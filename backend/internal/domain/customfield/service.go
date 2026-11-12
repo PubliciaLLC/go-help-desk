@@ -907,3 +907,44 @@ func (s *Service) CheckGuestValues(ctx context.Context, categoryID uuid.UUID, ra
 	}
 	return checkRequired(offered, raw, true)
 }
+
+// CopyValues carries the custom field values of ticket from to its follow-up to,
+// which has just been filed under the given classification (#625 item 8, D24).
+//
+// Staff and administrators carry every value whose field resolves on the new
+// classification. A requester (requester true) carries only the fields the
+// new-ticket form shows (visible_on_new): what the form keeps from a requester is
+// not handed to their new ticket. A field the new classification does not have is
+// left behind (a guest's follow-up is filed under the category alone).
+//
+// It is SetCreationValues' write, so each value is held to the rules of the field
+// as they are now: a value the field no longer accepts (a retired option, a limit
+// lowered since, a deactivated field) is left out and reported as a Warning, and
+// the rest are copied. It is not atomic with the follow-up: the ticket is already
+// committed when this runs, so a failure here is the caller's to log and cannot
+// undo it, and it is not retried.
+func (s *Service) CopyValues(ctx context.Context, from, to, categoryID uuid.UUID, typeID, itemID *uuid.UUID, requester bool) ([]Warning, error) {
+	held, err := s.store.ListValuesForTicket(ctx, from)
+	if err != nil {
+		return nil, fmt.Errorf("reading the values of the original: %w", err)
+	}
+	raw := make(map[string]string, len(held))
+	for _, v := range held {
+		if v.Value != "" {
+			raw[v.FieldDefID.String()] = v.Value
+		}
+	}
+	return s.setCreationValues(ctx, to, raw, func() ([]Assignment, error) {
+		fields, err := s.ResolveFieldsForCTI(ctx, categoryID, typeID, itemID)
+		if err != nil || !requester {
+			return fields, err
+		}
+		shown := make([]Assignment, 0, len(fields))
+		for _, a := range fields {
+			if a.VisibleOnNew {
+				shown = append(shown, a)
+			}
+		}
+		return shown, nil
+	})
+}

@@ -674,8 +674,8 @@ func (s *Server) registerTools() {
 		"create_follow_up",
 		mcpgo.WithDescription("Open a NEW ticket that continues a closed one, linked back to it. "+
 			"A closed ticket is terminal by default (an instance setting can let admins, or staff and admins, reopen it), so this is the way forward from one in every mode. "+
-			"Copies the subject, description, category/type/item, priority and requester; "+
-			"not the replies, attachments, history or custom fields. The new ticket starts open; "+
+			"Copies the subject, description, category/type/item, priority, requester and custom field values (every field that still accepts its value; best-effort, after the ticket is filed); "+
+			"not the replies, attachments or history. The new ticket starts open; "+
 			"the closed one is left as it was. Only works on a closed ticket."),
 		mcpgo.WithString("ticket_id", mcpgo.Required(), mcpgo.Description("UUID of the CLOSED ticket to continue")),
 	), scoped(mcpWrite, s.handleCreateFollowUp))

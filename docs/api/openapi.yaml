@@ -3565,8 +3565,8 @@ paths:
         spaces is no value. The message names each missing field. A reporting user's
         item_id is dropped before the check. One window remains: a field made required
         between the check and the create lets that one ticket through without it.
-        Follow-ups (POST /tickets/{id}/follow-up) are exempt from the required rule: they copy no
-        values and take no custom_fields.
+        Follow-ups (POST /tickets/{id}/follow-up) are exempt from the required rule: they take no
+        custom_fields. They carry their original's values (see that route), which usually satisfies it.
         A value over the longest its field's type takes (255 characters for text, number and select;
         10,000 for textarea; characters, not bytes) is refused with 400 before the ticket is created,
         for any field and any caller, naming the field and the limit and not repeating the value.
@@ -4447,6 +4447,14 @@ paths:
           added by hand does not use up the reporter's one follow-up. The
           follow-up keeps the original
           category and type, which must both still be active (400 otherwise).
+        The follow-up carries the closed ticket's custom field values, written after it
+        is committed. Staff and administrators carry every value whose field applies to
+        the follow-up's category, type and item; a reporting user carries only the fields
+        the new-ticket form shows (visible_on_new). A value the field no longer accepts (a
+        retired option, a limit lowered since, a deactivated field) is left out. It is not
+        atomic with the follow-up: if the copy fails the follow-up is still filed (201) and
+        the failure is logged. The follow-up is exempt from the required rule, which needs
+        custom_fields the route does not take.
         The ticket must be Closed (409 ticket_not_closed otherwise). The path id is a UUID
         or a tracking number. An OAuth client opens the follow-up as its service user,
         and needs the tickets:write scope.

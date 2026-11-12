@@ -326,11 +326,9 @@ Three doors, one creation path:
   for a normal create (`400` if an administrator has since archived it). The
   request body is ignored: there is no field to set.
 - **Not copied, for anyone:** replies and internal notes, attachments, status
-  history, custom-field values, tags, the assignee, any SLA state. The new ticket
-  starts in New and runs its own SLA clock. Custom-field values are not copied
-  because they live outside the ticket service, and copying them on one surface
-  and not the other would be two rules; a later change can add them to the
-  service for both.
+  history, tags, the assignee, any SLA state. The new ticket
+  starts in New and runs its own SLA clock. Custom-field values are copied, by a
+  hook after the follow-up commits (see *Custom-field values are copied* below).
 - **Linked:** the closed ticket is the **parent** of the follow-up
   (`parent_child`, source = closed ticket), written in the same transaction as
   the ticket, so a follow-up never exists without its link. The existing link
@@ -426,9 +424,24 @@ expired rows (a closed ticket collects one per mail sent on it).
   since archived answers `400` with the reason, as a direct submission does. The
   caller already holds a good link to a closed ticket and knows the category it
   was filed under, so nothing is revealed that they could not see.
-- **Custom-field values are not copied** to a follow-up: they live outside the
-  ticket service, and copying them on one surface and not the other would be
-  two rules. Planned with the custom-field work (#625, item 8).
+- **Custom-field values are copied** to a follow-up (#625 item 8, owner decision
+  D24). `ticket.Service` runs a hook the server wires (`SetFollowUpValueCopier`,
+  like `SetUserEmailLookup`) after the follow-up commits, for every door (REST,
+  guest link, MCP), and the hook calls `customfield.Service.CopyValues`. **Staff
+  and administrators** carry every value whose field resolves on the follow-up's
+  classification. **A requester** (an account holder or a guest) carries only the
+  fields the new-ticket form shows (`visible_on_new`), so what the form keeps
+  from a requester is not handed to their new ticket. A field the new
+  classification does not have is left behind (a guest's follow-up is filed
+  under the category alone). Each value is written through the creation write
+  (`SetCreationValues`), so it is held to the field as it is now: a value the
+  field no longer accepts (a retired option, a limit lowered since, a
+  deactivated field) is left out, logged, and the rest are copied. **It is not
+  atomic with the follow-up:** the ticket is already committed when the copy
+  runs, so a failure is logged at the boundary and the follow-up stands without
+  its values, the same trade as the values of an ordinary new ticket, and it is
+  not retried. The copy runs on a context detached from the request, so a client
+  that hangs up does not decide whether the follow-up keeps its values.
 - **Custom-field edits are not atomic with a close.** A reporter's custom-field
   edit (through the API; the ticket page offers Edit only to staff and admin) is
   checked once (`CanRequesterWrite`) and then written in a single transaction of
@@ -5036,8 +5049,11 @@ listed under breaking changes in the upgrade notes (#626, owner decision D25).
 
 **Follow-ups are exempt.** `POST /tickets/{id}/follow-up` (staff and requester),
 `POST /guest/follow-up` and MCP `create_follow_up` file a ticket in the original's
-category, type and item and copy no values; their routes take no `custom_fields`,
-so they could never satisfy a required field. They are filed without one.
+category, type and item; their routes take no `custom_fields`, so the request
+can never satisfy a required field, and the check is not made. They carry their
+original's values afterwards (see *Custom-field values are copied* under
+Follow-up), which usually satisfies it, but a follow-up is filed whether or not
+it does.
 
 **A failed write of the values.** Once the ticket exists its values are written
 in one transaction. Values are bounded (see *Values*), so a failure is a database
