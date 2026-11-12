@@ -146,7 +146,12 @@ func TestTicketStore_FollowUpLinkFlagAndTheTokenSweep(t *testing.T) {
 	})
 
 	t.Run("the sweep deletes expired tokens and keeps live ones", func(t *testing.T) {
-		now := time.Now()
+		// Postgres's clock, not this process's: the sweep decides expiry with
+		// clock_timestamp(), and the test database's clock can sit well behind
+		// the host's (a VM under load measured 105s). A minute of margin taken
+		// from time.Now() then leaves "expired-1" still live to the sweep.
+		var now time.Time
+		require.NoError(t, db.SQL.QueryRow(`SELECT clock_timestamp()`).Scan(&now))
 		require.NoError(t, ts.CreateGuestToken(ctx, uuid.New(), a.ID, "expired-1", now.Add(-time.Minute)))
 		require.NoError(t, ts.CreateGuestToken(ctx, uuid.New(), a.ID, "expired-2", now.Add(-24*time.Hour)))
 		require.NoError(t, ts.CreateGuestToken(ctx, uuid.New(), a.ID, "live", now.Add(time.Hour)))
