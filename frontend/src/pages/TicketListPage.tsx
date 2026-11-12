@@ -767,7 +767,10 @@ export function TicketListPage() {
                         <td className="whitespace-nowrap px-3 py-2 font-mono text-xs text-gray-500">
                           {t.tracking_number}
                         </td>
-                        <td className={'px-3 py-2 font-medium text-gray-900 ' + (t.reply_match ? 'max-w-lg' : 'max-w-xs truncate')}>
+                        {/* max-w-[16rem] on both: the Link truncates, but a cell's narrowest width
+                            is its text up to this cap, so a wider cap is room the status chip
+                            (which never wraps) and the date columns would need. */}
+                        <td className={'max-w-[16rem] px-3 py-2 font-medium text-gray-900 ' + (t.reply_match ? '' : 'truncate')}>
                           {/* A real link, not just a row click. The row was a
                               <tr onClick>, which no amount of tabbing reaches,
                               so a keyboard-only user had no way into a ticket
@@ -787,7 +790,7 @@ export function TicketListPage() {
                         <td className="px-3 py-2">
                           {status ? (
                             <span
-                              className="inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium"
+                              className="inline-flex items-center gap-1 whitespace-nowrap rounded-full border px-2 py-0.5 text-xs font-medium"
                               title={status.name}
                               style={{ borderColor: status.color, color: status.color }}
                             >

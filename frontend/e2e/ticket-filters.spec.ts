@@ -54,8 +54,8 @@ const SLA = {
 }
 
 const LIST = [
-  { ...TICKETS[0], status_id: ST_NEW, category_id: CAT_HW, subject: 'Printer on the 3rd floor jams on tray 2', priority: 'high', sla: SLA, updated_at: '2026-10-28T10:00:00Z' },
-  { ...TICKETS[1], status_id: ST_NEW, category_id: CAT_SW, subject: 'Toner warning stays on after replacement', priority: 'high', sla: SLA, updated_at: '2026-10-27T10:00:00Z' },
+  { ...TICKETS[0], status_id: ST_PROG, category_id: CAT_HW, subject: 'Printer on the 3rd floor jams on tray 2', priority: 'high', sla: SLA, updated_at: '2026-10-28T10:00:00Z' },
+  { ...TICKETS[1], status_id: ST_PEND, category_id: CAT_SW, subject: 'Toner warning stays on after replacement', priority: 'high', sla: SLA, updated_at: '2026-10-27T10:00:00Z' },
   { ...TICKETS[2], status_id: ST_NEW, category_id: CAT_SW, subject: 'Label printer prints blank lines between labels', priority: 'medium', sla: null, updated_at: '2026-10-26T10:00:00Z' },
 ]
 
@@ -131,11 +131,40 @@ async function noHorizontalScroll(page: Page) {
 // wide is not scrolled to: it is cut off. main never overflows, so the check
 // is on the box itself.
 async function tableFits(page: Page) {
-  const { scrollWidth, clientWidth } = await page.evaluate(() => {
-    const box = document.querySelector('table')!.parentElement!
-    return { scrollWidth: box.scrollWidth, clientWidth: box.clientWidth }
+  const { scrollWidth, clientWidth, minWidth } = await page.evaluate(() => {
+    const table = document.querySelector('table')!
+    const box = table.parentElement!
+    const out = { scrollWidth: box.scrollWidth, clientWidth: box.clientWidth, minWidth: 0 }
+    // The narrowest the table can get, which is what a different font eats into.
+    const before = table.style.width
+    table.style.width = '0'
+    out.minWidth = table.offsetWidth
+    table.style.width = before
+    return out
   })
+  // Room to spare, not just room: CI's Linux fonts made a table that fit here
+  // 1px too wide, so a fit with no margin is a fit on this machine only.
+  expect(clientWidth - minWidth, 'the narrowest the table can get leaves too little room for another font').toBeGreaterThanOrEqual(32)
   expect(scrollWidth, 'a column is cut off at the right of the table').toBeLessThanOrEqual(clientWidth)
+}
+
+// A status chip is one line, whatever the table does around it: wrapped, "In
+// Progress" is a two-line pill beside a one-line row. Measured against its own
+// line height and padding so it does not depend on a font.
+async function statusChipsAreOneLine(page: Page) {
+  const chips = await page.evaluate(() =>
+    [...document.querySelectorAll('tbody tr td span[title]')].map(el => {
+      const cs = getComputedStyle(el)
+      const oneLine =
+        parseFloat(cs.lineHeight) +
+        parseFloat(cs.paddingTop) + parseFloat(cs.paddingBottom) +
+        parseFloat(cs.borderTopWidth) + parseFloat(cs.borderBottomWidth)
+      return { name: el.getAttribute('title'), height: el.getBoundingClientRect().height, oneLine }
+    }),
+  )
+  expect(chips.length).toBeGreaterThan(0)
+  expect(chips.map(c => c.name)).toContain('In Progress')
+  for (const c of chips) expect(c.height, `"${c.name}" wraps`).toBeLessThanOrEqual(c.oneLine + 1)
 }
 
 test.describe('desktop, 1440x900', () => {
@@ -218,6 +247,20 @@ test.describe('desktop, 1440x900', () => {
     await tableFits(page)
   })
 
+  test('a status chip never wraps, with or without a reply match in the row', async ({ page }) => {
+    await mockApi(page, { me: STAFF })
+    await mockSearch(page)
+    await page.goto('/tickets')
+    await expect(page.getByRole('columnheader', { name: /Updated/ })).toBeVisible()
+    await statusChipsAreOneLine(page)
+    await tableFits(page)
+
+    await page.goto('/tickets?q=fuser')
+    await expect(page.locator('mark:visible').first()).toBeVisible()
+    await statusChipsAreOneLine(page)
+    await tableFits(page)
+  })
+
   test('a requester has no Updated column', async ({ page }) => {
     await mockApi(page, { me: ME_REPORTER })
     await mockSearch(page)
@@ -275,6 +318,19 @@ test.describe('desktop, 1440x900', () => {
 // The narrowest width that shows the Created and Updated columns.
 test.describe('desktop, 1280x800', () => {
   test.use({ viewport: { width: 1280, height: 800 } })
+
+  test('the status chip stays on one line here too', async ({ page }) => {
+    await mockApi(page, { me: ADMIN })
+    await mockSearch(page)
+    await page.goto('/tickets')
+    await expect(page.getByRole('columnheader', { name: /Updated/ })).toBeVisible()
+    await statusChipsAreOneLine(page)
+    await tableFits(page)
+    await page.goto('/tickets?q=fuser')
+    await expect(page.locator('mark:visible').first()).toBeVisible()
+    await statusChipsAreOneLine(page)
+    await tableFits(page)
+  })
 
   test('the Created and Updated columns fit without sideways scroll', async ({ page }) => {
     await mockApi(page, { me: ADMIN })
