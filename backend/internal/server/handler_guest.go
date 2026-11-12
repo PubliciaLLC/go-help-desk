@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/google/uuid"
 
@@ -18,7 +19,7 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 	authmw "github.com/publiciallc/go-help-desk/backend/internal/middleware"
-	"github.com/publiciallc/go-help-desk/backend/internal/server/notify"
+	"github.com/publiciallc/go-help-desk/backend/internal/ratelimit"
 )
 
 // The guest surface. Five routes, each doing one thing, mounted outside the
@@ -63,8 +64,7 @@ func (s *Server) handleGuestCreateTicket(w http.ResponseWriter, r *http.Request)
 	}
 	// Keyed on the source address, like signup, which is the only key there is
 	// when there is no account to key on.
-	if !s.loginLimiter.Allow("guest-submit:" + authmw.ClientAddr(r)) {
-		tooManyAttempts(w, s.loginLimiter.Remaining())
+	if !allowOrRefuse(ctx, w, s.loginLimiter, "guest-submit:"+authmw.ClientAddr(r)) {
 		return
 	}
 
@@ -373,21 +373,29 @@ func (s *Server) handleGuestUploadAttachment(w http.ResponseWriter, r *http.Requ
 	// upload (#559), and the two windows drift, so it could lock a guest out for
 	// up to an extra hour.
 	refusalKey := t.ID.String()
-	okRefusal, refusalWindow := s.guestRefusalLimiter.Take(refusalKey)
-	if !okRefusal {
-		w.Header().Set("Retry-After", strconv.Itoa(max(1, int(math.Ceil(s.guestRefusalLimiter.Remaining().Seconds())))))
+	refusal, err := s.guestRefusalLimiter.Take(ctx, refusalKey)
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+	if !refusal.Allowed {
+		w.Header().Set("Retry-After", retryAfterSeconds(refusal.RetryAfter))
 		Error(w, http.StatusTooManyRequests, "rate_limited",
 			"Too many of this ticket's uploads were refused. Please try again later.")
 		return
 	}
 
 	perHour := s.adminSvc.GuestAttachmentUploadsPerHour(ctx)
-	ok, window := s.guestUploadLimiter.TakeWithLimit(t.ID.String(), perHour)
-	if !ok {
+	upload, err := s.guestUploadLimiter.TakeWithLimit(ctx, t.ID.String(), perHour)
+	if err != nil {
+		s.refundGuestUnit(ctx, s.guestRefusalLimiter, refusalKey, refusal.Window)
+		handleError(w, err)
+		return
+	}
+	if !upload.Allowed {
 		// Not a refusal of a file: nothing was read or scanned.
-		s.guestRefusalLimiter.Refund(refusalKey, refusalWindow)
-		secs := max(1, int(math.Ceil(s.guestUploadLimiter.Remaining().Seconds())))
-		w.Header().Set("Retry-After", strconv.Itoa(secs))
+		s.refundGuestUnit(ctx, s.guestRefusalLimiter, refusalKey, refusal.Window)
+		w.Header().Set("Retry-After", retryAfterSeconds(upload.RetryAfter))
 		Error(w, http.StatusTooManyRequests, "rate_limited",
 			fmt.Sprintf("You can attach at most %d files an hour to this ticket. Please try again later.", perHour))
 		return
@@ -401,12 +409,30 @@ func (s *Server) handleGuestUploadAttachment(w http.ResponseWriter, r *http.Requ
 	// retry storm through.
 	rec := &refusalRecorder{ResponseWriter: w}
 	s.storeUploadedAttachment(rec, r, t.ID, ticket.Actor{Role: user.RoleUser}, s.guestAttachmentMaxBytes(ctx), maxFiles)
+	// Detached: the upload has already been answered, and a client that hung up
+	// must not leave the guest charged for a file that was never kept.
+	refundCtx := context.WithoutCancel(ctx)
 	if rec.status < 400 {
-		s.guestRefusalLimiter.Refund(refusalKey, refusalWindow) // accepted: not a refusal
+		s.refundGuestUnit(refundCtx, s.guestRefusalLimiter, refusalKey, refusal.Window) // accepted: not a refusal
 	}
 	if refundable(rec.status, rec.code()) {
-		s.guestUploadLimiter.Refund(t.ID.String(), window)
+		s.refundGuestUnit(refundCtx, s.guestUploadLimiter, t.ID.String(), upload.Window)
 	}
+}
+
+// refundGuestUnit gives a unit back. A failure is logged and swallowed: the
+// answer to the guest is already decided, and a unit not returned costs them
+// at most a wait for the window to end.
+func (s *Server) refundGuestUnit(ctx context.Context, l *ratelimit.Limiter, key string, window time.Time) {
+	if err := l.Refund(ctx, key, window); err != nil {
+		slog.ErrorContext(ctx, "guest upload unit could not be refunded", "error", err)
+	}
+}
+
+// retryAfterSeconds is a Retry-After value: whole seconds, rounded up so that
+// waiting that long is enough, and never 0, which a client reads as "retry now".
+func retryAfterSeconds(d time.Duration) string {
+	return strconv.Itoa(max(1, int(math.Ceil(d.Seconds()))))
 }
 
 // POST /api/v1/guest/follow-up
@@ -445,8 +471,7 @@ func (s *Server) handleGuestFollowUp(w http.ResponseWriter, r *http.Request) {
 		Error(w, http.StatusNotFound, "not_found", "not found")
 		return
 	}
-	if !s.loginLimiter.Allow("guest-submit:" + authmw.ClientAddr(r)) {
-		tooManyAttempts(w, s.loginLimiter.Remaining())
+	if !allowOrRefuse(ctx, w, s.loginLimiter, "guest-submit:"+authmw.ClientAddr(r)) {
 		return
 	}
 	created, err := s.tickets.CreateRequesterFollowUp(ctx, t.ID, s.adminSvc.TicketPrefix(ctx), ticket.ChannelGuest,
@@ -480,8 +505,7 @@ func (s *Server) handleGuestResend(w http.ResponseWriter, r *http.Request) {
 		Error(w, http.StatusNotFound, "not_found", "not found")
 		return
 	}
-	if !s.loginLimiter.Allow("guest-resend:" + authmw.ClientAddr(r)) {
-		tooManyAttempts(w, s.loginLimiter.Remaining())
+	if !allowOrRefuse(ctx, w, s.loginLimiter, "guest-resend:"+authmw.ClientAddr(r)) {
 		return
 	}
 	var body struct {
@@ -540,11 +564,18 @@ func (s *Server) PrepareGuestLink(ctx context.Context, ev notification.Event) (n
 		//
 		// Checked after the match, so a miss consumes nothing and the budget
 		// cannot be probed to learn which tickets exist. Charged once per
-		// request, on its first attempt: charging every attempt refused the
-		// retry of a send that had failed, and the request was dropped with
-		// the guest's old link already rotated away (#164 round 1). Outside
-		// the worker the attempt is 0, which is a first attempt too.
-		if notify.Attempt(ctx) <= 1 && !s.guestResendLimiter.Allow(id.String()) {
+		// request: charging every attempt refused the retry of a send that had
+		// failed, and the request was dropped with the guest's old link
+		// already rotated away (#164 round 1). A retry skips the charge only if
+		// an earlier attempt of the row made it; one that never was charged is
+		// counted here, and refused with no link made if the budget is spent.
+		ok, err := allowOncePerRow(ctx, s.guestResendLimiter, id.String())
+		if err != nil {
+			// Not "no": the outbox retries an error, and a request dropped
+			// here would have no mail and an old link already rotated away.
+			return ev, false, err
+		}
+		if !ok {
 			return ev, false, nil
 		}
 		ev.TicketID = id
