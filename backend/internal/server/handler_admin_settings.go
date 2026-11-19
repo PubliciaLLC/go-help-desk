@@ -528,6 +528,23 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// The same list shape, with the elements checked: a role no account holds
+	// would be accepted and silently do nothing, and the administrator would
+	// believe a requirement was in force (#616c).
+	if raw, ok := body[admin.KeyPasskeyRequiredRoles]; ok {
+		var roles []string
+		if err := unmarshalSetting(raw, admin.KeyPasskeyRequiredRoles, &roles); err != nil {
+			handleError(w, err)
+			return
+		}
+		for _, role := range roles {
+			if !user.Role(role).Valid() {
+				Error(w, http.StatusBadRequest, "bad_request",
+					"passkey_required_roles may only list admin, staff or user")
+				return
+			}
+		}
+	}
 	if raw, ok := body[admin.KeyReopenTargetStatusName]; ok {
 		var name string
 		if err := unmarshalSetting(raw, admin.KeyReopenTargetStatusName, &name); err != nil {
@@ -1195,6 +1212,11 @@ type passkeyStatus struct {
 	Available bool `json:"available"`
 	// Reason is why not, in the library's words. Empty when Available.
 	Reason string `json:"reason"`
+	// SuspendedRoles are the roles whose passkey requirement (#616c) is not
+	// being enforced because passkeys are unavailable: TOTP is accepted for
+	// them until BASE_URL is fixed. Always an array; empty unless passkeys are
+	// unavailable, MFA is on and passkey_required_roles lists a role.
+	SuspendedRoles []string `json:"suspended_roles"`
 }
 
 // emailStatus never carries a credential or an address: names of unset
@@ -1293,20 +1315,24 @@ func (s *Server) handleGetSecurityWarnings(w http.ResponseWriter, r *http.Reques
 		AttachmentScanning:        s.scanStatus(r.Context()),
 		AttachmentStorage:         storageStatus{Writable: problem == "", Problem: problem},
 		OAuthClientsWithoutGroups: unscoped,
-		Passkeys:                  s.passkeyStatus(),
+		Passkeys:                  s.passkeyStatus(r.Context()),
 		Email:                     s.emailStatus(r.Context()),
 	})
 }
 
-func (s *Server) passkeyStatus() passkeyStatus {
+func (s *Server) passkeyStatus(ctx context.Context) passkeyStatus {
 	if s.passkeysAvailable() {
-		return passkeyStatus{Available: true}
+		return passkeyStatus{Available: true, SuspendedRoles: []string{}}
 	}
 	reason := s.passkeysReason
 	if reason == "" {
 		reason = "BASE_URL cannot be used as a passkey domain"
 	}
-	return passkeyStatus{Reason: reason}
+	suspended := []string{}
+	if s.adminSvc.MFAEnabled(ctx) {
+		suspended = append(suspended, s.adminSvc.PasskeyRequiredRoles(ctx)...)
+	}
+	return passkeyStatus{Reason: reason, SuspendedRoles: suspended}
 }
 
 func (s *Server) emailStatus(ctx context.Context) emailStatus {

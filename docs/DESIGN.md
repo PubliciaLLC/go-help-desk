@@ -806,7 +806,7 @@ An install upgraded from an earlier release has never been asked about the choic
 - Username/password with bcrypt hashing at **cost 12** (`user.ProductionBcryptCost`, #453). Releases up to 1.2 hashed at cost 10; a hash made at a lower cost is replaced at that account's next successful password sign-in, with a write conditional on the old hash so a password changed in between is never overwritten. The upgrade is best effort: a failure is logged and the sign-in still succeeds. While accounts are still on a lower cost, a wrong password for such an account spends the extra comparisons needed to cost as much as one at cost 12, so it takes as long to refuse as an address with no account. An account with no password (one that signs in only through SSO) or with a hash bcrypt cannot read is refused after the same comparison an unknown address gets, so a wrong password does not say which addresses belong to SSO-only accounts (#476). A hash at a higher cost than this one still takes longer to refuse; none is ever written. A password is 8 to 72 **bytes**, the same rule wherever one is set: first-run setup, admin create, admin reset, the account page and signup verification (`user.ValidatePassword`, #368). The upper bound is bcrypt's: it reads only the first 72 bytes and refuses to hash more. It counts bytes, not characters, so accented letters take 2 bytes each and most other non-Latin characters 3 or 4, and a 25-character passphrase in Chinese is already too long. A password over the limit is refused with a 400 that names it (`bad_request`, or `password_too_long` at signup verification). Sign-in applies no maximum, so a hash made elsewhere by a bcrypt that silently truncated still accepts its owner's full password: only the first 72 bytes are compared, as bcrypt always has. A missing or wrong **current** password on `PATCH /me/password` is `400 invalid_current_password`, not 401 (#555): the session is good, and the web client reads every 401 as an expired session and signs the person out. Wrong guesses are throttled per user with a budget the size of sign-in's, counted separately (key `change-password:<user id>`, failures only, same `AUTH_THROTTLE_DELAY` tarpit: the right password always works).
 - **Old hashes stop working after N days (#453).** Rehash at sign-in only reaches accounts that sign in, so a hash made below cost 12 is refused too once the grace period ends. `admin.KeyPasswordRehashStartedAt` (`password_rehash_started_at`) holds the moment 1.3.0 first ran against the database, written once by migration 000044 (`ON CONFLICT DO NOTHING`; a fresh install has no old hashes, so its date changes nothing). It is a settings row rather than an `instance_secrets` row: that table is for secrets (a name allowlist and at least 32 bytes), and a date is not one. It is a known key only because the migration test requires every seeded key to be one; `PATCH /admin/settings` refuses it with `readonly_setting`, it is auth-critical, and the settings dump leaves it out, so nobody can restart the clock. N is `password_rehash_grace_days` (Authentication tab, default **30**, 1 to 365 enforced when saved; an unreadable or out-of-range stored value reads as 30). Sign-in only: `user.Service.VerifyPasswordForSignIn` returns `ErrPasswordResetRequired` for a **correct** password on a hash below the current cost once `started_at + N days` has passed, and the handler answers 403 `password_reset_required` (the reset link is sent, or the message says what to do instead; see below). A wrong password still answers 401 `invalid_credentials`, so a guesser learns nothing about the hash. The refusal spends the same bcrypt work as a wrong password on that hash (it burns the cost difference instead of the rehash), pinned by a work-counting test next to #475's. `VerifyPassword` (confirming the current password while changing it) never refuses, since changing the password is the cure. No deadline recorded, or one that cannot be read, means no refusal. **Every administrator is exempt** (rehashed at sign-in as before): administrators are who reset everyone else, setup does not reopen, and email may be off. An earlier version exempted only the last active administrator, which still locked out the others; Erik widened it. Staff and requesters are refused. The SAML restriction (`saml_required`, password sign-in limited to administrators) is checked first, so a non-administrator under SAML gets that refusal rather than a reset instruction. When the server can send email (`passwordResetAvailable()`), the refusal also sends the reset link, through the same code path as "Forgot password" (`requestPasswordReset`, see below), and the message says to check email; Erik's ruling of 2026-10-19, replacing "refuse and point at Forgot password". It is sent only after the password was verified and after the SAML check, so a wrong password or a SAML refusal sends nothing. It spends the same per-address budget as `POST /auth/forgot-password` (`forgotPasswordKey`), and the per-account limit applies when the worker sends. Over the budget, or if the queue insert fails, nothing is queued and the message says "We could not send a reset link just now. Try again in a minute, or ask an administrator." rather than claiming a mail was sent; the code stays `password_reset_required`. The work added to the request is one outbox insert; the mail is sent by the worker. When email is off nothing is sent and the message points at an administrator. The sign-in page shows the "Forgot password?" link in the email-on case (#451).
 - Available for all roles by default. With `saml_enabled` on, only administrators keep it (see SAML below).
-- **MFA** (optional toggle `mfa_enabled` in admin settings): a second factor is **either** a TOTP authenticator app (Google Authenticator, Authy, etc., enrolled by QR code) **or** a registered passkey (below). Admin can enforce MFA for specific roles (`mfa_enforced_roles`) or all users; an enforced user with no factor is sent to enrolment at sign-in, and right after verifying a self-service signup.
+- **MFA** (optional toggle `mfa_enabled` in admin settings): a second factor is **either** a TOTP authenticator app (Google Authenticator, Authy, etc., enrolled by QR code) **or** a registered passkey (below). Admin can enforce MFA for specific roles (`mfa_enforced_roles`) or all users, and can require a passkey, instead of TOTP being enough, for specific roles (`passkey_required_roles`, an auth-critical setting; see "Passkey required for roles (#616 part c)"; a listed role is MFA-enforced as well, and the settings page shows its MFA box checked and disabled); an enforced user with no factor is sent to enrolment at sign-in, and right after verifying a self-service signup.
 - **A half-signed-in session expires** (#452). After the password is accepted but before the second factor is done, the session is good for **5 minutes** when a code from an existing factor is owed (TOTP or passkey) and **15 minutes** for first-time enrolment, which takes longer (installing an app, scanning a code). The limit is chosen when the session is created (`auth.PendingDeadline`) and stored as `SessionData.PendingUntil`; saving a staged enrolment secret does not extend it. Past it, `SessionAuth` deletes the session row and the request carries no actor, so the route answers its usual 401 and the person signs in with their password again; a refused code is never checked, so it does not use up an MFA attempt. The cookie and row are also given that lifetime so an abandoned sign-in clears itself. A pending session with no `PendingUntil` (saved before this existed) counts as expired, so anyone mid-sign-in at upgrade signs in once more. A fully signed-in session is not affected. Enrolment stays outside `RequireMFA`, so the password is still a way in: the sole administrator can always sign in again and recover (`TestSoleAdministrator_CanSelfRecoverWithNoSecondFactor`).
 
 ### Forgot password (#451)
@@ -979,7 +979,9 @@ separate session fact, `FactorVerified`, set only by:
   `http://schemas.microsoft.com/claims/multipleauthn`. Entra ID sends neither by
   default: add the `amr` optional claim to the app registration (for SAML, with
   `include_granular_amr`). Without it SSO sign-in still works, but a user who
-  also has a local factor must enter it before changing factors.
+  also has a local factor must enter it before changing factors;
+- an SSO sign-in whose assertion is passkey-grade (below), which also counts as
+  having proved a factor.
 
 Without this, a password-only session on an account where MFA was optional could
 replace the owner's factor at any time after they enrolled. A session written
@@ -1036,10 +1038,18 @@ assertion they re-issue the session with `MFAPassed` and `FactorVerified` true.
 The gate downstream is `Actor.MFAPassed`, already enforced by `RequireMFA`, so
 no route learned a new idea.
 
-**The password step answers with three booleans:** `mfa_needed` (a TOTP
+**The password step answers with four booleans:** `mfa_needed` (a TOTP
 enrolment exists; TOTP wins when the account has both), `passkey_needed` (a
 passkey is registered and no TOTP) and `mfa_enrollment_needed` (neither, and the
-role is enforced). All false means no factor is owed. Each is also conditional
+role is enforced), and, for a role in `passkey_required_roles` only (#616c),
+`passkey_enrollment_needed` (register a passkey). For such a role the first
+three change meaning: `passkey_needed` is sent whenever a key is registered,
+TOTP or not; `mfa_needed` together with `passkey_enrollment_needed` means verify
+the authenticator code, **then** register a key (the TOTP verify still answers
+204); and `mfa_enrollment_needed` is never sent, because enrolling TOTP would
+not satisfy the gate. `POST /auth/verify-email` carries `passkey_enrollment_needed`
+too. For every role not in the list the first three keep their meanings and the
+fourth is false. All false means no factor is owed. Each is also conditional
 on the instance setting `mfa_enabled`: with it off, an account that holds TOTP or
 passkeys owes nothing at login, and the descriptions above apply with it on. Two booleans keyed off
 `u.MFAEnabled`, which is the TOTP column and not "this account has a second
@@ -1253,6 +1263,10 @@ unavailable: ...` with the reason) and carries on with no passkey service, and:
   then signs in and enrols TOTP as usual. An account with a passkey **and**
   TOTP uses TOTP as always. `passkey_needed` is never sent while passkeys are
   off.
+- **A passkey requirement for a role is suspended while passkeys are off**
+  (#616c, "Passkey required for roles" below): TOTP passes again, and
+  `GET /admin/security-warnings` gains `passkeys.suspended_roles` (the listed
+  roles, while `mfa_enabled` is on) so the banner can say so.
 - **There is no exception for the last administrator.** They are refused too,
   and `alreadyProtected` still counts passkeys, so a password alone cannot
   enrol TOTP on any passkey-only account. Recovery is on the server:
@@ -1262,42 +1276,87 @@ unavailable: ...` with the reason) and carries on with no passkey service, and:
   they were registered on.
 
 **Not built**, written down so it is not rediscovered as a gap: passwordless
-sign-in; attestation verification against a metadata service; a per-role
-"passkey required, TOTP no longer sufficient" policy; and any route by which a
-machine credential could register or use a passkey (`DenyMachineCredentials`
-refuses that and will keep refusing it). The two of those that
-[#616](https://github.com/PubliciaLLC/go-help-desk/issues/616) raised are limits
-of 1.3.0 and are described next.
+sign-in; attestation verification against a metadata service (below); and any
+route by which a machine credential could register or use a passkey
+(`DenyMachineCredentials` refuses that and will keep refusing it). The per-role
+"passkey required, TOTP no longer sufficient" policy that
+[#616](https://github.com/PubliciaLLC/go-help-desk/issues/616) raised was
+first listed here and is now built (part c, below).
 
-**Two limits of the passkey check in 1.3.0** ([#616](https://github.com/PubliciaLLC/go-help-desk/issues/616),
-parts a and c). Both were decided to be documented now and built in 1.3.x, not
-before the tag.
+**Attestation is deliberately not built** (#616 part a). Registration asks for
+no attestation, so browsers send `fmt: none`, and the library checks a present
+statement's signature but not its trust chain. Nothing here knows what kind of
+authenticator a key is. Enforcing attestation (the FIDO Metadata Service, a
+request for `direct` attestation, a refusal of `none`, a cache and a refresh, an
+answer for installs with no outbound access) would also very likely mean
+**hardware keys only**, because synced passkeys (iCloud Keychain, Google
+Password Manager) generally send none; that contradicts accepting synced
+passkeys, which this section does on purpose. The AAGUID is stored but is
+self-reported, so an allow-list on it would not be a control. What the property
+above does claim, phishing-resistance, holds for every credential this accepts;
+what an operator cannot do is require a particular kind of authenticator. The
+`backup_eligible` flag is how to tell a synced credential from a hardware key
+afterwards. The signature counter check (part b) shipped in 1.3.0 (#645).
 
-- **Attestation is not verified: any authenticator is accepted.** Registration
-  asks for no attestation, so browsers send `fmt: none`, and the library checks a
-  present statement's signature but not its trust chain. Nothing here knows what
-  kind of authenticator a key is. The AAGUID is stored but is self-reported, so
-  an allow-list on it would not be a control. Enforcing attestation (the FIDO
-  Metadata Service, a request for `direct` attestation, a refusal of `none`, a
-  cache and a refresh, an answer for installs with no outbound access) would
-  also very likely mean **hardware keys only**, because synced passkeys (iCloud
-  Keychain, Google Password Manager) generally send none; that would contradict
-  accepting synced passkeys, which this section does on purpose. That is a
-  product decision before it is a code change. What the property above does
-  claim, phishing-resistance, holds for every credential this accepts; what an
-  operator cannot do is require a particular kind of authenticator. The
-  `backup_eligible` flag is how to tell a synced credential from a hardware key
-  afterwards.
-- **There is no "passkey required" policy.** `MFARequiredFor(role)` is satisfied
-  by a TOTP enrolment **or** a passkey, so an operator who enforces MFA for a
-  role cannot also require that role to use a passkey rather than TOTP, and a
-  role's members with TOTP are not nudged to move to a key. Building it means a
-  new setting, a login state in which TOTP proves a factor but does not pass
-  the gate (so the person can only enrol a key), TOTP enrolment that stops
-  satisfying the gate for those roles, a rule for what happens while passkeys
-  are off (#494) and an exemption for SSO sign-ins, and it touches the login
-  state machine, which has had many fixes. An operator who needs this today
-  has no setting for it.
+### Passkey required for roles (#616 part c)
+
+`passkey_required_roles` (a JSON array of `admin`, `staff` and `user`, seeded
+`[]`, auth-critical so machine credentials cannot change it) lists roles whose
+members must finish **every sign-in with a passkey**. For them a TOTP code still
+proves a factor, but it does not pass MFA. With the list empty, which is how an
+upgrade leaves it (migration 000066), every path behaves as before.
+
+- **A listed role is MFA-enforced, computed when read.** `MFARequiredFor(role)`
+  is `mfa_enabled` and the role is in `mfa_enforced_roles` **or**
+  `passkey_required_roles`. Nothing writes `mfa_enforced_roles` for the
+  operator: untick the passkey requirement and the role is exactly as enforced
+  as it was before. The settings page shows the role's "Require MFA" box checked
+  and disabled while it is listed, with the stored value untouched; the server
+  enforces the implication regardless of the page. Like `mfa_enforced_roles`
+  the list has no effect while `mfa_enabled` is off (`PasskeyRequiredFor`).
+  `PATCH /admin/settings` refuses an element that is not one of the three roles
+  (`400 bad_request`).
+- **The decision is one pure function**, `auth.SecondStep` (table-tested), called
+  by the password login, signup verification, SAML and OIDC. Its output is what
+  the wire carries, plus the stranded refusal. For a role not in the list it is
+  the old logic unchanged. For a listed role: a passkey **registered** means the
+  passkey is owed (`passkey_needed`), even when the account also holds TOTP; TOTP
+  only: verify it, then register a key (`mfa_needed` and
+  `passkey_enrollment_needed` both true); nothing: register a key
+  (`passkey_enrollment_needed`), **never** TOTP enrolment, because that would not
+  satisfy the gate.
+- **The session fact is `PasskeyOwed`,** set only when a sign-in creates the
+  session (password login, signup verification, SAML, OIDC), from the role's
+  policy at that moment. Existing sessions are untouched: a policy change applies
+  at the next sign-in and ends nobody's session, as `mfa_enforced_roles` behaves.
+  A session saved before the field existed decodes it false. TOTP verification
+  and TOTP enrolment confirm leave `MFAPassed` as it was (`MFAPassed = !PasskeyOwed`)
+  and set `FactorVerified`, which is what lets a key be registered (#333, #617),
+  and they keep the pending deadline rather than extending it (#452). A password
+  change carries the flag, or a session that must change its password could then
+  enrol TOTP and pass. It is cleared by the only things that satisfy it: a
+  passkey sign-in and a passkey registration (`markPasskeyRegistrationSatisfiesMFA`).
+  The Account-page step-up (#336) on a fully signed-in session is unaffected,
+  since that session never owed a passkey.
+- **Suspended while passkeys are unavailable (#494).** With no passkey service the
+  requirement could not be met by anyone, so it is not applied
+  (`passkeyRequiredFor` is availability and the setting): TOTP passes again, a
+  role with no factor still enrols TOTP because the role is still MFA-enforced,
+  and a passkey-only account is still refused (`403 passkey_unavailable`). Nobody
+  is locked out by a bad `BASE_URL`. `GET /admin/security-warnings` gains
+  `passkeys.suspended_roles` (always an array; non-empty only when passkeys are
+  unavailable, `mfa_enabled` is on and the list is non-empty) and the banner shows
+  "Passkey requirement suspended", saying TOTP is accepted for those roles until
+  `BASE_URL` is fixed.
+- **Recovery.** A person who lost the key is helped by an administrator removing
+  it or resetting MFA, as in Losing a key above. A TOTP holder can also verify
+  the authenticator and then register a replacement. The sole administrator in a
+  listed role with no factor signs in, registers a key and is in. There is no
+  guard against listing your own role while you hold no key; the last
+  administrator recovers as above.
+
+SSO is covered under SAML and OIDC below: a listed role is let in by an IdP only
+on a passkey-grade assertion, otherwise a passkey step follows the SSO.
 
 ### SAML (Optional, Off by Default)
 
@@ -1318,7 +1377,7 @@ before the tag.
 - **Reloads are serialised (#619).** Reading the stored settings, building from them (a network fetch of up to 15 seconds) and committing are done under one lock per provider (`samlReloadMu`, `oidcReloadMu`), held by startup, the hourly refresh, the `PATCH /admin/settings` reload, and the `PUT /admin/saml` and `PUT /admin/oidc` saves. An older reload therefore cannot commit after a newer one and put the old configuration back live (pinned by `TestReloadSAML_ANewerReloadIsNotOverwrittenByAnOlderSlowOne` and `TestReloadOIDC_ANewerReloadIsNotOverwrittenByAnOlderSlowOne`). The hourly refresh holds the SAML lock across its metadata fetch, so a SAML save or a settings PATCH that reloads can wait up to 15 seconds, about once an hour; the lock is deliberately not narrowed to the commit.
 - **`saml_enabled`** (the "Enable SAML login" toggle) is a separate, stricter posture an operator opts into: it removes password login for non-administrators (`user.IsLocalAuthAllowed`; refused with `403 saml_required`), and `GET /auth/providers` says so with `local_admin_only` (true exactly when `saml_enabled` is on; `local` stays true, since the password form is still offered). `GET /auth/providers` is JSON, and its `saml` and `oidc` entries mean *loaded and able to sign someone in now*, not *switched on*: an identity provider that did not answer no longer gets a button that leads to a 503 (#421).
 - **Admin failsafe**: administrators can still sign in with a local password.
-- **First sign-in provisioning.** A known SAML subject signs in and has its email and display name refreshed from the assertion (the domain allowlist is not applied again). An unknown subject creates a `User`-role account, provided the email's domain passes `allowed_email_domains` (an empty list is unrestricted for this path). It never adopts an existing local account by email: an address already held by another account is refused (`/login?error=email_taken`). The email comes from `email`, `mail`, the LDAP `mail` OID or Entra ID's `…/claims/emailaddress`, falling back to the NameID. The name comes from `displayName`, Entra ID's `…/identity/claims/displayname`, `cn` or `name`, then the given name (`givenName`, `firstName` or `…/claims/givenname`) and surname (`sn`, `lastName` or `…/claims/surname`), either alone if only one is sent, then Entra ID's `…/claims/name` (ranked last because Entra fills it with the user principal name), falling back to the email (#461; `TestSAMLIdentity`). A blank value counts as absent. Each sign-in of a known subject rewrites the stored name, and the email when it is valid, from these, so an IdP that starts sending a name, or a release that starts reading one, changes the display name at the next sign-in. Other refusals redirect to `/login?error=` with `domain_not_allowed`, `account_disabled`, `account_link_refused`, `invalid_assertion`, `email_not_verified`, `sso_session_used` or `invalid_email` (an address that needs quotation marks, see Guest Submission). The login page shows a fixed message for each of these codes and a generic one for any other; it never displays text from the query string. An SSO sign-in counts as having passed MFA; whether it also counts as having proved a factor is under Passkeys above.
+- **First sign-in provisioning.** A known SAML subject signs in and has its email and display name refreshed from the assertion (the domain allowlist is not applied again). An unknown subject creates a `User`-role account, provided the email's domain passes `allowed_email_domains` (an empty list is unrestricted for this path). It never adopts an existing local account by email: an address already held by another account is refused (`/login?error=email_taken`). The email comes from `email`, `mail`, the LDAP `mail` OID or Entra ID's `…/claims/emailaddress`, falling back to the NameID. The name comes from `displayName`, Entra ID's `…/identity/claims/displayname`, `cn` or `name`, then the given name (`givenName`, `firstName` or `…/claims/givenname`) and surname (`sn`, `lastName` or `…/claims/surname`), either alone if only one is sent, then Entra ID's `…/claims/name` (ranked last because Entra fills it with the user principal name), falling back to the email (#461; `TestSAMLIdentity`). A blank value counts as absent. Each sign-in of a known subject rewrites the stored name, and the email when it is valid, from these, so an IdP that starts sending a name, or a release that starts reading one, changes the display name at the next sign-in. Other refusals redirect to `/login?error=` with `domain_not_allowed`, `account_disabled`, `account_link_refused`, `invalid_assertion`, `email_not_verified`, `sso_session_used` or `invalid_email` (an address that needs quotation marks, see Guest Submission). The login page shows a fixed message for each of these codes and a generic one for any other; it never displays text from the query string. An SSO sign-in counts as having passed MFA, **except for a role in `passkey_required_roles`** (#616c): that role is let in only when the assertion is passkey-grade, namely `authnmethodsreferences` (under its `Name` or `FriendlyName`) containing `fido` or `hwk` **together with** `http://schemas.microsoft.com/claims/multipleauthn`. Otherwise the session is pending (`MFAPassed` false, `PasskeyOwed` true) and the browser is redirected to `/login?sso_step=<code>` instead of `/`, where `<code>` is `passkey` (the account has a key: use it), `passkey_enroll` (register one) or `verify_then_passkey_enroll` (an authenticator code, then register one). The login page reads the code through an allowlist and ignores an unknown value; it only chooses the screen, and the server enforces the step whatever the URL says. With passkeys unavailable (#494) the requirement is suspended and the redirect is to `/`. **The accepted values are documented for Microsoft Entra ID only.** Okta and Google Workspace values are unverified and none is invented, so those providers fall through to the local passkey step. All accepted values, and the check for whether MFA was asserted, live in one file, `backend/internal/domain/auth/ssofactor.go`. Whether an SSO sign-in counts as having proved a factor is under Passkeys above.
 
 **Supported IdPs:** Okta, Azure AD / Entra ID, Google Workspace (whose metadata is a download: paste or upload it; standard SAML 2.0; additional IdPs should work via metadata import).
 
@@ -1381,7 +1440,7 @@ The request-tracking cookie is `SameSite=None; Secure` when the base URL is http
 - **Only a verified email counts.** An address the provider has not marked `email_verified` is dropped: it cannot be used to adopt an account or provision one. A subject already bound to an account still signs in; a first-time login with no verified email is refused (`email_not_verified`), and one whose address needs quotation marks with `invalid_email` (see Guest Submission).
 - **`allowed_email_domains` applies to every OIDC sign-in** that carries an email (`domain_not_allowed`), unlike SAML where it gates provisioning only; an empty list is unrestricted.
 - **Provisioning and linking.** The `sub` claim is the primary key. A known subject has its email and name refreshed. An unknown subject whose verified email matches an existing local account **adopts** it (matched on the parsed address, so `<a@x>` or `"a"@x` from the provider finds `a@x`), but only when that account is active, is not an administrator, is not already federated through SAML and is not bound to a different OIDC subject (otherwise `account_link_refused`; the write statement asks the rule again, so an account promoted in between is not adopted). An unknown subject with no matching account creates a `User`-role account. A disabled account is refused (`account_disabled`), an address held by another account is `email_taken` and a missing subject is `invalid_id_token`. The name comes from `name`, `preferred_username`, given plus family name, then the email.
-- An OIDC sign-in counts as having passed MFA (the identity provider's job); `FactorVerified` is set only when the ID token's `amr` contains `mfa` (Passkeys above).
+- An OIDC sign-in counts as having passed MFA (the identity provider's job); `FactorVerified` is set only when the ID token's `amr` contains `mfa` (Passkeys above). The exception is a role in `passkey_required_roles` (#616c): it is let in only when `amr` contains `fido` or `hwk` (documented for Entra ID; other providers' values are unverified and not accepted, see SAML above), which also sets `FactorVerified`. Without one the callback redirects to `/login?sso_step=<code>` (`passkey`, `passkey_enroll` or `verify_then_passkey_enroll`) with a pending session, exactly as the SAML sign-in does. The accepted values are in `backend/internal/domain/auth/ssofactor.go`.
 
 ### Self-Service Signup (Optional, Off by Default)
 
@@ -1391,7 +1450,7 @@ A visitor creates a `User`-role account for themselves and proves they own the a
 - `GET /api/v1/auth/signup/status` (public) returns `{enabled, open_registration, restricted_by_domain_list, saml_enabled}`; the login page offers "Create one" from it. `open_registration` is what is in force: the setting **and** no domain list, because a non-empty list overrides open registration. `restricted_by_domain_list` is true when such a list limits signup, which is why `open_registration` can be false while its setting is on (#421). Who may sign up is unchanged.
 - `POST /api/v1/auth/signup` takes `{email}` and answers `403 signup_disabled` when off. The signup form takes only the address: no password (#360) and no display name (#374), and either one sent by an older client is ignored. The address must be a single valid email (`400`), and not one whose local part needs quotation marks (#389, see Guest Submission). Attempts are counted per source address (`AUTH_RATE_LIMIT_PER_MINUTE`, `429`). It stores a **pending registration** (address and a 24-hour token; one pending row per address, and a repeat only re-issues the token, since no name or password is stored) and queues one event naming only that registration's id; the verification mail, a link to `{BASE_URL}/verify-email?token=…`, is sent from the notification outbox, not on the request (see the signup bullet under Notifications). Nothing is sent if SMTP is not configured, so signup cannot complete on an instance without email; turning `self_signup_enabled` on in that state is refused (`400 email_required`, see Notifications), and an instance that already has it on is warned in the admin security warnings.
 - **Same answer whether or not the address already has an account.** The response is `202` with the same body either way (deleted accounts still own their address), and a new and a taken address do the same work on the request: the address is checked, the pending row written and one event queued. Whether a mail goes out is decided when it would be sent, off the request: the send re-reads the row and mails nothing if the row is gone or expired or the address has an account, so a taken address gets a pending row that is never mailed and expires unused. Because neither case dials the mail server on the request, the timing does not tell them apart either. That is the request only: the timing of the send is a separate signal, recorded under Guest Submission. Anything that distinguished them would make signup a way to find out who has an account here; the person who forgot they have one reaches for the login page.
-- **The display name and password are chosen at verification** (#360, #374). The link opens the `/verify-email` page, which asks for both, neither pre-filled. `POST /api/v1/auth/verify-email` takes `{token, display_name, password}`: `422 token_invalid` for an unknown, used or malformed token, `422 token_expired` past 24 hours, `400 display_name_required` for a blank name, `400 password_too_short` for a password under 8 characters and `400 password_too_long` for one over 72 bytes; all three are refused without using up the link. An address that has gained an account since the link was mailed is also `422 token_invalid`. Anything that is not a verdict on the link, such as a database fault, is `500 internal_error` on the POST and on the lookup below, and the page keeps the form for it (#373). On success it creates the account with that name and password, deletes the pending row and signs the person in. When MFA is on and enforced for the `user` role (`mfa_enforced_roles`) the response says `mfa_enrollment_needed`, the session does not count as having passed MFA yet, and the page shows the same enrolment form a password login does before it goes to the dashboard (#369). The page first looks the link up with `GET /api/v1/auth/verify-email?token=` (#370), which answers `{email}` and nothing else and refuses an unknown, used, malformed or expired link the same way the POST does (`422 token_invalid` or `token_expired`), and so an address that has gained an account since the link was mailed (`422 token_invalid`, #421; before that the lookup answered 200 and only the POST refused). This reopens nothing from #348: `POST /auth/signup` is untouched, and a token for a taken address was never mailed, so its only holder is the inbox owner who received the link before the account existed. A link can still fail at the POST if the account appears between the two calls. That lets it show which address the account is for, hand a password manager the address, and say a dead link is dead before anything is typed. It never returns a display name, because none is stored before verification. Choosing the name and password there means only whoever holds the link, that is the owner of the mailbox, sets them: when signup carried them, anyone who knew an address could sign up after its owner and have the owner's newest link create an account with the other person's password, and later with their name (an attacker's words, on this site, in front of the inbox's owner).
+- **The display name and password are chosen at verification** (#360, #374). The link opens the `/verify-email` page, which asks for both, neither pre-filled. `POST /api/v1/auth/verify-email` takes `{token, display_name, password}`: `422 token_invalid` for an unknown, used or malformed token, `422 token_expired` past 24 hours, `400 display_name_required` for a blank name, `400 password_too_short` for a password under 8 characters and `400 password_too_long` for one over 72 bytes; all three are refused without using up the link. An address that has gained an account since the link was mailed is also `422 token_invalid`. Anything that is not a verdict on the link, such as a database fault, is `500 internal_error` on the POST and on the lookup below, and the page keeps the form for it (#373). On success it creates the account with that name and password, deletes the pending row and signs the person in. When MFA is on and enforced for the `user` role (`mfa_enforced_roles`) the response says `mfa_enrollment_needed`, the session does not count as having passed MFA yet, and the page shows the same enrolment form a password login does before it goes to the dashboard (#369). When `user` is in `passkey_required_roles` instead (#616c) the response says `passkey_enrollment_needed` (and `mfa_enrollment_needed` false) and the page asks for a passkey rather than an authenticator. The page first looks the link up with `GET /api/v1/auth/verify-email?token=` (#370), which answers `{email}` and nothing else and refuses an unknown, used, malformed or expired link the same way the POST does (`422 token_invalid` or `token_expired`), and so an address that has gained an account since the link was mailed (`422 token_invalid`, #421; before that the lookup answered 200 and only the POST refused). This reopens nothing from #348: `POST /auth/signup` is untouched, and a token for a taken address was never mailed, so its only holder is the inbox owner who received the link before the account existed. A link can still fail at the POST if the account appears between the two calls. That lets it show which address the account is for, hand a password manager the address, and say a dead link is dead before anything is typed. It never returns a display name, because none is stored before verification. Choosing the name and password there means only whoever holds the link, that is the owner of the mailbox, sets them: when signup carried them, anyone who knew an address could sign up after its owner and have the owner's newest link create an account with the other person's password, and later with their name (an attacker's words, on this site, in front of the inbox's owner).
 
 ### Identity provider lockout guard (#300)
 

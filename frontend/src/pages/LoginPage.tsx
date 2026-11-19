@@ -12,8 +12,9 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { useSiteBranding } from '@/hooks/useSiteBranding'
 import { signInWithPasskey, wasCancelled } from '@/api/passkeys'
 import { MFAEnrollForm } from '@/components/MFAEnrollForm'
+import { PasskeyEnrollForm } from '@/components/PasskeyEnrollForm'
 
-type Step = 'credentials' | 'verify' | 'enroll' | 'passkey' | 'newpassword'
+type Step = 'credentials' | 'verify' | 'enroll' | 'passkey' | 'passkey-enroll' | 'newpassword'
 
 // Refusal codes the server puts in /login?error= after SAML or OIDC sends the
 // browser back. Only these strings are ever shown: the query string is
@@ -38,6 +39,23 @@ const SSO_ERRORS = new Map<string, string>([
 ])
 const SSO_ERROR_FALLBACK = 'Single sign-on did not finish. Please try again, or ask an administrator.'
 
+// The step the server wants shown after a single sign-on that still owes a
+// passkey (#616): /login?sso_step=<code>. Like the error codes this is a key
+// into an allowlist and never text, and an unknown value is ignored. It only
+// chooses which screen to show; the server enforces the step whatever it says.
+// `thenPasskeyEnrol` is true when an authenticator code comes first and a key
+// is registered after it.
+const SSO_STEPS = new Map<string, { step: Step; thenPasskeyEnrol: boolean }>([
+  ['passkey', { step: 'passkey', thenPasskeyEnrol: false }],
+  ['passkey_enroll', { step: 'passkey-enroll', thenPasskeyEnrol: false }],
+  ['verify_then_passkey_enroll', { step: 'verify', thenPasskeyEnrol: true }],
+])
+
+function ssoStep(search: string) {
+  const code = new URLSearchParams(search).get('sso_step')
+  return code === null ? undefined : SSO_STEPS.get(code)
+}
+
 function ssoErrorMessage(search: string): string {
   const code = new URLSearchParams(search).get('error')
   if (code === null) return ''
@@ -48,7 +66,11 @@ export function LoginPage() {
   const navigate = useNavigate()
   const { name: siteName } = useSiteBranding()
   const { setUser } = useAuthStore()
-  const [step, setStep] = useState<Step>('credentials')
+  const [sso] = useState(() => ssoStep(window.location.search))
+  const [step, setStep] = useState<Step>(sso?.step ?? 'credentials')
+  // The authenticator code is checked first and a passkey is registered after
+  // it (#616): TOTP proves a factor for this role but does not pass MFA.
+  const [passkeyEnrolAfterVerify, setPasskeyEnrolAfterVerify] = useState(sso?.thenPasskeyEnrol ?? false)
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [mfaCode, setMfaCode] = useState('')
@@ -124,11 +146,17 @@ export function LoginPage() {
   }
 
   // Where a sign-in goes once the password is settled.
-  function proceed({ user, mfa_needed, passkey_needed, mfa_enrollment_needed }: LoginResponse) {
+  function proceed({
+    user, mfa_needed, passkey_needed, mfa_enrollment_needed, passkey_enrollment_needed,
+  }: LoginResponse) {
     if (mfa_enrollment_needed) {
       setStep('enroll')
     } else if (mfa_needed) {
+      setPasskeyEnrolAfterVerify(!!passkey_enrollment_needed)
       setStep('verify')
+    } else if (passkey_enrollment_needed) {
+      // A role that must use a passkey, and the account has none (#616).
+      setStep('passkey-enroll')
     } else if (passkey_needed) {
       // An account holding passkeys and no authenticator app. The password
       // has been accepted and the session already names the account; this
@@ -165,7 +193,13 @@ export function LoginPage() {
     setLoading(true)
     try {
       await verifyMFA(mfaCode)
-      await completeLogin()
+      if (passkeyEnrolAfterVerify) {
+        // The code proved a factor, which is what lets a key be registered;
+        // the key is what finishes the sign-in.
+        setStep('passkey-enroll')
+      } else {
+        await completeLogin()
+      }
     } catch (err) {
       setError(extractError(err))
     } finally {
@@ -195,6 +229,7 @@ export function LoginPage() {
     : step === 'verify' ? 'Two-factor authentication'
     : step === 'enroll' ? 'Set up two-factor authentication'
     : step === 'passkey' ? 'Confirm it is you'
+    : step === 'passkey-enroll' ? 'Register a passkey'
     : `Sign in to ${siteName}`
 
   return (
@@ -357,6 +392,8 @@ export function LoginPage() {
           )}
 
           {step === 'enroll' && <MFAEnrollForm onEnrolled={completeLogin} />}
+
+          {step === 'passkey-enroll' && <PasskeyEnrollForm onEnrolled={completeLogin} />}
         </CardContent>
       </Card>
     </div>

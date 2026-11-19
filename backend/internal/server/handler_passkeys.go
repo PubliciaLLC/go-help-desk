@@ -33,6 +33,15 @@ import (
 // when BASE_URL cannot be a relying-party id (#494).
 func (s *Server) passkeysAvailable() bool { return s.passkeys != nil }
 
+// passkeyRequiredFor is the passkey requirement as it applies right now: the
+// role's setting, suspended while passkeys are unavailable (#494). A policy
+// nobody can satisfy would lock them out, so TOTP passes again until BASE_URL
+// is fixed and the administrator is told (security warnings). This is the one
+// place the two are combined.
+func (s *Server) passkeyRequiredFor(ctx context.Context, role string) bool {
+	return s.passkeysAvailable() && s.adminSvc.PasskeyRequiredFor(ctx, role)
+}
+
 // requirePasskeys answers 503 on every route that would use the ceremony
 // service while passkeys are unavailable, so none of them can dereference the
 // nil service. It runs before the handler's own checks on purpose: nothing
@@ -345,6 +354,8 @@ func (s *Server) handlePasskeyRegisterFinish(w http.ResponseWriter, r *http.Requ
 func markPasskeyRegistrationSatisfiesMFA(sd auth.SessionData) auth.SessionData {
 	sd.MFAPassed = true
 	sd.FactorVerified = true
+	// A passkey is what a passkey-required sign-in was owed (#616c).
+	sd.PasskeyOwed = false
 	return sd
 }
 
@@ -524,6 +535,7 @@ func (s *Server) handlePasskeyLoginFinish(w http.ResponseWriter, r *http.Request
 	sd.Role = a.Role
 	sd.MFAPassed = true
 	sd.FactorVerified = true
+	sd.PasskeyOwed = false
 	if err := s.writeSession(w, r, sd); err != nil {
 		handleError(w, err)
 		return

@@ -197,6 +197,11 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Read before the sessions are deleted below.
+	current, _ := s.sessions.Get(r, auth.SessionName)
+	prev, _ := current.Values[auth.SessionDataKey].(auth.SessionData)
+	owedPasskey := prev.PasskeyOwed
+
 	if err := s.users.SetPassword(r.Context(), a.UserID, next); err != nil {
 		handleError(w, err)
 		return
@@ -216,6 +221,9 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		Role:           a.Role,
 		MFAPassed:      a.MFAPassed,
 		FactorVerified: a.FactorVerified,
+		// Carried, or a session that owes a passkey could change its password
+		// and then pass MFA with a TOTP code (#616c).
+		PasskeyOwed: owedPasskey,
 	}
 	// Only a session that owed the change can get here without having passed
 	// MFA (RequireMFAOrPasswordChange), and it still owes the enrolment, so
@@ -356,12 +364,10 @@ func (s *Server) handleMFAEnrollConfirm(w http.ResponseWriter, r *http.Request) 
 	// Successful enrollment satisfies this login's MFA challenge — flip the
 	// session so forced-enrollment users aren't locked out until they log out.
 	// Every other session ends: see writeSessionAfterNewFactor.
-	if err := s.writeSessionAfterNewFactor(w, r, auth.SessionData{
-		UserID:         a.UserID,
-		Role:           a.Role,
-		MFAPassed:      true,
-		FactorVerified: true,
-	}); err != nil {
+	//
+	// Unless the sign-in owes a passkey (#616c): an authenticator proves a
+	// factor there, which lets a key be registered, but only the key passes.
+	if err := s.writeSessionAfterNewFactor(w, r, afterTOTP(sd, a)); err != nil {
 		handleError(w, err)
 		return
 	}

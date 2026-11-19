@@ -12,6 +12,13 @@ export interface LoginResponse {
   passkey_needed: boolean
   mfa_enrollment_needed: boolean
   /**
+   * This role must use a passkey (#616) and the account has none: register one.
+   * With `mfa_needed` also true it means verify the authenticator code first,
+   * then register a key. Never true together with `mfa_enrollment_needed`.
+   * Absent from a server that predates it: read as false.
+   */
+  passkey_enrollment_needed?: boolean
+  /**
    * The account was unlocked from the server console and still holds the
    * password it was handed (#497). The session may only change the password;
    * every other route answers 403 password_change_required until it has.

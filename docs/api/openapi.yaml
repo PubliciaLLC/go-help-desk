@@ -568,7 +568,7 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [user, mfa_needed, passkey_needed, mfa_enrollment_needed, password_change_required]
+                required: [user, mfa_needed, passkey_needed, mfa_enrollment_needed, passkey_enrollment_needed, password_change_required]
                 properties:
                   user: {$ref: '#/components/schemas/User'}
                   password_change_required:
@@ -582,7 +582,20 @@ paths:
                     description: True when a passkey is owed. Answer with POST /auth/local/passkey/start and /finish.
                   mfa_enrollment_needed:
                     type: boolean
-                    description: True when the role must enrol a second factor before it is fully signed in.
+                    description: True when the role must enrol a second factor before it is fully signed in. Never true for a role in passkey_required_roles, which enrols a passkey instead.
+                  passkey_enrollment_needed:
+                    type: boolean
+                    description: >-
+                      True when the role is in the passkey_required_roles setting
+                      (while passkeys are available) and the account has no passkey:
+                      register one (POST /me/passkeys/register/start and /finish),
+                      which is what completes the sign-in. When mfa_needed is also
+                      true, verify the TOTP code first (POST /auth/local/mfa/verify,
+                      still 204; it proves a factor but does not pass MFA for such a
+                      role), then register the key. For a role in that setting with a
+                      passkey registered, passkey_needed is true whether or not the
+                      account also holds TOTP. False for every role not in the
+                      setting.
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
@@ -855,7 +868,13 @@ paths:
         GET /auth/oidc/login, and each state is used once. On success the code is
         exchanged, the ID token is verified against the stored nonce, the account
         is matched or provisioned, a new session is started, and the browser is
-        sent to /. A refused sign-in is a redirect to /login?error=<code>, not a
+        sent to /. The exception is a role in the passkey_required_roles setting
+        (#616) when the ID token's amr does not contain fido or hwk: the session is
+        then only half signed in and the browser is sent to
+        /login?sso_step=<code> instead, with the code passkey (use a registered
+        key), passkey_enroll (register one) or verify_then_passkey_enroll (a TOTP
+        code, then register one). The step is enforced by the server whatever the
+        query says. Suspended while passkeys are unavailable. A refused sign-in is a redirect to /login?error=<code>, not a
         JSON body, so the login page can show a fixed message. The codes are:
         invalid_session, invalid_state, idp_error, missing_code, internal_error,
         missing_id_token, invalid_id_token, domain_not_allowed, account_disabled,
@@ -893,11 +912,12 @@ paths:
       responses:
         '303':
           description: >-
-            Signed in, Location is /. Or refused, Location is /login?error=<code>
+            Signed in, Location is /. Or a passkey step is owed, Location is
+            /login?sso_step=<code>. Or refused, Location is /login?error=<code>
             with one of the codes listed in the description.
           headers:
             Location:
-              description: / on success, or /login?error=<code> on refusal.
+              description: / on success, /login?sso_step=<code> when a passkey step is owed, or /login?error=<code> on refusal.
               schema:
                 type: string
         '503':
@@ -1048,7 +1068,11 @@ paths:
         Reads the five-minute hand-over cookie set by POST /auth/saml/acs, spends
         it (it is refused from then on, in this browser and on the server, even if
         a copy was kept), matches or provisions the account, starts a new session
-        and redirects to /. If the hand-over cookie is missing, expired or does not
+        and redirects to /, or, for a role in the passkey_required_roles setting
+        (#616) whose assertion is not passkey-grade (authnmethodsreferences with
+        fido or hwk together with the Entra multipleauthn value), to
+        /login?sso_step=passkey, passkey_enroll or verify_then_passkey_enroll with a
+        half-signed-in session. If the hand-over cookie is missing, expired or does not
         verify, the request starts a fresh SAML sign-in instead. A hand-over that was already spent is refused with a redirect to
         /login?error=sso_session_used. Account refusals redirect to
         /login?error=<code>, with the codes domain_not_allowed, account_disabled,
@@ -1076,11 +1100,12 @@ paths:
                 type: string
         '303':
           description: >-
-            Signed in, Location is /. Or refused, Location is /login?error=<code>
+            Signed in, Location is /. Or a passkey step is owed, Location is
+            /login?sso_step=<code>. Or refused, Location is /login?error=<code>
             with one of the codes listed in the description.
           headers:
             Location:
-              description: / on success, or /login?error=<code> on refusal.
+              description: / on success, /login?sso_step=<code> when a passkey step is owed, or /login?error=<code> on refusal.
               schema:
                 type: string
         '500':
@@ -1335,12 +1360,15 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [user, mfa_enrollment_needed]
+                required: [user, mfa_enrollment_needed, passkey_enrollment_needed]
                 properties:
                   user: {$ref: '#/components/schemas/User'}
                   mfa_enrollment_needed:
                     type: boolean
                     description: True when the role must enrol a second factor before it is fully signed in.
+                  passkey_enrollment_needed:
+                    type: boolean
+                    description: True when the role is in the passkey_required_roles setting (while passkeys are available), so the new account must register a passkey before it is fully signed in. mfa_enrollment_needed is then false.
         '400':
           description: >-
             The body is not JSON (bad_request), the display name is blank
@@ -5278,7 +5306,7 @@ paths:
                       a group or is disabled.
                   passkeys:
                     type: object
-                    required: [available, reason]
+                    required: [available, reason, suspended_roles]
                     description: |
                       Whether passkeys can be used. They cannot when BASE_URL is
                       an IP address, a single-label host or a non-ASCII host,
@@ -5291,6 +5319,16 @@ paths:
                       reason:
                         type: string
                         description: Why not, as the passkey library words it. Empty when available.
+                      suspended_roles:
+                        type: array
+                        items: {type: string}
+                        description: |
+                          The roles in passkey_required_roles whose requirement is
+                          not being applied because passkeys are unavailable: their
+                          members may pass MFA with a TOTP code until BASE_URL is
+                          fixed. Always an array. Non-empty only when available is
+                          false, mfa_enabled is on and passkey_required_roles lists
+                          a role. The admin UI shows "Passkey requirement suspended".
                   saml_idp_certificate:
                     type: object
                     required: [expires_at, expired]
@@ -5685,7 +5723,8 @@ paths:
         - mfa_enabled, ticket_scope_enforced, sla_enabled, self_signup_enabled,
           open_registration_enabled and saml_enabled must be booleans;
           reopen_window_days a number of 0 or more; mfa_enforced_roles an array of
-          strings; reopen_target_status_name a string; site_logo_url a string that is
+          strings; passkey_required_roles an array whose elements are each admin,
+          staff or user; reopen_target_status_name a string; site_logo_url a string that is
           empty, an http(s) URL, or a path on this site (starting with a single "/").
           null or any other type is refused (bad_request) and nothing is written.
         - saml_metadata_url and saml_metadata_xml cannot both be non-empty after
@@ -5709,7 +5748,7 @@ paths:
         settings:write.
         saml_enabled, saml_metadata_url, saml_metadata_xml, saml_cert_pem,
         saml_key_pem, oidc_enabled, oidc_issuer_url, oidc_client_id, oidc_client_secret,
-        oidc_redirect_url, mfa_enabled, mfa_enforced_roles, allowed_email_domains,
+        oidc_redirect_url, mfa_enabled, mfa_enforced_roles, passkey_required_roles, allowed_email_domains,
         self_signup_enabled, open_registration_enabled, closed_reopen_policy,
         audit_mask_requester_names, guest_submission_enabled,
         guest_attachments_enabled, guest_attachment_max_mb,
@@ -12134,6 +12173,21 @@ components:
           items:
             type: string
           description: Role names that must enrol a second factor, from admin, staff and user. Session only.
+        passkey_required_roles:
+          type: array
+          items:
+            type: string
+            enum: [admin, staff, user]
+          description: |
+            Role names whose members must finish every sign-in with a passkey
+            (#616). A TOTP code proves a factor for them but does not pass MFA.
+            A role listed here is also treated as MFA-enforced, computed when
+            read: mfa_enforced_roles is not changed. Like mfa_enforced_roles it has
+            no effect while mfa_enabled is off. Applied when a session is created;
+            sessions already open are not ended. Suspended while passkeys are
+            unavailable (GET /admin/security-warnings, passkeys.suspended_roles).
+            An element other than admin, staff or user, a non-array or null is
+            refused with 400 bad_request. Default []. Session only.
         reopen_window_days:
           type: integer
           description: Days after resolution during which a reporter may still reply to a Resolved ticket.

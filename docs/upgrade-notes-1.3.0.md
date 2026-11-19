@@ -67,7 +67,7 @@ These come with the new staff API key feature (see *Staff Can Create Their Own A
 Passkeys are bound to a domain name, so they work only when the host in `BASE_URL` is a domain name (`help.example.com`) or `localhost`. **If `BASE_URL` is an IP address (`http://192.168.1.10:8080`, `http://[::1]:8080`), a single-label host (`http://helpdesk:8080`) or contains non-ASCII characters, passkeys are disabled.** The server still starts. It logs `passkeys unavailable` once at startup, and administrators see a warning banner explaining that `BASE_URL` must be a domain name.
 
 - `GET /api/v1/me/passkeys`, `POST /api/v1/me/passkeys/register/*` and `POST /api/v1/auth/local/passkey/*` answer `503 passkeys_unavailable`.
-- `GET /api/v1/auth/providers` gains `passkeys` (`false` here) and `GET /api/v1/admin/security-warnings` gains `passkeys: {available, reason}`.
+- `GET /api/v1/auth/providers` gains `passkeys` (`false` here) and `GET /api/v1/admin/security-warnings` gains `passkeys: {available, reason, suspended_roles}` (`suspended_roles` is the roles whose "Require passkeys" setting is paused; see "Require a Passkey for a Role").
 - An account whose only second factor is a passkey **cannot sign in** while passkeys are off: sign-in answers `403 passkey_unavailable` and tells the person to ask an administrator to reset their sign-in factors. An administrator's Reset MFA clears the passkey, after which the person signs in and enrols an authenticator app (TOTP). Accounts with TOTP are unaffected. This includes the last administrator: run `docker compose exec app /app/server reset-factors <email>` (from the `docker/` directory) on the server to clear their factors. Passkeys registered under a domain `BASE_URL` that is later fixed work again if the domain matches.
 
 What to check: if your instance is on an IP or single-word host and you want passkeys, give it a DNS name and set `BASE_URL` to it. Changing the domain invalidates passkeys registered under the old one.
@@ -503,7 +503,20 @@ Until now an administrator who learned that somebody had lost one key could only
 - **Two requests that could each add a second factor to an account that had none now cannot both win.** A password-only session confirming a first authenticator app while another request registered a first passkey, or two passkey registrations at once, could both pass the "no factor yet" check and write. A first factor is now written under a lock on the user row; the loser answers `403 mfa_required` and writes nothing (#617). A session that has proved a factor is unaffected.
 - **No migration, no setting.** Rolling back to 1.2.0 loses nothing.
 
-**Limits, stated plainly (#616).** 1.3.0 does not verify attestation: any authenticator is accepted, so an operator cannot require hardware keys, and there is no setting to require a passkey instead of TOTP for a role. Both are planned for 1.3.x. See Passkeys in `DESIGN.md`.
+**Limits, stated plainly (#616).** 1.3.0 does not verify attestation: any authenticator is accepted, so an operator cannot require hardware keys. That is deliberate, not a backlog item: synced passkeys send no attestation, so enforcing it would mean hardware keys only. See Passkeys in `DESIGN.md`. The per-role passkey requirement is described next.
+
+### Require a Passkey for a Role (#616)
+
+**Admin → Settings → Authentication → Multi-factor authentication** has a new row, **Require passkeys for roles** (setting `passkey_required_roles`, a list of `admin`, `staff` and `user`; empty after the upgrade, so nothing changes until you tick a role). People in a ticked role must finish **every** sign-in with a passkey.
+
+- **An authenticator app code is not enough for them.** It still proves a factor, but does not let them in. Someone with a passkey registered is asked for it (even if they also have an authenticator). Someone with only an authenticator enters the code and then registers a passkey. Someone with neither registers a passkey; they are never sent to set up an authenticator app.
+- **A ticked role is also MFA-required.** The "Require MFA for roles" box for that role shows checked and disabled. Your stored MFA list is not changed: untick the passkey requirement and the role is exactly as required as before. Like the MFA list, it has no effect while **Enable MFA** is off.
+- **It applies at each person's next sign-in.** Sessions already open are not ended.
+- **Single sign-on.** A SAML or OIDC user in a ticked role is let in only when the identity provider says the sign-in used a passkey. That is recognised for **Microsoft Entra ID only**: OIDC `amr` containing `fido` or `hwk`, or SAML `authnmethodsreferences` containing `fido` or `hwk` together with `http://schemas.microsoft.com/claims/multipleauthn`. Okta and Google Workspace values are not confirmed and are not accepted; their users are sent to use, or register, a passkey on this help desk after the single sign-on (the browser lands on `/login?sso_step=...` instead of `/`).
+- **Paused while passkeys are unavailable** (a `BASE_URL` that is an IP address or a single-label host, see above): nobody could meet the requirement, so authenticator codes are accepted again for those roles, and the administrator banner shows **Passkey requirement suspended**. `GET /api/v1/admin/security-warnings` gains `passkeys.suspended_roles`.
+- **API.** `POST /api/v1/auth/local/login` and `POST /api/v1/auth/verify-email` gain `passkey_enrollment_needed`. It is false for every role not ticked. `mfa_needed` together with `passkey_enrollment_needed` means: verify the code, then register a key. `passkey_required_roles` is a setting machine credentials cannot change.
+- **Rolling back** to a release before this one ignores the setting; the migration only adds a row.
+- **Recovery.** If someone loses their key: an administrator removes it or resets their MFA; a person who still holds an authenticator can enter its code and then register a replacement. A sole administrator can do the same, or run `reset-factors` on the server.
 
 ### OAuth Client and Webhook Changes Are Audited
 
