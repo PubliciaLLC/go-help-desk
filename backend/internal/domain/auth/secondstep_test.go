@@ -75,3 +75,31 @@ func TestSecondStep(t *testing.T) {
 		})
 	}
 }
+
+// PasskeyHeld is the policy owing a key the account already has, and nothing
+// else: a passkey-only account outside the policy owes a key too, and the
+// onboarding rows (TOTP only, no factor) owe a first one.
+func TestOwed_PasskeyHeld(t *testing.T) {
+	cases := []struct {
+		name string
+		f    SignInFacts
+		want bool
+	}{
+		{"required, key and totp", SignInFacts{PasskeyRequired: true, HasTOTP: true, Passkeys: 1}, true},
+		{"required, key only", SignInFacts{PasskeyRequired: true, Passkeys: 1}, true},
+		{"required, sso with a key", SignInFacts{PasskeyRequired: true, Passkeys: 1, SSO: true, SSOFactorProved: true}, true},
+		{"required, totp only", SignInFacts{PasskeyRequired: true, HasTOTP: true}, false},
+		{"required, nothing", SignInFacts{PasskeyRequired: true}, false},
+		{"required, passkey-grade sso", SignInFacts{PasskeyRequired: true, Passkeys: 1, SSO: true, SSOPasskeyGrade: true}, false},
+		{"not required, key only", SignInFacts{Passkeys: 1}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := tc.f
+			f.MFAOn, f.Enforced, f.PasskeysUsable = true, true, true
+			if got := SecondStep(f).PasskeyHeld(); got != tc.want {
+				t.Fatalf("PasskeyHeld() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

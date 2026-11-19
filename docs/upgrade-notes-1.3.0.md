@@ -516,7 +516,9 @@ Until now an administrator who learned that somebody had lost one key could only
 - **Paused while passkeys are unavailable** (a `BASE_URL` that is an IP address or a single-label host, see above): nobody could meet the requirement, so authenticator codes are accepted again for those roles, and the administrator banner shows **Passkey requirement suspended**. `GET /api/v1/admin/security-warnings` gains `passkeys.suspended_roles`.
 - **API.** `POST /api/v1/auth/local/login` and `POST /api/v1/auth/verify-email` gain `passkey_enrollment_needed`. It is false for every role not ticked. `mfa_needed` together with `passkey_enrollment_needed` means: verify the code, then register a key. `passkey_required_roles` is a setting machine credentials cannot change.
 - **Rolling back** to a release before this one ignores the setting; the migration only adds a row.
-- **Recovery.** If someone loses their key: an administrator removes it or resets their MFA; a person who still holds an authenticator can enter its code and then register a replacement. A sole administrator can do the same, or run `reset-factors` on the server.
+- **A registered key cannot be bypassed or replaced from the sign-in.** While a ticked-role sign-in is owed a key the account already has, no other factor (an authenticator code, or a single sign-on provider's MFA assertion) lets that session register another key or delete one: both answer `403 passkey_required` until the key itself is used. Registering is open only to a sign-in that is owed a first key.
+- **Recovery.** If someone loses their key: an administrator removes it (**Admin → Users**) or resets their MFA, and the person then registers a new key at their next sign-in; they can enter an authenticator code and register a key only when they have none. A sole administrator does the same through another administrator, or runs `reset-factors` on the server.
+- **Forced password change.** A ticked-role account that must change its password and holds an authenticator but no key enters the code, changes the password, then registers a key. One that already holds a key uses it first.
 
 ### OAuth Client and Webhook Changes Are Audited
 

@@ -185,6 +185,7 @@ func (s *Server) handleLocalLogin(w http.ResponseWriter, r *http.Request) {
 		Role:        u.Role,
 		MFAPassed:   owed.Passed(),
 		PasskeyOwed: owed.PasskeyOwed(),
+		PasskeyHeld: owed.PasskeyHeld(),
 
 		MustChangePassword: u.MustChangePassword,
 		// Not the raw flag: see auth.SessionData.PasswordChangeNeedsNoFactor.
@@ -304,6 +305,7 @@ func afterTOTP(prev auth.SessionData, a *authmw.Actor) auth.SessionData {
 		MFAPassed:      !prev.PasskeyOwed,
 		FactorVerified: true,
 		PasskeyOwed:    prev.PasskeyOwed,
+		PasskeyHeld:    prev.PasskeyHeld,
 
 		MustChangePassword: a.MustChangePassword,
 	}
@@ -589,6 +591,7 @@ func (s *Server) signInSSO(w http.ResponseWriter, r *http.Request, u user.User, 
 		if !owed.Passed() {
 			sd.MFAPassed = false
 			sd.PasskeyOwed = owed.PasskeyOwed()
+			sd.PasskeyHeld = owed.PasskeyHeld()
 			sd.PendingUntil = auth.PendingDeadline(time.Now(), owed.PasskeyEnrol)
 			to = "/login?sso_step=" + ssoStepCode(owed)
 		}

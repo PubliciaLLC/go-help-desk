@@ -1336,6 +1336,22 @@ upgrade leaves it (migration 000066), every path behaves as before.
   change carries the flag, or a session that must change its password could then
   enrol TOTP and pass. It is cleared by the only things that satisfy it: a
   passkey sign-in and a passkey registration (`markPasskeyRegistrationSatisfiesMFA`).
+  A second fact, **`PasskeyHeld`**, is set with it when the sign-in owed a key the
+  account **already had** (`Owed.PasskeyHeld`: password login, signup, SSO), carried
+  with it and cleared with it. While it is set the session may neither register a
+  passkey nor delete one (`403 passkey_required`, `requirePasskeyNotHeld`, on
+  register start and finish and on `DELETE /me/passkeys/{id}`), whatever else it
+  has proved: otherwise a TOTP code, or an IdP that asserted MFA but not a passkey,
+  would let the caller register an authenticator of their own and pass, never
+  using the owner's key, or delete the keys first and become the "no key yet"
+  case. Recorded at sign-in, so deleting keys mid-session cannot change it. Not set
+  for the onboarding sign-ins (TOTP only, or nothing), which keep their route to a
+  first key.
+  A forced password change (`must_change_password`) on a session that has proved a
+  factor and is owed a first key goes **before** the key: `RequireMFAOrPasswordChange`
+  admits `PasskeyOwed && FactorVerified && !PasskeyHeld`, since registering waits
+  behind `RequirePasswordCurrent` and `MFAPassed` cannot come until a key exists.
+  A session owed a held key signs in with it first.
   The Account-page step-up (#336) on a fully signed-in session is unaffected,
   since that session never owed a passkey.
 - **Suspended while passkeys are unavailable (#494).** With no passkey service the
@@ -1349,9 +1365,11 @@ upgrade leaves it (migration 000066), every path behaves as before.
   "Passkey requirement suspended", saying TOTP is accepted for those roles until
   `BASE_URL` is fixed.
 - **Recovery.** A person who lost the key is helped by an administrator removing
-  it or resetting MFA, as in Losing a key above. A TOTP holder can also verify
-  the authenticator and then register a replacement. The sole administrator in a
-  listed role with no factor signs in, registers a key and is in. There is no
+  it or resetting MFA, as in Losing a key above; there is no self-service route,
+  because a held key is exactly what the policy requires (`PasskeyHeld`). A TOTP
+  holder with **no** key verifies the authenticator and registers a first one. The
+  sole administrator in a listed role with no factor signs in, registers a key and
+  is in. There is no
   guard against listing your own role while you hold no key; the last
   administrator recovers as above.
 

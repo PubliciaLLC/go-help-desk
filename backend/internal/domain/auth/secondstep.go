@@ -59,6 +59,12 @@ func (o Owed) PasskeyOwed() bool {
 	return o.gated && (o.Passkey || o.PasskeyEnrol)
 }
 
+// PasskeyHeld reports that the passkey policy applies and the account already
+// has a key, so it is that key that is owed: see SessionData.PasskeyHeld.
+func (o Owed) PasskeyHeld() bool {
+	return o.gated && o.Passkey
+}
+
 // SecondStep decides what a sign-in owes. It is the one table behind the
 // password login, signup verification, SAML and OIDC.
 func SecondStep(f SignInFacts) Owed {

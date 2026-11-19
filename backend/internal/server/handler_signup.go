@@ -196,6 +196,7 @@ func (s *Server) handleVerifyEmail(w http.ResponseWriter, r *http.Request) {
 		Role:        u.Role,
 		MFAPassed:   owed.Passed(),
 		PasskeyOwed: owed.PasskeyOwed(),
+		PasskeyHeld: owed.PasskeyHeld(),
 	}
 	if !sd.MFAPassed {
 		sd.PendingUntil = auth.PendingDeadline(time.Now(), true)

@@ -200,7 +200,7 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 	// Read before the sessions are deleted below.
 	current, _ := s.sessions.Get(r, auth.SessionName)
 	prev, _ := current.Values[auth.SessionDataKey].(auth.SessionData)
-	owedPasskey := prev.PasskeyOwed
+	owedPasskey, heldPasskey := prev.PasskeyOwed, prev.PasskeyHeld
 
 	if err := s.users.SetPassword(r.Context(), a.UserID, next); err != nil {
 		handleError(w, err)
@@ -224,6 +224,7 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		// Carried, or a session that owes a passkey could change its password
 		// and then pass MFA with a TOTP code (#616c).
 		PasskeyOwed: owedPasskey,
+		PasskeyHeld: heldPasskey,
 	}
 	// Only a session that owed the change can get here without having passed
 	// MFA (RequireMFAOrPasswordChange), and it still owes the enrolment, so
