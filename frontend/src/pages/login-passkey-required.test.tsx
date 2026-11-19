@@ -18,6 +18,7 @@ vi.mock('@tanstack/react-router', () => ({
 
 vi.mock('@/api/auth', () => ({
   login: vi.fn(),
+  logout: vi.fn(),
   verifyMFA: vi.fn(),
   getMe: vi.fn(),
   changePassword: vi.fn(),
@@ -36,7 +37,7 @@ vi.mock('@/api/passkeys', () => ({
 vi.mock('@/hooks/useSiteBranding', () => ({ useSiteBranding: () => ({ name: 'Help Desk', logoURL: null }) }))
 
 import { LoginPage } from './LoginPage'
-import { login, verifyMFA, getMe, enrollMFAStart } from '@/api/auth'
+import { login, logout, verifyMFA, getMe, enrollMFAStart } from '@/api/auth'
 import { addPasskey, signInWithPasskey } from '@/api/passkeys'
 
 const USER = {
@@ -70,6 +71,7 @@ beforeEach(() => {
   vi.mocked(getMe).mockResolvedValue(USER)
   vi.mocked(verifyMFA).mockResolvedValue(undefined)
   vi.mocked(addPasskey).mockResolvedValue(undefined)
+  vi.mocked(logout).mockResolvedValue(undefined)
 })
 afterEach(() => {
   vi.clearAllMocks()
@@ -154,4 +156,50 @@ describe('the step single sign-on asks for', () => {
       expect(screen.queryByRole('heading', { name: /register a passkey/i })).toBeNull()
     },
   )
+})
+
+// /login?sso_step=<code> with no live pending session (a bookmark, or the
+// window ran out) lands on a step that cannot succeed. The way back to the
+// ordinary form must not be editing the URL.
+describe('starting over from a single sign-on step', () => {
+  it.each([
+    ['?sso_step=passkey', /confirm it is you/i],
+    ['?sso_step=passkey_enroll', /register a passkey/i],
+    ['?sso_step=verify_then_passkey_enroll', /two-factor authentication/i],
+  ])('%s offers Start over, which shows the credentials form and drops sso_step', async (search, heading) => {
+    renderAt(search + '&utm=keep')
+    await screen.findByRole('heading', { name: heading })
+    expect(screen.queryByLabelText(/^email/i)).toBeNull()
+
+    const user = userEvent.setup()
+    await user.click(screen.getByRole('button', { name: /start over/i }))
+
+    expect(await screen.findByLabelText(/^email/i)).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /start over/i })).toBeNull()
+    expect(logout).toHaveBeenCalledTimes(1)
+    const params = new URLSearchParams(window.location.search)
+    expect(params.has('sso_step')).toBe(false)
+    expect(params.get('utm')).toBe('keep')
+  })
+
+  it('clears the error the dead step was showing and still starts over if sign-out fails', async () => {
+    vi.mocked(logout).mockRejectedValue(new Error('no session'))
+    vi.mocked(signInWithPasskey).mockRejectedValue(new Error('no pending session'))
+    renderAt('?sso_step=passkey')
+    const user = userEvent.setup()
+    await user.click(await screen.findByRole('button', { name: /continue with a passkey/i }))
+    await screen.findByRole('alert')
+
+    await user.click(screen.getByRole('button', { name: /start over/i }))
+    expect(await screen.findByLabelText(/^email/i)).toBeTruthy()
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
+  it('is not offered on the ordinary sign-in path', async () => {
+    vi.mocked(login).mockResolvedValue(answer({ mfa_needed: true }))
+    renderAt()
+    await signIn()
+    await screen.findByLabelText(/verification code/i)
+    expect(screen.queryByRole('button', { name: /start over/i })).toBeNull()
+  })
 })

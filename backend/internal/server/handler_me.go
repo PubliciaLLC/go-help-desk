@@ -6,7 +6,6 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
-	"time"
 
 	qrcode "github.com/skip2/go-qrcode"
 
@@ -227,10 +226,12 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		PasskeyHeld: heldPasskey,
 	}
 	// Only a session that owed the change can get here without having passed
-	// MFA (RequireMFAOrPasswordChange), and it still owes the enrolment, so
-	// it gets the enrolment window rather than an already-expired one.
+	// MFA (RequireMFAOrPasswordChange), and it still owes the enrolment or the
+	// key. It keeps the deadline its sign-in gave, as afterTOTP does (#452): a
+	// change that minted a fresh one would be a way to hold a pending session
+	// open indefinitely.
 	if !sd.MFAPassed {
-		sd.PendingUntil = auth.PendingDeadline(time.Now(), true)
+		sd.PendingUntil = prev.PendingUntil
 	}
 	if err := s.writeSession(w, r, sd); err != nil {
 		handleError(w, err)

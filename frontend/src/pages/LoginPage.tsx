@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useNavigate, Link } from '@tanstack/react-router'
-import { login, verifyMFA, getMe, changePassword, getSignupStatus, getAuthProviders } from '@/api/auth'
+import { login, logout, verifyMFA, getMe, changePassword, getSignupStatus, getAuthProviders } from '@/api/auth'
 import type { LoginResponse } from '@/api/auth'
 import { getSiteConfig } from '@/api/admin'
 import { useAuthStore } from '@/store/auth'
@@ -71,6 +71,10 @@ export function LoginPage() {
   // The authenticator code is checked first and a passkey is registered after
   // it (#616): TOTP proves a factor for this role but does not pass MFA.
   const [passkeyEnrolAfterVerify, setPasskeyEnrolAfterVerify] = useState(sso?.thenPasskeyEnrol ?? false)
+  // True while the page is on a step it was sent to by ?sso_step=. That step
+  // needs a live pending session; with none (a bookmark, an expired window)
+  // it cannot succeed, so it carries a way back to the ordinary form.
+  const [viaSSOStep, setViaSSOStep] = useState(sso !== undefined)
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [mfaCode, setMfaCode] = useState('')
@@ -166,6 +170,24 @@ export function LoginPage() {
       setUser(user)
       navigate({ to: '/dashboard' })
     }
+  }
+
+  // Back to the ordinary form from a step that ?sso_step= opened (#616). Any
+  // partial session is ended, but a failure to do that is not a reason to stay
+  // stuck: with no session there is nothing to end.
+  async function startOver() {
+    await logout().catch(() => {})
+    const params = new URLSearchParams(window.location.search)
+    params.delete('sso_step')
+    const qs = params.toString()
+    window.history.replaceState(
+      {}, '', window.location.pathname + (qs ? `?${qs}` : '') + window.location.hash,
+    )
+    setViaSSOStep(false)
+    setPasskeyEnrolAfterVerify(false)
+    setMfaCode('')
+    setError('')
+    setStep('credentials')
   }
 
   async function handleNewPassword(e: React.FormEvent) {
@@ -394,6 +416,12 @@ export function LoginPage() {
           {step === 'enroll' && <MFAEnrollForm onEnrolled={completeLogin} />}
 
           {step === 'passkey-enroll' && <PasskeyEnrollForm onEnrolled={completeLogin} />}
+
+          {viaSSOStep && step !== 'credentials' && (
+            <Button type="button" variant="link" className="mt-3 w-full" onClick={startOver}>
+              Start over
+            </Button>
+          )}
         </CardContent>
       </Card>
     </div>

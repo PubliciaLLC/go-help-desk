@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -201,4 +202,54 @@ func TestPasskeyRequired_MustChangePassword_HeldKeyIsNotBypassedByTOTP(t *testin
 	res, body = s.send(t, http.MethodPatch, "/api/v1/me/password",
 		map[string]any{"current_password": "password", "new_password": "a-brand-new-password"})
 	require.Equal(t, http.StatusForbidden, res.StatusCode, "body: %s", body)
+}
+
+// A pending session that proved a factor and is owed a first key may change a
+// forced password, but that must not be a way to push the pending deadline
+// back: the change keeps the deadline the sign-in gave, and the route is open
+// to that session only while the change is actually owed.
+func TestPasskeyRequired_PasswordChangeDoesNotExtendThePendingDeadline(t *testing.T) {
+	cases := []struct {
+		name       string
+		mustChange bool
+		// Status of each successive PATCH /me/password after the TOTP code.
+		want []int
+	}{
+		{"forced change, then a second call", true, []int{http.StatusNoContent, http.StatusForbidden}},
+		{"no change owed", false, []int{http.StatusForbidden, http.StatusForbidden}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h, cleanup := newHarness(t)
+			defer cleanup()
+			ctx := context.Background()
+			enrollMFA(t, ctx, h.userSvc, h.staffID)
+			requirePasskeysFor(t, h, "staff")
+			_, err := h.tx.ExecContext(ctx, `UPDATE users SET must_change_password = $2 WHERE id = $1`, h.staffID, tc.mustChange)
+			require.NoError(t, err)
+
+			s, _ := loginAs(t, h, "staff@test.local")
+			_, signedIn, ok := storedSession(t, s)
+			require.True(t, ok)
+			require.False(t, signedIn.PendingUntil.IsZero())
+
+			res, body := s.send(t, http.MethodPost, "/api/v1/auth/local/mfa/verify",
+				map[string]any{"code": totpCodeFor(t, h, h.staffID)})
+			require.Equal(t, http.StatusNoContent, res.StatusCode, "body: %s", body)
+
+			for i, status := range tc.want {
+				// Let the clock move, so a deadline minted afresh differs.
+				time.Sleep(5 * time.Millisecond)
+				res, body = s.send(t, http.MethodPatch, "/api/v1/me/password",
+					map[string]any{"current_password": "password", "new_password": "a-brand-new-password"})
+				require.Equal(t, status, res.StatusCode, "call %d, body: %s", i+1, body)
+				_, sd, ok := storedSession(t, s)
+				require.True(t, ok)
+				require.True(t, sd.PasskeyOwed)
+				require.False(t, sd.MFAPassed)
+				require.Falsef(t, sd.PendingUntil.After(signedIn.PendingUntil),
+					"call %d moved PendingUntil from %v to %v", i+1, signedIn.PendingUntil, sd.PendingUntil)
+			}
+		})
+	}
 }

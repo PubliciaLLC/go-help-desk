@@ -2872,9 +2872,11 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           description: |
-            Two sources. The authentication middleware refuses a machine credential with session_required, as
+            Three sources. The authentication middleware refuses a machine credential with session_required, as
             text/plain. mfa_required, as application/json, when the account already has a second factor and
-            this session has not proved one.
+            this session has not proved one. passkey_required, as application/json, when the sign-in owes a
+            passkey the account already holds (the role is in passkey_required_roles): that session must use
+            the key it has, and can neither add a passkey nor remove one until it has.
           content:
             text/plain:
               schema: {$ref: '#/components/schemas/Error'}
@@ -2925,9 +2927,11 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           description: |
-            Two sources. The authentication middleware refuses a machine credential with session_required, as
+            Three sources. The authentication middleware refuses a machine credential with session_required, as
             text/plain. mfa_required, as application/json, when the account already has a second factor and
-            this session has not proved one.
+            this session has not proved one. passkey_required, as application/json, when the sign-in owes a
+            passkey the account already holds (the role is in passkey_required_roles): that session must use
+            the key it has, and can neither add a passkey nor remove one until it has.
           content:
             text/plain:
               schema: {$ref: '#/components/schemas/Error'}
@@ -2968,9 +2972,11 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           description: |
-            Two sources. The authentication middleware refuses a machine credential with session_required, as
+            Three sources. The authentication middleware refuses a machine credential with session_required, as
             text/plain. mfa_required, as application/json, when the account already has a second factor and
-            this session has not proved one.
+            this session has not proved one. passkey_required, as application/json, when the sign-in owes a
+            passkey the account already holds (the role is in passkey_required_roles): that session must use
+            the key it has, and can neither add a passkey nor remove one until it has.
           content:
             text/plain:
               schema: {$ref: '#/components/schemas/Error'}

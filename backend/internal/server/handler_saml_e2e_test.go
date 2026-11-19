@@ -142,6 +142,42 @@ func TestSAMLSignIn_EndToEndWithASignedAssertion(t *testing.T) {
 	require.Equal(t, "/login?error=sso_session_used", res.Header.Get("Location"))
 }
 
+// The same sign-in, signed assertion and all, for a user whose role is in
+// passkey_required_roles (#616c): a passkey-grade assertion (fido with
+// multipleauthn) signs them in owing nothing, and a plain one leaves a pending
+// session that owes a passkey and sends the browser to the passkey step.
+func TestSAMLSignIn_EndToEndWithASignedAssertion_ListedRole(t *testing.T) {
+	cases := []struct {
+		name         string
+		attrs        []saml.Attribute
+		wantLocation string
+		wantMe       int
+		wantOwed     bool
+	}{
+		{"passkey-grade assertion", samlAttrs("fido", ssoMultiple), "/", http.StatusOK, false},
+		{"plain assertion", nil, "/login?sso_step=passkey_enroll", http.StatusForbidden, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h, cleanup := newHarness(t)
+			defer cleanup()
+			idp := samlIdPFor(t, h)
+			requirePasskeysFor(t, h, "user")
+
+			res := samlComplete(t, h, idp, "sso@test.local", tc.attrs)
+			require.Equal(t, http.StatusSeeOther, res.StatusCode)
+			require.Equal(t, tc.wantLocation, res.Header.Get("Location"))
+			cookies := appCookies(res)
+			require.NotEmpty(t, cookies)
+			require.Equal(t, tc.wantMe, meStatus(t, h, cookies))
+			sd := sessionFrom(t, h, cookies)
+			require.Equal(t, tc.wantOwed, sd.PasskeyOwed)
+			require.Equal(t, !tc.wantOwed, sd.MFAPassed)
+			require.False(t, sd.PasskeyHeld, "the new account holds no key")
+		})
+	}
+}
+
 // Without the tracking cookie the ACS must refuse the assertion.
 func TestSAMLSignIn_ACSRefusesWithoutTrackingCookie(t *testing.T) {
 	h, cleanup := newHarness(t)

@@ -413,9 +413,11 @@ func RequirePasswordCurrent(next http.Handler) http.Handler {
 }
 
 // owesFirstKeyWithFactor: a passkey-required session that proved a factor and
-// is owed a first key (not one the account already holds).
+// is owed a first key (not one the account already holds), and that must
+// change its password first. Without MustChangePassword there is no change to
+// admit it for.
 func (a *Actor) owesFirstKeyWithFactor() bool {
-	return a.PasskeyOwed && !a.PasskeyHeld && a.FactorVerified
+	return a.PasskeyOwed && !a.PasskeyHeld && a.FactorVerified && a.MustChangePassword
 }
 
 // RequireMFAOrPasswordChange is RequireMFA for the password-change route
