@@ -561,7 +561,7 @@ Creating and deleting an OAuth client, and creating, editing and deleting a webh
 - **Staff now see empty fields** on the ticket page: every active field the ticket has, and every deactivated field that holds a value. Requesters see fields that hold a value. Guests see none.
 - **`PUT /tickets/{id}/custom-fields` writes all entries or none.** One refused entry now writes nothing from that request. A request in which two keys spell the same field id (upper and lower case, say) answers `400 bad_request` ("field_def_id is listed twice") instead of keeping one of them. The ticket page sends only the fields that changed.
 - **`GET /tickets/fields` returns one entry per field,** at its most specific level, in the order above. `field_def.sort_order` now carries the field's real number; it used to be 0 in this response.
-- **"Required on new-ticket form" is enforced by the form only.** The server does not refuse a ticket created through the API without a value for a required field; this is unchanged.
+- **"Required on new-ticket form" is now enforced by the server for every caller** (see *Custom Fields: The API Now Enforces Required Fields and Three More Rules (#626)* under Breaking changes).
 - **Migration 000059** adds the nullable column `custom_field_defs.retired_options`. No row is rewritten. See *Retiring and Deleting Custom-Field Options (#603)*.
 
 ### Follow-ups of Closed Tickets: Eight Limits Fixed (#625)
