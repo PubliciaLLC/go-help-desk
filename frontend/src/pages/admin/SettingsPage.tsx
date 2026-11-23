@@ -1,4 +1,4 @@
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useMutation, useQueryClient, useMutationState } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { getSettings, updateSettings, getSAMLConfig, saveSAMLConfig, getOIDCConfig, saveOIDCConfig, getSiteConfig, uploadLogo, deleteLogo, listStatuses, listCategories, listSLAPolicies, getSecurityWarnings, createSLAPolicy, updateSLAPolicy, deleteSLAPolicy } from '@/api/admin'
 import type { Priority, SLAPolicy } from '@/api/types'
@@ -1226,13 +1226,13 @@ function PolicyFormFields({
   )
 }
 
-// A save that failed after its form had closed. It keeps what the user typed
-// and which policy it was for (null for an add), so Reopen can put it back.
-type SaveFailure = { key: number; form: PolicyForm; editingId: string | null; message: string }
+// One add or edit of a policy, as the form held it when Save was pressed.
+// id is the policy being edited, or null for an add.
+type SaveVars = { id: string | null; form: PolicyForm }
 
 const SLA_KEY = ['sla-policies']
-// Rows added in this session and not yet answered by the server carry this id
-// prefix. A server id never starts with it.
+const SAVE_KEY = ['sla-policy-save']
+// Keys for the temporary rows of adds the server has not answered yet.
 const TEMP_PREFIX = 'saving-'
 
 function rowFromForm(id: string, f: PolicyForm): SLAPolicy {
@@ -1246,11 +1246,18 @@ function rowFromForm(id: string, f: PolicyForm): SLAPolicy {
   }
 }
 
+// What the table shows: a server row, or an overlay of a save still in flight.
+type Row = { policy: SLAPolicy; saving: boolean; unsaved: boolean }
+
 // Saves are asynchronous (#672): Save closes the form at once and the request
-// runs on its own. The list shows the change straight away through the query
-// cache, marked "Saving…" until the request settles and the list is refetched.
-// A failed save puts the row back and leaves an entry in `failures` with
-// Reopen. Nothing a save does when it finishes touches the open form.
+// runs on its own. Nothing is written to the query cache for a save. The table
+// is the server's list with an overlay of the saves in flight, and both the
+// overlay and the failures are read from react-query's mutation cache, which
+// outlives this component: leaving the tab and coming back changes nothing.
+// A save is held pending until the refetch it triggers has landed, so its row
+// is not dropped before the list has caught up. A failed save stays in the
+// mutation cache, listed above the table with Reopen, until it is reopened or
+// dismissed. Nothing a save does when it finishes touches the open form.
 function SLAPoliciesSection() {
   const qc = useQueryClient()
   const [editingId, setEditingId] = useState<string | null>(null)
@@ -1258,10 +1265,6 @@ function SLAPoliciesSection() {
   const [showAdd, setShowAdd] = useState(false)
   const [form, setForm] = useState<PolicyForm>(EMPTY_FORM)
   const [formError, setFormError] = useState('')
-  // Requests in flight per row id (a policy can be saved twice before the first answers).
-  const [saving, setSaving] = useState<Record<string, number>>({})
-  const [failures, setFailures] = useState<SaveFailure[]>([])
-  const seq = useRef(0)
   const nameRef = useRef<HTMLInputElement>(null)
 
   // The form renders below the whole table, so on opening it (or switching it
@@ -1275,6 +1278,28 @@ function SLAPoliciesSection() {
 
   const { data: policies = [] } = useQuery({ queryKey: SLA_KEY, queryFn: listSLAPolicies })
   const { data: categories = [] } = useQuery({ queryKey: ['categories'], queryFn: listCategories })
+
+  const inFlight = useMutationState({
+    filters: { mutationKey: SAVE_KEY, status: 'pending' },
+    select: (m) => ({ key: m.mutationId, vars: m.state.variables as SaveVars }),
+  })
+  const failed = useMutationState({
+    filters: { mutationKey: SAVE_KEY, status: 'error' },
+    select: (m) => ({ key: m.mutationId, vars: m.state.variables as SaveVars, error: m.state.error }),
+  })
+
+  // Last writer wins: of several saves of one policy, the latest shows.
+  const ordered = [...inFlight].sort((a, b) => a.key - b.key)
+  const edits = new Map(ordered.filter((m) => m.vars.id !== null).map((m) => [m.vars.id, m.vars.form]))
+  const rows: Row[] = [
+    ...policies.map((p) => {
+      const f = edits.get(p.id)
+      return { policy: f ? rowFromForm(p.id, f) : p, saving: f !== undefined, unsaved: false }
+    }),
+    ...ordered
+      .filter((m) => m.vars.id === null)
+      .map((m) => ({ policy: rowFromForm(`${TEMP_PREFIX}${m.key}`, m.vars.form), saving: true, unsaved: true })),
+  ]
 
   function startEdit(p: SLAPolicy) {
     setEditingId(p.id)
@@ -1296,74 +1321,55 @@ function SLAPoliciesSection() {
     setForm(EMPTY_FORM)
   }
 
-  function reopen(f: SaveFailure) {
-    setFailures((fs) => fs.filter((x) => x.key !== f.key))
+  function discard(key: number) {
+    const cache = qc.getMutationCache()
+    const m = cache.getAll().find((x) => x.mutationId === key)
+    if (m) cache.remove(m)
+  }
+
+  function reopen(f: (typeof failed)[number]) {
+    discard(f.key)
     setFormError('')
-    setForm(f.form)
-    setEditingId(f.editingId)
-    setShowAdd(f.editingId === null)
+    setForm(f.vars.form)
+    setEditingId(f.vars.id)
+    setShowAdd(f.vars.id === null)
   }
 
-  const bump = (id: string, by: number) => setSaving((s) => ({ ...s, [id]: (s[id] ?? 0) + by }))
-  const fail = (err: unknown, f: PolicyForm, editingId: string | null) =>
-    setFailures((fs) => [...fs, { key: seq.current++, form: f, editingId, message: extractError(err) }])
-  // Hold the mutation open until the refetch lands so the marker (and, for an
-  // add, the missing Edit and Delete) stay until the real row is in the list.
-  const settle = async (id: string) => {
-    await qc.invalidateQueries({ queryKey: SLA_KEY })
-    bump(id, -1)
-  }
-
-  const createMutation = useMutation({
-    mutationFn: ({ form: f }: { form: PolicyForm; tempId: string }) => createSLAPolicy({
-      name: f.name,
-      priority: f.priority || undefined,
-      category_id: f.category_id || undefined,
-      response_target_min: f.response_target_min,
-      resolution_target_min: f.resolution_target_min,
-    }),
-    onMutate: async ({ form: f, tempId }) => {
-      // A refetch landing now would overwrite the new row with the old list.
-      await qc.cancelQueries({ queryKey: SLA_KEY })
-      qc.setQueryData<SLAPolicy[]>(SLA_KEY, (list = []) => [...list, rowFromForm(tempId, f)])
-      bump(tempId, 1)
+  const saveMutation = useMutation({
+    mutationKey: SAVE_KEY,
+    // Failed and finished saves stay in the mutation cache: the failed ones are
+    // the error list, and they must outlive this component.
+    gcTime: Infinity,
+    mutationFn: async ({ id, form: f }: SaveVars) => {
+      if (id === null) {
+        await createSLAPolicy({
+          name: f.name,
+          priority: f.priority || undefined,
+          category_id: f.category_id || undefined,
+          response_target_min: f.response_target_min,
+          resolution_target_min: f.resolution_target_min,
+        })
+      } else {
+        await updateSLAPolicy(id, {
+          name: f.name,
+          priority: f.priority || undefined,
+          clear_priority: !f.priority,
+          category_id: f.category_id || undefined,
+          clear_category: !f.category_id,
+          response_target_min: f.response_target_min,
+          resolution_target_min: f.resolution_target_min,
+        })
+      }
+      // Stay pending until the refetch lands, so the row keeps its marker
+      // until the real one is in the list.
+      await qc.invalidateQueries({ queryKey: SLA_KEY })
     },
-    onError: (err, { form: f, tempId }) => {
-      qc.setQueryData<SLAPolicy[]>(SLA_KEY, (list = []) => list.filter((p) => p.id !== tempId))
-      fail(err, f, null)
-    },
-    onSettled: (_data, _err, { tempId }) => settle(tempId),
-  })
-
-  const updateMutation = useMutation({
-    mutationFn: ({ id, form: f }: { id: string; form: PolicyForm }) => updateSLAPolicy(id, {
-      name: f.name,
-      priority: f.priority || undefined,
-      clear_priority: !f.priority,
-      category_id: f.category_id || undefined,
-      clear_category: !f.category_id,
-      response_target_min: f.response_target_min,
-      resolution_target_min: f.resolution_target_min,
-    }),
-    onMutate: async ({ id, form: f }) => {
-      await qc.cancelQueries({ queryKey: SLA_KEY })
-      const previous = qc.getQueryData<SLAPolicy[]>(SLA_KEY)?.find((p) => p.id === id)
-      qc.setQueryData<SLAPolicy[]>(SLA_KEY, (list = []) => list.map((p) => (p.id === id ? rowFromForm(id, f) : p)))
-      bump(id, 1)
-      return { previous }
-    },
-    onError: (err, { id, form: f }, ctx) => {
-      const previous = ctx?.previous
-      if (previous) qc.setQueryData<SLAPolicy[]>(SLA_KEY, (list = []) => list.map((p) => (p.id === id ? previous : p)))
-      fail(err, f, id)
-    },
-    onSettled: (_data, _err, { id }) => settle(id),
   })
 
   const deleteMutation = useMutation({
     mutationFn: (id: string) => deleteSLAPolicy(id),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['sla-policies'] })
+      qc.invalidateQueries({ queryKey: SLA_KEY })
       setPendingDelete(null)
       setFormError('')
     },
@@ -1379,16 +1385,19 @@ function SLAPoliciesSection() {
         <p className="text-xs font-medium uppercase tracking-wider text-gray-400">SLA Policies</p>
       </div>
       <div className="px-5 py-4 space-y-3">
-        {failures.map((f) => (
-          <div key={f.key} role="alert" className="flex items-start justify-between gap-3 rounded border border-red-200 bg-red-50 p-3 text-sm text-red-700">
-            <span>Saving '{f.form.name}' failed: {f.message}</span>
-            <span className="flex shrink-0 gap-3">
-              <button className="text-xs font-medium text-red-700 underline" onClick={() => reopen(f)}>Reopen</button>
-              <button className="text-xs text-red-700 hover:underline" onClick={() => setFailures((fs) => fs.filter((x) => x.key !== f.key))}>Dismiss</button>
-            </span>
-          </div>
-        ))}
-        {policies.length > 0 ? (
+        {failed.map((f) => {
+          const name = f.vars.form.name || 'unnamed policy'
+          return (
+            <div key={f.key} className="flex items-start justify-between gap-3 rounded border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+              <span role="alert">Saving '{name}' failed: {extractError(f.error)}</span>
+              <span className="flex shrink-0 gap-3">
+                <button aria-label={`Reopen '${name}'`} className="text-xs font-medium text-red-700 underline" onClick={() => reopen(f)}>Reopen</button>
+                <button aria-label={`Dismiss '${name}'`} className="text-xs text-red-700 hover:underline" onClick={() => discard(f.key)}>Dismiss</button>
+              </span>
+            </div>
+          )
+        })}
+        {rows.length > 0 ? (
           <div className="overflow-x-auto rounded border bg-white">
             <table className="w-full text-sm">
               <thead className="border-b bg-gray-50">
@@ -1402,48 +1411,47 @@ function SLAPoliciesSection() {
                 </tr>
               </thead>
               <tbody className="divide-y">
-                {policies.map((p) => {
+                {rows.map(({ policy: p, saving, unsaved }) => {
                   const isEditing = editingId === p.id
-                  const isSaving = (saving[p.id] ?? 0) > 0
-                  const marked = isEditing || isSaving
+                  const marked = isEditing || saving
                   return (
-                  <tr key={p.id} aria-current={marked ? 'true' : undefined} className={marked ? 'bg-blue-50' : 'hover:bg-gray-50'}>
-                    <td className="px-3 py-2 font-medium">
-                      {p.name}
-                      {isEditing && <span className="ml-2 text-xs font-normal text-blue-700">Editing</span>}
-                      {isSaving && <span className="ml-2 text-xs font-normal text-blue-700">Saving…</span>}
-                    </td>
-                    <td className="px-3 py-2">
-                      {p.priority ? (
-                        <span className={cn('rounded-full px-2 py-0.5 text-xs font-medium capitalize', PRIORITY_COLORS[p.priority])}>
-                          {p.priority}
-                        </span>
-                      ) : (
-                        <span className="text-gray-600">Any priority</span>
-                      )}
-                    </td>
-                    <td className="px-3 py-2 text-gray-600">
-                      {p.category_id
-                        ? (categories.find((c) => c.id === p.category_id)?.name ?? '—')
-                        : 'All categories'}
-                    </td>
-                    <td className="px-3 py-2 tabular-nums text-gray-600">{fmtMin(p.response_target_min)}</td>
-                    <td className="px-3 py-2 tabular-nums text-gray-600">{fmtMin(p.resolution_target_min)}</td>
-                    <td className="px-3 py-2">
-                      {!isEditing && !p.id.startsWith(TEMP_PREFIX) && (
-                        <div className="flex gap-3">
-                          <button className="text-xs text-blue-600 hover:underline" onClick={() => startEdit(p)}>Edit</button>
-                          <button
-                            className="text-xs text-red-600 hover:underline disabled:opacity-40"
-                            onClick={() => { setFormError(''); setPendingDelete(p) }}
-                            disabled={deleteMutation.isPending}
-                          >
-                            Delete
-                          </button>
-                        </div>
-                      )}
-                    </td>
-                  </tr>
+                    <tr key={p.id} aria-current={marked ? 'true' : undefined} className={marked ? 'bg-blue-50' : 'hover:bg-gray-50'}>
+                      <td className="px-3 py-2 font-medium">
+                        {p.name}
+                        {isEditing && <span className="ml-2 text-xs font-normal text-blue-700">Editing</span>}
+                        {saving && <span className="ml-2 text-xs font-normal text-blue-700">Saving…</span>}
+                      </td>
+                      <td className="px-3 py-2">
+                        {p.priority ? (
+                          <span className={cn('rounded-full px-2 py-0.5 text-xs font-medium capitalize', PRIORITY_COLORS[p.priority])}>
+                            {p.priority}
+                          </span>
+                        ) : (
+                          <span className="text-gray-600">Any priority</span>
+                        )}
+                      </td>
+                      <td className="px-3 py-2 text-gray-600">
+                        {p.category_id
+                          ? (categories.find((c) => c.id === p.category_id)?.name ?? '—')
+                          : 'All categories'}
+                      </td>
+                      <td className="px-3 py-2 tabular-nums text-gray-600">{fmtMin(p.response_target_min)}</td>
+                      <td className="px-3 py-2 tabular-nums text-gray-600">{fmtMin(p.resolution_target_min)}</td>
+                      <td className="px-3 py-2">
+                        {!isEditing && !unsaved && (
+                          <div className="flex gap-3">
+                            <button className="text-xs text-blue-600 hover:underline" onClick={() => startEdit(p)}>Edit</button>
+                            <button
+                              className="text-xs text-red-600 hover:underline disabled:opacity-40"
+                              onClick={() => { setFormError(''); setPendingDelete(p) }}
+                              disabled={deleteMutation.isPending}
+                            >
+                              Delete
+                            </button>
+                          </div>
+                        )}
+                      </td>
+                    </tr>
                   )
                 })}
               </tbody>
@@ -1456,11 +1464,10 @@ function SLAPoliciesSection() {
           <PolicyFormFields
             form={form} setForm={setForm} categories={categories} nameRef={nameRef}
             onSave={() => {
+              saveMutation.mutate({ id: editingId, form })
               if (editingId !== null) {
-                updateMutation.mutate({ id: editingId, form })
                 setEditingId(null)
               } else {
-                createMutation.mutate({ form, tempId: `${TEMP_PREFIX}${seq.current++}` })
                 setShowAdd(false)
                 setForm(EMPTY_FORM)
               }
