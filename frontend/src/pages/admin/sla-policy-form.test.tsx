@@ -129,16 +129,67 @@ describe('the SLA policy form', () => {
     expect(post).not.toHaveBeenCalled()
   })
 
-  it('cancel on edit restores the row without saving', async () => {
+  it('cancel on edit closes the form and restores the row without saving', async () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const patch = vi.spyOn(api, 'patch').mockResolvedValue({ data: {} } as any)
     await renderSLA()
     await userEvent.click(screen.getByRole('button', { name: 'Edit' }))
+    expect(screen.getByLabelText('Policy name')).toBeTruthy()
     await userEvent.click(screen.getByRole('button', { name: 'Cancel' }))
 
     expect(screen.queryByLabelText('Policy name')).toBeNull()
     const row = screen.getByText('Critical outage').closest('tr') as HTMLElement
     expect(within(row).getByRole('button', { name: 'Edit' })).toBeTruthy()
     expect(patch).not.toHaveBeenCalled()
+  })
+
+  it('renders the edit form outside the scrolling table, like the add form', async () => {
+    await renderSLA()
+    await userEvent.click(screen.getByRole('button', { name: 'Edit' }))
+    expect(screen.getByLabelText('Policy name').closest('table')).toBeNull()
+    expect(screen.getByLabelText('Policy name').closest('.overflow-x-auto')).toBeNull()
+
+    // The policy being edited stays in the list, marked, with no row actions.
+    const row = screen.getByText('Critical outage').closest('tr') as HTMLElement
+    expect(row.className).toContain('bg-blue-50')
+    expect(within(row).queryByRole('button', { name: 'Edit' })).toBeNull()
+  })
+
+  it('edit sends clear_priority and clear_category when set to Any priority and All categories', async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const patch = vi.spyOn(api, 'patch').mockResolvedValue({ data: {} } as any)
+    await renderSLA()
+    await userEvent.click(screen.getByRole('button', { name: 'Edit' }))
+    await userEvent.selectOptions(screen.getByLabelText('Priority'), '')
+    await userEvent.selectOptions(screen.getByLabelText('Category'), '')
+    await userEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect(patch).toHaveBeenCalledTimes(1))
+    const body = patch.mock.calls[0][1] as Record<string, unknown>
+    expect(body.clear_priority).toBe(true)
+    expect(body.clear_category).toBe(true)
+    expect(body.priority).toBeUndefined()
+    expect(body.category_id).toBeUndefined()
+  })
+
+  it('disables Save while the request is pending', async () => {
+    vi.spyOn(api, 'patch').mockReturnValue(new Promise(() => {}) as never)
+    await renderSLA()
+    await userEvent.click(screen.getByRole('button', { name: 'Edit' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => expect((screen.getByRole('button', { name: 'Save' }) as HTMLButtonElement).disabled).toBe(true))
+  })
+
+  it('hides the Add button while a form is open', async () => {
+    await renderSLA()
+    expect(screen.getByRole('button', { name: '+ Add policy' })).toBeTruthy()
+
+    await userEvent.click(screen.getByRole('button', { name: '+ Add policy' }))
+    expect(screen.queryByRole('button', { name: '+ Add policy' })).toBeNull()
+    await userEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+
+    await userEvent.click(screen.getByRole('button', { name: 'Edit' }))
+    expect(screen.queryByRole('button', { name: '+ Add policy' })).toBeNull()
   })
 })

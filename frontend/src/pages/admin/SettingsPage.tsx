@@ -13,7 +13,7 @@ import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
 import { Spinner } from '@/components/ui/spinner'
 import { cn } from '@/lib/utils'
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useId } from 'react'
 import { fmtMin } from '@/lib/format'
 import { UPDATE_CHECK_LABEL, UPDATE_CHECK_DETAIL } from '@/lib/updateCheck'
 
@@ -1134,11 +1134,12 @@ const EMPTY_FORM: PolicyForm = {
   resolution_target_min: 2880,
 }
 
-// The stacked add and edit form. It is a block, not a table row, so it lays out
-// at the card's width and at 375px: Name full width, Priority and Category side
-// by side, Response and Resolution side by side, buttons underneath. The edit
-// form sits in a full-width <td colSpan={6}> in place of the policy's row.
-function PolicyForm({
+// The stacked add and edit form. It is a block outside the policy table (the
+// table scrolls sideways in a narrow card, and a form inside it would too), so
+// it lays out at the card's width. Name is full width. Priority and Category,
+// and Response and Resolution, sit side by side from the sm breakpoint (640px)
+// up and stack in one column below it, which includes 375px. Buttons underneath.
+function PolicyFormFields({
   form, setForm, categories, onSave, onCancel, isPending,
 }: {
   form: PolicyForm
@@ -1148,12 +1149,13 @@ function PolicyForm({
   onCancel: () => void
   isPending: boolean
 }) {
+  const id = useId()
   return (
     <div className="space-y-3 rounded border bg-blue-50 p-3">
       <div className="space-y-1">
-        <label htmlFor="sla-policy-name" className="block text-sm font-medium text-gray-900">Policy name</label>
+        <label htmlFor={`${id}-name`} className="block text-sm font-medium text-gray-900">Policy name</label>
         <Input
-          id="sla-policy-name"
+          id={`${id}-name`}
           className="h-9 text-sm"
           value={form.name}
           onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
@@ -1161,9 +1163,9 @@ function PolicyForm({
       </div>
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         <div className="space-y-1">
-          <label htmlFor="sla-policy-priority" className="block text-sm font-medium text-gray-900">Priority</label>
+          <label htmlFor={`${id}-priority`} className="block text-sm font-medium text-gray-900">Priority</label>
           <Select
-            id="sla-policy-priority"
+            id={`${id}-priority`}
             className="h-9 text-sm"
             value={form.priority}
             onChange={(e) => setForm((f) => ({ ...f, priority: e.target.value }))}
@@ -1175,9 +1177,9 @@ function PolicyForm({
           </Select>
         </div>
         <div className="space-y-1">
-          <label htmlFor="sla-policy-category" className="block text-sm font-medium text-gray-900">Category</label>
+          <label htmlFor={`${id}-category`} className="block text-sm font-medium text-gray-900">Category</label>
           <Select
-            id="sla-policy-category"
+            id={`${id}-category`}
             className="h-9 text-sm"
             value={form.category_id}
             onChange={(e) => setForm((f) => ({ ...f, category_id: e.target.value }))}
@@ -1191,10 +1193,10 @@ function PolicyForm({
       </div>
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         <div className="space-y-1">
-          <label htmlFor="sla-policy-response" className="block text-sm font-medium text-gray-900">Response target</label>
+          <label htmlFor={`${id}-response`} className="block text-sm font-medium text-gray-900">Response target</label>
           <div className="flex items-center gap-2">
             <Input
-              id="sla-policy-response"
+              id={`${id}-response`}
               type="number" min={1} className="h-9 w-24 text-sm"
               value={form.response_target_min}
               onChange={(e) => setForm((f) => ({ ...f, response_target_min: Math.max(1, parseInt(e.target.value, 10) || 1) }))}
@@ -1203,10 +1205,10 @@ function PolicyForm({
           </div>
         </div>
         <div className="space-y-1">
-          <label htmlFor="sla-policy-resolution" className="block text-sm font-medium text-gray-900">Resolution target</label>
+          <label htmlFor={`${id}-resolution`} className="block text-sm font-medium text-gray-900">Resolution target</label>
           <div className="flex items-center gap-2">
             <Input
-              id="sla-policy-resolution"
+              id={`${id}-resolution`}
               type="number" min={1} className="h-9 w-24 text-sm"
               value={form.resolution_target_min}
               onChange={(e) => setForm((f) => ({ ...f, resolution_target_min: Math.max(1, parseInt(e.target.value, 10) || 1) }))}
@@ -1322,38 +1324,27 @@ function SLAPoliciesSection() {
                 </tr>
               </thead>
               <tbody className="divide-y">
-                {policies.map((p) =>
-                  editingId === p.id ? (
-                    <tr key={p.id} className="bg-blue-50">
-                      <td colSpan={6} className="px-3 py-3">
-                        <PolicyForm
-                          form={form} setForm={setForm} categories={categories}
-                          onSave={() => updateMutation.mutate(p.id)}
-                          onCancel={() => { setFormError(''); setEditingId(null) }}
-                          isPending={updateMutation.isPending}
-                        />
-                      </td>
-                    </tr>
-                  ) : (
-                    <tr key={p.id} className="hover:bg-gray-50">
-                      <td className="px-3 py-2 font-medium">{p.name}</td>
-                      <td className="px-3 py-2">
-                        {p.priority ? (
-                          <span className={cn('rounded-full px-2 py-0.5 text-xs font-medium capitalize', PRIORITY_COLORS[p.priority])}>
-                            {p.priority}
-                          </span>
-                        ) : (
-                          <span className="text-gray-600">Any priority</span>
-                        )}
-                      </td>
-                      <td className="px-3 py-2 text-gray-600">
-                        {p.category_id
-                          ? (categories.find((c) => c.id === p.category_id)?.name ?? '—')
-                          : 'All categories'}
-                      </td>
-                      <td className="px-3 py-2 tabular-nums text-gray-600">{fmtMin(p.response_target_min)}</td>
-                      <td className="px-3 py-2 tabular-nums text-gray-600">{fmtMin(p.resolution_target_min)}</td>
-                      <td className="px-3 py-2">
+                {policies.map((p) => (
+                  <tr key={p.id} className={editingId === p.id ? 'bg-blue-50' : 'hover:bg-gray-50'}>
+                    <td className="px-3 py-2 font-medium">{p.name}</td>
+                    <td className="px-3 py-2">
+                      {p.priority ? (
+                        <span className={cn('rounded-full px-2 py-0.5 text-xs font-medium capitalize', PRIORITY_COLORS[p.priority])}>
+                          {p.priority}
+                        </span>
+                      ) : (
+                        <span className="text-gray-600">Any priority</span>
+                      )}
+                    </td>
+                    <td className="px-3 py-2 text-gray-600">
+                      {p.category_id
+                        ? (categories.find((c) => c.id === p.category_id)?.name ?? '—')
+                        : 'All categories'}
+                    </td>
+                    <td className="px-3 py-2 tabular-nums text-gray-600">{fmtMin(p.response_target_min)}</td>
+                    <td className="px-3 py-2 tabular-nums text-gray-600">{fmtMin(p.resolution_target_min)}</td>
+                    <td className="px-3 py-2">
+                      {editingId !== p.id && (
                         <div className="flex gap-3">
                           <button className="text-xs text-blue-600 hover:underline" onClick={() => startEdit(p)}>Edit</button>
                           <button
@@ -1364,22 +1355,22 @@ function SLAPoliciesSection() {
                             Delete
                           </button>
                         </div>
-                      </td>
-                    </tr>
-                  )
-                )}
+                      )}
+                    </td>
+                  </tr>
+                ))}
               </tbody>
             </table>
           </div>
         ) : (
           !showAdd && <p className="text-sm text-gray-500">No SLA policies defined.</p>
         )}
-        {showAdd && (
-          <PolicyForm
+        {(showAdd || editingId !== null) && (
+          <PolicyFormFields
             form={form} setForm={setForm} categories={categories}
-            onSave={() => createMutation.mutate()}
-            onCancel={() => { setFormError(''); setShowAdd(false) }}
-            isPending={createMutation.isPending}
+            onSave={() => (editingId !== null ? updateMutation.mutate(editingId) : createMutation.mutate())}
+            onCancel={() => { setFormError(''); setShowAdd(false); setEditingId(null) }}
+            isPending={editingId !== null ? updateMutation.isPending : createMutation.isPending}
           />
         )}
         {formError && <p role="alert" className="text-sm text-red-600">{formError}</p>}
