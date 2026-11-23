@@ -394,10 +394,11 @@ func TestPatchSettings_PasskeyRequiredRoles(t *testing.T) {
 	})
 }
 
-// The self-lockout guard (#616c, owner ruling): a save that lists the saving
-// administrator's own role is refused unless they hold a passkey, because the
-// list applies at their next sign-in and a TOTP holder with no key would then be
-// owed one they do not have. Only the transition matters.
+// The self-lockout guard (#616c, owner ruling): a save that newly lists the
+// saving administrator's own role is refused unless they hold a passkey, so an
+// administrator does not require a passkey of their own role before they have
+// shown they can hold one (they could be stuck at registration at next
+// sign-in). Only a newly listed own role matters: any other edit is accepted.
 func TestPatchSettings_PasskeyRequiredRoles_RefusesSelfLockout(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -417,7 +418,10 @@ func TestPatchSettings_PasskeyRequiredRoles_RefusesSelfLockout(t *testing.T) {
 		{"unchanged list", []string{"admin", "staff"}, false, false, []string{"staff", "admin"}, http.StatusNoContent, []string{"staff", "admin"}},
 		{"role removed", []string{"admin", "staff"}, false, false, []string{"staff"}, http.StatusNoContent, []string{"staff"}},
 		{"list emptied", []string{"admin"}, false, false, []string{}, http.StatusNoContent, []string{}},
-		{"changed list still naming own role", []string{"admin", "staff"}, false, false, []string{"admin", "user"}, http.StatusBadRequest, []string{"admin", "staff"}},
+		{"other role removed while own role stays", []string{"admin", "staff"}, false, false, []string{"admin"}, http.StatusNoContent, []string{"admin"}},
+		{"other role added while own role stays", []string{"admin"}, false, false, []string{"admin", "user"}, http.StatusNoContent, []string{"admin", "user"}},
+		{"own role newly added beside a stored one", []string{"staff"}, false, false, []string{"staff", "admin"}, http.StatusBadRequest, []string{"staff"}},
+		{"own role swapped in for another", []string{"staff"}, false, false, []string{"admin", "user"}, http.StatusBadRequest, []string{"staff"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -442,7 +446,7 @@ func TestPatchSettings_PasskeyRequiredRoles_RefusesSelfLockout(t *testing.T) {
 			require.Equal(t, tc.wantStatus, res.StatusCode, "body: %s", body)
 			if tc.wantStatus == http.StatusBadRequest {
 				require.Contains(t, string(body), `"bad_request"`)
-				require.Contains(t, string(body), "register a passkey")
+				require.Contains(t, string(body), "invalid input: your role cannot be listed in passkey_required_roles because you have no passkey: register a passkey on your Account page first, then save again")
 			}
 			require.ElementsMatch(t, tc.wantStored, h.adminSvc.PasskeyRequiredRoles(ctx),
 				"a refused save must leave the stored list as it was")

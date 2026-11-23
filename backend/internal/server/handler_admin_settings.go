@@ -1075,27 +1075,32 @@ func (s *Server) ssoSettingsWarning(ctx context.Context, body map[string]json.Ra
 }
 
 // refusePasskeySelfLockout is the #300 guard's shape for passkey_required_roles
-// (#616c): a save that lists the saving administrator's own role is refused
-// unless they hold a passkey, because the list applies at their next sign-in
-// and a TOTP holder with no key would then be owed one they cannot produce.
-// 400 bad_request, as ErrWouldOrphanInstance is.
+// (#616c): a save that newly lists the saving administrator's own role is
+// refused unless they hold a passkey. The aim is that an administrator does not
+// require a passkey of their own role before they have shown they can hold one:
+// one who cannot create a passkey on their device or browser would be stuck at
+// the registration step at their next sign-in. 400 bad_request, as
+// ErrWouldOrphanInstance is.
 //
-// Only a change matters: the same list as is stored, or one without the saver's
-// role (a removal included), is never refused. It applies whether or not
-// mfa_enabled is on, since turning that on later would activate the policy under
-// the saver. A machine credential cannot reach this (the key is auth-critical),
-// so the actor is a signed-in person. A save racing the deletion of the saver's
-// last key is accepted, as #300's race is.
+// Only a newly listed own role matters: when the stored list already names the
+// saver's role, or the new list does not, the save changes nothing about their
+// own exposure, so any other edit (a removal included) is never refused. It
+// applies whether or not mfa_enabled is on, since turning that on later would
+// activate the policy under the saver. A machine credential cannot reach this
+// (the key is auth-critical), so the actor is a signed-in person. A save racing
+// the deletion of the saver's last key is accepted, as #300's race is, and so
+// is a key bound to an old relying-party ID (BASE_URL moved): it counts as held
+// but cannot sign in.
 func (s *Server) refusePasskeySelfLockout(ctx context.Context, a *authmw.Actor, roles []string) error {
 	role := string(a.Role)
-	if !slices.Contains(roles, role) || sameRoles(roles, s.adminSvc.PasskeyRequiredRoles(ctx)) {
+	if !slices.Contains(roles, role) || slices.Contains(s.adminSvc.PasskeyRequiredRoles(ctx), role) {
 		return nil
 	}
-	keys, err := s.passkeyStore.ListByUser(ctx, a.UserID)
+	n, err := s.passkeyStore.CountForUser(ctx, a.UserID)
 	if err != nil {
-		return fmt.Errorf("listing passkeys: %w", err)
+		return fmt.Errorf("counting passkeys: %w", err)
 	}
-	if len(keys) > 0 {
+	if n > 0 {
 		return nil
 	}
 	if !s.passkeysAvailable() {
@@ -1105,12 +1110,6 @@ func (s *Server) refusePasskeySelfLockout(ctx context.Context, a *authmw.Actor, 
 	}
 	return fmt.Errorf("%w: your role cannot be listed in passkey_required_roles because you have no passkey: "+
 		"register a passkey on your Account page first, then save again", user.ErrValidation)
-}
-
-// sameRoles compares two role lists as sets: order and repeats do not matter.
-func sameRoles(a, b []string) bool {
-	norm := func(l []string) []string { return slices.Compact(slices.Sorted(slices.Values(l))) }
-	return slices.Equal(norm(a), norm(b))
 }
 
 // refuseNullSetting is unmarshalSetting's null half, for the settings whose

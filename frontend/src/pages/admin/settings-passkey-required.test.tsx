@@ -96,7 +96,7 @@ describe('Require passkeys for roles', () => {
   })
 
   it('shows the server message when a save is refused for listing your own role without a passkey', async () => {
-    const message = 'your role cannot be listed in passkey_required_roles because you have no passkey: register a passkey on your Account page first, then save again'
+    const message = 'invalid input: your role cannot be listed in passkey_required_roles because you have no passkey: register a passkey on your Account page first, then save again'
     const patch = await renderSettings({ mfa_enabled: true, mfa_enforced_roles: [], passkey_required_roles: [] })
     patch.mockRejectedValue({
       isAxiosError: true, message: 'Request failed with status code 400',
