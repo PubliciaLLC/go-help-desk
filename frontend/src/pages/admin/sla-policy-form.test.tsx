@@ -1,6 +1,7 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { screen, waitFor, within, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { AxiosError } from 'axios'
 import { renderWithQuery } from '@/test/render'
 import { api } from '@/api/client'
 import { useAuthStore } from '@/store/auth'
@@ -12,6 +13,12 @@ import { useAuthStore } from '@/store/auth'
 // shared form sits outside the scrolling table and is re-pointed from one
 // policy to another; focus moves to the Name field when the form opens; and the
 // empty-state text never shows beside an open form.
+//
+// #672 made saves asynchronous: Save closes the form at once, the list shows the
+// change marked "Saving…", a failed save rolls the row back and lists an error
+// with a Reopen button, and a save finishing never touches whatever form is open
+// by then. The tests for that use deferred promises so each request can be
+// resolved or rejected on demand.
 
 vi.mock('@tanstack/react-router', () => ({
   useRouterState: () => ({ location: { pathname: '/admin/settings' } }),
@@ -67,6 +74,15 @@ beforeEach(() => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
   }) as any)
 })
+
+function deferred() {
+  let resolve!: (v: unknown) => void
+  let reject!: (e: unknown) => void
+  const promise = new Promise((res, rej) => { resolve = res; reject = rej })
+  return { promise, resolve, reject }
+}
+
+const rowOf = (name: string) => screen.getByText(name).closest('tr') as HTMLElement
 
 async function renderSLA() {
   const { queryClient } = renderWithQuery(<SettingsPage />)
@@ -176,6 +192,9 @@ describe('the SLA policy form', () => {
     const row = screen.getByText('Critical outage').closest('tr') as HTMLElement
     expect(row.className).toContain('bg-blue-50')
     expect(within(row).queryByRole('button', { name: 'Edit' })).toBeNull()
+    // Marked by text and aria-current, not by colour alone (#672).
+    expect(row.getAttribute('aria-current')).toBe('true')
+    expect(within(row).getByText('Editing')).toBeTruthy()
   })
 
   it('edit sends clear_priority and clear_category when set to Any priority and All categories', async () => {
@@ -193,15 +212,6 @@ describe('the SLA policy form', () => {
     expect(body.clear_category).toBe(true)
     expect(body.priority).toBeUndefined()
     expect(body.category_id).toBeUndefined()
-  })
-
-  it('disables Save while the request is pending', async () => {
-    vi.spyOn(api, 'patch').mockReturnValue(new Promise(() => {}) as never)
-    await renderSLA()
-    await userEvent.click(screen.getByRole('button', { name: 'Edit' }))
-    await userEvent.click(screen.getByRole('button', { name: 'Save' }))
-
-    await waitFor(() => expect((screen.getByRole('button', { name: 'Save' }) as HTMLButtonElement).disabled).toBe(true))
   })
 
   it('hides the Add button while a form is open', async () => {
@@ -307,6 +317,246 @@ describe('the SLA policy form', () => {
       clear_category: false,
       response_target_min: 15,
       resolution_target_min: 90,
+    })
+  })
+
+  describe('asynchronous saves (#672)', () => {
+    const typedEditBody = (name: string) => ({
+      name,
+      priority: 'critical',
+      clear_priority: false,
+      category_id: 'c1',
+      clear_category: false,
+      response_target_min: 60,
+      resolution_target_min: 240,
+    })
+
+    // A failure the way the API client sees one: an axios error carrying the
+    // server's { error: { code, message } } body.
+    const apiError = (message: string) =>
+      new AxiosError('Request failed', 'ERR_BAD_REQUEST', undefined, undefined, {
+        status: 409, statusText: 'Conflict', headers: {}, config: {} as never,
+        data: { error: { code: 'conflict', message } },
+      })
+
+    async function addPolicyNamed(name: string) {
+      await userEvent.click(screen.getByRole('button', { name: '+ Add policy' }))
+      await userEvent.type(screen.getByLabelText('Policy name'), name)
+      await userEvent.click(screen.getByRole('button', { name: 'Save' }))
+    }
+
+    it('Save on add closes the form at once and shows a Saving row without Edit or Delete', async () => {
+      const d = deferred()
+      vi.spyOn(api, 'post').mockReturnValue(d.promise as never)
+      await renderSLA()
+      await addPolicyNamed('Brand new')
+
+      expect(screen.queryByLabelText('Policy name')).toBeNull()
+      const row = await waitFor(() => rowOf('Brand new'))
+      expect(within(row).getByText('Saving…')).toBeTruthy()
+      expect(row.getAttribute('aria-current')).toBe('true')
+      expect(within(row).queryByRole('button', { name: 'Edit' })).toBeNull()
+      expect(within(row).queryByRole('button', { name: 'Delete' })).toBeNull()
+      // The form is gone, so the Add button is back.
+      expect(screen.getByRole('button', { name: '+ Add policy' })).toBeTruthy()
+
+      // The server answers and the list refetches with the real row.
+      policies = [POLICY, { ...POLICY_B, name: 'Brand new' }]
+      d.resolve({ data: {} })
+      await waitFor(() => expect(within(rowOf('Brand new')).queryByText('Saving…')).toBeNull())
+      expect(within(rowOf('Brand new')).getByRole('button', { name: 'Edit' })).toBeTruthy()
+      expect(rowOf('Brand new').getAttribute('aria-current')).toBeNull()
+    })
+
+    it('Save on edit closes the form at once; the row shows the new values marked Saving', async () => {
+      const d = deferred()
+      const patch = vi.spyOn(api, 'patch').mockReturnValue(d.promise as never)
+      await renderSLA()
+      await userEvent.click(screen.getByRole('button', { name: 'Edit' }))
+      const name = screen.getByLabelText('Policy name')
+      await userEvent.clear(name)
+      await userEvent.type(name, 'Major outage')
+      fireEvent.change(screen.getByLabelText('Response target'), { target: { value: '30' } })
+      await userEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+      expect(screen.queryByLabelText('Policy name')).toBeNull()
+      expect(patch).toHaveBeenCalledTimes(1)
+      const row = rowOf('Major outage')
+      expect(screen.queryByText('Critical outage')).toBeNull()
+      expect(within(row).getByText('Saving…')).toBeTruthy()
+      expect(within(row).queryByText('Editing')).toBeNull()
+      expect(row.getAttribute('aria-current')).toBe('true')
+      expect(within(row).getByText('30m')).toBeTruthy()
+
+      policies = [{ ...POLICY, name: 'Major outage', response_target_min: 30 }]
+      d.resolve({ data: {} })
+      await waitFor(() => expect(within(rowOf('Major outage')).queryByText('Saving…')).toBeNull())
+      expect(within(rowOf('Major outage')).getByRole('button', { name: 'Edit' })).toBeTruthy()
+    })
+
+    it('editing while an add is pending keeps the edit form intact when the add resolves', async () => {
+      const d = deferred()
+      vi.spyOn(api, 'post').mockReturnValue(d.promise as never)
+      const patch = vi.spyOn(api, 'patch').mockResolvedValue({ data: {} } as never)
+      await renderSLA()
+      await addPolicyNamed('Brand new')
+      await userEvent.click(within(rowOf('Critical outage')).getByRole('button', { name: 'Edit' }))
+      const name = screen.getByLabelText('Policy name') as HTMLInputElement
+      await userEvent.clear(name)
+      await userEvent.type(name, 'Edited meanwhile')
+
+      policies = [POLICY, { ...POLICY_B, name: 'Brand new' }]
+      d.resolve({ data: {} })
+      await waitFor(() => expect(within(rowOf('Brand new')).queryByText('Saving…')).toBeNull())
+
+      // The add finishing did not blank or close the edit form.
+      expect((screen.getByLabelText('Policy name') as HTMLInputElement).value).toBe('Edited meanwhile')
+      expect((screen.getByLabelText('Priority') as HTMLSelectElement).value).toBe('critical')
+      expect((screen.getByLabelText('Response target') as HTMLInputElement).value).toBe('60')
+      await userEvent.click(screen.getByRole('button', { name: 'Save' }))
+      await waitFor(() => expect(patch).toHaveBeenCalledTimes(1))
+      expect(patch).toHaveBeenCalledWith('/admin/sla/policies/p1', typedEditBody('Edited meanwhile'))
+    })
+
+    it('editing policy B while an update of A is pending keeps B open when A resolves', async () => {
+      policies = [POLICY, POLICY_B]
+      const dA = deferred()
+      const patch = vi.spyOn(api, 'patch')
+        .mockReturnValueOnce(dA.promise as never)
+        .mockResolvedValue({ data: {} } as never)
+      await renderSLA()
+      await screen.findByText('Printer fleet')
+      await userEvent.click(within(rowOf('Critical outage')).getByRole('button', { name: 'Edit' }))
+      await userEvent.click(screen.getByRole('button', { name: 'Save' }))
+      await userEvent.click(within(rowOf('Printer fleet')).getByRole('button', { name: 'Edit' }))
+      await userEvent.type(screen.getByLabelText('Policy name'), ' 2')
+
+      dA.resolve({ data: {} })
+      await waitFor(() => expect(within(rowOf('Critical outage')).queryByText('Saving…')).toBeNull())
+
+      expect((screen.getByLabelText('Policy name') as HTMLInputElement).value).toBe('Printer fleet 2')
+      // B's Save was never held up by A's request.
+      await userEvent.click(screen.getByRole('button', { name: 'Save' }))
+      await waitFor(() => expect(patch).toHaveBeenCalledTimes(2))
+      expect(patch.mock.calls[1][0]).toBe('/admin/sla/policies/p2')
+      expect((patch.mock.calls[1][1] as { name: string }).name).toBe('Printer fleet 2')
+    })
+
+    it('a failed edit rolls the row back and shows the named error above the list', async () => {
+      const d = deferred()
+      vi.spyOn(api, 'patch').mockReturnValue(d.promise as never)
+      await renderSLA()
+      await userEvent.click(screen.getByRole('button', { name: 'Edit' }))
+      const name = screen.getByLabelText('Policy name')
+      await userEvent.clear(name)
+      await userEvent.type(name, 'Major outage')
+      await userEvent.click(screen.getByRole('button', { name: 'Save' }))
+      expect(within(rowOf('Major outage')).getByText('Saving…')).toBeTruthy()
+
+      d.reject(apiError('name already taken'))
+      const alert = await screen.findByRole('alert')
+      expect(alert.textContent).toContain("Saving 'Major outage' failed: name already taken")
+
+      // Previous values are back, with no marker and with row actions.
+      expect(screen.queryByText('Major outage', { selector: 'td' })).toBeNull()
+      const row = rowOf('Critical outage')
+      expect(within(row).queryByText('Saving…')).toBeNull()
+      expect(within(row).getByRole('button', { name: 'Edit' })).toBeTruthy()
+      // The error sits above the list.
+      const table = screen.getByRole('table')
+      expect(alert.compareDocumentPosition(table) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    })
+
+    it('Reopen restores the typed values and the policy being edited; dismiss removes the error', async () => {
+      const patch = vi.spyOn(api, 'patch').mockRejectedValue(apiError('boom'))
+      await renderSLA()
+      await userEvent.click(screen.getByRole('button', { name: 'Edit' }))
+      const name = screen.getByLabelText('Policy name')
+      await userEvent.clear(name)
+      await userEvent.type(name, 'Major outage')
+      await userEvent.selectOptions(screen.getByLabelText('Priority'), '')
+      await userEvent.click(screen.getByRole('button', { name: 'Save' }))
+      await screen.findByRole('alert')
+
+      await userEvent.click(screen.getByRole('button', { name: 'Reopen' }))
+      expect(screen.queryByRole('alert')).toBeNull()
+      expect((screen.getByLabelText('Policy name') as HTMLInputElement).value).toBe('Major outage')
+      expect((screen.getByLabelText('Priority') as HTMLSelectElement).value).toBe('')
+      expect(within(rowOf('Critical outage')).getByText('Editing')).toBeTruthy()
+
+      // Save sends it to the same policy again.
+      await userEvent.click(screen.getByRole('button', { name: 'Save' }))
+      await waitFor(() => expect(patch).toHaveBeenCalledTimes(2))
+      expect(patch.mock.calls[1][0]).toBe('/admin/sla/policies/p1')
+      expect((patch.mock.calls[1][1] as { name: string }).name).toBe('Major outage')
+      await screen.findByRole('alert')
+
+      await userEvent.click(screen.getByRole('button', { name: 'Dismiss' }))
+      expect(screen.queryByRole('alert')).toBeNull()
+      expect(screen.queryByLabelText('Policy name')).toBeNull()
+    })
+
+    it('a failed add removes the temporary row, and Reopen restores the add form', async () => {
+      vi.spyOn(api, 'post').mockRejectedValue(apiError('nope'))
+      await renderSLA()
+      await userEvent.click(screen.getByRole('button', { name: '+ Add policy' }))
+      await userEvent.type(screen.getByLabelText('Policy name'), 'Brand new')
+      await userEvent.selectOptions(screen.getByLabelText('Priority'), 'high')
+      fireEvent.change(screen.getByLabelText('Response target'), { target: { value: '30' } })
+      await userEvent.click(screen.getByRole('button', { name: 'Save' }))
+
+      const alert = await screen.findByRole('alert')
+      expect(alert.textContent).toContain("Saving 'Brand new' failed: nope")
+      expect(screen.queryByText('Brand new', { selector: 'td' })).toBeNull()
+
+      await userEvent.click(screen.getByRole('button', { name: 'Reopen' }))
+      expect((screen.getByLabelText('Policy name') as HTMLInputElement).value).toBe('Brand new')
+      expect((screen.getByLabelText('Priority') as HTMLSelectElement).value).toBe('high')
+      expect((screen.getByLabelText('Response target') as HTMLInputElement).value).toBe('30')
+      expect(screen.queryByRole('button', { name: '+ Add policy' })).toBeNull()
+    })
+
+    it('a failure landing while another form is open leaves that form alone; Reopen replaces it', async () => {
+      policies = [POLICY, POLICY_B]
+      const d = deferred()
+      vi.spyOn(api, 'patch').mockReturnValue(d.promise as never)
+      await renderSLA()
+      await screen.findByText('Printer fleet')
+      await userEvent.click(within(rowOf('Critical outage')).getByRole('button', { name: 'Edit' }))
+      await userEvent.click(screen.getByRole('button', { name: 'Save' }))
+      await userEvent.click(within(rowOf('Printer fleet')).getByRole('button', { name: 'Edit' }))
+      await userEvent.type(screen.getByLabelText('Policy name'), ' typing')
+
+      d.reject(apiError('late failure'))
+      await screen.findByText(/late failure/)
+      expect((screen.getByLabelText('Policy name') as HTMLInputElement).value).toBe('Printer fleet typing')
+
+      await userEvent.click(screen.getByRole('button', { name: 'Reopen' }))
+      expect((screen.getByLabelText('Policy name') as HTMLInputElement).value).toBe('Critical outage')
+      expect(screen.getAllByLabelText('Policy name')).toHaveLength(1)
+    })
+
+    it('lists several failures at once', async () => {
+      vi.spyOn(api, 'post').mockRejectedValue(apiError('no'))
+      await renderSLA()
+      await addPolicyNamed('First')
+      await screen.findByText(/Saving 'First' failed/)
+      await addPolicyNamed('Second')
+      await screen.findByText(/Saving 'Second' failed/)
+      expect(screen.getAllByRole('button', { name: 'Reopen' })).toHaveLength(2)
+    })
+
+    it('Delete is not offered on an unsaved add row, and still works on a saved one', async () => {
+      vi.spyOn(api, 'post').mockReturnValue(deferred().promise as never)
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const del = vi.spyOn(api, 'delete').mockResolvedValue({ data: {} } as any)
+      await renderSLA()
+      await addPolicyNamed('Brand new')
+      expect(within(rowOf('Brand new')).queryByRole('button', { name: 'Delete' })).toBeNull()
+
+      await userEvent.click(within(rowOf('Critical outage')).getByRole('button', { name: 'Delete' }))
+      await userEvent.click(await screen.findByRole('button', { name: 'Delete policy' }))
+      await waitFor(() => expect(del).toHaveBeenCalledWith('/admin/sla/policies/p1'))
     })
   })
 })
