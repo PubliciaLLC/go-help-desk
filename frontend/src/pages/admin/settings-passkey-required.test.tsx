@@ -94,4 +94,18 @@ describe('Require passkeys for roles', () => {
     expect(body.passkey_required_roles).toEqual(['staff'])
     expect('mfa_enforced_roles' in body).toBe(false)
   })
+
+  it('shows the server message when a save is refused for listing your own role without a passkey', async () => {
+    const message = 'your role cannot be listed in passkey_required_roles because you have no passkey: register a passkey on your Account page first, then save again'
+    const patch = await renderSettings({ mfa_enabled: true, mfa_enforced_roles: [], passkey_required_roles: [] })
+    patch.mockRejectedValue({
+      isAxiosError: true, message: 'Request failed with status code 400',
+      response: { status: 400, data: { error: { code: 'bad_request', message } } },
+    })
+    await userEvent.click(passkeyBox('admin'))
+    await userEvent.click(screen.getAllByRole('button', { name: /save changes/i }).at(-1)!)
+    expect((await screen.findByRole('alert')).textContent).toBe(message)
+    // The edit stays where it was, to be saved again once a key exists.
+    expect(passkeyBox('admin').checked).toBe(true)
+  })
 })

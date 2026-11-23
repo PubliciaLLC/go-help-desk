@@ -1369,7 +1369,8 @@ upgrade leaves it (migration 000066), every path behaves as before.
   role with no factor still enrols TOTP because the role is still MFA-enforced,
   and a passkey-only account is still refused (`403 passkey_unavailable`). The
   policy itself locks nobody out, but a passkey-only account, which the policy
-  creates when it sends a no-factor account to register a key, is stranded while
+  creates when it sends a no-factor account to register a key, is stranded (an
+  accepted, documented consequence) while
   passkeys are unavailable (a bad `BASE_URL`), until passkeys work again or an
   administrator resets the account's factors (reset-factors). `GET /admin/security-warnings` gains
   `passkeys.suspended_roles` (always an array; non-empty only when passkeys are
@@ -1381,9 +1382,30 @@ upgrade leaves it (migration 000066), every path behaves as before.
   because a held key is exactly what the policy requires (`PasskeyHeld`). A TOTP
   holder with **no** key verifies the authenticator and registers a first one. The
   sole administrator in a listed role with no factor signs in, registers a key and
-  is in. There is no
-  guard against listing your own role while you hold no key; the last
-  administrator recovers as above.
+  is in. A sole administrator in a listed role who holds TOTP and has lost the key
+  needs `reset-factors` on the server; the guard below prevents the self-inflicted
+  version of that, not a key lost later.
+- **Self-lockout guard (owner ruling).** `PATCH /admin/settings` refuses
+  (`400 bad_request`, the status and code of #300's `ErrWouldOrphanInstance`, whose
+  shape this follows) a `passkey_required_roles` that lists the **saving user's own
+  role** unless that user has at least one registered passkey
+  (`refusePasskeySelfLockout`; the message says to register a passkey first, and
+  names `BASE_URL` only when passkeys are unavailable, in which case nobody can
+  have registered one). Only a change is judged: a list equal to the stored one
+  (as a set), a list without the saver's role, and the removal of a role are never
+  refused, and a refused save writes nothing. It applies whether or not
+  `mfa_enabled` is on, because switching it on later would otherwise activate the
+  policy under the saver. A machine credential cannot reach the key at all
+  (`AuthCriticalKeys`; `a machine credential is refused` in
+  `TestPatchSettings_PasskeyRequiredRoles`), so the saver is always a signed-in
+  person. Server-side only: the settings page shows the refusal through its
+  existing error display. The same narrow race as #300 is accepted (the last key
+  deleted between the check and the write).
+
+Decided by the owner, as built: an SSO user in a listed role with no passkey is
+sent to register one after the SSO; the policy is inert while `mfa_enabled` is
+off; and a passkey-only account stranded while passkeys are unavailable is
+accepted, as described under the suspension above.
 
 SSO is covered under SAML and OIDC below: a listed role is let in by an IdP only
 on a passkey-grade assertion, otherwise a passkey step follows the SSO.

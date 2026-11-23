@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -360,7 +361,7 @@ func TestPatchSettings_PasskeyRequiredRoles(t *testing.T) {
 		body any
 		want int
 	}{
-		{"valid", []string{"staff", "admin"}, http.StatusNoContent},
+		{"valid", []string{"staff", "user"}, http.StatusNoContent},
 		{"empty", []string{}, http.StatusNoContent},
 		{"unknown role", []string{"root"}, http.StatusBadRequest},
 		{"not an array", "staff", http.StatusBadRequest},
@@ -391,6 +392,85 @@ func TestPatchSettings_PasskeyRequiredRoles(t *testing.T) {
 		require.JSONEq(t, `["user"]`, string(got["passkey_required_roles"]))
 		require.JSONEq(t, `[]`, string(got["mfa_enforced_roles"]))
 	})
+}
+
+// The self-lockout guard (#616c, owner ruling): a save that lists the saving
+// administrator's own role is refused unless they hold a passkey, because the
+// list applies at their next sign-in and a TOTP holder with no key would then be
+// owed one they do not have. Only the transition matters.
+func TestPatchSettings_PasskeyRequiredRoles_RefusesSelfLockout(t *testing.T) {
+	cases := []struct {
+		name       string
+		stored     []string
+		hasKey     bool
+		hasTOTP    bool
+		send       []string
+		wantStatus int
+		wantStored []string
+	}{
+		{"own role, no key", nil, false, false, []string{"admin"}, http.StatusBadRequest, nil},
+		{"own role among others, no key", nil, false, false, []string{"staff", "admin"}, http.StatusBadRequest, nil},
+		{"own role, TOTP but no key", nil, false, true, []string{"admin"}, http.StatusBadRequest, nil},
+		{"own role, with a key", nil, true, false, []string{"admin"}, http.StatusNoContent, []string{"admin"}},
+		{"own role, TOTP and a key", nil, true, true, []string{"admin"}, http.StatusNoContent, []string{"admin"}},
+		{"list without own role", nil, false, false, []string{"staff", "user"}, http.StatusNoContent, []string{"staff", "user"}},
+		{"unchanged list", []string{"admin", "staff"}, false, false, []string{"staff", "admin"}, http.StatusNoContent, []string{"staff", "admin"}},
+		{"role removed", []string{"admin", "staff"}, false, false, []string{"staff"}, http.StatusNoContent, []string{"staff"}},
+		{"list emptied", []string{"admin"}, false, false, []string{}, http.StatusNoContent, []string{}},
+		{"changed list still naming own role", []string{"admin", "staff"}, false, false, []string{"admin", "user"}, http.StatusBadRequest, []string{"admin", "staff"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h, cleanup := newHarness(t)
+			defer cleanup()
+			ctx := context.Background()
+			if tc.hasTOTP {
+				enrollMFA(t, ctx, h.userSvc, h.adminID)
+			}
+			if tc.hasKey {
+				addKey(t, h, h.adminID)
+			}
+			if tc.stored != nil {
+				raw, err := json.Marshal(tc.stored)
+				require.NoError(t, err)
+				require.NoError(t, h.adminSvc.SetRaw(ctx, admin.KeyPasskeyRequiredRoles, raw))
+			}
+			s := loggedInAdmin(t, h)
+
+			res, body := s.send(t, http.MethodPatch, "/api/v1/admin/settings",
+				map[string]any{"passkey_required_roles": tc.send})
+			require.Equal(t, tc.wantStatus, res.StatusCode, "body: %s", body)
+			if tc.wantStatus == http.StatusBadRequest {
+				require.Contains(t, string(body), `"bad_request"`)
+				require.Contains(t, string(body), "register a passkey")
+			}
+			require.ElementsMatch(t, tc.wantStored, h.adminSvc.PasskeyRequiredRoles(ctx),
+				"a refused save must leave the stored list as it was")
+		})
+	}
+}
+
+// Whether passkeys are available is the one thing the message may speak to:
+// without them nobody can register a key, so BASE_URL is the thing to fix.
+func TestPatchSettings_PasskeyRequiredRoles_RefusalNamesBaseURLOnlyWhenPasskeysAreOff(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		newH    func(*testing.T) (*harness, func())
+		wantURL bool
+	}{
+		{"passkeys available", newHarness, false},
+		{"passkeys unavailable", newHarnessPasskeysOff, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, cleanup := tc.newH(t)
+			defer cleanup()
+			s := loggedInAdmin(t, h)
+			res, body := s.send(t, http.MethodPatch, "/api/v1/admin/settings",
+				map[string]any{"passkey_required_roles": []string{"admin"}})
+			require.Equal(t, http.StatusBadRequest, res.StatusCode, "body: %s", body)
+			require.Equal(t, tc.wantURL, strings.Contains(string(body), "BASE_URL"), "body: %s", body)
+		})
+	}
 }
 
 type suspendedWarning struct {
