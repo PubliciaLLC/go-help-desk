@@ -440,3 +440,32 @@ func TestSecurityWarnings_PasskeyPolicySuspended(t *testing.T) {
 		require.Empty(t, *got.Passkeys.SuspendedRoles)
 	})
 }
+
+// The session a listed-role sign-in with a held key leaves is owed that key
+// (PasskeyOwed, PasskeyHeld). Finishing the passkey login is what satisfies the
+// debt: MFA passes and both facts are cleared, or the session would stay
+// restricted (PasskeyHeld blocks key registration and deletion) after signing in.
+func TestPasskeyLoginFinish_ClearsPasskeyOwed(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	key := addKey(t, h, h.staffID)
+	requirePasskeysFor(t, h, "staff")
+
+	s, got := loginAs(t, h, "staff@test.local")
+	require.Equal(t, loginAnswer{PasskeyNeeded: true}, got)
+	_, before, ok := storedSession(t, s)
+	require.True(t, ok)
+	require.False(t, before.MFAPassed, "precondition")
+	require.True(t, before.PasskeyOwed, "precondition")
+	require.True(t, before.PasskeyHeld, "precondition")
+
+	res, body := signInWithKey(t, h, s, key, 1)
+	require.Equal(t, http.StatusNoContent, res.StatusCode, "body: %s", body)
+	keepLastCookies(s)
+
+	_, after, ok := storedSession(t, s)
+	require.True(t, ok)
+	require.True(t, after.MFAPassed)
+	require.False(t, after.PasskeyOwed)
+	require.False(t, after.PasskeyHeld)
+}

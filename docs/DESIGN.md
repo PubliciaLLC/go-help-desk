@@ -1168,8 +1168,11 @@ It refuses an OAuth client's service account (#490), which has no password to un
 `users.must_change_password` (migration 000045). While the flag is set the
 session a correct password opens may do exactly one thing, change the password
 (`PATCH /me/password`, which asks for the current password as ever); the
-login answer carries `password_change_required` and the login page shows the
-change step first. Every other route answers `403 password_change_required`:
+login answer carries `password_change_required`. The login page shows the
+change step first for an account that holds no factor, and the factor step first
+(`mfa_needed` or `passkey_needed` in the same answer, since the server refuses
+the change with `403 mfa_required` until a code or key is proved) for one that
+does, with the change after it. Every other route answers `403 password_change_required`:
 `RequireMFA` refuses it for all the routes behind it, and `RequirePasswordCurrent`
 for the enrolment routes outside it, the way the MFA-pending gate holds a
 half-signed-in session. Changing the password (`SetUserPasswordHash`) clears the
@@ -1364,8 +1367,11 @@ upgrade leaves it (migration 000066), every path behaves as before.
   requirement could not be met by anyone, so it is not applied
   (`passkeyRequiredFor` is availability and the setting): TOTP passes again, a
   role with no factor still enrols TOTP because the role is still MFA-enforced,
-  and a passkey-only account is still refused (`403 passkey_unavailable`). Nobody
-  is locked out by a bad `BASE_URL`. `GET /admin/security-warnings` gains
+  and a passkey-only account is still refused (`403 passkey_unavailable`). The
+  policy itself locks nobody out, but a passkey-only account, which the policy
+  creates when it sends a no-factor account to register a key, is stranded while
+  passkeys are unavailable (a bad `BASE_URL`), until passkeys work again or an
+  administrator resets the account's factors (reset-factors). `GET /admin/security-warnings` gains
   `passkeys.suspended_roles` (always an array; non-empty only when passkeys are
   unavailable, `mfa_enabled` is on and the list is non-empty) and the banner shows
   "Passkey requirement suspended", saying TOTP is accepted for those roles until
@@ -1464,7 +1470,7 @@ The request-tracking cookie is `SameSite=None; Secure` when the base URL is http
 - **Only a verified email counts.** An address the provider has not marked `email_verified` is dropped: it cannot be used to adopt an account or provision one. A subject already bound to an account still signs in; a first-time login with no verified email is refused (`email_not_verified`), and one whose address needs quotation marks with `invalid_email` (see Guest Submission).
 - **`allowed_email_domains` applies to every OIDC sign-in** that carries an email (`domain_not_allowed`), unlike SAML where it gates provisioning only; an empty list is unrestricted.
 - **Provisioning and linking.** The `sub` claim is the primary key. A known subject has its email and name refreshed. An unknown subject whose verified email matches an existing local account **adopts** it (matched on the parsed address, so `<a@x>` or `"a"@x` from the provider finds `a@x`), but only when that account is active, is not an administrator, is not already federated through SAML and is not bound to a different OIDC subject (otherwise `account_link_refused`; the write statement asks the rule again, so an account promoted in between is not adopted). An unknown subject with no matching account creates a `User`-role account. A disabled account is refused (`account_disabled`), an address held by another account is `email_taken` and a missing subject is `invalid_id_token`. The name comes from `name`, `preferred_username`, given plus family name, then the email.
-- An OIDC sign-in counts as having passed MFA (the identity provider's job); `FactorVerified` is set only when the ID token's `amr` contains `mfa` (Passkeys above). The exception is a role in `passkey_required_roles` (#616c): it is let in only when `amr` contains `fido` or `hwk` (documented for Entra ID; other providers' values are unverified and not accepted, see SAML above), which also sets `FactorVerified`. Without one the callback redirects to `/login?sso_step=<code>` (`passkey`, `passkey_enroll` or `verify_then_passkey_enroll`) with a pending session, exactly as the SAML sign-in does. The accepted values are in `backend/internal/domain/auth/ssofactor.go`.
+- An OIDC sign-in counts as having passed MFA (the identity provider's job); `FactorVerified` is set when the ID token's `amr` contains `mfa`, or contains `fido` or `hwk`, for every role including one not in `passkey_required_roles` (Passkeys above). The exception is a role in `passkey_required_roles` (#616c): it is let in only when `amr` contains `fido` or `hwk` (documented for Entra ID; other providers' values are unverified and not accepted, see SAML above), which also sets `FactorVerified`. Without one the callback redirects to `/login?sso_step=<code>` (`passkey`, `passkey_enroll` or `verify_then_passkey_enroll`) with a pending session, exactly as the SAML sign-in does. The accepted values are in `backend/internal/domain/auth/ssofactor.go`.
 
 ### Self-Service Signup (Optional, Off by Default)
 

@@ -44,7 +44,8 @@ var oidcPasskeyAMR = []string{"fido", "hwk"}
 
 // samlPasskeyMethods are the same two values as they appear in the SAML
 // authnmethodsreferences attribute. They count only together with
-// samlMultipleAuthn.
+// samlMultipleAuthn. Kept separate from oidcPasskeyAMR on purpose: the IdPs may
+// diverge, so do not merge them.
 var samlPasskeyMethods = []string{"fido", "hwk"}
 
 // SAMLAssertedMFA reports whether a SAML assertion's attributes say the user

@@ -81,6 +81,13 @@ export function LoginPage() {
   // The unlock command's password has to be replaced before the rest of the
   // sign-in (#497). What the sign-in answered is kept so it can carry on.
   const [afterPasswordChange, setAfterPasswordChange] = useState<LoginResponse | null>(null)
+  // True from a sign-in that owes a password change until the change is made:
+  // an account that holds a factor proves it first (see handleLogin), and the
+  // change follows the factor step instead of replacing it.
+  const [passwordChangeOwed, setPasswordChangeOwed] = useState(false)
+  // True once the factor step has been passed while a change is still owed, so
+  // the page knows what follows the new password.
+  const [factorProved, setFactorProved] = useState(false)
   const [newPassword, setNewPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
   // Seeded from ?error= so a refused single sign-on says why; handleLogin
@@ -136,7 +143,14 @@ export function LoginPage() {
     setLoading(true)
     try {
       const answer = await login(email, password)
-      if (answer.password_change_required) {
+      setPasswordChangeOwed(!!answer.password_change_required)
+      setFactorProved(false)
+      // The server will not change the password of an account that holds a
+      // factor until the factor is proved (403 mfa_required, #498): a held
+      // authenticator (mfa_needed) or key (passkey_needed) comes first, and the
+      // new password after it. An account that holds none has nothing to prove
+      // and changes it first, as enrolment waits behind it (#497).
+      if (answer.password_change_required && !answer.mfa_needed && !answer.passkey_needed) {
         setAfterPasswordChange(answer)
         setStep('newpassword')
       } else {
@@ -201,7 +215,15 @@ export function LoginPage() {
     try {
       // The password just typed to sign in is the current one.
       await changePassword(password, newPassword)
-      if (afterPasswordChange) proceed(afterPasswordChange)
+      setPasswordChangeOwed(false)
+      if (factorProved) {
+        // The factor came first: what is left is the key a passkey-required
+        // role registers, or nothing.
+        if (passkeyEnrolAfterVerify) setStep('passkey-enroll')
+        else await completeLogin()
+      } else if (afterPasswordChange) {
+        proceed(afterPasswordChange)
+      }
     } catch (err) {
       setError(extractError(err))
     } finally {
@@ -215,7 +237,10 @@ export function LoginPage() {
     setLoading(true)
     try {
       await verifyMFA(mfaCode)
-      if (passkeyEnrolAfterVerify) {
+      if (passwordChangeOwed) {
+        setFactorProved(true)
+        setStep('newpassword')
+      } else if (passkeyEnrolAfterVerify) {
         // The code proved a factor, which is what lets a key be registered;
         // the key is what finishes the sign-in.
         setStep('passkey-enroll')
@@ -234,7 +259,12 @@ export function LoginPage() {
     setLoading(true)
     try {
       await signInWithPasskey()
-      await completeLogin()
+      if (passwordChangeOwed) {
+        setFactorProved(true)
+        setStep('newpassword')
+      } else {
+        await completeLogin()
+      }
     } catch (err) {
       // Dismissing the browser prompt is a choice, not a failure, and the
       // person is still on this screen with the button in front of them.

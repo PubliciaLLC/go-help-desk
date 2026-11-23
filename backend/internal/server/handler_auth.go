@@ -120,22 +120,9 @@ func (s *Server) handleLocalLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The second-factor gate, after a valid password. There are four answers,
-	// and there used to be two.
-	//
-	//   verify TOTP    — a TOTP enrolment exists
-	//   verify passkey — a passkey is registered and no TOTP is
-	//   enrol         — neither, and this role must have one
-	//   nothing owed  — anything else; the session is fully authenticated
-	//
-	// The two booleans that used to carry this both keyed off u.MFAEnabled,
-	// which is the TOTP column rather than "this account has a second
-	// factor". That was a complete answer while TOTP was the only kind.
-	// Passkeys made it a wrong one: an account with a passkey and no TOTP
-	// read MFAEnabled false, so the server answered "you still need to
-	// enrol" on every sign-in and never once offered the key. It could not
-	// sign in again. There was no third outcome on the wire to say "you have
-	// a factor, use it, and it is not TOTP".
+	// The second-factor gate, after a valid password. What is owed is decided
+	// by auth.SecondStep, which also explains the TOTP-first order and the
+	// stranded refusal.
 	mfaEnabled := s.adminSvc.MFAEnabled(r.Context())
 	// The password was right, so prior failures for this address stop counting.
 	s.resetLoginLimit(r.Context(), loginKey)
@@ -146,24 +133,9 @@ func (s *Server) handleLocalLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// What is owed is decided in one place, auth.SecondStep, which signup
-	// verification, SAML and OIDC call too.
-	//
-	// TOTP first when both exist: it is what the account had before, and a
-	// person who enrolled a key alongside it has not asked to stop using the
-	// authenticator they already have. The passkey route is still reachable
-	// directly for anyone who prefers it. A role that must use a passkey (#616c)
-	// is the exception: there the key is asked for, a TOTP code alone does not
-	// pass, and an account with no key is asked to register one.
-	//
-	// Passkeys unavailable (#494): a key the server cannot check is not a
-	// factor, so it is never asked for, and the passkey requirement is
-	// suspended with it. An account whose ONLY second factor is such a key is
-	// refused rather than let in on its password alone, or a stolen password
-	// would take over exactly the accounts that chose a stronger factor. That
-	// includes the last administrator: the way back is an administrator's MFA
-	// reset, or reset-factors on the server. The refusal comes after
-	// loginLimiter.Reset, so it never counts as a failed attempt, and before any
+	// auth.SecondStep decides what is owed (it is shared with signup
+	// verification, SAML and OIDC). A stranded account is refused here, after
+	// the limiter reset so it never counts as a failed attempt, and before any
 	// session is written.
 	role := string(u.Role)
 	owed := auth.SecondStep(auth.SignInFacts{
