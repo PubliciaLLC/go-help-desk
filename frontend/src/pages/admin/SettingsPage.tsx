@@ -1134,7 +1134,11 @@ const EMPTY_FORM: PolicyForm = {
   resolution_target_min: 2880,
 }
 
-function PolicyFormRow({
+// The stacked add and edit form. It is a block, not a table row, so it lays out
+// at the card's width and at 375px: Name full width, Priority and Category side
+// by side, Response and Resolution side by side, buttons underneath. The edit
+// form sits in a full-width <td colSpan={6}> in place of the policy's row.
+function PolicyForm({
   form, setForm, categories, onSave, onCancel, isPending,
 }: {
   form: PolicyForm
@@ -1145,66 +1149,77 @@ function PolicyFormRow({
   isPending: boolean
 }) {
   return (
-    <tr className="bg-blue-50">
-      <td className="px-3 py-2">
+    <div className="space-y-3 rounded border bg-blue-50 p-3">
+      <div className="space-y-1">
+        <label htmlFor="sla-policy-name" className="block text-sm font-medium text-gray-900">Policy name</label>
         <Input
-          className="h-7 text-sm"
+          id="sla-policy-name"
+          className="h-9 text-sm"
           value={form.name}
           onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
-          placeholder="Policy name"
         />
-      </td>
-      <td className="px-3 py-2">
-        <Select
-          className="h-7 text-sm"
-          value={form.priority}
-          onChange={(e) => setForm((f) => ({ ...f, priority: e.target.value }))}
-        >
-          <option value="">Any priority</option>
-          {PRIORITIES.map((p) => (
-            <option key={p} value={p} className="capitalize">{p}</option>
-          ))}
-        </Select>
-      </td>
-      <td className="px-3 py-2">
-        <Select
-          className="h-7 text-sm"
-          value={form.category_id}
-          onChange={(e) => setForm((f) => ({ ...f, category_id: e.target.value }))}
-        >
-          <option value="">All categories</option>
-          {categories.filter((c) => c.active).map((c) => (
-            <option key={c.id} value={c.id}>{c.name}</option>
-          ))}
-        </Select>
-      </td>
-      <td className="px-3 py-2">
-        <div className="flex items-center gap-1">
-          <Input
-            type="number" min={1} className="h-7 w-20 text-sm"
-            value={form.response_target_min}
-            onChange={(e) => setForm((f) => ({ ...f, response_target_min: Math.max(1, parseInt(e.target.value, 10) || 1) }))}
-          />
-          <span className="text-xs text-gray-400">min</span>
+      </div>
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <div className="space-y-1">
+          <label htmlFor="sla-policy-priority" className="block text-sm font-medium text-gray-900">Priority</label>
+          <Select
+            id="sla-policy-priority"
+            className="h-9 text-sm"
+            value={form.priority}
+            onChange={(e) => setForm((f) => ({ ...f, priority: e.target.value }))}
+          >
+            <option value="">Any priority</option>
+            {PRIORITIES.map((p) => (
+              <option key={p} value={p} className="capitalize">{p}</option>
+            ))}
+          </Select>
         </div>
-      </td>
-      <td className="px-3 py-2">
-        <div className="flex items-center gap-1">
-          <Input
-            type="number" min={1} className="h-7 w-20 text-sm"
-            value={form.resolution_target_min}
-            onChange={(e) => setForm((f) => ({ ...f, resolution_target_min: Math.max(1, parseInt(e.target.value, 10) || 1) }))}
-          />
-          <span className="text-xs text-gray-400">min</span>
+        <div className="space-y-1">
+          <label htmlFor="sla-policy-category" className="block text-sm font-medium text-gray-900">Category</label>
+          <Select
+            id="sla-policy-category"
+            className="h-9 text-sm"
+            value={form.category_id}
+            onChange={(e) => setForm((f) => ({ ...f, category_id: e.target.value }))}
+          >
+            <option value="">All categories</option>
+            {categories.filter((c) => c.active).map((c) => (
+              <option key={c.id} value={c.id}>{c.name}</option>
+            ))}
+          </Select>
         </div>
-      </td>
-      <td className="px-3 py-2">
-        <div className="flex gap-2">
-          <Button size="sm" onClick={onSave} disabled={isPending}>Save</Button>
-          <Button size="sm" variant="outline" onClick={onCancel}>Cancel</Button>
+      </div>
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <div className="space-y-1">
+          <label htmlFor="sla-policy-response" className="block text-sm font-medium text-gray-900">Response target</label>
+          <div className="flex items-center gap-2">
+            <Input
+              id="sla-policy-response"
+              type="number" min={1} className="h-9 w-24 text-sm"
+              value={form.response_target_min}
+              onChange={(e) => setForm((f) => ({ ...f, response_target_min: Math.max(1, parseInt(e.target.value, 10) || 1) }))}
+            />
+            <span className="text-xs text-gray-500">min</span>
+          </div>
         </div>
-      </td>
-    </tr>
+        <div className="space-y-1">
+          <label htmlFor="sla-policy-resolution" className="block text-sm font-medium text-gray-900">Resolution target</label>
+          <div className="flex items-center gap-2">
+            <Input
+              id="sla-policy-resolution"
+              type="number" min={1} className="h-9 w-24 text-sm"
+              value={form.resolution_target_min}
+              onChange={(e) => setForm((f) => ({ ...f, resolution_target_min: Math.max(1, parseInt(e.target.value, 10) || 1) }))}
+            />
+            <span className="text-xs text-gray-500">min</span>
+          </div>
+        </div>
+      </div>
+      <div className="flex gap-2">
+        <Button size="sm" onClick={onSave} disabled={isPending}>Save</Button>
+        <Button size="sm" variant="outline" onClick={onCancel}>Cancel</Button>
+      </div>
+    </div>
   )
 }
 
@@ -1287,15 +1302,13 @@ function SLAPoliciesSection() {
     },
   })
 
-  const showTable = policies.length > 0 || showAdd
-
   return (
     <div className="border-t bg-gray-50">
       <div className="px-5 pt-3 pb-0">
         <p className="text-xs font-medium uppercase tracking-wider text-gray-400">SLA Policies</p>
       </div>
       <div className="px-5 py-4 space-y-3">
-        {showTable ? (
+        {policies.length > 0 ? (
           <div className="overflow-x-auto rounded border bg-white">
             <table className="w-full text-sm">
               <thead className="border-b bg-gray-50">
@@ -1311,13 +1324,16 @@ function SLAPoliciesSection() {
               <tbody className="divide-y">
                 {policies.map((p) =>
                   editingId === p.id ? (
-                    <PolicyFormRow
-                      key={p.id}
-                      form={form} setForm={setForm} categories={categories}
-                      onSave={() => updateMutation.mutate(p.id)}
-                      onCancel={() => { setFormError(''); setEditingId(null) }}
-                      isPending={updateMutation.isPending}
-                    />
+                    <tr key={p.id} className="bg-blue-50">
+                      <td colSpan={6} className="px-3 py-3">
+                        <PolicyForm
+                          form={form} setForm={setForm} categories={categories}
+                          onSave={() => updateMutation.mutate(p.id)}
+                          onCancel={() => { setFormError(''); setEditingId(null) }}
+                          isPending={updateMutation.isPending}
+                        />
+                      </td>
+                    </tr>
                   ) : (
                     <tr key={p.id} className="hover:bg-gray-50">
                       <td className="px-3 py-2 font-medium">{p.name}</td>
@@ -1352,19 +1368,19 @@ function SLAPoliciesSection() {
                     </tr>
                   )
                 )}
-                {showAdd && (
-                  <PolicyFormRow
-                    form={form} setForm={setForm} categories={categories}
-                    onSave={() => createMutation.mutate()}
-                    onCancel={() => { setFormError(''); setShowAdd(false) }}
-                    isPending={createMutation.isPending}
-                  />
-                )}
               </tbody>
             </table>
           </div>
         ) : (
-          <p className="text-sm text-gray-500">No SLA policies defined.</p>
+          !showAdd && <p className="text-sm text-gray-500">No SLA policies defined.</p>
+        )}
+        {showAdd && (
+          <PolicyForm
+            form={form} setForm={setForm} categories={categories}
+            onSave={() => createMutation.mutate()}
+            onCancel={() => { setFormError(''); setShowAdd(false) }}
+            isPending={createMutation.isPending}
+          />
         )}
         {formError && <p role="alert" className="text-sm text-red-600">{formError}</p>}
         {!showAdd && !editingId && (
