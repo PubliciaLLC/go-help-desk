@@ -1140,8 +1140,9 @@ const EMPTY_FORM: PolicyForm = {
 // and Response and Resolution, sit side by side from the sm breakpoint (640px)
 // up and stack in one column below it, which includes 375px. Buttons underneath.
 function PolicyFormFields({
-  form, setForm, categories, onSave, onCancel, isPending,
+  form, setForm, categories, onSave, onCancel, isPending, nameRef,
 }: {
+  nameRef: React.Ref<HTMLInputElement>
   form: PolicyForm
   setForm: React.Dispatch<React.SetStateAction<PolicyForm>>
   categories: { id: string; name: string; active: boolean }[]
@@ -1156,6 +1157,7 @@ function PolicyFormFields({
         <label htmlFor={`${id}-name`} className="block text-sm font-medium text-gray-900">Policy name</label>
         <Input
           id={`${id}-name`}
+          ref={nameRef}
           className="h-9 text-sm"
           value={form.name}
           onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
@@ -1232,6 +1234,16 @@ function SLAPoliciesSection() {
   const [showAdd, setShowAdd] = useState(false)
   const [form, setForm] = useState<PolicyForm>(EMPTY_FORM)
   const [formError, setFormError] = useState('')
+  const nameRef = useRef<HTMLInputElement>(null)
+
+  // The form renders below the whole table, so on opening it (or switching it
+  // to another policy) move focus to its Name field and bring it into view.
+  // Keyed on what is open, not on the form values, so typing does not re-run it.
+  useEffect(() => {
+    if (!showAdd && editingId === null) return
+    nameRef.current?.focus()
+    nameRef.current?.scrollIntoView?.({ block: 'nearest' })
+  }, [showAdd, editingId])
 
   const { data: policies = [] } = useQuery({ queryKey: ['sla-policies'], queryFn: listSLAPolicies })
   const { data: categories = [] } = useQuery({ queryKey: ['categories'], queryFn: listCategories })
@@ -1363,18 +1375,18 @@ function SLAPoliciesSection() {
             </table>
           </div>
         ) : (
-          !showAdd && <p className="text-sm text-gray-500">No SLA policies defined.</p>
+          !showAdd && editingId === null && <p className="text-sm text-gray-500">No SLA policies defined.</p>
         )}
         {(showAdd || editingId !== null) && (
           <PolicyFormFields
-            form={form} setForm={setForm} categories={categories}
+            form={form} setForm={setForm} categories={categories} nameRef={nameRef}
             onSave={() => (editingId !== null ? updateMutation.mutate(editingId) : createMutation.mutate())}
             onCancel={() => { setFormError(''); setShowAdd(false); setEditingId(null) }}
             isPending={editingId !== null ? updateMutation.isPending : createMutation.isPending}
           />
         )}
         {formError && <p role="alert" className="text-sm text-red-600">{formError}</p>}
-        {!showAdd && !editingId && (
+        {!showAdd && editingId === null && (
           <Button size="sm" variant="outline" onClick={startAdd}>+ Add policy</Button>
         )}
       </div>
