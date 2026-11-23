@@ -1337,8 +1337,8 @@ function SLAPoliciesSection() {
 
   const saveMutation = useMutation({
     mutationKey: SAVE_KEY,
-    // Failed and finished saves stay in the mutation cache: the failed ones are
-    // the error list, and they must outlive this component.
+    // Failed saves stay in the mutation cache: they are the error list, and
+    // they must outlive this component.
     gcTime: Infinity,
     mutationFn: async ({ id, form: f }: SaveVars) => {
       if (id === null) {
@@ -1363,6 +1363,14 @@ function SLAPoliciesSection() {
       // Stay pending until the refetch lands, so the row keeps its marker
       // until the real one is in the list.
       await qc.invalidateQueries({ queryKey: SLA_KEY })
+    },
+    // A save that worked has nothing left to show (the list has caught up), so
+    // it leaves the cache, which then holds only saves pending or failed. The
+    // variables object is the one handed to mutate(), so it identifies this one.
+    onSuccess: (_data, vars) => {
+      const cache = qc.getMutationCache()
+      const self = cache.find({ mutationKey: SAVE_KEY, predicate: (m) => m.state.variables === vars })
+      if (self) cache.remove(self)
     },
   })
 

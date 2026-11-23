@@ -2,6 +2,7 @@ import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { screen, waitFor, within, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { AxiosError } from 'axios'
+import type { QueryClient } from '@tanstack/react-query'
 import { renderWithQuery } from '@/test/render'
 import { api } from '@/api/client'
 import { useAuthStore } from '@/store/auth'
@@ -14,11 +15,14 @@ import { useAuthStore } from '@/store/auth'
 // policy to another; focus moves to the Name field when the form opens; and the
 // empty-state text never shows beside an open form.
 //
-// #672 made saves asynchronous: Save closes the form at once, the list shows the
-// change marked "Saving…", a failed save rolls the row back and lists an error
-// with a Reopen button, and a save finishing never touches whatever form is open
-// by then. The tests for that use deferred promises so each request can be
-// resolved or rejected on demand.
+// #672 made saves asynchronous: Save closes the form at once and the list shows
+// the change marked "Saving…". The list is the server's rows plus an overlay of
+// the saves in flight, read from react-query's mutation cache; nothing is written
+// to the query cache and there is no rollback. A save that fails drops out of the
+// overlay (the row shows what the server has) and is listed above the table with
+// a Reopen button, and a save finishing never touches whatever form is open by
+// then. The tests for that use deferred promises so each request can be resolved
+// or rejected on demand.
 
 vi.mock('@tanstack/react-router', () => ({
   useRouterState: () => ({ location: { pathname: '/admin/settings' } }),
@@ -81,6 +85,15 @@ function deferred() {
   const promise = new Promise((res, rej) => { resolve = res; reject = rej })
   return { promise, resolve, reject }
 }
+
+// Saves in the mutation cache, by status. The cache should hold only the ones
+// still pending and the ones that failed.
+const saveStatuses = (qc: QueryClient) =>
+  qc.getMutationCache().findAll({ mutationKey: ['sla-policy-save'] }).map((m) => m.state.status).sort()
+
+// Waits for every save to have answered, so no refetch runs after the test ends.
+const savesAnswered = (qc: QueryClient) =>
+  waitFor(() => expect(saveStatuses(qc)).not.toContain('pending'))
 
 const rowOf = (name: string) => screen.getByText(name).closest('tr') as HTMLElement
 
@@ -563,7 +576,7 @@ describe('the SLA policy form', () => {
       vi.spyOn(api, 'post').mockReturnValue(dAdd.promise as never)
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const del = vi.spyOn(api, 'delete').mockResolvedValue({ data: {} } as any)
-      await renderSLA()
+      const qc = await renderSLA()
       await addPolicyNamed('Brand new')
       expect(within(rowOf('Brand new')).queryByRole('button', { name: 'Delete' })).toBeNull()
 
@@ -571,6 +584,7 @@ describe('the SLA policy form', () => {
       await userEvent.click(await screen.findByRole('button', { name: 'Delete policy' }))
       await waitFor(() => expect(del).toHaveBeenCalledWith('/admin/sla/policies/p1'))
       dAdd.resolve({ data: {} })
+      await savesAnswered(qc)
     })
   })
 
@@ -611,7 +625,7 @@ describe('the SLA policy form', () => {
       const dAdd = deferred()
       vi.spyOn(api, 'post').mockReturnValue(dAdd.promise as never)
       vi.spyOn(api, 'patch').mockResolvedValue({ data: {} } as never)
-      await renderSLA()
+      const qc = await renderSLA()
       await screen.findByText('Printer fleet')
       await addPolicyNamed('Brand new')
       await waitFor(() => expect(within(rowOf('Brand new')).getByText('Saving…')).toBeTruthy())
@@ -623,6 +637,32 @@ describe('the SLA policy form', () => {
       // The edit settled and the list refetched; the add is still waiting.
       expect(within(rowOf('Brand new')).getByText('Saving…')).toBeTruthy()
       dAdd.resolve({ data: {} })
+      await savesAnswered(qc)
+    })
+
+    it('a save that succeeds leaves the mutation cache; pending and failed saves stay', async () => {
+      policies = [POLICY, POLICY_B]
+      const dPending = deferred()
+      vi.spyOn(api, 'post')
+        .mockReturnValueOnce(dPending.promise as never)
+        .mockRejectedValueOnce(apiError('nope'))
+      vi.spyOn(api, 'patch').mockResolvedValue({ data: {} } as never)
+      const qc = await renderSLA()
+      await screen.findByText('Printer fleet')
+      await addPolicyNamed('Still pending')
+      await addPolicyNamed('Will fail')
+      await screen.findByText(/Saving 'Will fail' failed/)
+
+      policies = [POLICY, { ...POLICY_B, name: 'Printer fleet 2' }]
+      await editRowTo('Printer fleet', 'Printer fleet 2')
+      await waitFor(() => expect(within(rowOf('Printer fleet 2')).queryByText('Saving…')).toBeNull())
+
+      expect(saveStatuses(qc)).toEqual(['error', 'pending'])
+      expect(within(rowOf('Still pending')).getByText('Saving…')).toBeTruthy()
+      expect(screen.getByText(/Saving 'Will fail' failed/)).toBeTruthy()
+
+      dPending.resolve({ data: {} })
+      await waitFor(() => expect(saveStatuses(qc)).toEqual(['error']))
     })
 
     it('two adds in flight keep both Saving rows until each is answered', async () => {
@@ -631,11 +671,11 @@ describe('the SLA policy form', () => {
       vi.spyOn(api, 'post')
         .mockReturnValueOnce(d1.promise as never)
         .mockReturnValueOnce(d2.promise as never)
-      await renderSLA()
+      const qc = await renderSLA()
       await addPolicyNamed('One')
       await addPolicyNamed('Two')
-      expect(within(rowOf('One')).getByText('Saving…')).toBeTruthy()
-      expect(within(rowOf('Two')).getByText('Saving…')).toBeTruthy()
+      await waitFor(() => expect(within(rowOf('One')).getByText('Saving…')).toBeTruthy())
+      await waitFor(() => expect(within(rowOf('Two')).getByText('Saving…')).toBeTruthy())
 
       policies = [POLICY, { ...POLICY_B, name: 'One' }]
       d1.resolve({ data: {} })
@@ -646,6 +686,7 @@ describe('the SLA policy form', () => {
       d2.resolve({ data: {} })
       await waitFor(() => expect(within(rowOf('Two')).queryByText('Saving…')).toBeNull())
       expect(within(rowOf('One')).getByRole('button', { name: 'Edit' })).toBeTruthy()
+      await savesAnswered(qc)
     })
 
     it('an edit pending on one policy survives another policy’s save settling', async () => {
@@ -654,7 +695,7 @@ describe('the SLA policy form', () => {
       vi.spyOn(api, 'patch')
         .mockReturnValueOnce(dA.promise as never)
         .mockResolvedValue({ data: {} } as never)
-      await renderSLA()
+      const qc = await renderSLA()
       await screen.findByText('Printer fleet')
       await editRowTo('Critical outage', 'Major outage')
       policies = [POLICY, { ...POLICY_B, name: 'Printer fleet 2' }]
@@ -664,6 +705,7 @@ describe('the SLA policy form', () => {
       // A's request is still open: its new values and marker are still shown.
       expect(within(rowOf('Major outage')).getByText('Saving…')).toBeTruthy()
       dA.resolve({ data: {} })
+      await savesAnswered(qc)
     })
 
     it('two saves of one policy: the row shows the later values throughout, and each failure is named', async () => {
@@ -676,8 +718,8 @@ describe('the SLA policy form', () => {
       await editRowTo('Critical outage', 'First try')
       await editRowTo('First try', 'Second try')
 
-      expect(within(rowOf('Second try')).getByText('Saving…')).toBeTruthy()
-      expect(screen.queryByText('First try')).toBeNull()
+      await waitFor(() => expect(within(rowOf('Second try')).getByText('Saving…')).toBeTruthy())
+      await waitFor(() => expect(screen.queryByText('First try')).toBeNull())
 
       // The first fails while the second is still open: the row keeps the
       // second's values, not the server's and not the first's.
@@ -698,7 +740,7 @@ describe('the SLA policy form', () => {
     it('a save still pending when the section is left is marked Saving on return', async () => {
       const d = deferred()
       vi.spyOn(api, 'post').mockReturnValue(d.promise as never)
-      await renderSLA()
+      const qc = await renderSLA()
       await addPolicyNamed('Brand new')
       await leaveAndReturn()
 
@@ -707,18 +749,19 @@ describe('the SLA policy form', () => {
       expect(row.getAttribute('aria-current')).toBe('true')
       expect(within(row).queryByRole('button', { name: 'Edit' })).toBeNull()
       d.resolve({ data: {} })
+      await savesAnswered(qc)
     })
 
     it('a save that fails while the section is unmounted shows its named error with Reopen on return', async () => {
       const d = deferred()
       vi.spyOn(api, 'post').mockReturnValue(d.promise as never)
-      await renderSLA()
+      const qc = await renderSLA()
       await addPolicyNamed('Brand new')
       await userEvent.click(screen.getByRole('button', { name: 'General' }))
       await waitFor(() => expect(screen.queryByRole('button', { name: '+ Add policy' })).toBeNull())
 
       d.reject(apiError('nope'))
-      await new Promise((r) => setTimeout(r, 20))
+      await waitFor(() => expect(saveStatuses(qc)).toEqual(['error']))
       await userEvent.click(screen.getByRole('button', { name: 'Features' }))
 
       const alert = await screen.findByRole('alert')
@@ -748,18 +791,19 @@ describe('the SLA policy form', () => {
       vi.spyOn(api, 'post')
         .mockReturnValueOnce(d1.promise as never)
         .mockReturnValueOnce(d2.promise as never)
-      await renderSLA()
+      const qc = await renderSLA()
       await addPolicyNamed('First')
       await leaveAndReturn()
       await addPolicyNamed('Second')
-      expect(within(rowOf('First')).getByText('Saving…')).toBeTruthy()
-      expect(within(rowOf('Second')).getByText('Saving…')).toBeTruthy()
+      await waitFor(() => expect(within(rowOf('First')).getByText('Saving…')).toBeTruthy())
+      await waitFor(() => expect(within(rowOf('Second')).getByText('Saving…')).toBeTruthy())
 
       d1.reject(apiError('no'))
       await screen.findByText(/Saving 'First' failed/)
       expect(screen.queryByText('First', { selector: 'td' })).toBeNull()
       expect(within(rowOf('Second')).getByText('Saving…')).toBeTruthy()
       d2.resolve({ data: {} })
+      await savesAnswered(qc)
     })
   })
 })
