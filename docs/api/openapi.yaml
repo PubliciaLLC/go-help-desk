@@ -5735,7 +5735,7 @@ paths:
           not already name) is refused with 400 bad_request unless the caller has
           at least one registered passkey, so that nobody requires a passkey of
           their own role before showing they can hold one; any other edit is
-          never refused (another role added or removed, the caller's own role
+          never refused by this check (another role added or removed, the caller's own role
           removed, an unchanged list), and mfa_enabled does not matter;
           reopen_target_status_name a string; site_logo_url a string that is
           empty, an http(s) URL, or a path on this site (starting with a single "/").

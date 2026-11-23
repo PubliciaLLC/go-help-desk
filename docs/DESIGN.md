@@ -1394,7 +1394,7 @@ upgrade leaves it (migration 000066), every path behaves as before.
   that **newly lists the saving user's own role** unless that user has at least one
   registered passkey (`refusePasskeySelfLockout`; the message says to register a
   passkey first, and names `BASE_URL` only when passkeys are unavailable, in which
-  case nobody can have registered one). Only a newly listed own role is judged:
+  case someone with no key cannot register one now). Only a newly listed own role is judged:
   when the stored list already names the saver's role, or the new list does not,
   nothing about their own exposure changes, so any other edit (another role added
   or removed, an unchanged list) is never refused. A refused
@@ -1404,9 +1404,14 @@ upgrade leaves it (migration 000066), every path behaves as before.
   credential is refused` in `TestPatchSettings_PasskeyRequiredRoles`), so the saver
   is always a signed-in person. Server-side only: the settings page shows the
   refusal through its existing error display. The same narrow race as #300 is
-  accepted (the last key deleted between the check and the write), and so is a key
-  bound to an old relying-party ID (`BASE_URL` moved), which counts as held but
-  cannot sign in.
+  accepted (the last key deleted between the check and the write), and so are two
+  more: a key bound to an old relying-party ID (`BASE_URL` moved), which counts as
+  held but cannot sign in, and another administrator unticking the role between the
+  check and the write (the stored list is read when validating and written
+  afterwards, with no transaction), which lets a keyless saver re-add their own role.
+  The settings page sends the whole form, so a keyless administrator whose page
+  still shows their role ticked after someone else unticked it is refused on any
+  save until they reload.
 
 Decided by the owner, as built: an SSO user in a listed role with no passkey is
 sent to register one after the SSO; the policy is inert while `mfa_enabled` is
