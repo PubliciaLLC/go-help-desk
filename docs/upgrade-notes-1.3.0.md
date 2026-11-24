@@ -816,6 +816,47 @@ New accounts, sign-ins that create or link an account, and password resets refus
 - **Existing users with a non-ASCII domain:** an allowed-domains list is compared with the `xn--` form of such a domain, so putting `xn--bcher-kva.de` in the list admits `a@bücher.de`. This only widens matching. It matters for OIDC (checked on every sign-in). To find the accounts: `SELECT email FROM users WHERE oidc_subject <> '' AND split_part(email,'@',2) ~ '[^\x01-\x7f]';`. The save-time `400` names the `xn--` form for an entry you typed in Unicode (#620).
 - **What to check:** `SELECT count(*) FROM users WHERE email ~ '[^\x01-\x7f]'`. Zero means nothing changes for you.
 
+### SAML: Accounts Could Sign In Only Once With Entra; Fixed, and a Deleted Account's Address Can Be Used Again
+
+**What was wrong.** The help desk asked the identity provider for a *transient* NameID, and Microsoft Entra ID answers that with a new random value at every sign-in. The NameID is the key of the account (`users.saml_subject`), so the first sign-in created the account and every later one looked like a new person whose address was already taken: "Another account here already uses the email address your identity provider sent." In effect a SAML account worked for exactly one sign-in. Other identity providers that hand out a different NameID each time failed the same way.
+
+**What changed.**
+
+- **The sign-in request now asks for a persistent NameID** (`urn:oasis:names:tc:SAML:2.0:nameid-format:persistent`), and the SP metadata says so. Entra then sends a stable identifier for each user and application. The format in the request overrides the setting in the Entra application, so there is nothing to change there. Download the SP metadata again only if your identity provider keeps a copy of it.
+- **Existing SAML accounts reconnect at their next sign-in, by email address.** When the NameID is one no account knows but a live account that SAML created holds the address in the assertion, that account is relinked to the new NameID and signed in. Its role, groups and tickets are untouched. This repairs every account created before 1.3.0 without any step from you, and it keeps an identity provider that still sends a different NameID each time working. A disabled account is still refused (`account_disabled`) and is not relinked.
+- **A local account is never taken over.** An address held by an account that SAML did not create (a local password account, an administrator above all, or a service account) still refuses the SAML sign-in with `email_taken`, and the login page now says an account with that address already exists and was not created by single sign-on (or is held by a removed account), and to ask an administrator.
+- **A deleted SAML account is gone.** If someone whose SAML-created account was deleted signs in through SAML again, they get a new account (role User). The old row stays, with its id, tickets and audit history; its address becomes `deleted-<id>@invalid` and its SAML subject is cleared, in the same transaction that creates the new account. Both rows get an audit entry (`email_released`, `replaced_deleted_user`; ids only). A deleted *local* account still blocks its address.
+- **An administrator can create an account over a deleted one.** `POST /admin/users` (Admin → Users → New user) with an address that only deleted accounts hold, of any kind, releases the address the same way (the old row also gives up its SAML and OIDC subjects) and creates the account in one step; before, it answered `409 email_taken` with no way forward in the web interface. **To bring a deleted SAML user back, they sign in through SAML.** The New user form makes a *local* account, and a SAML sign-in refuses to take over a local account (`email_taken`); with SAML restricting passwords to administrators, a non-administrator made that way could not sign in at all. An address held by a live account still answers `409 email_taken`, and its message is now "an account with that email address already exists". Self-signup, guest submission and OIDC still treat a deleted account's address as taken.
+- **Two first sign-ins of one person at once** (a double click, two tabs) now end with one account and no error.
+- **Addresses are matched ignoring case.** Accounts written before 1.2.0 can have a mixed-case address; a SAML sign-in and the New user form find, relink or release them like any other, and do not make a second account beside one. Other doors (signup, OIDC, editing an address) still compare exactly. If an address exists twice in different capitals (legacy data only), the sign-in uses the live one whose address is exactly lower-case, then one SAML did not create, then the oldest; check `SELECT lower(email), count(*) FROM users GROUP BY 1 HAVING count(*) > 1;`. A sign-in does not rewrite an address whose only difference is case, so a legacy `Name@x` keeps its spelling; a deleted local twin in other capitals does not block a deleted SAML-created account that holds the lower-case address.
+- **After a retirement, search by the old address stops finding that row.** The retired row shows `deleted-<id>@invalid`, so the audit log and ticket search by the old address no longer reach it. Its history is reached by the row's id.
+
+**An identity provider that refuses persistent.** It answers the request with a SAML status error (`InvalidNameIDPolicy`). The sign-in then lands on the login page with "Your identity provider cannot issue the persistent identifier this help desk asks for. Ask an administrator to check the single sign-on setup." Allow persistent identifiers for the application at the provider. Any other failed response is still a plain 403 page.
+
+**What your identity provider must send.** A NameID (opaque is fine) and the person's address as an attribute (`email`, `mail`, the LDAP `mail` OID or Entra's `…/claims/emailaddress`). Without the address an opaque NameID cannot name a mailbox, and a first sign-in is refused with `invalid_email` (also when an allowed-domains list is set).
+
+**Trust.** Reconnecting by address makes the identity provider's address attribute the identity for every SAML-created account. Anyone who can make the provider assert an address can sign in as the SAML-created account that holds it, a promoted administrator and an account later given a password or MFA included. Check which attribute is mapped to the address and that users cannot edit it at the provider. An account that SAML did not create is never taken over this way.
+
+**Not verified here:** sign-in against a real Microsoft Entra ID tenant. The persistent request, the matching and the race are tested against Postgres and the library, not against Entra.
+
+**See which accounts this concerns** (read only):
+
+```sql
+-- every SAML-created account; each one has a stored NameID that may be a dead transient value
+SELECT id, email, role, disabled, deleted_at, left(saml_subject, 12) AS subject_start, created_at
+FROM users WHERE saml_subject <> '' ORDER BY created_at;
+
+-- addresses stored with capitals (written before 1.2.0): matched ignoring case, listed so you know
+SELECT id, email, deleted_at FROM users WHERE email <> lower(email);
+
+-- one person, whatever state the row is in
+SELECT id, email, role, disabled, deleted_at, saml_subject <> '' AS saml_created, password_hash <> '' AS has_password
+FROM users WHERE lower(email) = lower('person@example.com');
+
+-- addresses already retired by the rule above (deleted accounts that gave their address up)
+SELECT id, email, deleted_at FROM users WHERE email LIKE 'deleted-%@invalid' ORDER BY deleted_at;
+```
+
 ### SAML and sign-in settings (#618, #619)
 
 - **A SAML assertion can be used once.** The library accepted the same signed response again for about 90 seconds; it is now refused (`403`) on its second use, on every replica. An identity provider that reuses assertion IDs breaks the SAML specification and will be refused from its second sign-in. If the database cannot record the assertion, sign-in fails rather than going ahead.

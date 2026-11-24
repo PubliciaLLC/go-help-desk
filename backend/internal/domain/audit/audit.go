@@ -332,6 +332,11 @@ var shownKeys = map[string]bool{
 	"requesternamemask": true,
 	// A client's secret being replaced (#622): the fact, not the secret.
 	"credentialreplaced": true,
+	// A deleted account giving up its address to a new one (email_released,
+	// replaced_deleted_user): the two user ids, which are UUIDs, and a SAML
+	// account being relinked to a new NameID (saml_relinked): the flag. Neither
+	// the address nor the NameID is ever written.
+	"replacedbyuserid": true, "previoususerid": true, "samlsubjectchanged": true,
 }
 
 // Redact returns copies of before/after showing only allow-listed keys

@@ -1022,8 +1022,10 @@ paths:
         the URL the sign-in began at, normally /api/v1/auth/saml/complete, which
         turns the hand-over into a session. A response that does not verify, an
         IdP-initiated response (this server does not accept one) and any other
-        refusal are answered 403 with the plain body Forbidden. Answers
-        503 when SAML is not configured.
+        refusal are answered 403 with the plain body Forbidden, with one
+        exception: a status error of InvalidNameIDPolicy (the provider cannot
+        issue the persistent NameID this server asks for) is a 303 redirect to
+        /login?error=saml_nameid_format. Answers 503 when SAML is not configured.
       tags: ['Single sign-on']
       x-ghd-handler: handleSAMLACS
       security: []
@@ -1047,6 +1049,13 @@ paths:
           headers:
             Location:
               description: Normally /api/v1/auth/saml/complete.
+              schema:
+                type: string
+        '303':
+          description: The identity provider answered with InvalidNameIDPolicy (it cannot issue a persistent NameID). Redirects to /login?error=saml_nameid_format.
+          headers:
+            Location:
+              description: /login?error=saml_nameid_format.
               schema:
                 type: string
         '403':
@@ -1077,7 +1086,9 @@ paths:
         /login?error=sso_session_used. Account refusals redirect to
         /login?error=<code>, with the codes domain_not_allowed, account_disabled,
         account_link_refused, email_taken, invalid_assertion, email_not_verified
-        and invalid_email. Answers 503 when SAML is not configured.
+        and invalid_email. Answers 503 when SAML is not configured. An identity
+        provider that cannot issue the persistent NameID this server asks for is
+        refused at the ACS with a redirect to /login?error=saml_nameid_format.
       tags: ['Single sign-on']
       x-ghd-handler: handleSAMLComplete
       security: []
@@ -8212,8 +8223,11 @@ paths:
         password is optional. When present it must be 8 to 72 bytes. An account
         created without a password has no local sign-in until one is set with
         POST /api/v1/admin/users/{id}/password. The email address is trimmed and
-        lowercased. An address that any account holds, deleted accounts included,
-        answers 409 email_taken.
+        lowercased. An address that a live account holds answers 409 email_taken.
+        An address held only by deleted accounts is released and the account is
+        created: the deleted account keeps its id, tickets and history, its
+        address becomes deleted-<id>@invalid and any SAML subject is cleared, in
+        the same transaction, and both rows get an audit entry.
       tags: ['Admin: Users']
       x-ghd-handler: handleCreateUser
       security:
@@ -8275,8 +8289,8 @@ paths:
                 $ref: '#/components/schemas/Error'
         '409':
           description: >-
-            email_taken, with message "that email address is already in use, possibly
-            by a deleted account".
+            email_taken, with message "an account with that email address already
+            exists". A live account holds the address; a deleted one no longer does.
           content:
             application/json:
               schema:

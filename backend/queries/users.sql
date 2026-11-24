@@ -593,6 +593,74 @@ WHERE id = sqlc.arg('id')
   AND oidc_subject IN ('', sqlc.arg('oidc_subject'))
 RETURNING id;
 
+-- name: GetUserByEmailAnyState :one
+-- The row that holds this address, whatever it is: live or deleted, person or
+-- service account. GetUserByEmail is the login lookup and hides deleted rows
+-- and service accounts; the SAML sign-in has to see them, because which of
+-- the two holds the address decides what happens.
+--
+-- Compared ignoring case. The unique index on users.email is case-sensitive,
+-- and every write has lower-cased the address only since v1.2.0, so an older
+-- row can be 'Legacy@Example.com' and an exact match would miss it and let a
+-- second account be made for the same person. Nothing in the schema stops
+-- 'A@x' and 'a@x' both existing (only legacy data can: every write
+-- lower-cases now), so more than one row can match. The order is the answer
+-- to "which one is the holder": a live row over a deleted one; then the row
+-- whose address is exactly the lower-cased input, which is the one the unique
+-- index sees as holding it; then a row SAML did not create over one it did, so
+-- a deleted local account keeps blocking; then the oldest.
+SELECT * FROM users WHERE lower(email) = lower($1)
+ORDER BY (deleted_at IS NULL) DESC, (email = lower($1)) DESC, (saml_subject = '') DESC, created_at, id
+LIMIT 1;
+
+-- name: LiveUserHoldsEmail :one
+-- Whether a live account holds this address, ignoring case. The unique index
+-- only refuses an exact match, so a legacy mixed-case live row would not stop
+-- a second live account being made beside it.
+SELECT EXISTS (SELECT 1 FROM users WHERE lower(email) = lower($1) AND deleted_at IS NULL);
+
+-- name: RelinkSAMLSubject :one
+-- Replaces the SAML subject of an account that was created by SAML, when the
+-- identity provider sends a NameID the account does not know. The conditions
+-- are asked at the write, not only by the caller, so an account that was
+-- deleted, disabled or changed kind between the read and this statement is
+-- not relinked on the strength of the older read. Writes the subject and the
+-- name and nothing else, so the role, the groups and the MFA state it carries
+-- are not touched. An empty display name leaves the stored one alone.
+UPDATE users
+SET saml_subject = sqlc.arg('saml_subject'),
+    display_name = COALESCE(sqlc.narg('display_name'), display_name),
+    updated_at   = now()
+WHERE id = sqlc.arg('id')
+  AND saml_subject <> ''
+  AND deleted_at IS NULL
+  AND disabled = FALSE
+  AND NOT service_account
+RETURNING *;
+
+-- name: ReleaseDeletedUserEmail :many
+-- Frees an address held by a deleted account, so a new account can have it:
+-- the old row's address becomes 'deleted-<id>@invalid' (a reserved top-level
+-- domain: it cannot receive mail) and its SAML and OIDC subjects are cleared.
+-- The OIDC one matters: oidc_subject is unique across every row, deleted
+-- included, so a retired row that kept it would stop the person ever signing
+-- in with OIDC again. The row keeps its id, so the tickets, replies and audit
+-- entries that point at it stay on it. Only a deleted row is ever touched.
+-- saml_created_only narrows it to rows SAML created (a SAML sign-in recreates
+-- those and leaves a deleted local account blocking); an administrator
+-- creating an account passes false. Matched ignoring case, like
+-- GetUserByEmailAnyState, so legacy rows that differ only in case are all
+-- released by one call, and every id comes back so each can be audited.
+UPDATE users
+SET email = 'deleted-' || id::text || '@invalid',
+    saml_subject = '',
+    oidc_subject = '',
+    updated_at = now()
+WHERE lower(email) = lower(sqlc.arg('email'))
+  AND deleted_at IS NOT NULL
+  AND (NOT sqlc.arg('saml_created_only')::boolean OR saml_subject <> '')
+RETURNING id;
+
 -- name: EnableMFAIfStillEnrolled :one
 -- Turns MFA on using whatever secret the row still holds, and reports whether
 -- it applied.
