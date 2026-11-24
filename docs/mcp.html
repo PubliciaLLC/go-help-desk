@@ -4,17 +4,17 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>MCP Server — Go Help Desk Docs</title>
-  <meta name="description" content="Connect AI assistants to Go Help Desk through the built-in MCP server: nine ticket tools over the SSE transport, with the same authentication, scopes and visibility as the REST API." />
+  <meta name="description" content="Connect AI assistants to Go Help Desk through the built-in MCP server: eleven ticket tools over the SSE transport, with the same authentication, scopes and visibility as the REST API." />
   <link rel="canonical" href="https://gohelpdesk.org/docs/mcp.html" />
   <meta property="og:site_name" content="Go Help Desk" />
   <meta property="og:type" content="article" />
   <meta property="og:url" content="https://gohelpdesk.org/docs/mcp.html" />
   <meta property="og:title" content="MCP Server — Go Help Desk Docs" />
-  <meta property="og:description" content="Connect AI assistants to Go Help Desk through the built-in MCP server: nine ticket tools over the SSE transport, with the same authentication, scopes and visibility as the REST API." />
+  <meta property="og:description" content="Connect AI assistants to Go Help Desk through the built-in MCP server: eleven ticket tools over the SSE transport, with the same authentication, scopes and visibility as the REST API." />
   <meta name="twitter:card" content="summary" />
   <meta name="twitter:site" content="@go_help_desk" />
   <meta name="twitter:title" content="MCP Server — Go Help Desk Docs" />
-  <meta name="twitter:description" content="Connect AI assistants to Go Help Desk through the built-in MCP server: nine ticket tools over the SSE transport, with the same authentication, scopes and visibility as the REST API." />
+  <meta name="twitter:description" content="Connect AI assistants to Go Help Desk through the built-in MCP server: eleven ticket tools over the SSE transport, with the same authentication, scopes and visibility as the REST API." />
   <link rel="icon" type="image/svg+xml" href="../favicon.svg" />
   <link rel="stylesheet" href="../style.css" />
   <script type="application/ld+json">
@@ -22,7 +22,7 @@
     "@context": "https://schema.org",
     "@type": "TechArticle",
     "headline": "MCP Server",
-    "description": "Connect AI assistants to Go Help Desk through the built-in MCP server: nine ticket tools over the SSE transport, with the same authentication, scopes and visibility as the REST API.",
+    "description": "Connect AI assistants to Go Help Desk through the built-in MCP server: eleven ticket tools over the SSE transport, with the same authentication, scopes and visibility as the REST API.",
     "url": "https://gohelpdesk.org/docs/mcp.html",
     "author": { "@type": "Organization", "name": "PubliciaLLC", "url": "https://github.com/PubliciaLLC" },
     "publisher": { "@type": "Organization", "name": "Go Help Desk", "url": "https://gohelpdesk.org" },
@@ -140,14 +140,16 @@
 
 <h2 id="mcp-tools">Available tools</h2>
 
-<p>Nine tools. Four read and five write. Identifiers are UUIDs, except that <code>get_ticket</code> also takes a tracking number. A tool that fails answers with an MCP tool error, a plain sentence the assistant can show its user.</p>
+<p>Eleven tools. Six read and five write. Identifiers are UUIDs, except that <code>get_ticket</code> and <code>list_attachments</code> also take a tracking number. A tool that fails answers with an MCP tool error, a plain sentence the assistant can show its user.</p>
 
 <table>
   <thead><tr><th>Tool</th><th>Kind</th><th>Who can call it</th><th>Scope for a machine credential</th></tr></thead>
   <tbody>
     <tr><td><code>get_ticket</code></td><td>read</td><td>Any signed-in role, for tickets it can see</td><td><code>tickets:read</code></td></tr>
     <tr><td><code>list_tickets</code></td><td>read</td><td>Any signed-in role, over tickets it can see</td><td><code>tickets:read</code></td></tr>
+    <tr><td><code>list_attachments</code></td><td>read</td><td>Any signed-in role, for tickets it can see</td><td><code>tickets:read</code></td></tr>
     <tr><td><code>list_categories</code></td><td>read</td><td>Any signed-in role</td><td><code>tickets:read</code></td></tr>
+    <tr><td><code>list_ticket_fields</code></td><td>read</td><td>Any signed-in role</td><td><code>tickets:read</code></td></tr>
     <tr><td><code>list_statuses</code></td><td>read</td><td>Any signed-in role</td><td><code>tickets:read</code></td></tr>
     <tr><td><code>create_ticket</code></td><td>write</td><td>Staff and Admin</td><td><code>tickets:write</code></td></tr>
     <tr><td><code>add_reply</code></td><td>write</td><td>Staff and Admin</td><td><code>tickets:write</code></td></tr>
@@ -175,15 +177,37 @@
   <tbody>
     <tr><td><code>assignee_user_id</code></td><td>string (optional)</td><td>Only tickets assigned to this user.</td></tr>
     <tr><td><code>status_id</code></td><td>string (optional)</td><td>Only tickets in this status (see <code>list_statuses</code>).</td></tr>
-    <tr><td><code>priority</code></td><td>string (optional)</td><td><code>critical</code>, <code>high</code>, <code>medium</code> or <code>low</code>.</td></tr>
+    <tr><td><code>priority</code></td><td>string or array of strings (optional)</td><td><code>critical</code>, <code>high</code>, <code>medium</code> or <code>low</code>: one value, or an array of at most 20 to match any of them.</td></tr>
     <tr><td><code>category_id</code></td><td>string (optional)</td><td>Only tickets in this category (see <code>list_categories</code>).</td></tr>
     <tr><td><code>q</code></td><td>string (optional)</td><td>Full-text search over subject, description and tracking number.</td></tr>
     <tr><td><code>search_replies</code></td><td>boolean (optional)</td><td>With <code>q</code>, also match the replies. A ticket matches when <strong>one</strong> reply holds every word. Default <code>false</code>. <span class="badge-new">New in 1.3.0</span></td></tr>
+    <tr><td><code>scope</code></td><td>string (optional)</td><td>Which queue: <code>mine</code>, <code>assigned_to_me</code>, <code>my_groups</code>, <code>unassigned</code>, <code>all</code> or <code>visible</code>. Absent or null means <code>visible</code>, which is what this tool has always listed. An unknown value, an empty string or a value that is not a string is refused ("invalid scope"). <span class="badge-new">New in 1.3.0</span> See <a href="#mcp-queues">Queues over MCP</a>.</td></tr>
+    <tr><td><code>held_by</code></td><td>string (optional)</td><td><code>nobody</code>, <code>me</code> or <code>others</code>: no person holds the ticket, the caller holds it, or someone else does. Any other value is refused ("invalid held_by"). Staff and administrators only. <span class="badge-new">New in 1.3.0</span></td></tr>
+    <tr><td><code>awaiting_reply</code></td><td>boolean (optional)</td><td><code>true</code> keeps the tickets that are not Resolved or Closed and whose newest public message is from the requester's side, so they are waiting for the help desk. A value that is not a boolean, such as the string <code>"true"</code>, is refused ("invalid awaiting_reply"). Staff and administrators only. <span class="badge-new">New in 1.3.0</span></td></tr>
+    <tr><td><code>assignee_group_id</code></td><td>string (optional)</td><td>Only tickets assigned to this group. Staff and administrators only.</td></tr>
+    <tr><td><code>status_ids</code></td><td>array of strings (optional)</td><td>Only tickets in any of these statuses, at most 20. May be combined with <code>status_id</code>. <span class="badge-new">New in 1.3.0</span></td></tr>
+    <tr><td><code>include_closed</code></td><td>boolean (optional)</td><td><code>false</code> leaves out Closed tickets. Ignored when a status is named. Default <code>true</code>. <span class="badge-new">New in 1.3.0</span></td></tr>
+    <tr><td><code>type_id</code>, <code>item_id</code></td><td>string (optional)</td><td>Only tickets of this type, or of this item. <span class="badge-new">New in 1.3.0</span></td></tr>
+    <tr><td><code>reporter_id</code></td><td>string (optional)</td><td>Only tickets this account reported. Staff and administrators only. <span class="badge-new">New in 1.3.0</span></td></tr>
+    <tr><td><code>requester</code></td><td>string (optional)</td><td>Free text, 2 to 254 characters. Staff and administrators only. An API key or OAuth client needs <code>requester_search:read</code>. See <a href="#mcp-requester-search">Free-text requester search</a>. <span class="badge-new">New in 1.3.0</span></td></tr>
+    <tr><td><code>created_after</code>, <code>created_before</code></td><td>string (optional)</td><td>RFC 3339 times. <span class="badge-new">New in 1.3.0</span></td></tr>
+    <tr><td><code>updated_after</code>, <code>updated_before</code></td><td>string (optional)</td><td>RFC 3339 times. Staff and administrators only. <span class="badge-new">New in 1.3.0</span></td></tr>
+    <tr><td><code>source_channel</code></td><td>array of strings (optional)</td><td>Any of <code>web</code>, <code>api</code>, <code>mcp</code>, <code>guest</code> or <code>phone</code>. Staff and administrators only. <span class="badge-new">New in 1.3.0</span></td></tr>
+    <tr><td><code>sla</code></td><td>string (optional)</td><td><code>breached</code> or <code>at_risk</code>. Refused while SLA tracking is off. Staff and administrators only. <span class="badge-new">New in 1.3.0</span></td></tr>
+    <tr><td><code>sort</code>, <code>order</code></td><td>string (optional)</td><td><code>sort</code> is <code>number</code>, <code>subject</code>, <code>status</code>, <code>priority</code>, <code>sla</code>, <code>created</code> or <code>updated</code>; <code>order</code> is <code>asc</code> or <code>desc</code>. <code>sla</code> is refused while SLA tracking is off, and a reporting user may not sort by <code>updated</code> or <code>sla</code>. The other rules are those of REST, see <a href="api.html#api-ticket-search">Searching tickets over the REST API</a>. <span class="badge-new">New in 1.3.0</span></td></tr>
     <tr><td><code>limit</code></td><td>number (optional)</td><td>1 to 100, default 20. A larger value is clamped to 100.</td></tr>
     <tr><td><code>offset</code></td><td>number (optional)</td><td>Pagination offset.</td></tr>
   </tbody>
 </table>
 <p>The filters narrow what the caller can already see. They never widen it: a reporting user lists only their own tickets whatever the arguments say.</p>
+
+<h4 id="mcp-queues">Queues over MCP <span class="badge-new">New in 1.3.0</span></h4>
+<ul>
+  <li><code>scope</code> takes the same six values as <code>scope</code> on <code>GET /api/v1/tickets</code>, with the same permission rules and the same refusals in the same words: <code>unassigned</code> is for administrators, and for staff only while an administrator has ticked Staff under <em>Admin &rarr; System &rarr; Privacy &rarr; Available queue</em>, and <code>all</code> is for administrators only. Otherwise the answer is "only admins can use this scope". See <a href="api.html#api-ticket-search-scope">Queues</a> over REST for what each value returns.</li>
+  <li><strong>A call that sends no <code>scope</code> returns what it always did</strong>, every ticket the caller can see. The queues never widen what the caller may see.</li>
+  <li><code>held_by</code> and <code>awaiting_reply</code> are refused for a reporting user, as over REST ("held_by is not available to requesters", "awaiting_reply is not available to requesters").</li>
+  <li>There is no tool for the dashboard or for reports. <code>GET /api/v1/dashboard</code> and <code>GET /api/v1/reports/kpi</code> are REST only (see <a href="api.html#api-dashboard-reports">Dashboard and reports</a>).</li>
+</ul>
 
 <h4 id="mcp-search-replies">Searching replies <span class="badge-new">New in 1.3.0</span></h4>
 <ul>
@@ -195,7 +219,17 @@
 </ul>
 
 <h4 id="mcp-requester-search">Free-text requester search</h4>
-<p>MCP <code>list_tickets</code> in 1.3.0 has no requester argument. The free-text <code>requester</code> filter, and the <code>requester_search:read</code> permission an API key or OAuth client needs for it, belong to the REST list, <code>GET /api/v1/tickets</code>. See <a href="api.html#api-ticket-search">Searching tickets over the REST API</a>.</p>
+<p><code>requester</code> works as it does over REST: free text, 2 to 254 characters, matched against the reporter's name or email and a guest's name or email. Staff and administrators only. An API key or OAuth client needs the <code>requester_search:read</code> scope for it; without the scope the call is refused. <code>reporter_id</code> does not need it. See <a href="api.html#api-ticket-search">Searching tickets over the REST API</a>.</p>
+
+<h3 id="mcp-list-attachments"><code>list_attachments</code> <span class="badge-new">New in 1.3.0</span></h3>
+<p>List the files attached to a ticket. Metadata only: no file content is returned, and no reputation lookup is made.</p>
+<table>
+  <thead><tr><th>Parameter</th><th>Type</th><th>Description</th></tr></thead>
+  <tbody>
+    <tr><td><code>ticket_id</code></td><td>string (required)</td><td>Ticket UUID, or a tracking number such as <code>GHD-2026-000001</code>.</td></tr>
+  </tbody>
+</table>
+<p>Each file has <code>id</code>, <code>filename</code>, <code>mime_type</code>, <code>size_bytes</code>, <code>created_at</code>, <code>detected_mime</code>, <code>sha256</code>, <code>virus_name</code>, <code>mismatch</code> and <code>quarantined</code>. <code>quarantined</code> is <code>true</code> when the scanner identified the file as malicious, and <code>virus_name</code> says what it found. <code>mismatch</code> is <code>true</code> when the content contradicts the file's name, and <code>null</code> when the file was never inspected. Attachments are download-only in the web interface, and there is no tool that returns their content. A ticket the caller may not see is answered with the same "not found" message as one that does not exist.</p>
 
 <h3><code>list_categories</code></h3>
 <p>The Category, Type and Item catalogue, as a tree, for composing <code>create_ticket</code>.</p>
@@ -208,6 +242,18 @@
 
 <h3><code>list_statuses</code></h3>
 <p>The ticket statuses this instance defines, with their IDs, for <code>list_tickets</code> and <code>update_ticket_status</code>. No parameters.</p>
+
+<h3 id="mcp-list-ticket-fields"><code>list_ticket_fields</code> <span class="badge-new">New in 1.3.0</span></h3>
+<p>List the custom fields the new-ticket form shows for a category, and for a type and item under it: the fields <code>create_ticket</code> takes in <code>custom_fields</code>.</p>
+<table>
+  <thead><tr><th>Parameter</th><th>Type</th><th>Description</th></tr></thead>
+  <tbody>
+    <tr><td><code>category_id</code></td><td>string (required)</td><td>Category UUID (see <code>list_categories</code>).</td></tr>
+    <tr><td><code>type_id</code></td><td>string (optional)</td><td>Type UUID, to include the fields attached to the type.</td></tr>
+    <tr><td><code>item_id</code></td><td>string (optional)</td><td>Item UUID, to include the fields attached to the item.</td></tr>
+  </tbody>
+</table>
+<p>Each field has an <code>id</code>, a <code>name</code>, a <code>field_type</code> (<code>text</code>, <code>textarea</code>, <code>number</code> or <code>select</code>), its <code>options</code> for a select, whether it is <code>required</code>, its <code>max_length</code> and the <code>level</code> it is attached at. Only fields that are active and shown on the new-ticket form are listed.</p>
 
 <h3><code>create_ticket</code></h3>
 <p>Open a new ticket.</p>
@@ -225,9 +271,17 @@
     <tr><td><code>reporter_email</code></td><td>string (optional)</td><td>Who the ticket is for, as an address. The ticket is filed for the account with that address if there is one, otherwise it is a guest ticket and the guest link is emailed. Not with <code>reporter_user_id</code>.</td></tr>
     <tr><td><code>guest_name</code></td><td>string</td><td>Required whenever <code>reporter_email</code> is given, whether or not the address has an account.</td></tr>
     <tr><td><code>guest_phone</code></td><td>string (optional)</td><td>Kept with a guest ticket.</td></tr>
+    <tr><td><code>custom_fields</code></td><td>object (optional)</td><td>Custom field values: an object of field id to a string value, with the ids and options from <code>list_ticket_fields</code>. A value that is not a string, or an argument that is not an object, is a tool error. <span class="badge-new">New in 1.3.0</span> See <a href="#mcp-custom-fields">Custom fields over MCP</a>.</td></tr>
   </tbody>
 </table>
 <p>A ticket made here is recorded as arriving by MCP, including one filed for someone else. A <code>source_channel</code> argument is a tool error and nothing is written. A malformed <code>type_id</code>, <code>item_id</code> or <code>reporter_user_id</code> is refused rather than ignored. <code>reporter_user_id</code> files the ticket for that user: you, the caller, are recorded as the one who filed it (earlier, the reporter was recorded as the actor), and the user is emailed the usual "We have received your ticket" message, as through the REST API. The same holds for <code>reporter_email</code>, by the same rules as the REST API: an account if the address has one, otherwise a guest ticket (refused while guest submission is off), and every use of <code>reporter_email</code> costs one of 40 an hour per staff member, shared with REST, which is never given back. Creating your own ticket is unchanged. Two things differ from creating a ticket through the REST API: a ticket opened here is not auto-assigned, and custom field values cannot be set.</p>
+
+<h4 id="mcp-custom-fields">Custom fields over MCP <span class="badge-new">New in 1.3.0</span></h4>
+<ul>
+  <li>A field the ticket's classification requires must have a value. Without one the ticket is refused and nothing is created.</li>
+  <li>For any other field, a value that is not accepted (an unknown or inactive field, a retired or unlisted option, a number that is not a number) is dropped, and the result lists it under <code>warnings</code> as <code>{"field_id", "reason"}</code>. The key is absent when nothing was dropped. An empty value means no value and is not a warning.</li>
+  <li><code>get_ticket</code> returns the ticket's <code>custom_fields</code> to staff and administrators, never to a reporting user.</li>
+</ul>
 
 <h3><code>add_reply</code></h3>
 <p>Add a reply or an internal note to a ticket, authored by the authenticated caller.</p>
@@ -274,7 +328,7 @@
     <tr><td><code>ticket_id</code></td><td>string (required)</td><td>UUID of the closed ticket to continue.</td></tr>
   </tbody>
 </table>
-<p>It copies the subject, description, category, type, item, priority and requester, not the replies, attachments, history or custom fields. It works only on a Closed ticket. Staff and administrators can open as many follow-ups from one closed ticket as they need; only a requester is limited to one. See <a href="tickets.html#tickets-follow-up">Follow-up tickets</a>.</p>
+<p>It copies the subject, description, category, type, item, priority, requester and the custom field values whose fields still apply (a value a field no longer accepts is left out), not the replies, attachments or history. The values are copied after the follow-up is filed: if that fails, the follow-up stands without them. It works only on a Closed ticket. Staff and administrators can open as many follow-ups from one closed ticket as they need; only a requester is limited to one. See <a href="tickets.html#tickets-follow-up">Follow-up tickets</a>.</p>
 
 <h2 id="mcp-connect">Connecting clients</h2>
 

@@ -148,7 +148,7 @@ docker compose up -d      <span style="color:#22c55e"># pulls the published imag
           <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></svg>
         </div>
         <h3>OpenID Connect, now documented</h3>
-        <p>Sign in with an OpenID Connect provider, beside SAML and local accounts. It is set up under Admin → System → Settings → Authentication. It has shipped since 1.1.1, but was not documented on this site before 1.3.0. New in 1.3.0: a refused sign-in says why on the login page, and an account whose provider wraps its email address is matched to the right account. <a href="docs/authentication.html#auth-oidc">OIDC setup →</a></p>
+        <p>Sign in with an OpenID Connect provider, beside SAML and local accounts. It is set up under Admin → System → Authentication → OIDC / OpenID Connect. It has shipped since 1.1.1, but was not documented on this site before 1.3.0. New in 1.3.0: a refused sign-in says why on the login page, and an account whose provider wraps its email address is matched to the right account. <a href="docs/authentication.html#auth-oidc">OIDC setup →</a></p>
       </div>
 
       <div class="feature-card">
@@ -177,6 +177,14 @@ docker compose up -d      <span style="color:#22c55e"># pulls the published imag
 
       <div class="feature-card">
         <div class="feature-icon">
+          <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
+        </div>
+        <h3>A dashboard, ticket views and Reports</h3>
+        <p>The dashboard shows your queue, the tickets that need attention, a 30-day trend and, for administrators, a health card. The ticket list opens on views for your own tickets, your groups' tickets, the unassigned ones (administrators, and staff if allowed) and a search of every ticket you can see. Reports shows resolution and response times, SLA attainment and reopens for a period, compared with the previous period, and the current backlog and workload. <a href="docs/tickets.html#tickets-dashboard">Dashboard →</a> <a href="docs/tickets.html#tickets-views">Ticket views →</a> <a href="docs/tickets.html#tickets-reports">Reports →</a></p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon">
           <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/><path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/></svg>
         </div>
         <h3>Webhooks for Slack, Teams, Discord and JIRA</h3>
@@ -196,7 +204,7 @@ docker compose up -d      <span style="color:#22c55e"># pulls the published imag
           <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></svg>
         </div>
         <h3>Attachment security</h3>
-        <p>Uploads are checked against their content, optionally scanned by ClamAV, and optionally looked up at reputation services. Files are download-only, and nothing is rendered in the browser. <a href="docs/attachment-security.html">Read how it works →</a></p>
+        <p>Uploads are checked against their content, optionally scanned by ClamAV, and optionally looked up at reputation services. Files are download-only, and nothing is rendered in the browser. The largest upload is 25 MB unless an administrator sets it from 1 to 100 MB. <a href="docs/attachment-security.html">Read how it works →</a></p>
       </div>
 
     </div>
@@ -214,13 +222,17 @@ docker compose up -d      <span style="color:#22c55e"># pulls the published imag
     </div>
 
     <div class="scr-gallery">
-      <button class="scr-thumb" data-src="screenshots/02-dashboard.png" data-caption="Dashboard: ticket counts for each status, and the requesters grouped by client">
-        <img src="screenshots/02-dashboard.png" alt="Dashboard with ticket counts for New, In Progress, Pending, Resolved and Closed, and a By Client section listing three requesters" loading="lazy" />
+      <button class="scr-thumb" data-src="screenshots/02-dashboard.png" data-caption="Dashboard for an administrator: a health card, your queue (assigned to me, my groups, breached, at risk, awaiting my reply), the status cards, the tickets that need attention, and a 30-day trend of tickets created and resolved">
+        <img src="screenshots/02-dashboard.png" alt="Administrator's dashboard: a health card with one amber notice, a Your queue row of five counts, the status cards, a Needs attention list with breached, at-risk, unassigned and reopened tickets, and a 30-day chart of tickets created and resolved" loading="lazy" />
         <span>Dashboard</span>
       </button>
-      <button class="scr-thumb scr-thumb-fit" data-src="screenshots/42-ticket-list-filters-and-sort.png" data-caption="Ticket list: filters for status, priority, category, requester, assignee, group, dates, channel and SLA, a sort on every column, and a Search replies box">
-        <img src="screenshots/42-ticket-list-filters-and-sort.png" alt="Ticket list with the Filters panel open and four filters on, shown as chips under it, above a table with sortable Ticket, Subject, Status, Priority, SLA, Created and Updated headings" loading="lazy" />
+      <button class="scr-thumb scr-thumb-fit" data-src="screenshots/42-ticket-list-filters-and-sort.png" data-caption="Ticket list, Search view: filters for status, priority, category, requester, assignee, group, dates, channel and SLA, a sort on every column, and a Search replies box">
+        <img src="screenshots/42-ticket-list-filters-and-sort.png" alt="Ticket list on the Search view with the Filters panel open and four filters on, shown as chips under it, above a table with sortable Ticket, Subject, Status, Priority, SLA, Created and Updated headings" loading="lazy" />
         <span>Ticket list and filters</span>
+      </button>
+      <button class="scr-thumb scr-thumb-fit" data-src="screenshots/48-reports.png" data-caption="Reports: time to resolve, first response, SLA attainment and reopen rate for a period, each compared with the previous period, plus volume, backlog by age and workload">
+        <img src="screenshots/48-reports.png" alt="Reports page for the last 30 days compared with the 30 days before: time to resolve, first response, SLA attainment and reopen rate with their changes, a created-and-resolved chart, open tickets by age, and open tickets by assignee and by group" loading="lazy" />
+        <span>Reports</span>
       </button>
       <button class="scr-thumb" data-src="screenshots/05-ticket-detail.png" data-caption="Ticket detail: the timeline and replies, with the assignee, status, tags, linked tickets and followers alongside">
         <img src="screenshots/05-ticket-detail.png" alt="Ticket detail with a timeline, a public reply, an internal note, the start of the reply box, and assignee, status, tags, linked tickets and followers panels alongside" loading="lazy" />
@@ -376,7 +388,7 @@ docker compose up -d      <span style="color:#22c55e"># pulls the published imag
           <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/></svg>
         </div>
         <h3>Email &amp; Webhooks</h3>
-        <p>Email requesters about ticket events via SMTP, queued and retried on failure. Staff are emailed about their own and their groups' tickets, and about tickets they follow. Administrators can edit the wording of all 17 emails, with an optional HTML part, and add a shared header and footer, with a check as they type and a test send. Outbound webhooks for Slack, Teams, Discord and JIRA formats, or raw JSON, retried when a delivery fails, with a delivery history and an optional ticket filter.</p>
+        <p>Email requesters about ticket events via SMTP, queued and retried on failure. Staff are emailed about their own and their groups' tickets, and about tickets they follow. Administrators can edit the wording of all 24 emails, with an optional HTML part, and add a shared header and footer, with a check as they type and a test send. Outbound webhooks for Slack, Teams, Discord and JIRA formats, or raw JSON, retried when a delivery fails, with a delivery history and an optional ticket filter.</p>
       </div>
 
       <div class="feature-card">
@@ -400,7 +412,7 @@ docker compose up -d      <span style="color:#22c55e"># pulls the published imag
           <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
         </div>
         <h3>Search and Filters</h3>
-        <p>Relevance-ranked Postgres full-text search across subject, description and, if you want it, replies, matched by word prefix as you type. Filter by status, priority, category, requester, assignee, group, dates, channel and SLA, and sort on any column. <a href="docs/tickets.html#tickets-search">Read about search →</a></p>
+        <p>Relevance-ranked Postgres full-text search across subject, description and, if you want it, replies, matched by word prefix as you type. Filter by status, priority, category, requester, assignee, group, dates, channel and SLA, and sort on any column. Staff and administrators open the list as views: Assigned to Me, My Group's Tickets and Search, plus Available for administrators and for staff when an administrator allows it. <a href="docs/tickets.html#tickets-search">Read about search →</a></p>
       </div>
 
       <div class="feature-card">
@@ -505,6 +517,7 @@ docker compose up -d      <span style="color:#22c55e"># pulls the published imag
           <li>✓ Docker deploy</li>
           <li>✓ Canned responses</li>
           <li>✓ Search, filters and reply search</li>
+          <li>✓ Dashboard, ticket views and KPI reports</li>
           <li>✓ Attachment security</li>
           <li>✓ Guest submission</li>
           <li>✓ Audit log with retention</li>
@@ -520,7 +533,7 @@ docker compose up -d      <span style="color:#22c55e"># pulls the published imag
           <li>Default ticket type per CTI</li>
           <li>Incident management</li>
           <li>Monitoring events</li>
-          <li>Operational reporting</li>
+          <li>Operational reporting beyond the 1.3 KPI reports: scheduled reports, channel and agent cuts and further measures</li>
           <li>Asset reference</li>
           <li>Continual improvement</li>
           <li>Suppliers</li>

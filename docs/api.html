@@ -99,6 +99,7 @@
       <li><a href="#api-format">Text format</a></li>
       <li><a href="#api-webhook-events">Webhook events</a></li>
       <li><a href="#api-ticket-search">Searching tickets</a></li>
+      <li><a href="#api-dashboard-reports">Dashboard and reports</a></li>
       <li><a href="#api-errors">Errors &amp; pagination</a></li>
       <li><a href="api-reference.html">API Reference</a></li>
       <li><a href="mcp.html">MCP Server</a></li>
@@ -200,14 +201,16 @@
 <p>The settings a machine credential cannot change are:</p>
 <ul>
   <li><strong>Sign-in:</strong> <code>saml_enabled</code>, <code>saml_metadata_url</code>, <code>saml_metadata_xml</code>, <code>saml_cert_pem</code>, <code>saml_key_pem</code>, <code>oidc_enabled</code>, <code>oidc_issuer_url</code>, <code>oidc_client_id</code>, <code>oidc_client_secret</code>, <code>oidc_redirect_url</code>.</li>
-  <li><strong>Second factor:</strong> <code>mfa_enabled</code>, <code>mfa_enforced_roles</code>.</li>
+  <li><strong>Second factor:</strong> <code>mfa_enabled</code>, <code>mfa_enforced_roles</code>, <code>passkey_required_roles</code>.</li>
   <li><strong>Accounts:</strong> <code>self_signup_enabled</code>, <code>open_registration_enabled</code>, <code>allowed_email_domains</code>.</li>
-  <li><strong>Guests:</strong> <code>guest_submission_enabled</code>.</li>
+  <li><strong>Guests:</strong> <code>guest_submission_enabled</code>, <code>guest_attachments_enabled</code>, <code>guest_attachment_max_mb</code>, <code>guest_attachment_max_per_ticket</code>, <code>guest_attachment_uploads_per_hour</code>.</li>
   <li><strong>API keys:</strong> <code>staff_can_create_api_keys</code> and <code>api_key_max_lifetime_years</code>.</li>
-  <li><strong>Who sees and who is handed tickets:</strong> <code>ticket_scope_enforced</code>, <code>auto_assign_group_id</code> and <code>auto_assign_user_ids</code>. A key that could switch scope enforcement off, or point auto-assignment at an account it controls, would widen what that account sees or is given.</li>
-  <li><strong>Closed tickets and audit:</strong> <code>closed_reopen_policy</code>, <code>audit_mask_requester_names</code>, <code>audit_retention_days</code>, <code>staff_can_view_ticket_change_history</code>.</li>
-  <li><strong>Attachment scanning:</strong> <code>attachment_scan_address</code>, <code>attachment_scan_policy</code>, <code>attachment_allowed_types</code>, <code>attachment_infected_handling</code>, <code>attachment_mismatch_handling</code>.</li>
+  <li><strong>Who sees and who is handed tickets:</strong> <code>ticket_scope_enforced</code>, <code>available_queue_roles</code> (which roles may open the Available view, see <a href="#api-ticket-search-scope">Queues</a>), <code>auto_assign_group_id</code> and <code>auto_assign_user_ids</code>. A key that could switch scope enforcement off, or point auto-assignment at an account it controls, would widen what that account sees or is given.</li>
+  <li><strong>Closed tickets and audit:</strong> <code>closed_reopen_policy</code>, <code>audit_mask_requester_names</code>, <code>audit_retention_days</code>, <code>staff_can_view_ticket_change_history</code>, <code>staff_can_view_follow_audit</code>.</li>
+  <li><strong>Attachment limits and scanning:</strong> <code>attachment_max_mb</code> <span class="badge-new">New in 1.3.0</span> (the largest file anyone may attach, 1 to 100 MB, default 25), <code>attachment_scan_address</code>, <code>attachment_scan_policy</code>, <code>attachment_allowed_types</code>, <code>attachment_infected_handling</code>, <code>attachment_mismatch_handling</code>.</li>
   <li><strong>Reputation lookups:</strong> <code>attachment_reputation_refresh</code>, <code>attachment_reputation_virustotal_enabled</code>, <code>attachment_reputation_virustotal_key</code>, <code>attachment_reputation_metadefender_enabled</code>, <code>attachment_reputation_metadefender_key</code>, <code>attachment_reputation_polyswarm_enabled</code>, <code>attachment_reputation_polyswarm_key</code>, <code>attachment_reputation_circl_enabled</code>.</li>
+  <li><strong>Passwords:</strong> <code>password_rehash_grace_days</code>.</li>
+  <li><strong>Update check:</strong> <code>update_check_enabled</code>.</li>
   <li><strong>Deprecated, still writable:</strong> <code>attachment_vt_lookup</code>, <code>attachment_vt_api_key</code>, <code>attachment_reputation_provider</code>, <code>attachment_reputation_api_key</code>.</li>
 </ul>
 
@@ -259,7 +262,7 @@ Cache-Control: private, max-age=3600</code></pre>
 
 <p>The route checks <code>Sec-Fetch-Dest</code>. Only <code>document</code>, <code>empty</code> and an absent header are accepted. A request whose header says the browser will render the response, such as an image or a frame, is refused with <code>403 not_downloadable</code>. Command-line clients send no such header and are not affected. An <code>&lt;a download&gt;</code> click and a <code>fetch()</code> send <code>empty</code> and are accepted.</p>
 
-<p>Uploads, the attachment object and the reputation fields are described in the <a href="api-reference.html">API Reference</a>. For why the help desk never renders an attachment, see <a href="attachment-security.html#attach-download">Attachment Security</a>.</p>
+<p>Uploads, the attachment object and the reputation fields are described in the <a href="api-reference.html">API Reference</a>. The largest file is <code>attachment_max_mb</code>, 25 MB unless an administrator changes it; a client can read it as <code>attachment_max_bytes</code> from <code>GET /api/v1/me</code> (see <a href="#api-me-fields">What /me tells a client</a>) and refuse an oversize file before sending it. A file over the limit is <code>413 too_large</code>. For why the help desk never renders an attachment, see <a href="attachment-security.html#attach-download">Attachment Security</a>.</p>
 
 
 <h2 id="api-guest">Guest access</h2>
@@ -324,7 +327,7 @@ Cache-Control: private, max-age=3600</code></pre>
 <p><code>POST /api/v1/tickets</code> takes <code>reporter_user_id</code> (an existing account) or <code>reporter_email</code> (a typed address, which must be ASCII or the request is refused with <code>400</code>), for staff and administrators only, and at most one of them. A requester who sends either is refused with <code>403</code>. The staff member is recorded as the actor.</p>
 <ul>
   <li><strong>A typed address</strong> is filed like a guest ticket and the guest link is emailed to it. <code>guest_name</code> is required with every <code>reporter_email</code> (<code>400</code> without one), whether or not the address has an account, so a refusal says nothing about the address; it is ignored for an account. <code>guest_phone</code> is optional. The request is refused with <code>400</code> while guest submission is off and the address has no account. If the address belongs to an account, the ticket is filed for that account.</li>
-  <li><strong>Rate limit:</strong> 40 uses of <code>reporter_email</code> an hour per staff member, then <code>429 rate_limited</code> with <code>Retry-After</code>. Every <code>reporter_email</code> that passes validation counts, account or not, and the refusal for guest submission being off counts too; a request refused by validation spends nothing, and a unit, once taken, is never given back. <code>reporter_user_id</code> does not count. An API key or OAuth client counts against the user it acts as. The limit is kept in memory by each server instance.</li>
+  <li><strong>Rate limit:</strong> 40 uses of <code>reporter_email</code> an hour per staff member, then <code>429 rate_limited</code> with <code>Retry-After</code>. Every <code>reporter_email</code> that passes validation counts, account or not, and the refusal for guest submission being off counts too; a request refused by validation spends nothing, and a unit, once taken, is never given back. <code>reporter_user_id</code> does not count. An API key or OAuth client counts against the user it acts as. The count is kept in the database, so a restart does not reset it and every server instance shares it.</li>
   <li><strong>Finding a user:</strong> <code>GET /api/v1/users/lookup?q=</code> returns at most ten accounts (<code>id</code>, <code>display_name</code>, <code>email</code>) whose name or address contains <code>q</code>. <code>q</code> must be at least two characters (<code>400</code> otherwise). It is for staff and administrators <strong>in a signed-in session only</strong>: an API key or OAuth client gets <code>403 session_required</code>, whatever scopes it holds. Disabled, deleted and service accounts are not returned. A script that files for someone sends <code>reporter_email</code> and lets the server resolve it (an account if the address has one, otherwise a guest ticket); an administrator's key that searched accounts can use <code>GET /api/v1/admin/users?page=1&amp;q=</code>.</li>
   <li><code>GET /api/v1/tickets/{id}</code> carries <code>requester</code> (name and email) for staff and administrators, and never for requesters.</li>
   <li><strong>How the ticket arrived:</strong> the ticket carries <code>source_channel</code> (<code>web</code>, <code>api</code>, <code>mcp</code>, <code>guest</code> or <code>phone</code>) for staff and administrators, and never for requesters or guests. The server records it from the way the request came in: <code>web</code> for a browser session, <code>api</code> for an API key or OAuth client. <code>POST /api/v1/tickets</code> accepts <code>source_channel</code> for one value only, <code>phone</code>, from a staff or administrator browser session that also sends <code>reporter_user_id</code> or <code>reporter_email</code>. Every other use is refused with <code>400</code> and nothing is created: any value from an API key or OAuth client, any value but <code>phone</code>, and <code>phone</code> without a requester.</li>
@@ -356,6 +359,9 @@ Cache-Control: private, max-age=3600</code></pre>
   <tbody>
     <tr><td><code>q</code></td><td>Search text. Words are prefix-matched against subject and description, and the tracking number is prefix-matched. A search is ranked by relevance unless <code>sort</code> is given.</td><td>Everyone</td></tr>
     <tr><td><code>search_replies</code></td><td><code>true</code> or <code>false</code>. With <code>q</code>, also search replies. <strong>Off unless you ask</strong> (the web page asks by default). Any other value is <code>400</code>.</td><td>Everyone</td></tr>
+    <tr><td><code>scope</code></td><td>Which queue: <code>mine</code> (the default), <code>assigned_to_me</code>, <code>my_groups</code>, <code>unassigned</code>, <code>all</code> or <code>visible</code>. <span class="badge-new">New in 1.3.0</span> <code>assigned_to_me</code>, <code>my_groups</code> and <code>visible</code> are new. See <a href="#api-ticket-search-scope">Queues</a>.</td><td>Everyone (a requester gets their own tickets, or the <code>403</code> for <code>unassigned</code> and <code>all</code>); <code>unassigned</code> and <code>all</code> are restricted, see below</td></tr>
+    <tr><td><code>held_by</code></td><td><code>nobody</code>, <code>me</code> or <code>others</code>: no person holds the ticket, the caller holds it, or someone else does. <span class="badge-new">New in 1.3.0</span> Valid on every queue. Any other value is <code>400</code> "invalid held_by".</td><td>Staff and administrators</td></tr>
+    <tr><td><code>awaiting_reply</code></td><td><code>true</code> or <code>false</code>. <span class="badge-new">New in 1.3.0</span> <code>true</code> keeps the tickets that are not Resolved or Closed and whose newest public message is from the requester's side (no reply yet, a guest's message, or a requester's or follower's), so they are waiting for the help desk. Internal notes do not count. Any other value is <code>400</code> "invalid awaiting_reply".</td><td>Staff and administrators</td></tr>
     <tr><td><code>status_id</code>, <code>priority</code></td><td>Repeat the key for several values (at most 20). Values of one key are ORed. <code>priority</code> is <code>critical</code>, <code>high</code>, <code>medium</code> or <code>low</code>.</td><td>Everyone</td></tr>
     <tr><td><code>category_id</code>, <code>type_id</code>, <code>item_id</code></td><td>Ids. A category also matches every type and item under it.</td><td>Everyone</td></tr>
     <tr><td><code>created_after</code>, <code>created_before</code></td><td>RFC 3339 times. <code>after</code> is included, <code>before</code> is not, and <code>after</code> must be earlier.</td><td>Everyone</td></tr>
@@ -371,6 +377,28 @@ Cache-Control: private, max-age=3600</code></pre>
     <tr><td><code>limit</code>, <code>offset</code></td><td>See <a href="#api-errors">Errors &amp; pagination</a>.</td><td>Everyone</td></tr>
   </tbody>
 </table>
+
+<h3 id="api-ticket-search-scope">Queues: the <code>scope</code> parameter</h3>
+<p><code>scope</code> names the queue a request reads. The ticket list page's sidebar views use the same values: Assigned to Me is <code>assigned_to_me</code>, My Group's Tickets is <code>my_groups</code>, Available is <code>unassigned</code> and Search is <code>visible</code>. An absent, empty or unknown value is <code>mine</code>, as it has always been.</p>
+<table>
+  <thead><tr><th>Value</th><th>Returns</th><th>Who may use it</th></tr></thead>
+  <tbody>
+    <tr><td><code>mine</code> (the default)</td><td>Tickets assigned to the caller or to one of the caller's groups. For staff while <em>Limit staff to their group scope</em> is on, everything their scope admits. A requester gets their own tickets. Unchanged from 1.2.</td><td>Everyone</td></tr>
+    <tr><td><code>assigned_to_me</code></td><td>Tickets assigned to the caller.</td><td>Staff and administrators</td></tr>
+    <tr><td><code>my_groups</code></td><td>Tickets assigned to any of the caller's groups, held by anyone or by nobody. A person in no group gets an empty list.</td><td>Staff and administrators</td></tr>
+    <tr><td><code>unassigned</code></td><td>Tickets with no group and no person: the Available queue.</td><td>Administrators always. Staff only while <code>available_queue_roles</code> lists <code>staff</code> (Admin &rarr; System &rarr; Privacy &rarr; Available queue). Otherwise <code>403</code>, "only admins can use this scope".</td></tr>
+    <tr><td><code>all</code></td><td>Every ticket.</td><td>Administrators only. Otherwise <code>403</code>, "only admins can use this scope".</td></tr>
+    <tr><td><code>visible</code></td><td>Every ticket the caller can see. For staff while scope enforcement is on, that is everything their scope admits.</td><td>Staff and administrators; a requester gets their own tickets</td></tr>
+  </tbody>
+</table>
+<ul>
+  <li><strong><code>assigned_to_me</code> and <code>my_groups</code> are always applied.</strong> <code>reporter_id</code>, <code>requester</code> and <code>assignee_group_id</code> narrow them like any other filter. The older four values (<code>mine</code>, <code>unassigned</code>, <code>all</code>, <code>visible</code>) still give way to those three filters, as they did in 1.2, and the two <code>403</code> refusals above do not apply when one of them is present.</li>
+  <li><strong>Queues never widen visibility.</strong> Every queue is limited to what the caller may see. With scope enforcement on, a staff member's <code>unassigned</code> list is the available tickets in their area.</li>
+  <li>A requester who sends <code>assigned_to_me</code> or <code>my_groups</code> gets their own tickets, as for <code>mine</code>. A requester has no queues.</li>
+  <li><code>available_queue_roles</code> is a list of <code>admin</code> and <code>staff</code>, changed with <code>PATCH /api/v1/admin/settings</code> by a signed-in administrator only (<code>403 session_required</code> for a key or client). Any other value is <code>400</code>, "available_queue_roles may list only admin and staff". It is absent on every install until an administrator saves it, and absent means administrators only. An OAuth client uses its service user's role (staff).</li>
+  <li><code>held_by</code> is relative to the caller, so a client does not need its own id. On <code>my_groups</code> the three values split the queue: <code>nobody</code> is the group's unclaimed tickets, <code>me</code> is the caller's, <code>others</code> is everyone else's. A requester who sends it gets <code>403</code>, "held_by is not available to requesters".</li>
+  <li><code>awaiting_reply</code> is refused for a requester the same way: <code>403</code>, "awaiting_reply is not available to requesters".</li>
+</ul>
 
 <h3 id="api-ticket-search-requester">Free-text requester search needs its own scope</h3>
 <ul>
@@ -402,12 +430,64 @@ Cache-Control: private, max-age=3600</code></pre>
 <h3 id="api-ticket-search-sla">Knowing whether SLA tracking is on</h3>
 <p><code>GET /api/v1/me</code> carries <code>sla_enabled</code> for staff and administrators, so a client can offer the SLA filter and sort only while they work. A requester's <code>/me</code> has no such key. If the setting could not be read the key is missing: treat that as unknown, not as off.</p>
 
+<h3 id="api-me-fields">What <code>/me</code> tells a client <span class="badge-new">New in 1.3.0</span></h3>
+<ul>
+  <li><code>can_use_available_queue</code> is a boolean on every <code>GET /api/v1/me</code> answer for a person (a session, or an API key, which answers for its owner): true for an administrator, true for staff while <code>available_queue_roles</code> lists <code>staff</code>, false for a requester. An OAuth client is not a person, and its <code>/me</code> answer does not carry it.</li>
+  <li><code>attachment_max_bytes</code> is the largest file the person may attach, in bytes. It is on every <code>GET /api/v1/me</code> answer for a person (a session, or an API key, which answers for its owner), so a client can refuse an oversize file before sending it. An OAuth client's <code>/me</code> does not carry it, and neither does the sign-in response. A guest reads <code>guest_attachment_max_bytes</code> from <code>GET /api/v1/site</code> instead.</li>
+</ul>
+
 <h3 id="api-ticket-search-changes">What changed for existing requests</h3>
 <ul>
   <li><code>reporter_id</code> is open to staff, limited to the tickets they can see. It was administrators only.</li>
-  <li><code>reporter_id</code>, <code>requester</code> and <code>assignee_group_id</code> now combine with each other and with the other filters. Before, the first one present won and the rest were ignored, so <code>reporter_id</code> with <code>assignee_group_id</code> dropped the group. They still ignore <code>scope</code>.</li>
+  <li><code>reporter_id</code>, <code>requester</code> and <code>assignee_group_id</code> now combine with each other and with the other filters. Before, the first one present won and the rest were ignored, so <code>reporter_id</code> with <code>assignee_group_id</code> dropped the group. They still replace the older <code>scope</code> values (<code>mine</code>, <code>unassigned</code>, <code>all</code>, <code>visible</code>). The two new values, <code>assigned_to_me</code> and <code>my_groups</code>, are always applied; see <a href="#api-ticket-search-scope">Queues</a>.</li>
   <li>A search (<code>q</code>) on the default <code>mine</code> queue, for an administrator or for staff with scope enforcement off, is now ranked by relevance like every other search. It used to be newest first. The same tickets match.</li>
 </ul>
+
+<h2 id="api-dashboard-reports">Dashboard and reports <span class="badge-new">New in 1.3.0</span></h2>
+
+<p>Two read-only routes feed the dashboard and the Reports page. Both are counted on the server, live, from the tickets the caller can see, and nothing is stored for them. <strong>There is no MCP tool for either.</strong> <code>GET /api/v1/tickets</code> and MCP <code>list_tickets</code> list the tickets behind a dashboard number, but a list carries no total, so a client that wants the counts calls <code>GET /api/v1/dashboard</code>.</p>
+
+<h3 id="api-dashboard"><code>GET /api/v1/dashboard</code></h3>
+<ul>
+  <li><strong>Who:</strong> the same as <code>GET /api/v1/tickets</code>. A session of any role, or an API key or OAuth client with <code>tickets:read</code>.</li>
+  <li><strong><code>tz</code>:</strong> the IANA time zone the trend's days are counted in, for example <code>Europe/London</code>. Absent or empty is UTC. At most 64 bytes of letters, digits and <code>_ + - /</code>, otherwise <code>400</code>, "invalid tz". For staff and administrators, a name the database does not know is <code>400</code>, "unknown time zone"; a requester's zone is checked for form only.</li>
+  <li><strong>Response, for staff and administrators:</strong> <code>queues</code> (the Your queue counts), <code>attention</code> (up to five open tickets that need attention) and <code>volume</code> (the 30-day trend).
+    <ul>
+      <li><code>queues</code> is a list of <code>{key, count}</code>. The keys are <code>assigned_to_me</code>, <code>my_groups</code>, <code>sla_breached</code>, <code>sla_at_risk</code> and <code>awaiting_my_reply</code>. Each count is the length of the list a <code>GET /tickets</code> request returns, so a number and the list behind it agree. Closed tickets are not counted, so each of these requests also carries <code>include_closed=false</code>: <code>assigned_to_me</code> is <code>scope=assigned_to_me</code>, <code>my_groups</code> is <code>scope=my_groups</code>, <code>sla_breached</code> and <code>sla_at_risk</code> are <code>scope=assigned_to_me&amp;sla=breached</code> and <code>scope=assigned_to_me&amp;sla=at_risk</code>, and <code>awaiting_my_reply</code> is <code>scope=assigned_to_me&amp;awaiting_reply=true</code>. <code>sla_breached</code> and <code>sla_at_risk</code> count the caller's own assigned tickets, and are absent while SLA tracking is off. Ignore a key you do not know.</li>
+      <li><code>attention</code> is a list of <code>{reason, since, ticket}</code>. <code>reason</code> is <code>breached</code>, <code>at_risk</code>, <code>unassigned</code> or <code>reopened</code>, each ticket appears once under its first reason, and <code>ticket</code> is the object <code>GET /tickets</code> would return to this caller. The SLA reasons are absent while SLA tracking is off.</li>
+      <li><code>volume</code> is <code>{tz, days}</code>: 30 entries, oldest first, the last is today, each <code>{date, created, resolved}</code>.</li>
+    </ul>
+  </li>
+  <li><strong>For a requester</strong> <code>queues</code> holds one cell, <code>my_tickets</code> (<code>scope=mine</code> with <code>include_closed=false</code>), and <code>attention</code> and <code>volume</code> are <code>null</code>.</li>
+  <li><strong>Errors:</strong> <code>401</code> and <code>403</code> as for <code>GET /tickets</code>, and <code>400</code> for <code>tz</code>. Nothing is cached on the server.</li>
+</ul>
+
+<h3 id="api-reports-kpi"><code>GET /api/v1/reports/kpi</code></h3>
+<ul>
+  <li><strong>Who:</strong> staff and administrators, in a session that has passed its second factor, or an API key or OAuth client with <code>tickets:read</code>. A requester gets <code>403</code>.</li>
+  <li><strong>Numbers follow ticket scope.</strong> An administrator's figures count every ticket. With <em>Limit staff to their group scope</em> on, a staff member's figures count only the tickets their scope admits.</li>
+  <li><strong>Parameters:</strong>
+    <ul>
+      <li><code>tz</code>, as for the dashboard.</li>
+      <li><code>from</code> and <code>to</code>, <code>YYYY-MM-DD</code>, both ends included, in <code>tz</code>. Both absent is the last 30 days ending today. One without the other is <code>400</code>, "from and to go together". The period is at most 366 days (<code>400</code>, "the range is longer than 366 days"), <code>from</code> may not be after <code>to</code>, and a <code>from</code> before 1970-01-01 is <code>400</code>, "from is too early".</li>
+      <li><code>category_id</code> and <code>assignee_group_id</code>, one id each. <code>priority</code>, repeated for several, at most four. A value that does not parse is <code>400</code>, for example "invalid priority". Any other parameter is ignored.</li>
+    </ul>
+  </li>
+  <li><strong>Response:</strong>
+    <ul>
+      <li><code>period</code> and <code>previous</code>: the days counted, and the period of the same length that ends the day before it begins. The previous period is always computed.</li>
+      <li><code>measures.current</code> and <code>measures.previous</code>: tickets created and resolved, time to resolve (median and 90th percentile, in seconds, less time spent Pending), time to first response (median, seconds), SLA attainment and reopens. A median is <code>null</code> when nothing was counted, and a rate is a fraction between 0 and 1, <code>null</code> when nothing was counted.</li>
+      <li><code>measures.change</code>: the change from the previous period for each of nine measures, each <code>{kind, state, value}</code>. <code>kind</code> is <code>relative</code> for counts and durations and <code>points</code> for rates, and <code>value</code> is <code>null</code> unless <code>state</code> is <code>change</code>.</li>
+      <li><code>volume</code>: created and resolved per day, and tickets created by category and by priority.</li>
+      <li><code>backlog</code>: open tickets by age in four buckets (0 to 2, 3 to 7, 8 to 30 and over 30 days). <code>workload</code>: open tickets by assignee and by group, with a row (null id and name) for tickets with no person or no group. Neither depends on the period.</li>
+      <li><code>sla_enabled</code>: whether SLA tracking is on now. First response and SLA attainment cover only tickets timed while it was on.</li>
+    </ul>
+  </li>
+  <li><strong>What is counted.</strong> Volume compares tickets created in the period with tickets resolved in it. The other period measures count the tickets finished in the period, which are resolved, or closed if never resolved. Reopens before 1.3.0 are not counted, because the count was not kept.</li>
+  <li><strong>Errors:</strong> the first failed check answers <code>400 bad_request</code> with its message, and a requester gets <code>403</code>.</li>
+</ul>
+<p>The Download CSV and Download image buttons on the Reports page work in the browser from the figures on screen. Neither calls the server. The request fields and response schemas are in the <a href="api-reference.html">API Reference</a>.</p>
+
 
 <h2 id="api-errors">Errors &amp; pagination</h2>
 
@@ -478,7 +558,7 @@ Cache-Control: private, max-age=3600</code></pre>
   <li>The audit list returns an object with <code>entries</code>, <code>total</code>, <code>total_capped</code> and <code>has_more</code>. Page while <code>has_more</code> is true. When <code>total_capped</code> is true, <code>total</code> is the cap (10,000) and means "at least this many".</li>
 </ul>
 <pre><code>GET /api/v1/tickets?limit=50&amp;offset=100</code></pre>
-<p><code>GET /api/v1/tickets</code> also takes <code>scope</code>: <code>mine</code> (the default), <code>unassigned</code>, <code>all</code> (administrators only) and <code>visible</code>. <code>scope=visible</code> is available to staff and administrators and returns every ticket the caller can see, in one query that pages with <code>limit</code> and <code>offset</code>: every ticket for an administrator, or for staff while <em>Limit staff to their group scope</em> is off, and the staff scope while it is on. A reporting user still gets only their own tickets. A server older than this release ignores an unknown scope and answers as <code>mine</code>.</p>
+<p><code>GET /api/v1/tickets</code> also takes <code>scope</code>, which names the queue it reads, and the filters <code>held_by</code> and <code>awaiting_reply</code>. See <a href="#api-ticket-search-scope">Queues</a>. A server older than this release ignores an unknown scope and answers as <code>mine</code>.</p>
 <p>Every other list returns its whole result as a bare JSON array.</p>
 
 <h3>Rate limiting</h3>
