@@ -388,6 +388,7 @@ LEFT JOIN LATERAL (
     AND r.superseded_at IS NULL
 ) sb ON TRUE
 WHERE
+  -- visibility: begin
   (
     sqlc.arg(unrestricted)::bool
     OR (
@@ -425,6 +426,7 @@ WHERE
       )
     )
   )
+  -- visibility: end
   -- queue: 'any' | 'mine' | 'assigned_to_me' | 'my_groups' | 'unassigned'. Set by
   -- the handler, never the caller. (#676: assigned_to_me and my_groups are the two
   -- halves of mine; held_by below splits my_groups three ways.)
@@ -465,6 +467,22 @@ WHERE
        OR (sqlc.arg(held_by)::text = 'me' AND t.assignee_user_id = sqlc.arg(actor_id)::uuid)
        OR (sqlc.arg(held_by)::text = 'others' AND t.assignee_user_id IS NOT NULL
            AND t.assignee_user_id <> sqlc.arg(actor_id)::uuid))
+  -- awaiting_reply (#675): not Resolved or Closed, and the newest public reply
+  -- is not the help desk's (no reply, a guest reply with no author, or an
+  -- author who is a requester, all wait for staff). The author's role is read
+  -- whether or not the account is soft-deleted, on purpose: no deleted_at test.
+  -- Internal notes are never read. Staff and administrators only: the gate is
+  -- Filter.AllowedFor, not this clause.
+  AND (NOT sqlc.arg(awaiting_reply)::bool OR (
+    t.status_id IS DISTINCT FROM (SELECT s.id FROM statuses s WHERE s.name = 'Closed'   AND s.kind = 'system')
+    AND t.status_id IS DISTINCT FROM (SELECT s.id FROM statuses s WHERE s.name = 'Resolved' AND s.kind = 'system')
+    AND NOT COALESCE((SELECT u.role IN ('admin', 'staff')
+                      FROM ticket_replies r LEFT JOIN users u ON u.id = r.author_id
+                      WHERE r.ticket_id = t.id AND NOT r.internal
+                      ORDER BY r.created_at DESC, r.id DESC LIMIT 1), false)))
+  -- reopened_after (#675): server-set, the dashboard's recently reopened
+  -- window. NULL is not filtered, and a never-reopened ticket has no instant.
+  AND (sqlc.narg(reopened_after)::timestamptz IS NULL OR t.last_reopened_at >= sqlc.narg(reopened_after)::timestamptz)
   AND (sqlc.narg(reporter_id)::uuid IS NULL OR t.reporter_user_id = sqlc.narg(reporter_id)::uuid)
   -- requester_pattern is '%' || LIKE-escaped text || '%', built in the store.
   -- It matches the ticket's guest fields and the reporting account's name and
@@ -532,3 +550,305 @@ ORDER BY
   t.created_at DESC,
   t.id
 LIMIT sqlc.arg(result_limit) OFFSET sqlc.arg(result_offset);
+
+-- name: CountTicketsFiltered :one
+-- How many tickets ListTicketsFiltered would return for the same parameters,
+-- without paging: the dashboard's counts (#675). It is that query with the select
+-- list replaced by count(*) and everything from ORDER BY to the end removed,
+-- the same reply_hits CTE, SLA lateral and WHERE, so the store fills both from
+-- one function. The two are held equal by TestSQL_DashboardQueriesShareTheListRule
+-- (comments and whitespace aside): change one, copy the change to the other.
+WITH reply_hits AS (
+  SELECT DISTINCT m.ticket_id FROM (
+    SELECT r.ticket_id
+    FROM ticket_replies r
+    JOIN tickets rt ON rt.id = r.ticket_id
+    WHERE sqlc.arg(search_replies)::bool
+      AND sqlc.arg(search_query)::text <> ''
+      AND r.body_tsv @@ to_tsquery('english', sqlc.arg(search_query)::text)
+      AND (sqlc.arg(include_internal)::bool OR NOT r.internal)
+      AND (
+        sqlc.arg(unrestricted)::bool
+        OR (sqlc.arg(reporter_only)::bool AND rt.reporter_user_id = sqlc.arg(actor_id)::uuid)
+        OR (
+          NOT sqlc.arg(unrestricted)::bool
+          AND NOT sqlc.arg(reporter_only)::bool
+          AND (
+            rt.reporter_user_id = sqlc.arg(actor_id)::uuid
+            OR rt.assignee_user_id = sqlc.arg(actor_id)::uuid
+            -- The same arrays as the main query's scope below, for the same reason
+            -- given there, and the same rule.
+            OR rt.assignee_group_id = ANY(sqlc.arg(scope_group_ids)::uuid[])
+            OR rt.category_id = ANY(sqlc.arg(scope_category_ids)::uuid[])
+            OR (rt.type_id = ANY(sqlc.arg(scope_type_ids)::uuid[])
+                AND (rt.category_id, rt.type_id) IN (SELECT c.id, ty.id
+                    FROM unnest(sqlc.arg(scope_type_category_ids)::uuid[]) WITH ORDINALITY AS c(id, n)
+                    JOIN unnest(sqlc.arg(scope_type_ids)::uuid[]) WITH ORDINALITY AS ty(id, n) ON ty.n = c.n))
+          )
+        )
+      )
+    ORDER BY r.created_at DESC, r.id
+    LIMIT sqlc.arg(reply_cap)
+  ) m
+)
+-- Single values are NULL-means-absent and arrays are cardinality(...) = 0, so
+-- one prepared statement serves every combination. The store always passes a
+-- non-nil array.
+--
+-- The SLA bucket joins the CURRENT record only and is computed only when the
+-- filter or the sort asks for it (the first condition in the lateral is a
+-- parameter-only test, so the planner evaluates it once, not per ticket). It is
+-- a lateral join and not a correlated subquery because the planner can hash
+-- join it: as a subquery, sorting by SLA took 1 s at 200k instead of 0.25 s. It
+-- reproduces sla.StatusFor, the live read the list indicator shows, NOT the
+-- breach stamps: StatusFor never reads them, and a target met on time keeps
+-- its frozen reading. Per target, with elapsed as sla.ElapsedFrom has it
+-- (the clock stops at pending_since or at the instant the target was met):
+--   a met target with a frozen reading  -> that reading
+--   anything else                       -> LEAST(COALESCE(pending_since, at), at)
+--                                          - start - pause, with at = the met
+--                                          instant, or now while outstanding
+-- 0 = a target at or past 100% (red), 1 = otherwise one at or past 80%
+-- (amber, exactly target_min * 48 seconds), 2 = everything else. This is the
+-- third copy of the formula, after sla.ElapsedFrom and ListSLABreachCandidates;
+-- TestListFiltered_SLAAgreesWithStatusFor holds it to the first.
+SELECT count(*)
+FROM tickets t
+LEFT JOIN LATERAL (
+  SELECT CASE
+           WHEN e.response   >= make_interval(mins => p.response_target_min)
+             OR e.resolution >= make_interval(mins => p.resolution_target_min) THEN 0
+           WHEN e.response   >= make_interval(secs => (p.response_target_min::bigint   * 48)::double precision)
+             OR e.resolution >= make_interval(secs => (p.resolution_target_min::bigint * 48)::double precision) THEN 1
+           ELSE 2
+         END AS bucket
+  FROM sla_records r
+  JOIN sla_policies p ON p.id = r.policy_id
+  CROSS JOIN LATERAL (
+    SELECT
+      CASE WHEN r.first_response_at IS NOT NULL AND r.response_elapsed_at_met_seconds IS NOT NULL
+           THEN make_interval(secs => r.response_elapsed_at_met_seconds::double precision)
+           ELSE LEAST(COALESCE(t.pending_since, COALESCE(r.first_response_at, sqlc.arg(now)::timestamptz)),
+                      COALESCE(r.first_response_at, sqlc.arg(now)::timestamptz))
+                - (COALESCE(r.started_at, t.created_at)
+                   + make_interval(secs => (t.sla_paused_seconds - r.paused_seconds_at_start)::double precision))
+      END AS response,
+      CASE WHEN r.resolved_at IS NOT NULL AND r.resolution_elapsed_at_met_seconds IS NOT NULL
+           THEN make_interval(secs => r.resolution_elapsed_at_met_seconds::double precision)
+           ELSE LEAST(COALESCE(t.pending_since, COALESCE(r.resolved_at, sqlc.arg(now)::timestamptz)),
+                      COALESCE(r.resolved_at, sqlc.arg(now)::timestamptz))
+                - (COALESCE(r.started_at, t.created_at)
+                   + make_interval(secs => (t.sla_paused_seconds - r.paused_seconds_at_start)::double precision))
+      END AS resolution
+  ) e
+  WHERE (sqlc.arg(sla)::text <> '' OR sqlc.arg(sort_key)::text = 'sla')
+    AND r.ticket_id = t.id
+    AND r.superseded_at IS NULL
+) sb ON TRUE
+WHERE
+  -- visibility: begin
+  (
+    sqlc.arg(unrestricted)::bool
+    OR (
+      sqlc.arg(reporter_only)::bool
+      AND t.reporter_user_id = sqlc.arg(actor_id)::uuid
+    )
+    OR (
+      NOT sqlc.arg(unrestricted)::bool
+      AND NOT sqlc.arg(reporter_only)::bool
+      AND (
+        t.reporter_user_id = sqlc.arg(actor_id)::uuid
+        OR t.assignee_user_id = sqlc.arg(actor_id)::uuid
+        -- The caller's groups and the categories and types those groups cover
+        -- arrive as plain arrays, read by the store just before this runs, for
+        -- the reason given at mine_group_ids below. As subqueries the planner
+        -- could not tell a staff member in no group from one in every group,
+        -- assumed most tickets match, and walked the whole of tickets_created_at_idx
+        -- discarding every row that did not: 1M tickets read 205k buffers and took
+        -- 0.9 s for a staff member with 10 assignments, and the cost grew with the
+        -- table. As arrays an empty set folds away and each arm that remains can
+        -- use an index (reporter, assignee, group, category).
+        -- TestListFiltered_ScopedVisibility holds the rule to a hand-derived answer
+        -- over every kind of scope.
+        OR t.assignee_group_id = ANY(sqlc.arg(scope_group_ids)::uuid[])
+        OR t.category_id = ANY(sqlc.arg(scope_category_ids)::uuid[])
+        -- One type of a category: the type conjunct is what lets an index
+        -- (tickets_type_id_idx) serve the arm, and the pair test is the rule.
+        -- The conjunct is implied by the pair, so it never changes the answer.
+        -- A ticket with no type never matches the row comparison, as it never
+        -- matched gs.type_id = t.type_id.
+        OR (t.type_id = ANY(sqlc.arg(scope_type_ids)::uuid[])
+            AND (t.category_id, t.type_id) IN (SELECT c.id, ty.id
+                FROM unnest(sqlc.arg(scope_type_category_ids)::uuid[]) WITH ORDINALITY AS c(id, n)
+                JOIN unnest(sqlc.arg(scope_type_ids)::uuid[]) WITH ORDINALITY AS ty(id, n) ON ty.n = c.n))
+      )
+    )
+  )
+  -- visibility: end
+  -- queue: 'any' | 'mine' | 'assigned_to_me' | 'my_groups' | 'unassigned'. Set by
+  -- the handler, never the caller. (#676: assigned_to_me and my_groups are the two
+  -- halves of mine; held_by below splits my_groups three ways.)
+  AND (
+    sqlc.arg(queue)::text = 'any'
+    OR (sqlc.arg(queue)::text = 'unassigned'
+        AND t.assignee_user_id IS NULL AND t.assignee_group_id IS NULL)
+    OR (sqlc.arg(queue)::text = 'assigned_to_me'
+        AND t.assignee_user_id = sqlc.arg(actor_id)::uuid)
+    OR (sqlc.arg(queue)::text = 'my_groups'
+        AND t.assignee_group_id = ANY(sqlc.arg(mine_group_ids)::uuid[]))
+    -- mine_group_ids is the caller's groups, read by the store just before this
+    -- runs and passed as a plain array. That is deliberate: the planner cannot
+    -- know how many groups a subquery will return, assumes a lot, and then walks
+    -- the whole created_at index looking for rows a user with few or no
+    -- assignments does not have (83-95 ms at 200k tickets for an administrator).
+    -- Given the array itself it sees an empty or two-element list, and drives the
+    -- queue from the two assignee indexes instead (0.8 ms).
+    OR (sqlc.arg(queue)::text = 'mine' AND (
+        t.assignee_user_id = sqlc.arg(actor_id)::uuid
+        OR t.assignee_group_id = ANY(sqlc.arg(mine_group_ids)::uuid[])))
+  )
+  AND (cardinality(sqlc.arg(status_ids)::uuid[]) = 0 OR t.status_id = ANY(sqlc.arg(status_ids)::uuid[]))
+  -- IS DISTINCT FROM, not <>: if the Closed status were ever missing the
+  -- subquery is NULL, and <> would then exclude every ticket.
+  AND (NOT sqlc.arg(exclude_closed)::bool
+       OR t.status_id IS DISTINCT FROM (SELECT s.id FROM statuses s WHERE s.name = 'Closed' AND s.kind = 'system'))
+  AND (cardinality(sqlc.arg(priorities)::text[]) = 0 OR t.priority = ANY(sqlc.arg(priorities)::text[]))
+  AND (sqlc.narg(category_id)::uuid IS NULL OR t.category_id = sqlc.narg(category_id)::uuid)
+  AND (sqlc.narg(type_id)::uuid IS NULL OR t.type_id = sqlc.narg(type_id)::uuid)
+  AND (sqlc.narg(item_id)::uuid IS NULL OR t.item_id = sqlc.narg(item_id)::uuid)
+  AND (sqlc.narg(assignee_user_id)::uuid IS NULL OR t.assignee_user_id = sqlc.narg(assignee_user_id)::uuid)
+  AND (sqlc.narg(assignee_group_id)::uuid IS NULL OR t.assignee_group_id = sqlc.narg(assignee_group_id)::uuid)
+  -- held_by (#676): who personally holds the ticket, relative to the caller.
+  -- '' is no restriction. Only the assignee user is read, never the group.
+  AND (sqlc.arg(held_by)::text = ''
+       OR (sqlc.arg(held_by)::text = 'nobody' AND t.assignee_user_id IS NULL)
+       OR (sqlc.arg(held_by)::text = 'me' AND t.assignee_user_id = sqlc.arg(actor_id)::uuid)
+       OR (sqlc.arg(held_by)::text = 'others' AND t.assignee_user_id IS NOT NULL
+           AND t.assignee_user_id <> sqlc.arg(actor_id)::uuid))
+  -- awaiting_reply (#675): not Resolved or Closed, and the newest public reply
+  -- is not the help desk's (no reply, a guest reply with no author, or an
+  -- author who is a requester, all wait for staff). The author's role is read
+  -- whether or not the account is soft-deleted, on purpose: no deleted_at test.
+  -- Internal notes are never read. Staff and administrators only: the gate is
+  -- Filter.AllowedFor, not this clause.
+  AND (NOT sqlc.arg(awaiting_reply)::bool OR (
+    t.status_id IS DISTINCT FROM (SELECT s.id FROM statuses s WHERE s.name = 'Closed'   AND s.kind = 'system')
+    AND t.status_id IS DISTINCT FROM (SELECT s.id FROM statuses s WHERE s.name = 'Resolved' AND s.kind = 'system')
+    AND NOT COALESCE((SELECT u.role IN ('admin', 'staff')
+                      FROM ticket_replies r LEFT JOIN users u ON u.id = r.author_id
+                      WHERE r.ticket_id = t.id AND NOT r.internal
+                      ORDER BY r.created_at DESC, r.id DESC LIMIT 1), false)))
+  -- reopened_after (#675): server-set, the dashboard's recently reopened
+  -- window. NULL is not filtered, and a never-reopened ticket has no instant.
+  AND (sqlc.narg(reopened_after)::timestamptz IS NULL OR t.last_reopened_at >= sqlc.narg(reopened_after)::timestamptz)
+  AND (sqlc.narg(reporter_id)::uuid IS NULL OR t.reporter_user_id = sqlc.narg(reporter_id)::uuid)
+  -- requester_pattern is '%' || LIKE-escaped text || '%', built in the store.
+  -- It matches the ticket's guest fields and the reporting account's name and
+  -- email. Deleted and disabled accounts are included on purpose: their tickets
+  -- still exist and the ticket page still names them.
+  AND (sqlc.narg(requester_pattern)::text IS NULL
+       OR t.guest_name ILIKE sqlc.narg(requester_pattern)::text
+       OR t.guest_email ILIKE sqlc.narg(requester_pattern)::text
+       -- ARRAY(subquery), not IN (subquery), so all three arms can be indexes
+       -- feeding one BitmapOr (see the queue arm above for the same reason).
+       OR t.reporter_user_id = ANY(ARRAY(SELECT u.id FROM users u
+                                         WHERE u.display_name ILIKE sqlc.narg(requester_pattern)::text
+                                            OR u.email ILIKE sqlc.narg(requester_pattern)::text)))
+  AND (sqlc.narg(created_after)::timestamptz IS NULL OR t.created_at >= sqlc.narg(created_after)::timestamptz)
+  AND (sqlc.narg(created_before)::timestamptz IS NULL OR t.created_at < sqlc.narg(created_before)::timestamptz)
+  AND (sqlc.narg(updated_after)::timestamptz IS NULL OR t.updated_at >= sqlc.narg(updated_after)::timestamptz)
+  AND (sqlc.narg(updated_before)::timestamptz IS NULL OR t.updated_at < sqlc.narg(updated_before)::timestamptz)
+  AND (cardinality(sqlc.arg(source_channels)::text[]) = 0 OR t.source_channel = ANY(sqlc.arg(source_channels)::text[]))
+  AND (sqlc.arg(sla)::text = ''
+       OR (sqlc.arg(sla)::text = 'breached' AND sb.bucket = 0)
+       OR (sqlc.arg(sla)::text = 'at_risk' AND sb.bucket = 1))
+  -- `searching` says whether the caller asked for a search at all, which is
+  -- NOT the same as search_query being empty. A term like "???" contains no
+  -- indexable tokens, so buildSearchTSQuery yields "" — and keying off that
+  -- alone made the whole clause vanish and returned every visible ticket as
+  -- though each one matched. A search that tokenises to nothing must match on
+  -- the tracking number or not at all.
+  AND (
+    NOT sqlc.arg(searching)::bool
+    OR t.tracking_number ILIKE sqlc.arg(tracking_pattern)::text
+    OR (
+      sqlc.arg(search_query)::text <> ''
+      AND t.search_vector @@ to_tsquery('english', sqlc.arg(search_query)::text)
+    )
+    OR t.id IN (SELECT ticket_id FROM reply_hits)
+  );
+
+-- name: TicketVolumeByDay :many
+-- The dashboard's 30-day trend (#675, DESIGN.md "Volume trend"): per local day in
+-- tz, ending with the day that contains now, the tickets created and the tickets
+-- resolved. The visibility block is the list's, copied into both arms and pinned
+-- to it by TestSQL_DashboardQueriesShareTheListRule. The resolved arm is served
+-- by tickets_done_at_idx (000066), the created arm by tickets_created_at_idx.
+-- tz is only ever a parameter of AT TIME ZONE; a name Postgres does not know
+-- fails with SQLSTATE 22023, which the store maps to ErrUnknownTimeZone.
+WITH bounds AS (
+  SELECT date_trunc('day', sqlc.arg(now)::timestamptz AT TIME ZONE sqlc.arg(tz)::text) - interval '29 days' AS first_day
+), w AS (
+  -- first_day is a local date-time; since_at is the instant it begins in tz
+  SELECT first_day, first_day AT TIME ZONE sqlc.arg(tz)::text AS since_at FROM bounds
+), events AS (
+  SELECT (t.created_at AT TIME ZONE sqlc.arg(tz)::text)::date AS day, 1 AS created, 0 AS resolved
+  FROM tickets t, w
+  WHERE
+  -- visibility: begin
+  (
+    sqlc.arg(unrestricted)::bool
+    OR (
+      sqlc.arg(reporter_only)::bool
+      AND t.reporter_user_id = sqlc.arg(actor_id)::uuid
+    )
+    OR (
+      NOT sqlc.arg(unrestricted)::bool
+      AND NOT sqlc.arg(reporter_only)::bool
+      AND (
+        t.reporter_user_id = sqlc.arg(actor_id)::uuid
+        OR t.assignee_user_id = sqlc.arg(actor_id)::uuid
+        OR t.assignee_group_id = ANY(sqlc.arg(scope_group_ids)::uuid[])
+        OR t.category_id = ANY(sqlc.arg(scope_category_ids)::uuid[])
+        OR (t.type_id = ANY(sqlc.arg(scope_type_ids)::uuid[])
+            AND (t.category_id, t.type_id) IN (SELECT c.id, ty.id
+                FROM unnest(sqlc.arg(scope_type_category_ids)::uuid[]) WITH ORDINALITY AS c(id, n)
+                JOIN unnest(sqlc.arg(scope_type_ids)::uuid[]) WITH ORDINALITY AS ty(id, n) ON ty.n = c.n))
+      )
+    )
+  )
+  -- visibility: end
+  AND t.created_at >= w.since_at
+  UNION ALL
+  SELECT (COALESCE(t.resolved_at, t.closed_at) AT TIME ZONE sqlc.arg(tz)::text)::date, 0, 1
+  FROM tickets t, w
+  WHERE
+  -- visibility: begin
+  (
+    sqlc.arg(unrestricted)::bool
+    OR (
+      sqlc.arg(reporter_only)::bool
+      AND t.reporter_user_id = sqlc.arg(actor_id)::uuid
+    )
+    OR (
+      NOT sqlc.arg(unrestricted)::bool
+      AND NOT sqlc.arg(reporter_only)::bool
+      AND (
+        t.reporter_user_id = sqlc.arg(actor_id)::uuid
+        OR t.assignee_user_id = sqlc.arg(actor_id)::uuid
+        OR t.assignee_group_id = ANY(sqlc.arg(scope_group_ids)::uuid[])
+        OR t.category_id = ANY(sqlc.arg(scope_category_ids)::uuid[])
+        OR (t.type_id = ANY(sqlc.arg(scope_type_ids)::uuid[])
+            AND (t.category_id, t.type_id) IN (SELECT c.id, ty.id
+                FROM unnest(sqlc.arg(scope_type_category_ids)::uuid[]) WITH ORDINALITY AS c(id, n)
+                JOIN unnest(sqlc.arg(scope_type_ids)::uuid[]) WITH ORDINALITY AS ty(id, n) ON ty.n = c.n))
+      )
+    )
+  )
+  -- visibility: end
+  AND COALESCE(t.resolved_at, t.closed_at) >= w.since_at
+)
+SELECT d::date AS day, COALESCE(sum(e.created), 0)::bigint AS created, COALESCE(sum(e.resolved), 0)::bigint AS resolved
+FROM w, generate_series(w.first_day, w.first_day + interval '29 days', interval '1 day') AS d
+LEFT JOIN events e ON e.day = d::date
+GROUP BY d ORDER BY d;

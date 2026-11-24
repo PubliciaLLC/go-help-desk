@@ -196,6 +196,17 @@ type Filter struct {
 	SLA             SLAState        // `sla`; "" is not filtered
 	HeldBy          HeldBy          // `held_by`; "" is not filtered
 
+	// AwaitingReply is `awaiting_reply=true` (#675): the ticket is not
+	// Resolved or Closed and the newest public message is the requester's
+	// side, so it waits for the help desk. Staff and administrators only: the
+	// clause reads the current role of the newest public reply's author, which
+	// a requester is never sent.
+	AwaitingReply bool
+
+	// ReopenedAfter keeps tickets whose last_reopened_at is at or after it.
+	// server: the dashboard's "recently reopened" window; never a parameter.
+	ReopenedAfter *time.Time
+
 	// ExcludeClosed is `include_closed=false` and no `status_id`: leave out
 	// the Closed system status. It is a bool that defaults to false so that
 	// the zero Filter includes closed tickets, as every listing always has.
@@ -319,6 +330,9 @@ func ParseListFilter(q url.Values) (Filter, error) {
 	}
 	includeClosed, err := parseBool(q, "include_closed", true)
 	if err != nil {
+		return Filter{}, err
+	}
+	if f.AwaitingReply, err = parseBool(q, "awaiting_reply", false); err != nil {
 		return Filter{}, err
 	}
 
@@ -512,6 +526,10 @@ var requesterRules = []struct {
 	{"SourceChannels", "source_channel", "source_channel", false, func(f Filter) bool { return len(f.SourceChannels) > 0 }},
 	{"SLA", "sla", "pending_since", false, func(f Filter) bool { return f.SLA != "" }}, // the SLA is null for a requester; pending_since is what it derives from
 	{"HeldBy", "held_by", "assignee_user_id", false, func(f Filter) bool { return f.HeldBy != "" }},
+	// The clause reads the current role of the newest public reply's author, a
+	// fact a requester is never sent. reply_author_role is not a key of the
+	// ticket object, so no requester allowed list can hold it.
+	{"AwaitingReply", "awaiting_reply", "reply_author_role", false, func(f Filter) bool { return f.AwaitingReply }},
 }
 
 // AllowedFor checks the filter against who is asking. role is the caller's role

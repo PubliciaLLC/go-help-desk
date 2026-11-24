@@ -1,0 +1,15 @@
+-- The index the dashboard's volume trend reads its resolved arm through (#675):
+--     COALESCE(resolved_at, closed_at) >= <start of the 30-day window>
+-- A ticket's current resolution is resolved_at, or closed_at when it was closed
+-- without being resolved. The created arm is served by tickets_created_at_idx
+-- (000021); this is the same for the other column pair.
+--
+-- Numbering: 000066 was the next free number on the branch this was written on.
+-- Other open branches also add migrations (#616, #670), so a renumber may be
+-- needed at merge; the content does not depend on the number.
+--
+-- Built inside the migration, not concurrently, as 000021 built its ticket
+-- indexes: one btree on the tickets table takes seconds at a million rows, holds
+-- writes to that table for those seconds, and the migration runs before the
+-- server answers. It changes no data.
+CREATE INDEX IF NOT EXISTS tickets_done_at_idx ON tickets ((COALESCE(resolved_at, closed_at)));

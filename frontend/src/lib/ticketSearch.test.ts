@@ -11,6 +11,7 @@ import {
   parseTicketSearch,
   toApiParams,
   toUrlSearch,
+  VIEW_FILTERS,
   type TicketSearch,
 } from './ticketSearch'
 
@@ -107,6 +108,15 @@ describe('parseTicketSearch: URL to state', () => {
     expect(parseTicketSearch({ closed: false })).toEqual({})
   })
 
+  // awaiting_reply=true is on; the page reads it as text or as a boolean, as
+  // every value arrives. A value that is not "on" is not stored.
+  it('awaiting_reply is stored only when on, as the address spells it', () => {
+    expect(parseTicketSearch({ awaiting_reply: 'true' })).toEqual({ awaiting_reply: true })
+    expect(parseTicketSearch({ awaiting_reply: true })).toEqual({ awaiting_reply: true })
+    expect(parseTicketSearch({ awaiting_reply: false })).toEqual({})
+    expect(parseTicketSearch({ awaiting_reply: 'yes' })).toEqual({})
+  })
+
   it('page counts from 1 and is stored from 2', () => {
     expect(parseTicketSearch({ page: 3 })).toEqual({ page: 3 })
     expect(parseTicketSearch({ page: 1 })).toEqual({})
@@ -135,6 +145,7 @@ describe('toUrlSearch: state to URL', () => {
       status: [ID_A],
       priority: ['high'],
       created_from: '2026-10-01',
+      awaiting_reply: true,
       sort: 'created',
       order: 'asc',
       page: 2,
@@ -284,6 +295,24 @@ describe('toApiParams', () => {
     expect(toApiParams({ view: 'search', reporter: ID_A }, staff).scope).toBe('visible')
   })
 
+  // awaiting_reply is offered on Assigned to Me and My Group's Tickets only
+  // (DESIGN.md, Dashboard). Available and Search do not send it even when the
+  // address carries it.
+  it.each([
+    ['me', true],
+    ['groups', true],
+    ['available', false],
+    ['search', false],
+  ] as const)('awaiting_reply on the %s view is sent: %s', (view, sent) => {
+    const p = toApiParams({ view, awaiting_reply: true }, admin)
+    if (sent) expect(p.awaiting_reply).toBe(true)
+    else expect(p).not.toHaveProperty('awaiting_reply')
+  })
+
+  it('awaiting_reply is not sent when it is not set', () => {
+    expect(toApiParams({ view: 'me' }, staff)).not.toHaveProperty('awaiting_reply')
+  })
+
   it('held_by is sent on My Group\'s Tickets and nowhere else', () => {
     expect(toApiParams({ view: 'groups', held_by: 'nobody' }, staff)).toMatchObject({ scope: 'my_groups', held_by: 'nobody' })
     expect(toApiParams({ view: 'groups', held_by: 'me' }, staff).held_by).toBe('me')
@@ -353,6 +382,10 @@ describe('toApiParams', () => {
     it('always asks for the queue the server expects of them', () => {
       expect(toApiParams({ q: 'x' }, requester).scope).toBe('mine')
     })
+
+    it('never sends awaiting_reply, which the server refuses with 403 to a requester', () => {
+      expect(toApiParams({ awaiting_reply: true }, requester)).not.toHaveProperty('awaiting_reply')
+    })
   })
 })
 
@@ -375,6 +408,17 @@ describe('toApiParams while SLA tracking is not known to be on', () => {
   })
 })
 
+describe('VIEW_FILTERS: awaiting_reply', () => {
+  it.each([
+    ['me', true],
+    ['groups', true],
+    ['available', false],
+    ['search', false],
+  ] as const)('the %s view offers it: %s', (view, offered) => {
+    expect(VIEW_FILTERS[view].includes('awaiting')).toBe(offered)
+  })
+})
+
 describe('hasNarrowing / activeFilterCount', () => {
   it('a requester counts only the filters they are sent', () => {
     const link = {
@@ -394,6 +438,12 @@ describe('hasNarrowing / activeFilterCount', () => {
 
   it('counts a filter once, however many values it has', () => {
     expect(activeFilterCount({ status: [ID_A, ID_B], priority: ['high'], created_from: '2026-10-01', created_to: '2026-10-31' })).toBe(3)
+  })
+
+  it('awaiting_reply is one filter, counted where the view offers it', () => {
+    expect(activeFilterCount({ awaiting_reply: true })).toBe(1)
+    expect(activeFilterCount({ awaiting_reply: true }, true, VIEW_FILTERS.available)).toBe(0)
+    expect(activeFilterCount({ awaiting_reply: true }, false)).toBe(0)
   })
 
   it('text, the queue, the toggles and the sort are not filters', () => {
@@ -431,6 +481,13 @@ describe('clearing', () => {
     expect(s.page).toBeUndefined()
   })
 
+  it('the awaiting chip clears awaiting_reply and nothing else', () => {
+    const s = clearFilter({ ...full, awaiting_reply: true }, 'awaiting')
+    expect(s.awaiting_reply).toBeUndefined()
+    expect(s.priority).toEqual(['high'])
+    expect(s.page).toBeUndefined()
+  })
+
   it('the Created chip clears both ends', () => {
     const s = clearFilter(full, 'created')
     expect(s.created_from).toBeUndefined()
@@ -444,7 +501,8 @@ describe('clearing', () => {
 
   it('Clear all clears every filter, and leaves the search text, queue and sort alone', () => {
     const s = clearAll(full)
-    expect(activeFilterCount(s)).toBe(0)
+    expect(activeFilterCount(clearAll({ ...full, awaiting_reply: true }))).toBe(0)
+    expect(clearAll({ ...full, awaiting_reply: true }).awaiting_reply).toBeUndefined()
     expect(s).toMatchObject({ q: 'x', scope: 'all', sort: 'subject', order: 'asc' })
     expect(s.page).toBeUndefined()
   })

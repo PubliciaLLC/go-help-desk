@@ -825,3 +825,50 @@ export interface TicketSLA {
   resolution: SLATargetStatus
   earlier?: SLAEarlierRecord
 }
+
+// --- Dashboard (#675) -------------------------------------------------------
+
+// The cells of the queue strip. The server may later send a key this build does
+// not know; the page ignores it (see lib/dashboard.ts).
+export type QueueKey =
+  | 'assigned_to_me'
+  | 'my_groups'
+  | 'sla_breached'
+  | 'sla_at_risk'
+  | 'awaiting_my_reply'
+  | 'my_tickets'
+
+export interface QueueCount {
+  key: string
+  count: number
+}
+
+export type AttentionReason = 'breached' | 'at_risk' | 'unassigned' | 'reopened'
+
+// `since` is the instant the row's age is measured from: the ticket's created_at,
+// or for a reopened ticket the moment it was reopened. `ticket` is what GET
+// /tickets sends this caller for it.
+export interface AttentionItem {
+  reason: AttentionReason
+  since: string
+  ticket: Ticket
+}
+
+export interface VolumeDay {
+  date: string // YYYY-MM-DD, a calendar day in `tz`
+  created: number
+  resolved: number
+}
+
+export interface DashboardVolume {
+  tz: string
+  days: VolumeDay[]
+}
+
+// null is "not part of your dashboard" (a requester's attention and volume),
+// [] is "nothing to show".
+export interface Dashboard {
+  queues: QueueCount[]
+  attention: AttentionItem[] | null
+  volume: DashboardVolume | null
+}

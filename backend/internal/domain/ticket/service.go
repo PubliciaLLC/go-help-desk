@@ -3376,6 +3376,20 @@ func (s *Service) ListFilteredWithMeta(ctx context.Context, f Filter) (ListResul
 	return s.store.ListFilteredWithMeta(ctx, f)
 }
 
+// CountFiltered is how many tickets ListFiltered would return for f. Like
+// ListFiltered it applies the Filter it is given and does not re-derive the
+// actor's authority.
+func (s *Service) CountFiltered(ctx context.Context, f Filter) (int64, error) {
+	return s.store.CountFiltered(ctx, f)
+}
+
+// VolumeByDay is Store.VolumeByDay: the tickets created and resolved on each of
+// the 30 days ending today in tz, over what f lets its actor see. Like
+// CountFiltered it applies the Filter it is given.
+func (s *Service) VolumeByDay(ctx context.Context, f Filter, tz string, now time.Time) ([]DayVolume, error) {
+	return s.store.VolumeByDay(ctx, f, tz, now)
+}
+
 // ReplyMatches is Store.ReplyMatches: the reply each ticket of a page matched
 // through, read with the same Filter that listed them.
 func (s *Service) ReplyMatches(ctx context.Context, f Filter, ticketIDs []uuid.UUID) (map[uuid.UUID]ReplyMatch, error) {

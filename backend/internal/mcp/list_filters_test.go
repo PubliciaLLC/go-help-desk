@@ -79,6 +79,18 @@ func TestBuildListFilter_IncludeClosedFalseLeavesOutClosed(t *testing.T) {
 	require.False(t, f.ExcludeClosed, "closed tickets are listed unless asked otherwise, as before")
 }
 
+func TestBuildListFilter_AwaitingReply(t *testing.T) {
+	f, err := buildListFilter(map[string]any{"awaiting_reply": true}, ticket.VisibilityAll, uuid.New())
+	require.NoError(t, err)
+	require.True(t, f.AwaitingReply)
+
+	for _, args := range []map[string]any{{}, {"awaiting_reply": false}, {"awaiting_reply": nil}} {
+		f, err = buildListFilter(args, ticket.VisibilityAll, uuid.New())
+		require.NoError(t, err)
+		require.False(t, f.AwaitingReply, "%v", args)
+	}
+}
+
 // status_id (one) predates status_ids and keeps working, alone and beside it.
 func TestBuildListFilter_StatusIDStillWorksBesideStatusIDs(t *testing.T) {
 	one, two := uuid.New(), uuid.New()
@@ -139,6 +151,9 @@ func TestBuildListFilter_RejectsWhatTheParserRejects(t *testing.T) {
 		{"a number in a list of ids", map[string]any{"status_ids": []any{5.0}}, "invalid status_id"},
 		{"a string for a bool", map[string]any{"search_replies": "yes"}, "invalid search_replies"},
 		{"a string for include_closed", map[string]any{"include_closed": "no"}, "invalid include_closed"},
+		{"a string for awaiting_reply", map[string]any{"awaiting_reply": "true"}, "invalid awaiting_reply"},
+		{"a number for awaiting_reply", map[string]any{"awaiting_reply": 1.0}, "invalid awaiting_reply"},
+		{"an object for awaiting_reply", map[string]any{"awaiting_reply": map[string]any{}}, "invalid awaiting_reply"},
 		{"a number for sort", map[string]any{"sort": 3.0}, "invalid sort"},
 		{"a string for limit", map[string]any{"limit": "100"}, "invalid limit"},
 		{"a bool for limit", map[string]any{"limit": true}, "invalid limit"},
@@ -366,9 +381,13 @@ func TestToolSchema_ListTicketsAdvertisesTheFilters(t *testing.T) {
 		"assignee_user_id", "status_id", "priority", "category_id", "q", "search_replies", "limit", "offset", // as before
 		"status_ids", "reporter_id", "requester", "created_after", "created_before", "updated_after", "updated_before",
 		"type_id", "item_id", "assignee_group_id", "include_closed", "source_channel", "sla", "sort", "order",
+		"awaiting_reply",
 	} {
 		require.Contains(t, props, name)
 	}
+	aw, ok := props["awaiting_reply"].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "boolean", aw["type"], "awaiting_reply is a JSON boolean, like include_closed")
 	require.NotContains(t, props, "include_internal", "it is not an argument")
 
 	for _, name := range []string{"status_ids", "source_channel"} {

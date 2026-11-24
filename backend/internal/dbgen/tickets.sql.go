@@ -126,6 +126,319 @@ func (q *Queries) CountGuestAttachments(ctx context.Context, ticketID uuid.UUID)
 	return count, err
 }
 
+const countTicketsFiltered = `-- name: CountTicketsFiltered :one
+WITH reply_hits AS (
+  SELECT DISTINCT m.ticket_id FROM (
+    SELECT r.ticket_id
+    FROM ticket_replies r
+    JOIN tickets rt ON rt.id = r.ticket_id
+    WHERE $34::bool
+      AND $33::text <> ''
+      AND r.body_tsv @@ to_tsquery('english', $33::text)
+      AND ($35::bool OR NOT r.internal)
+      AND (
+        $4::bool
+        OR ($5::bool AND rt.reporter_user_id = $6::uuid)
+        OR (
+          NOT $4::bool
+          AND NOT $5::bool
+          AND (
+            rt.reporter_user_id = $6::uuid
+            OR rt.assignee_user_id = $6::uuid
+            -- The same arrays as the main query's scope below, for the same reason
+            -- given there, and the same rule.
+            OR rt.assignee_group_id = ANY($7::uuid[])
+            OR rt.category_id = ANY($8::uuid[])
+            OR (rt.type_id = ANY($9::uuid[])
+                AND (rt.category_id, rt.type_id) IN (SELECT c.id, ty.id
+                    FROM unnest($10::uuid[]) WITH ORDINALITY AS c(id, n)
+                    JOIN unnest($9::uuid[]) WITH ORDINALITY AS ty(id, n) ON ty.n = c.n))
+          )
+        )
+      )
+    ORDER BY r.created_at DESC, r.id
+    LIMIT $36
+  ) m
+)
+SELECT count(*)
+FROM tickets t
+LEFT JOIN LATERAL (
+  SELECT CASE
+           WHEN e.response   >= make_interval(mins => p.response_target_min)
+             OR e.resolution >= make_interval(mins => p.resolution_target_min) THEN 0
+           WHEN e.response   >= make_interval(secs => (p.response_target_min::bigint   * 48)::double precision)
+             OR e.resolution >= make_interval(secs => (p.resolution_target_min::bigint * 48)::double precision) THEN 1
+           ELSE 2
+         END AS bucket
+  FROM sla_records r
+  JOIN sla_policies p ON p.id = r.policy_id
+  CROSS JOIN LATERAL (
+    SELECT
+      CASE WHEN r.first_response_at IS NOT NULL AND r.response_elapsed_at_met_seconds IS NOT NULL
+           THEN make_interval(secs => r.response_elapsed_at_met_seconds::double precision)
+           ELSE LEAST(COALESCE(t.pending_since, COALESCE(r.first_response_at, $1::timestamptz)),
+                      COALESCE(r.first_response_at, $1::timestamptz))
+                - (COALESCE(r.started_at, t.created_at)
+                   + make_interval(secs => (t.sla_paused_seconds - r.paused_seconds_at_start)::double precision))
+      END AS response,
+      CASE WHEN r.resolved_at IS NOT NULL AND r.resolution_elapsed_at_met_seconds IS NOT NULL
+           THEN make_interval(secs => r.resolution_elapsed_at_met_seconds::double precision)
+           ELSE LEAST(COALESCE(t.pending_since, COALESCE(r.resolved_at, $1::timestamptz)),
+                      COALESCE(r.resolved_at, $1::timestamptz))
+                - (COALESCE(r.started_at, t.created_at)
+                   + make_interval(secs => (t.sla_paused_seconds - r.paused_seconds_at_start)::double precision))
+      END AS resolution
+  ) e
+  WHERE ($2::text <> '' OR $3::text = 'sla')
+    AND r.ticket_id = t.id
+    AND r.superseded_at IS NULL
+) sb ON TRUE
+WHERE
+  -- visibility: begin
+  (
+    $4::bool
+    OR (
+      $5::bool
+      AND t.reporter_user_id = $6::uuid
+    )
+    OR (
+      NOT $4::bool
+      AND NOT $5::bool
+      AND (
+        t.reporter_user_id = $6::uuid
+        OR t.assignee_user_id = $6::uuid
+        -- The caller's groups and the categories and types those groups cover
+        -- arrive as plain arrays, read by the store just before this runs, for
+        -- the reason given at mine_group_ids below. As subqueries the planner
+        -- could not tell a staff member in no group from one in every group,
+        -- assumed most tickets match, and walked the whole of tickets_created_at_idx
+        -- discarding every row that did not: 1M tickets read 205k buffers and took
+        -- 0.9 s for a staff member with 10 assignments, and the cost grew with the
+        -- table. As arrays an empty set folds away and each arm that remains can
+        -- use an index (reporter, assignee, group, category).
+        -- TestListFiltered_ScopedVisibility holds the rule to a hand-derived answer
+        -- over every kind of scope.
+        OR t.assignee_group_id = ANY($7::uuid[])
+        OR t.category_id = ANY($8::uuid[])
+        -- One type of a category: the type conjunct is what lets an index
+        -- (tickets_type_id_idx) serve the arm, and the pair test is the rule.
+        -- The conjunct is implied by the pair, so it never changes the answer.
+        -- A ticket with no type never matches the row comparison, as it never
+        -- matched gs.type_id = t.type_id.
+        OR (t.type_id = ANY($9::uuid[])
+            AND (t.category_id, t.type_id) IN (SELECT c.id, ty.id
+                FROM unnest($10::uuid[]) WITH ORDINALITY AS c(id, n)
+                JOIN unnest($9::uuid[]) WITH ORDINALITY AS ty(id, n) ON ty.n = c.n))
+      )
+    )
+  )
+  -- visibility: end
+  -- queue: 'any' | 'mine' | 'assigned_to_me' | 'my_groups' | 'unassigned'. Set by
+  -- the handler, never the caller. (#676: assigned_to_me and my_groups are the two
+  -- halves of mine; held_by below splits my_groups three ways.)
+  AND (
+    $11::text = 'any'
+    OR ($11::text = 'unassigned'
+        AND t.assignee_user_id IS NULL AND t.assignee_group_id IS NULL)
+    OR ($11::text = 'assigned_to_me'
+        AND t.assignee_user_id = $6::uuid)
+    OR ($11::text = 'my_groups'
+        AND t.assignee_group_id = ANY($12::uuid[]))
+    -- mine_group_ids is the caller's groups, read by the store just before this
+    -- runs and passed as a plain array. That is deliberate: the planner cannot
+    -- know how many groups a subquery will return, assumes a lot, and then walks
+    -- the whole created_at index looking for rows a user with few or no
+    -- assignments does not have (83-95 ms at 200k tickets for an administrator).
+    -- Given the array itself it sees an empty or two-element list, and drives the
+    -- queue from the two assignee indexes instead (0.8 ms).
+    OR ($11::text = 'mine' AND (
+        t.assignee_user_id = $6::uuid
+        OR t.assignee_group_id = ANY($12::uuid[])))
+  )
+  AND (cardinality($13::uuid[]) = 0 OR t.status_id = ANY($13::uuid[]))
+  -- IS DISTINCT FROM, not <>: if the Closed status were ever missing the
+  -- subquery is NULL, and <> would then exclude every ticket.
+  AND (NOT $14::bool
+       OR t.status_id IS DISTINCT FROM (SELECT s.id FROM statuses s WHERE s.name = 'Closed' AND s.kind = 'system'))
+  AND (cardinality($15::text[]) = 0 OR t.priority = ANY($15::text[]))
+  AND ($16::uuid IS NULL OR t.category_id = $16::uuid)
+  AND ($17::uuid IS NULL OR t.type_id = $17::uuid)
+  AND ($18::uuid IS NULL OR t.item_id = $18::uuid)
+  AND ($19::uuid IS NULL OR t.assignee_user_id = $19::uuid)
+  AND ($20::uuid IS NULL OR t.assignee_group_id = $20::uuid)
+  -- held_by (#676): who personally holds the ticket, relative to the caller.
+  -- '' is no restriction. Only the assignee user is read, never the group.
+  AND ($21::text = ''
+       OR ($21::text = 'nobody' AND t.assignee_user_id IS NULL)
+       OR ($21::text = 'me' AND t.assignee_user_id = $6::uuid)
+       OR ($21::text = 'others' AND t.assignee_user_id IS NOT NULL
+           AND t.assignee_user_id <> $6::uuid))
+  -- awaiting_reply (#675): not Resolved or Closed, and the newest public reply
+  -- is not the help desk's (no reply, a guest reply with no author, or an
+  -- author who is a requester, all wait for staff). The author's role is read
+  -- whether or not the account is soft-deleted, on purpose: no deleted_at test.
+  -- Internal notes are never read. Staff and administrators only: the gate is
+  -- Filter.AllowedFor, not this clause.
+  AND (NOT $22::bool OR (
+    t.status_id IS DISTINCT FROM (SELECT s.id FROM statuses s WHERE s.name = 'Closed'   AND s.kind = 'system')
+    AND t.status_id IS DISTINCT FROM (SELECT s.id FROM statuses s WHERE s.name = 'Resolved' AND s.kind = 'system')
+    AND NOT COALESCE((SELECT u.role IN ('admin', 'staff')
+                      FROM ticket_replies r LEFT JOIN users u ON u.id = r.author_id
+                      WHERE r.ticket_id = t.id AND NOT r.internal
+                      ORDER BY r.created_at DESC, r.id DESC LIMIT 1), false)))
+  -- reopened_after (#675): server-set, the dashboard's recently reopened
+  -- window. NULL is not filtered, and a never-reopened ticket has no instant.
+  AND ($23::timestamptz IS NULL OR t.last_reopened_at >= $23::timestamptz)
+  AND ($24::uuid IS NULL OR t.reporter_user_id = $24::uuid)
+  -- requester_pattern is '%' || LIKE-escaped text || '%', built in the store.
+  -- It matches the ticket's guest fields and the reporting account's name and
+  -- email. Deleted and disabled accounts are included on purpose: their tickets
+  -- still exist and the ticket page still names them.
+  AND ($25::text IS NULL
+       OR t.guest_name ILIKE $25::text
+       OR t.guest_email ILIKE $25::text
+       -- ARRAY(subquery), not IN (subquery), so all three arms can be indexes
+       -- feeding one BitmapOr (see the queue arm above for the same reason).
+       OR t.reporter_user_id = ANY(ARRAY(SELECT u.id FROM users u
+                                         WHERE u.display_name ILIKE $25::text
+                                            OR u.email ILIKE $25::text)))
+  AND ($26::timestamptz IS NULL OR t.created_at >= $26::timestamptz)
+  AND ($27::timestamptz IS NULL OR t.created_at < $27::timestamptz)
+  AND ($28::timestamptz IS NULL OR t.updated_at >= $28::timestamptz)
+  AND ($29::timestamptz IS NULL OR t.updated_at < $29::timestamptz)
+  AND (cardinality($30::text[]) = 0 OR t.source_channel = ANY($30::text[]))
+  AND ($2::text = ''
+       OR ($2::text = 'breached' AND sb.bucket = 0)
+       OR ($2::text = 'at_risk' AND sb.bucket = 1))
+  -- ` + "`" + `searching` + "`" + ` says whether the caller asked for a search at all, which is
+  -- NOT the same as search_query being empty. A term like "???" contains no
+  -- indexable tokens, so buildSearchTSQuery yields "" — and keying off that
+  -- alone made the whole clause vanish and returned every visible ticket as
+  -- though each one matched. A search that tokenises to nothing must match on
+  -- the tracking number or not at all.
+  AND (
+    NOT $31::bool
+    OR t.tracking_number ILIKE $32::text
+    OR (
+      $33::text <> ''
+      AND t.search_vector @@ to_tsquery('english', $33::text)
+    )
+    OR t.id IN (SELECT ticket_id FROM reply_hits)
+  )
+`
+
+type CountTicketsFilteredParams struct {
+	Now                  time.Time      `json:"now"`
+	Sla                  string         `json:"sla"`
+	SortKey              string         `json:"sort_key"`
+	Unrestricted         bool           `json:"unrestricted"`
+	ReporterOnly         bool           `json:"reporter_only"`
+	ActorID              uuid.UUID      `json:"actor_id"`
+	ScopeGroupIds        []uuid.UUID    `json:"scope_group_ids"`
+	ScopeCategoryIds     []uuid.UUID    `json:"scope_category_ids"`
+	ScopeTypeIds         []uuid.UUID    `json:"scope_type_ids"`
+	ScopeTypeCategoryIds []uuid.UUID    `json:"scope_type_category_ids"`
+	Queue                string         `json:"queue"`
+	MineGroupIds         []uuid.UUID    `json:"mine_group_ids"`
+	StatusIds            []uuid.UUID    `json:"status_ids"`
+	ExcludeClosed        bool           `json:"exclude_closed"`
+	Priorities           []string       `json:"priorities"`
+	CategoryID           uuid.NullUUID  `json:"category_id"`
+	TypeID               uuid.NullUUID  `json:"type_id"`
+	ItemID               uuid.NullUUID  `json:"item_id"`
+	AssigneeUserID       uuid.NullUUID  `json:"assignee_user_id"`
+	AssigneeGroupID      uuid.NullUUID  `json:"assignee_group_id"`
+	HeldBy               string         `json:"held_by"`
+	AwaitingReply        bool           `json:"awaiting_reply"`
+	ReopenedAfter        sql.NullTime   `json:"reopened_after"`
+	ReporterID           uuid.NullUUID  `json:"reporter_id"`
+	RequesterPattern     sql.NullString `json:"requester_pattern"`
+	CreatedAfter         sql.NullTime   `json:"created_after"`
+	CreatedBefore        sql.NullTime   `json:"created_before"`
+	UpdatedAfter         sql.NullTime   `json:"updated_after"`
+	UpdatedBefore        sql.NullTime   `json:"updated_before"`
+	SourceChannels       []string       `json:"source_channels"`
+	Searching            bool           `json:"searching"`
+	TrackingPattern      string         `json:"tracking_pattern"`
+	SearchQuery          string         `json:"search_query"`
+	SearchReplies        bool           `json:"search_replies"`
+	IncludeInternal      bool           `json:"include_internal"`
+	ReplyCap             int32          `json:"reply_cap"`
+}
+
+// How many tickets ListTicketsFiltered would return for the same parameters,
+// without paging: the dashboard's counts (#675). It is that query with the select
+// list replaced by count(*) and everything from ORDER BY to the end removed,
+// the same reply_hits CTE, SLA lateral and WHERE, so the store fills both from
+// one function. The two are held equal by TestSQL_DashboardQueriesShareTheListRule
+// (comments and whitespace aside): change one, copy the change to the other.
+// Single values are NULL-means-absent and arrays are cardinality(...) = 0, so
+// one prepared statement serves every combination. The store always passes a
+// non-nil array.
+//
+// The SLA bucket joins the CURRENT record only and is computed only when the
+// filter or the sort asks for it (the first condition in the lateral is a
+// parameter-only test, so the planner evaluates it once, not per ticket). It is
+// a lateral join and not a correlated subquery because the planner can hash
+// join it: as a subquery, sorting by SLA took 1 s at 200k instead of 0.25 s. It
+// reproduces sla.StatusFor, the live read the list indicator shows, NOT the
+// breach stamps: StatusFor never reads them, and a target met on time keeps
+// its frozen reading. Per target, with elapsed as sla.ElapsedFrom has it
+// (the clock stops at pending_since or at the instant the target was met):
+//
+//	a met target with a frozen reading  -> that reading
+//	anything else                       -> LEAST(COALESCE(pending_since, at), at)
+//	                                       - start - pause, with at = the met
+//	                                       instant, or now while outstanding
+//
+// 0 = a target at or past 100% (red), 1 = otherwise one at or past 80%
+// (amber, exactly target_min * 48 seconds), 2 = everything else. This is the
+// third copy of the formula, after sla.ElapsedFrom and ListSLABreachCandidates;
+// TestListFiltered_SLAAgreesWithStatusFor holds it to the first.
+func (q *Queries) CountTicketsFiltered(ctx context.Context, arg CountTicketsFilteredParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countTicketsFiltered,
+		arg.Now,
+		arg.Sla,
+		arg.SortKey,
+		arg.Unrestricted,
+		arg.ReporterOnly,
+		arg.ActorID,
+		pq.Array(arg.ScopeGroupIds),
+		pq.Array(arg.ScopeCategoryIds),
+		pq.Array(arg.ScopeTypeIds),
+		pq.Array(arg.ScopeTypeCategoryIds),
+		arg.Queue,
+		pq.Array(arg.MineGroupIds),
+		pq.Array(arg.StatusIds),
+		arg.ExcludeClosed,
+		pq.Array(arg.Priorities),
+		arg.CategoryID,
+		arg.TypeID,
+		arg.ItemID,
+		arg.AssigneeUserID,
+		arg.AssigneeGroupID,
+		arg.HeldBy,
+		arg.AwaitingReply,
+		arg.ReopenedAfter,
+		arg.ReporterID,
+		arg.RequesterPattern,
+		arg.CreatedAfter,
+		arg.CreatedBefore,
+		arg.UpdatedAfter,
+		arg.UpdatedBefore,
+		pq.Array(arg.SourceChannels),
+		arg.Searching,
+		arg.TrackingPattern,
+		arg.SearchQuery,
+		arg.SearchReplies,
+		arg.IncludeInternal,
+		arg.ReplyCap,
+	)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const createAttachment = `-- name: CreateAttachment :exec
 INSERT INTO attachments (id, ticket_id, filename, mime_type, size_bytes, storage_path, created_at,
                          detected_mime, sha256, virus_name, content_mismatch, uploaded_by_guest)
@@ -911,10 +1224,10 @@ WITH reply_hits AS (
     SELECT r.ticket_id
     FROM ticket_replies r
     JOIN tickets rt ON rt.id = r.ticket_id
-    WHERE $35::bool
-      AND $31::text <> ''
-      AND r.body_tsv @@ to_tsquery('english', $31::text)
-      AND ($36::bool OR NOT r.internal)
+    WHERE $37::bool
+      AND $33::text <> ''
+      AND r.body_tsv @@ to_tsquery('english', $33::text)
+      AND ($38::bool OR NOT r.internal)
       AND (
         $4::bool
         OR ($5::bool AND rt.reporter_user_id = $6::uuid)
@@ -936,7 +1249,7 @@ WITH reply_hits AS (
         )
       )
     ORDER BY r.created_at DESC, r.id
-    LIMIT $37
+    LIMIT $39
   ) m
 )
 SELECT t.id, t.tracking_number, t.subject, t.description, t.category_id, t.type_id, t.item_id, t.priority, t.status_id, t.assignee_user_id, t.assignee_group_id, t.reporter_user_id, t.guest_email, t.resolution_notes, t.resolved_at, t.closed_at, t.created_at, t.updated_at, t.guest_name, t.guest_phone, t.pending_since, t.sla_paused_seconds, t.reopen_count, t.last_reopened_at, t.paused_seconds_at_last_reopen, t.description_format, t.source_channel
@@ -973,6 +1286,7 @@ LEFT JOIN LATERAL (
     AND r.superseded_at IS NULL
 ) sb ON TRUE
 WHERE
+  -- visibility: begin
   (
     $4::bool
     OR (
@@ -1010,6 +1324,7 @@ WHERE
       )
     )
   )
+  -- visibility: end
   -- queue: 'any' | 'mine' | 'assigned_to_me' | 'my_groups' | 'unassigned'. Set by
   -- the handler, never the caller. (#676: assigned_to_me and my_groups are the two
   -- halves of mine; held_by below splits my_groups three ways.)
@@ -1050,24 +1365,40 @@ WHERE
        OR ($21::text = 'me' AND t.assignee_user_id = $6::uuid)
        OR ($21::text = 'others' AND t.assignee_user_id IS NOT NULL
            AND t.assignee_user_id <> $6::uuid))
-  AND ($22::uuid IS NULL OR t.reporter_user_id = $22::uuid)
+  -- awaiting_reply (#675): not Resolved or Closed, and the newest public reply
+  -- is not the help desk's (no reply, a guest reply with no author, or an
+  -- author who is a requester, all wait for staff). The author's role is read
+  -- whether or not the account is soft-deleted, on purpose: no deleted_at test.
+  -- Internal notes are never read. Staff and administrators only: the gate is
+  -- Filter.AllowedFor, not this clause.
+  AND (NOT $22::bool OR (
+    t.status_id IS DISTINCT FROM (SELECT s.id FROM statuses s WHERE s.name = 'Closed'   AND s.kind = 'system')
+    AND t.status_id IS DISTINCT FROM (SELECT s.id FROM statuses s WHERE s.name = 'Resolved' AND s.kind = 'system')
+    AND NOT COALESCE((SELECT u.role IN ('admin', 'staff')
+                      FROM ticket_replies r LEFT JOIN users u ON u.id = r.author_id
+                      WHERE r.ticket_id = t.id AND NOT r.internal
+                      ORDER BY r.created_at DESC, r.id DESC LIMIT 1), false)))
+  -- reopened_after (#675): server-set, the dashboard's recently reopened
+  -- window. NULL is not filtered, and a never-reopened ticket has no instant.
+  AND ($23::timestamptz IS NULL OR t.last_reopened_at >= $23::timestamptz)
+  AND ($24::uuid IS NULL OR t.reporter_user_id = $24::uuid)
   -- requester_pattern is '%' || LIKE-escaped text || '%', built in the store.
   -- It matches the ticket's guest fields and the reporting account's name and
   -- email. Deleted and disabled accounts are included on purpose: their tickets
   -- still exist and the ticket page still names them.
-  AND ($23::text IS NULL
-       OR t.guest_name ILIKE $23::text
-       OR t.guest_email ILIKE $23::text
+  AND ($25::text IS NULL
+       OR t.guest_name ILIKE $25::text
+       OR t.guest_email ILIKE $25::text
        -- ARRAY(subquery), not IN (subquery), so all three arms can be indexes
        -- feeding one BitmapOr (see the queue arm above for the same reason).
        OR t.reporter_user_id = ANY(ARRAY(SELECT u.id FROM users u
-                                         WHERE u.display_name ILIKE $23::text
-                                            OR u.email ILIKE $23::text)))
-  AND ($24::timestamptz IS NULL OR t.created_at >= $24::timestamptz)
-  AND ($25::timestamptz IS NULL OR t.created_at < $25::timestamptz)
-  AND ($26::timestamptz IS NULL OR t.updated_at >= $26::timestamptz)
-  AND ($27::timestamptz IS NULL OR t.updated_at < $27::timestamptz)
-  AND (cardinality($28::text[]) = 0 OR t.source_channel = ANY($28::text[]))
+                                         WHERE u.display_name ILIKE $25::text
+                                            OR u.email ILIKE $25::text)))
+  AND ($26::timestamptz IS NULL OR t.created_at >= $26::timestamptz)
+  AND ($27::timestamptz IS NULL OR t.created_at < $27::timestamptz)
+  AND ($28::timestamptz IS NULL OR t.updated_at >= $28::timestamptz)
+  AND ($29::timestamptz IS NULL OR t.updated_at < $29::timestamptz)
+  AND (cardinality($30::text[]) = 0 OR t.source_channel = ANY($30::text[]))
   AND ($2::text = ''
        OR ($2::text = 'breached' AND sb.bucket = 0)
        OR ($2::text = 'at_risk' AND sb.bucket = 1))
@@ -1078,39 +1409,39 @@ WHERE
   -- though each one matched. A search that tokenises to nothing must match on
   -- the tracking number or not at all.
   AND (
-    NOT $29::bool
-    OR t.tracking_number ILIKE $30::text
+    NOT $31::bool
+    OR t.tracking_number ILIKE $32::text
     OR (
-      $31::text <> ''
-      AND t.search_vector @@ to_tsquery('english', $31::text)
+      $33::text <> ''
+      AND t.search_vector @@ to_tsquery('english', $33::text)
     )
     OR t.id IN (SELECT ticket_id FROM reply_hits)
   )
 ORDER BY
-  CASE WHEN $3::text = 'relevance' AND $31::text <> ''
-       THEN ts_rank(t.search_vector, to_tsquery('english', $31::text)) END DESC,
-  CASE WHEN $3::text = 'number' AND $32::text = 'asc' THEN t.tracking_number END ASC,
-  CASE WHEN $3::text = 'number' AND $32::text = 'desc' THEN t.tracking_number END DESC,
-  CASE WHEN $3::text = 'subject' AND $32::text = 'asc' THEN lower(t.subject) END ASC,
-  CASE WHEN $3::text = 'subject' AND $32::text = 'desc' THEN lower(t.subject) END DESC,
+  CASE WHEN $3::text = 'relevance' AND $33::text <> ''
+       THEN ts_rank(t.search_vector, to_tsquery('english', $33::text)) END DESC,
+  CASE WHEN $3::text = 'number' AND $34::text = 'asc' THEN t.tracking_number END ASC,
+  CASE WHEN $3::text = 'number' AND $34::text = 'desc' THEN t.tracking_number END DESC,
+  CASE WHEN $3::text = 'subject' AND $34::text = 'asc' THEN lower(t.subject) END ASC,
+  CASE WHEN $3::text = 'subject' AND $34::text = 'desc' THEN lower(t.subject) END DESC,
   -- Status order is each status's place in (sort_order, name), looked up in an
   -- array built once per query. A join or a subquery per ticket cost 85 to
   -- 684 ms at 200k when sorting by status, and a join cost every other list too.
   CASE WHEN $3::text = 'status'
        THEN array_position((SELECT array_agg(s.id ORDER BY s.sort_order, s.name) FROM statuses s), t.status_id)
-            * CASE WHEN $32::text = 'asc' THEN 1 ELSE -1 END END ASC,
+            * CASE WHEN $34::text = 'asc' THEN 1 ELSE -1 END END ASC,
   CASE WHEN $3::text = 'priority'
        THEN (CASE t.priority WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END)
-            * CASE WHEN $32::text = 'asc' THEN 1 ELSE -1 END END ASC,
+            * CASE WHEN $34::text = 'asc' THEN 1 ELSE -1 END END ASC,
   CASE WHEN $3::text = 'sla'
-       THEN COALESCE(sb.bucket, 2) * CASE WHEN $32::text = 'asc' THEN 1 ELSE -1 END END ASC,
-  CASE WHEN $3::text = 'created' AND $32::text = 'asc' THEN t.created_at END ASC,
-  CASE WHEN $3::text = 'created' AND $32::text = 'desc' THEN t.created_at END DESC,
-  CASE WHEN $3::text = 'updated' AND $32::text = 'asc' THEN t.updated_at END ASC,
-  CASE WHEN $3::text = 'updated' AND $32::text = 'desc' THEN t.updated_at END DESC,
+       THEN COALESCE(sb.bucket, 2) * CASE WHEN $34::text = 'asc' THEN 1 ELSE -1 END END ASC,
+  CASE WHEN $3::text = 'created' AND $34::text = 'asc' THEN t.created_at END ASC,
+  CASE WHEN $3::text = 'created' AND $34::text = 'desc' THEN t.created_at END DESC,
+  CASE WHEN $3::text = 'updated' AND $34::text = 'asc' THEN t.updated_at END ASC,
+  CASE WHEN $3::text = 'updated' AND $34::text = 'desc' THEN t.updated_at END DESC,
   t.created_at DESC,
   t.id
-LIMIT $34 OFFSET $33
+LIMIT $36 OFFSET $35
 `
 
 type ListTicketsFilteredParams struct {
@@ -1135,6 +1466,8 @@ type ListTicketsFilteredParams struct {
 	AssigneeUserID       uuid.NullUUID  `json:"assignee_user_id"`
 	AssigneeGroupID      uuid.NullUUID  `json:"assignee_group_id"`
 	HeldBy               string         `json:"held_by"`
+	AwaitingReply        bool           `json:"awaiting_reply"`
+	ReopenedAfter        sql.NullTime   `json:"reopened_after"`
 	ReporterID           uuid.NullUUID  `json:"reporter_id"`
 	RequesterPattern     sql.NullString `json:"requester_pattern"`
 	CreatedAfter         sql.NullTime   `json:"created_after"`
@@ -1277,6 +1610,8 @@ func (q *Queries) ListTicketsFiltered(ctx context.Context, arg ListTicketsFilter
 		arg.AssigneeUserID,
 		arg.AssigneeGroupID,
 		arg.HeldBy,
+		arg.AwaitingReply,
+		arg.ReopenedAfter,
 		arg.ReporterID,
 		arg.RequesterPattern,
 		arg.CreatedAfter,
@@ -1368,6 +1703,133 @@ func (q *Queries) NextTicketSeq(ctx context.Context) (int64, error) {
 	var column_1 int64
 	err := row.Scan(&column_1)
 	return column_1, err
+}
+
+const ticketVolumeByDay = `-- name: TicketVolumeByDay :many
+WITH bounds AS (
+  SELECT date_trunc('day', $2::timestamptz AT TIME ZONE $1::text) - interval '29 days' AS first_day
+), w AS (
+  -- first_day is a local date-time; since_at is the instant it begins in tz
+  SELECT first_day, first_day AT TIME ZONE $1::text AS since_at FROM bounds
+), events AS (
+  SELECT (t.created_at AT TIME ZONE $1::text)::date AS day, 1 AS created, 0 AS resolved
+  FROM tickets t, w
+  WHERE
+  -- visibility: begin
+  (
+    $3::bool
+    OR (
+      $4::bool
+      AND t.reporter_user_id = $5::uuid
+    )
+    OR (
+      NOT $3::bool
+      AND NOT $4::bool
+      AND (
+        t.reporter_user_id = $5::uuid
+        OR t.assignee_user_id = $5::uuid
+        OR t.assignee_group_id = ANY($6::uuid[])
+        OR t.category_id = ANY($7::uuid[])
+        OR (t.type_id = ANY($8::uuid[])
+            AND (t.category_id, t.type_id) IN (SELECT c.id, ty.id
+                FROM unnest($9::uuid[]) WITH ORDINALITY AS c(id, n)
+                JOIN unnest($8::uuid[]) WITH ORDINALITY AS ty(id, n) ON ty.n = c.n))
+      )
+    )
+  )
+  -- visibility: end
+  AND t.created_at >= w.since_at
+  UNION ALL
+  SELECT (COALESCE(t.resolved_at, t.closed_at) AT TIME ZONE $1::text)::date, 0, 1
+  FROM tickets t, w
+  WHERE
+  -- visibility: begin
+  (
+    $3::bool
+    OR (
+      $4::bool
+      AND t.reporter_user_id = $5::uuid
+    )
+    OR (
+      NOT $3::bool
+      AND NOT $4::bool
+      AND (
+        t.reporter_user_id = $5::uuid
+        OR t.assignee_user_id = $5::uuid
+        OR t.assignee_group_id = ANY($6::uuid[])
+        OR t.category_id = ANY($7::uuid[])
+        OR (t.type_id = ANY($8::uuid[])
+            AND (t.category_id, t.type_id) IN (SELECT c.id, ty.id
+                FROM unnest($9::uuid[]) WITH ORDINALITY AS c(id, n)
+                JOIN unnest($8::uuid[]) WITH ORDINALITY AS ty(id, n) ON ty.n = c.n))
+      )
+    )
+  )
+  -- visibility: end
+  AND COALESCE(t.resolved_at, t.closed_at) >= w.since_at
+)
+SELECT d::date AS day, COALESCE(sum(e.created), 0)::bigint AS created, COALESCE(sum(e.resolved), 0)::bigint AS resolved
+FROM w, generate_series(w.first_day, w.first_day + interval '29 days', interval '1 day') AS d
+LEFT JOIN events e ON e.day = d::date
+GROUP BY d ORDER BY d
+`
+
+type TicketVolumeByDayParams struct {
+	Tz                   string      `json:"tz"`
+	Now                  time.Time   `json:"now"`
+	Unrestricted         bool        `json:"unrestricted"`
+	ReporterOnly         bool        `json:"reporter_only"`
+	ActorID              uuid.UUID   `json:"actor_id"`
+	ScopeGroupIds        []uuid.UUID `json:"scope_group_ids"`
+	ScopeCategoryIds     []uuid.UUID `json:"scope_category_ids"`
+	ScopeTypeIds         []uuid.UUID `json:"scope_type_ids"`
+	ScopeTypeCategoryIds []uuid.UUID `json:"scope_type_category_ids"`
+}
+
+type TicketVolumeByDayRow struct {
+	Day      time.Time `json:"day"`
+	Created  int64     `json:"created"`
+	Resolved int64     `json:"resolved"`
+}
+
+// The dashboard's 30-day trend (#675, DESIGN.md "Volume trend"): per local day in
+// tz, ending with the day that contains now, the tickets created and the tickets
+// resolved. The visibility block is the list's, copied into both arms and pinned
+// to it by TestSQL_DashboardQueriesShareTheListRule. The resolved arm is served
+// by tickets_done_at_idx (000066), the created arm by tickets_created_at_idx.
+// tz is only ever a parameter of AT TIME ZONE; a name Postgres does not know
+// fails with SQLSTATE 22023, which the store maps to ErrUnknownTimeZone.
+func (q *Queries) TicketVolumeByDay(ctx context.Context, arg TicketVolumeByDayParams) ([]TicketVolumeByDayRow, error) {
+	rows, err := q.db.QueryContext(ctx, ticketVolumeByDay,
+		arg.Tz,
+		arg.Now,
+		arg.Unrestricted,
+		arg.ReporterOnly,
+		arg.ActorID,
+		pq.Array(arg.ScopeGroupIds),
+		pq.Array(arg.ScopeCategoryIds),
+		pq.Array(arg.ScopeTypeIds),
+		pq.Array(arg.ScopeTypeCategoryIds),
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []TicketVolumeByDayRow
+	for rows.Next() {
+		var i TicketVolumeByDayRow
+		if err := rows.Scan(&i.Day, &i.Created, &i.Resolved); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const unassignTicketsForGroup = `-- name: UnassignTicketsForGroup :many

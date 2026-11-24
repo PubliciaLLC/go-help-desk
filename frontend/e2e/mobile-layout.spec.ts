@@ -98,13 +98,19 @@ test.describe('shell + pages fit at 390 CSS pixels', () => {
 })
 
 test.describe('the sidebar is reachable, not just absent', () => {
+  // The shell's own navigation, which has no accessible name. The dashboard has
+  // navigation landmarks of its own (the queue strip, #675), each named.
+  // By role, so a drawer that is in the DOM but hidden is not counted, and
+  // intersected with "no aria-label" to leave out the named landmarks.
+  const sidebar = (page: Page) => page.getByRole('navigation').and(page.locator('nav:not([aria-label])'))
+
   test('a drawer trigger opens the navigation, and it closes again', async ({ page }) => {
     await mockApi(page)
     await page.goto('/dashboard')
 
     // The desktop sidebar's own nav must not be sitting in the page,
     // consuming width, at this viewport.
-    const nav = page.getByRole('navigation')
+    const nav = sidebar(page)
     await expect(nav).toBeHidden()
 
     const trigger = page.getByRole('button', { name: /menu|navigation/i })
@@ -116,10 +122,10 @@ test.describe('the sidebar is reachable, not just absent', () => {
     // Scoped to the nav landmark, not the whole page: DashboardPage has its
     // own cards linking to /tickets, so an unscoped name query is ambiguous.
     await trigger.click()
-    await expect(page.getByRole('navigation').getByRole('link', { name: 'Assigned to Me', exact: true })).toBeVisible()
+    await expect(sidebar(page).getByRole('link', { name: 'Assigned to Me', exact: true })).toBeVisible()
 
     await page.keyboard.press('Escape')
-    await expect(page.getByRole('navigation')).toBeHidden()
+    await expect(sidebar(page)).toBeHidden()
   })
 
   test('resizing past md closes an open drawer instead of leaving it trapped behind the sidebar', async ({ page }) => {
@@ -127,20 +133,20 @@ test.describe('the sidebar is reachable, not just absent', () => {
     await page.goto('/dashboard')
 
     await page.getByRole('button', { name: /menu|navigation/i }).click()
-    await expect(page.getByRole('navigation').getByRole('link', { name: 'Assigned to Me', exact: true })).toBeVisible()
+    await expect(sidebar(page).getByRole('link', { name: 'Assigned to Me', exact: true })).toBeVisible()
 
     // Widening past md (768px) is what a phone rotating to landscape, or a
     // window being resized, looks like. Without a listener for this, the
     // drawer stays open and its focus trap and overlay keep covering the now
     // otherwise-usable desktop layout underneath.
     await page.setViewportSize({ width: 1024, height: 800 })
-    await expect(page.getByRole('navigation')).toBeVisible()
+    await expect(sidebar(page)).toBeVisible()
 
     // Back below md: the drawer must not have silently reopened — the
     // permanent sidebar is what took its place, and only its own trigger
     // reopens the drawer again.
     await page.setViewportSize({ width: 390, height: 844 })
-    await expect(page.getByRole('navigation')).toBeHidden()
+    await expect(sidebar(page)).toBeHidden()
   })
 })
 

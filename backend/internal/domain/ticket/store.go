@@ -115,6 +115,16 @@ type Store interface {
 	// ListFilteredWithMeta is ListFiltered plus what the query could not do
 	// about reply text. ListFiltered is the same call without it.
 	ListFilteredWithMeta(ctx context.Context, f Filter) (ListResult, error)
+	// CountFiltered is how many tickets ListFiltered would return for f, without
+	// a page: it ignores Sort, Limit and Offset and never searches replies. The
+	// visibility rule is the list's, by the same SQL (#675).
+	CountFiltered(ctx context.Context, f Filter) (int64, error)
+	// VolumeByDay is how many tickets were created and how many resolved on
+	// each of the 30 local days in tz ending with the one that contains now,
+	// oldest first, every day present. Only f's visibility and actor are read:
+	// it is the list's own visibility rule, by the same SQL (#675). A zone
+	// Postgres does not know is ErrUnknownTimeZone.
+	VolumeByDay(ctx context.Context, f Filter, tz string, now time.Time) ([]DayVolume, error)
 	// ReplyMatches reads, for the tickets of one page of a ListFiltered result,
 	// the reply each matched through: at most one per ticket, absent for a ticket
 	// that did not match through a reply. It takes the same Filter, so

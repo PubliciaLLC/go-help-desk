@@ -2062,6 +2062,82 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Error'}
+  /api/v1/dashboard:
+    get:
+      operationId: getDashboard
+      summary: Read the dashboard's queue counts, needs-attention list and 30-day trend.
+      description: |
+        The numbers and rows behind the dashboard's blocks (#675). Every count and
+        every row is computed by the same path as GET /tickets: the caller's
+        visibility, the queue, and the list query's own filter, so a number here
+        is the length of the list it links to. With ticket scope enforcement on, a
+        staff member's numbers count only what their scope admits.
+        - queues: the queue strip. A reporting user gets one cell, my_tickets. Staff
+          and administrators get five: assigned_to_me, my_groups, awaiting_my_reply
+          and, while SLA tracking is on, sla_breached and sla_at_risk. The two SLA
+          cells count what is assigned to the caller; they are left out while SLA
+          tracking is off, and a failure to read that setting is treated as off.
+          A count is a plain number, 0 included.
+        - attention: up to five open tickets that want someone, for staff and
+          administrators; null for a reporting user. Each row names one reason and
+          the instant its age is measured from, and carries the ticket exactly as
+          GET /tickets returns it to this caller. The reasons, in order: breached and
+          at_risk (SLA tracking on, oldest first), unassigned (the Available queue
+          rule: administrators, and staff while Staff is ticked under Available),
+          and reopened (reopened in the last 7 days, most recently updated first). A ticket is
+          listed once, under its first reason. since is created_at for the first
+          three reasons and the time it was last reopened for reopened. An empty
+          list means nothing needs attention.
+        - volume: tickets created and resolved per day for the last 30 days, today
+          included, oldest first, counted in the time zone given by tz over every
+          ticket the caller can see; null for a reporting user. A day with nothing
+          is present with zeros. Resolved is resolved_at, or closed_at when the
+          ticket was closed without being resolved.
+        Nothing is cached on the server. A store failure answers 500 for the whole
+        response.
+      tags: ['Tickets']
+      x-ghd-handler: handleGetDashboard
+      security:
+        - sessionCookie: []
+        - apiKey: ['tickets:read']
+        - oauthClient: ['tickets:read']
+      x-ghd-roles: [admin, staff, user]
+      x-ghd-mfa: true
+      parameters:
+        - name: tz
+          in: query
+          required: false
+          description: >-
+            The IANA time zone the trend's days are counted in, for example Europe/London. Absent or empty is
+            UTC. At most 64 bytes of A-Z, a-z, 0-9, _, +, - and /. Any other value is 400 bad_request,
+            "invalid tz"; a name the database does not know is 400 bad_request, "unknown time zone", but only for
+            staff and administrators, the callers who get a trend: a requester runs no trend, so their zone is
+            checked for form only.
+          schema:
+            type: string
+            maxLength: 64
+            pattern: '^[A-Za-z0-9_+/-]*$'
+      responses:
+        '200':
+          description: The dashboard's blocks. attention and volume are null for a reporting user.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Dashboard'
+        '400':
+          description: '`bad_request` with the message "invalid tz" or "unknown time zone" (see the tz parameter).'
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          description: A store failure (`internal_error`) fails the whole response.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
   /api/v1/groups:
     get:
       operationId: listGroupsForAssignment
@@ -3445,6 +3521,17 @@ paths:
           schema:
             type: string
             enum: [nobody, me, others]
+        - name: awaiting_reply
+          in: query
+          required: false
+          description: >-
+            true or false (absent and false are the same). true keeps the tickets that are not Resolved or
+            Closed and whose newest public message is the requester's side (no reply yet, a guest, or an
+            author who is not staff or an administrator), so they wait for the help desk. Internal notes are
+            not read. Any other value is 400 bad_request, "invalid awaiting_reply". Staff and administrators
+            (403 for a reporting user sending true, "awaiting_reply is not available to requesters").
+          schema:
+            type: boolean
         - name: status_id
           in: query
           required: false
@@ -11704,6 +11791,89 @@ components:
                   $ref: '#/components/schemas/Uuid'
                 tracking_number:
                   type: string
+    Dashboard:
+      description: |
+        What GET /api/v1/dashboard returns. queues is the strip, in the order it is shown.
+        attention and volume are null when the block is not part of the caller's dashboard (a reporting
+        user has no attention list and no trend); [] and zero counts are a real answer, "nothing to show".
+      type: object
+      required: [queues, attention, volume]
+      properties:
+        queues:
+          type: array
+          items: {$ref: '#/components/schemas/DashboardQueue'}
+        attention:
+          type: [array, 'null']
+          items: {$ref: '#/components/schemas/DashboardAttention'}
+        volume:
+          anyOf:
+            - $ref: '#/components/schemas/DashboardVolume'
+            - type: 'null'
+    DashboardQueue:
+      type: object
+      required: [key, count]
+      properties:
+        key:
+          type: string
+          description: |
+            A queue cell. assigned_to_me, my_groups and awaiting_my_reply, and sla_breached and sla_at_risk
+            while SLA tracking is on, are staff and administrator cells; my_tickets is the requester's one cell.
+            Each key appears at most once in a response, and a consumer ignores a key it does not know.
+          enum: [assigned_to_me, my_groups, sla_breached, sla_at_risk, awaiting_my_reply, my_tickets]
+        count:
+          type: integer
+          format: int64
+          minimum: 0
+          description: The number of tickets the link for this cell lists (the GET /tickets call with the cell's parameters).
+    DashboardAttention:
+      type: object
+      required: [reason, since, ticket]
+      properties:
+        reason:
+          type: string
+          description: |
+            Why the ticket needs attention: breached and at_risk (SLA), unassigned (no group and no person,
+            the Available queue) or reopened (reopened in the last 7 days). A ticket is listed once, under its
+            first reason in that order.
+          enum: [breached, at_risk, unassigned, reopened]
+        since:
+          type: string
+          format: date-time
+          description: The instant the row's age is measured from, in UTC. The ticket's created_at for breached, at_risk and unassigned; the time it was last reopened for reopened.
+        ticket:
+          description: The ticket as GET /api/v1/tickets returns it to this caller, with its SLA status and can_reopen.
+          $ref: '#/components/schemas/TicketView'
+    DashboardVolume:
+      type: object
+      required: [tz, days]
+      properties:
+        tz:
+          type: string
+          description: The time zone the days are counted in, as sent (UTC when tz was absent).
+        days:
+          type: array
+          description: Thirty entries, oldest first; the last is today in tz. Every day is present, zeros included.
+          minItems: 30
+          maxItems: 30
+          items: {$ref: '#/components/schemas/DashboardVolumeDay'}
+    DashboardVolumeDay:
+      type: object
+      required: [date, created, resolved]
+      properties:
+        date:
+          type: string
+          format: date
+          description: A calendar date in tz.
+        created:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Tickets the caller can see whose created_at falls on this day in tz.
+        resolved:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Tickets the caller can see whose resolved_at, or closed_at when it is null, falls on this day in tz.
     SlaStatus:
       description: |
         A ticket's live SLA status. Computed fresh on every read from the
