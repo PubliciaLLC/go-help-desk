@@ -62,3 +62,25 @@ func (q *Queries) SetSetting(ctx context.Context, arg SetSettingParams) error {
 	_, err := q.db.ExecContext(ctx, setSetting, arg.Key, arg.Value)
 	return err
 }
+
+const setSettingIfEmpty = `-- name: SetSettingIfEmpty :execrows
+INSERT INTO settings (key, value) VALUES ($1, $2)
+ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value
+WHERE settings.value = '""'::jsonb
+`
+
+type SetSettingIfEmptyParams struct {
+	Key   string          `json:"key"`
+	Value json.RawMessage `json:"value"`
+}
+
+// Writes the value only when the setting is an empty string or not there yet.
+// The row lock on the conflicting row is the gate: a second writer waits for
+// the first to commit and then finds the value filled, so it affects no row.
+func (q *Queries) SetSettingIfEmpty(ctx context.Context, arg SetSettingIfEmptyParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, setSettingIfEmpty, arg.Key, arg.Value)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}

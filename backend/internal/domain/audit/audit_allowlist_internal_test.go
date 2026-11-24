@@ -67,3 +67,24 @@ func TestRedact_CredentialKeysAreShown(t *testing.T) {
 		}
 	}
 }
+
+// A generated SAML service-provider certificate (saml_cert_generated): its
+// expiry and its public fingerprint are shown. The private key is not among the
+// keys, and one named for it would be redacted whatever it held.
+func TestRedact_SAMLCertificateKeysAreShown(t *testing.T) {
+	entry := map[string]any{
+		"source": "generated", "cert_not_after": "2036-11-24T12:00:00Z", "cert_fingerprint": "AA:BB",
+	}
+	got, _ := Redact(entry, nil)
+	for k, v := range entry {
+		if got[k] != v {
+			t.Errorf("%s: got %v, want %v", k, got[k], v)
+		}
+	}
+	got, _ = Redact(map[string]any{"private_key": "-----BEGIN PRIVATE KEY-----", "key_pem": "x"}, nil)
+	for k, v := range got {
+		if v != redactedPlaceholder {
+			t.Errorf("%s: key material shown as %v", k, v)
+		}
+	}
+}

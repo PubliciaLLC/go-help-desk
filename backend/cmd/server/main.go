@@ -242,7 +242,7 @@ func run() error {
 	tStore := ticketstore.NewWithDB(q, sqlDB)
 	cStore := categorystore.New(q)
 	gStore := groupstore.New(q)
-	aStore := adminstore.New(q)
+	aStore := adminstore.NewWithDB(q, sqlDB)
 	auStore := auditstore.New(q)
 	slStore := slastore.New(q)
 	authStore := authstore.NewWithDB(q, sqlDB)
