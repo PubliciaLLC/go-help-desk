@@ -1,0 +1,163 @@
+name: site-openapi
+
+# Keeps the website's copy of the API description current. docs/api/openapi.yaml
+# here is the source; the site branch serves a byte-identical copy at
+# docs/openapi/openapi.yaml, pinned by docs/openapi/SOURCE (first line: the app
+# commit). Before this workflow, that copy was refreshed by hand at release time.
+#
+# Which site branch, fed from which code branch, is configuration, not code:
+#   vars.SITE_OPENAPI_SOURCE  code branch that feeds the site, e.g. v1.3.0-beta
+#   vars.SITE_OPENAPI_BRANCH  site branch to write,           e.g. docs/web-1-3-0
+# Unset either and nothing is written: the `gate` job says so in the run summary
+# and the rest is skipped. Pushes to any other branch are ignored, so the 1.2
+# line on main cannot overwrite the 1.3 site. A release tag (no '-') counts only
+# when its commit is on SITE_OPENAPI_SOURCE, so a v1.2.x hotfix tag cannot
+# re-pin the 1.3 site.
+#
+# It commits straight to the site branch with GITHUB_TOKEN. That branch is a
+# staging branch (production is promoted by a human PR), and a commit made with
+# GITHUB_TOKEN starts no workflow, so the site's own openapi-sync check does not
+# run on it. This workflow runs that same check before it pushes instead.
+#
+# Pushes run it from any branch that has this file. workflow_dispatch works only
+# once the file is on the default branch (main). Tag pushes ignore the `paths`
+# filter, so every release tag runs it.
+#
+# Untrusted input: none. It runs on push to branches and tags maintainers
+# control, never on pull_request, and passes every ${{ }} value to the shell
+# through env rather than into the script text.
+on:
+  push:
+    branches: [main, 'v[0-9]*-beta']
+    tags: ['v[0-9]*']
+    paths:
+      - docs/api/openapi.yaml
+      - .github/workflows/site-openapi.yml
+  workflow_dispatch:
+
+# One writer to the site branch at a time. A newer pending run replaces an older
+# pending one, which is what we want: the newest spec wins.
+concurrency:
+  group: site-openapi
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  # Decides whether this push is one the site follows, and says why when it is
+  # not. A skipped job says nothing, so "variables unset" would otherwise be
+  # indistinguishable from "the workflow is broken".
+  gate:
+    runs-on: ubuntu-latest
+    outputs:
+      publish: ${{ steps.decide.outputs.publish }}
+    env:
+      SOURCE: ${{ vars.SITE_OPENAPI_SOURCE }}
+      SITE_BRANCH: ${{ vars.SITE_OPENAPI_BRANCH }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # the tag check needs origin/<source branch>
+      - name: Is this a push the site follows?
+        id: decide
+        run: |
+          set -eu
+          skip() {
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::site-openapi: nothing to do. $1"
+            echo "site-openapi did nothing: $1" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          }
+          [ -n "$SOURCE" ] && [ -n "$SITE_BRANCH" ] ||
+            skip "repository variables SITE_OPENAPI_SOURCE and SITE_OPENAPI_BRANCH are not both set."
+          case "$GITHUB_REF_TYPE" in
+            branch)
+              [ "$GITHUB_REF_NAME" = "$SOURCE" ] ||
+                skip "$GITHUB_REF_NAME is not the source branch ($SOURCE)."
+              ;;
+            tag)
+              case "$GITHUB_REF_NAME" in
+                *-*) skip "$GITHUB_REF_NAME is a pre-release tag; only release tags re-pin the site." ;;
+              esac
+              git merge-base --is-ancestor "$GITHUB_SHA" "origin/$SOURCE" 2>/dev/null ||
+                skip "$GITHUB_REF_NAME is not on $SOURCE, so it belongs to another release line."
+              ;;
+            *)
+              skip "unsupported ref type $GITHUB_REF_TYPE."
+              ;;
+          esac
+          echo "publish=true" >> "$GITHUB_OUTPUT"
+
+  # Never publish a spec that fails its own tests. No database and no frontend
+  # build are needed: internal/ui/dist/index.html is tracked, so the server
+  # package builds from a plain checkout.
+  verify:
+    needs: gate
+    if: needs.gate.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+      - name: Spec tests
+        working-directory: backend
+        run: go test -count=1 -run 'TestOpenAPISpec|TestDiffRoutes|TestCallerSentence' ./internal/server
+
+  publish:
+    needs: [gate, verify]
+    if: needs.gate.outputs.publish == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      SITE_BRANCH: ${{ vars.SITE_OPENAPI_BRANCH }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ vars.SITE_OPENAPI_BRANCH }}
+          fetch-depth: 0 # check needs the pinned commit and the release refs
+      - name: Pull the spec into the site branch and push
+        run: |
+          set -eu
+          [ -x scripts/openapi-sync.sh ] || {
+            echo "::error::$SITE_BRANCH has no scripts/openapi-sync.sh; is SITE_OPENAPI_BRANCH a site branch?"
+            exit 1
+          }
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          for attempt in 1 2 3; do
+            # A fresh reset on every attempt, so a lost race is never a rebase
+            # conflict. The bot writes only the two files in docs/openapi/.
+            git fetch -q origin "+refs/heads/$SITE_BRANCH:refs/remotes/origin/$SITE_BRANCH"
+            git reset -q --hard "origin/$SITE_BRANCH"
+            cur=$(sed -n 1p docs/openapi/SOURCE 2>/dev/null || true)
+            # Re-running an old run must not roll the site back to an older spec.
+            if [ "$cur" != "$GITHUB_SHA" ] && git merge-base --is-ancestor "$GITHUB_SHA" "$cur" 2>/dev/null; then
+              echo "::notice::$SITE_BRANCH is already pinned to $cur, which is newer than $GITHUB_SHA; nothing to do"
+              exit 0
+            fi
+            scripts/openapi-sync.sh pull "$GITHUB_SHA" "$GITHUB_REF_NAME"
+            scripts/openapi-sync.sh check
+            if git diff --quiet -- docs/openapi; then
+              echo "::notice::$SITE_BRANCH already serves the spec at $GITHUB_SHA"
+              exit 0
+            fi
+            git add docs/openapi
+            git commit -q \
+              -m "API reference: spec from $GITHUB_REF_NAME ${GITHUB_SHA:0:8}" \
+              -m "Written by $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+            if git push -q origin "HEAD:refs/heads/$SITE_BRANCH"; then
+              {
+                echo "Pinned \`$SITE_BRANCH\` to \`$GITHUB_SHA\` ($GITHUB_REF_NAME):"
+                echo "$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/commit/$(git rev-parse HEAD)"
+              } >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            echo "push rejected (attempt $attempt); someone else pushed to $SITE_BRANCH, retrying"
+            sleep $((attempt * 5))
+          done
+          echo "::error::could not push to $SITE_BRANCH after 3 attempts"
+          exit 1
