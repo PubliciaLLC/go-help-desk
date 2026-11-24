@@ -3629,6 +3629,23 @@ routes answer 503 `attachments_unavailable` before reading the body, the admin
 banner says why, and downloads of files already stored keep working for as long
 as the directory is readable.
 
+**Compose makes the directory writable before the app starts.** The app runs
+as uid 100 / gid 101 (`ghd`, pinned in `backend/Dockerfile`). A bind mount, unlike
+a named volume, does not take the image's ownership, so on a fresh Linux host,
+where Docker creates `docker/data/attachments` as `root:root`, the probe above
+fails and uploads are off from the first start. Docker Desktop on macOS hides
+this, and an install upgraded from 1.2 keeps the owner it had. A named volume
+would strand 1.2 data, so `docker-compose.yml` has a one-shot `attachments-init`
+service instead: the same image as `app`, run as root with only `CHOWN` and
+`DAC_READ_SEARCH`, no network, which creates `/data/attachments` if missing and
+runs `chown -R 100:101` only when the top directory is not already owned by
+100:101 (a restart on a large store walks nothing). `app` waits for it with
+`service_completed_successfully`. The numbers are written in the Dockerfile and
+the compose file; `scripts/check-compose-attachments.sh` (CI, Docker image job)
+fails if they differ, and runs the service's own command against root-owned,
+missing and already-owned directories. A deployment that does not use this
+compose file must make the directory writable by uid 100 / gid 101 itself.
+
 ### Credential Scopes
 
 Machine credentials — API keys and OAuth clients — carry scopes. Browser
