@@ -790,7 +790,7 @@ An administrator can have the server check for newer releases. It is **off unles
 
 An install upgraded from an earlier release has never been asked about the choices 1.3.0 added. The first administrator who signs in lands on the dashboard and is sent to `/after-upgrade`, a short wizard with one step per question and **Back**, **Next** and **Skip** on each. A step shows today's setting, says what changed in 1.3.0 and lets the administrator change it.
 
-- **Steps, in order:** the weekly update check (unchecked); staff email notifications (migration 000052 turned the three overrides off); staff API keys (`staff_can_create_api_keys` and the default lifetime slider); the old-password reset window (`password_rehash_grace_days`, with how many accounts are still on an old hash and whether email is set up). Guest file uploads (#536) is a fifth step, shown only while guest submission is on: it says that 1.2 let guests upload through the API and 1.3.0 switches that off, and offers `guest_attachments_enabled`, the size slider (`guest_attachment_max_mb`, held to the 25 MB instance maximum) and the per-ticket and per-hour limits, reusing the Settings controls. With guest submission off the step is not part of the wizard and the final step says guest uploads stay off because they need guest submission. Skipping it leaves uploads off.
+- **Steps, in order:** the weekly update check (unchecked); staff email notifications (migration 000052 turned the three overrides off); staff API keys (`staff_can_create_api_keys` and the default lifetime slider); the old-password reset window (`password_rehash_grace_days`, with how many accounts are still on an old hash and whether email is set up). Guest file uploads (#536) is a fifth step, shown only while guest submission is on: it says that 1.2 let guests upload through the API and 1.3.0 switches that off, and offers `guest_attachments_enabled`, the size slider (`guest_attachment_max_mb`, running to the per-file limit `attachment_max_mb`, #673) and the per-ticket and per-hour limits, reusing the Settings controls. With guest submission off the step is not part of the wizard and the final step says guest uploads stay off because they need guest submission. Skipping it leaves uploads off.
 - **Saving.** Next sends what the step changed through `PATCH /admin/settings`, so every server-side validation and every session-only rule applies unchanged. Skip sends nothing and drops that step's edits, so the setting keeps its safe default. A refusal is shown on the step and the administrator stays on it.
 - **Upgraded, not guessed.** The wizard is shown while `post_upgrade_130_seen` is not true. Setup writes it `true` on a fresh install (setup asks the update question itself), so a fresh install never sees the wizard; an install that upgraded to 1.3.0 never ran that setup and has no value. The wizard writes it, in the same request as the last step, when it is finished or skipped, and it never shows again. This needs no migration and no version comparison. An administrator who closes the tab part-way sees it again next time, with the steps already saved showing their new values.
 - **Who.** Administrators only. A staff member or requester is never redirected and the route turns them away; `/after-upgrade` redirects to the dashboard once the flag is set. Only the dashboard redirects, so a deep link after sign-in is not interrupted, and a failure to read the settings lets the administrator straight through.
@@ -1654,7 +1654,7 @@ in 1.2.0.
 
 - **Toggle in admin settings:** when off, all guest routes (both public submission and token-based read/reply/attach) answer 404 to visitors, suspending any links already issued until the setting is turned back on (#424).
 - **Guests attaching files** (#445) is a second, separate switch, **Guests may attach files** (`guest_attachments_enabled`, **Admin → Settings → General → Submissions**, under guest submission). **Off by default, upgraded installs included**: before it existed a guest could upload through `POST /guest/attachments` whenever guest submission was on, and that is now closed until an administrator opens it. It is **dependent** on guest submission: the setting only takes effect while `guest_submission_enabled` is on (the settings page shows it unavailable while submission is off, and the server treats it as off), so there is no state in which uploads are on and submission is off.
-  - **Size.** `guest_attachment_max_mb` is a per-file maximum for guests, set with a slider from 1 to 100 MB, 5 MB by default. The server holds the guest to the **lower** of it and the instance-wide attachment maximum (25 MB, the one every upload has), so a figure above 25 is accepted by the setting and cannot be reached; the slider says so. A value outside 1 to 100 is refused at save (`400 bad_request`) and not stored, and an unreadable stored value reads as 5. Over the limit is `413 too_large`, with the limit that applied in the message ("file exceeds 5 MB limit"); the body is capped while it is read, as for every upload.
+  - **Size.** `guest_attachment_max_mb` is a per-file maximum for guests, 5 MB by default, set with a slider that runs from 1 MB to the per-file limit every upload has (`attachment_max_mb`, 25 MB by default; see Per-file size limit, #673). The server holds the guest to the **lower** of the two. A value outside 1 to that limit is refused at save (`400 bad_request`) and not stored; a stored value that the limit was later lowered beneath is kept, and the limit applies until one of them changes (the page says so). An unreadable stored value, or one outside 1 to 100, reads as 5. Over the limit is `413 too_large`, with the limit that applied in the message ("file exceeds 5 MB limit"); the body is capped while it is read, as for every upload.
   - **Per-ticket cap and hourly rate** (Erik, 2026-10-19). `guest_attachment_max_per_ticket` is the most files guests may attach to one ticket (1 to 50, default 5); `guest_attachment_uploads_per_hour` is how many uploads one guest link may make per hour (1 to 30, default 3). Both are set under the uploads switch in Settings, unavailable while it is off, session-only, validated at save (`400`, nothing stored) and read as their defaults when unset or damaged, so an upgraded install gets 5 and 3 as soon as an administrator turns uploads on. Both are checked on the guest upload route after the setting, the token and the lifecycle check, the cap first: a full ticket answers `409 guest_attachment_limit` ("This ticket already has the most files a guest can attach"), and the cap does not spend the hour. Past the hourly figure the answer is `429 rate_limited` with `Retry-After` in whole seconds. The rate is keyed by the **ticket the link names**, not the address, so a guest behind a shared address cannot use up another's hour; it counts in the database like every limiter (see Rate limits), through `ratelimit.Limiter.TakeWithLimit`, because the figure is an admin setting that changes while the server runs. The window is the ticket's own, opened by its first upload in an hour, so `Retry-After` is the time left in that ticket's window; a restart does not clear it and every replica shares it. The unit is spent before the work, so parallel uploads cannot all pass a budget with one slot left, and **given back only when the refusal was decided before the scanner**: a wrong type, an over-size file, a name or request the parser refuses (`unsupported_type`, `too_large`, `invalid_filename`, `bad_request`). Those cost the server a body read and nothing more. Everything decided after the scan keeps its unit: `invalid_image`, `invalid_file` (a content mismatch), a malware verdict (`422 infected`), a scanner or storage fault (`503`) and any 5xx, and so does the cap refusal that comes from inside the transaction. Refunding a post-scan refusal let a guest make the server scan without limit (measured: twenty bad PNGs at a budget of one were twenty scans). Because a pre-scan refusal is free of the hour, **every refused attempt also draws on a second, fixed budget of 20 per hour per ticket** (`guestRefusalLimiter`, not a setting), whether or not its unit came back; it is charged up front in one locked step (so parallel refusals cannot overshoot it) and given back when the upload is accepted, and it is charged before the hourly budget, so an attempt turned away by it never spends an hourly upload (#559). Once spent, the route answers `429 rate_limited` with `Retry-After` before reading anything, a good file included, until the window ends. It is in the database too, with the window of its own ticket. The cap counts **only guest uploads**, for which `attachments.uploaded_by_guest` (migration 000054) records the fact, because nothing recorded who uploaded a file; staff and reporter files never count. Files a guest attached before the migration are not counted (the column defaults to false). The cap is **exact**: the authority is `ticket.Service.CreateGuestAttachment`, which counts inside the transaction that already locks the ticket row, so uploads racing for the last slot leave exactly one file there (`TestCreateGuestAttachment_ParallelUploadsCannotOvershootTheCap`). A cheaper count before the file is read and scanned only saves that work. `GET /site` carries the cap and the hourly figure with the size, and the page offers at most the lower of what the ticket has room for and the hour allows, worded "up to 3 files now (5 per ticket)" when they differ.
   - **Refusal.** With uploads off the route answers the generic `404 not_found`, byte-identical to a bad link and to guest submission being off, like every other guest refusal: a different status would tell an anonymous caller which setting is in force.
   - **Session only.** All four keys are in `AuthCriticalKeys`: they widen what anonymous people can do, and a leaked API key must not be able to turn them on and use them. They are in `KnownKeys`.
@@ -2153,7 +2153,7 @@ administrator has turned on **Guests may attach files**, off by default, and
 within the guest per-file limit; see Guest Submission, #445), authorized the
 same way `POST /api/v1/guest/replies` is: the ticket comes from the guest
 token in the `Authorization` header, never from an id in the path, so there
-is nothing for a guest to change to reach a different ticket. Which types are accepted is an operator setting, `attachment_allowed_types` — a JSON array of lowercase extensions with the leading dot, each matching `^\.[a-z0-9]{1,16}$`. The shipped default is PDF, DOCX, XLSX, TXT, LOG, JPG, JPEG, PNG, BMP; an empty array means this instance takes no attachments at all. `.jpg` and `.jpeg` name one format, so allowing either allows both. Changing it needs a signed-in administrator — an API key cannot widen what the instance accepts. Max 25 MB per file (a guest's maximum is the lower of that and `guest_attachment_max_mb`, 5 MB by default, #445). Images (JPEG, PNG, BMP) are re-encoded to whichever of JPEG (quality 85) or PNG produces a smaller file — except an image with transparency in it, which is always PNG, because JPEG has no alpha channel and "smaller" would be comparing two different pictures. File names on disk are obfuscated (UUID-based); the original file name is preserved in the database for download.
+is nothing for a guest to change to reach a different ticket. Which types are accepted is an operator setting, `attachment_allowed_types` — a JSON array of lowercase extensions with the leading dot, each matching `^\.[a-z0-9]{1,16}$`. The shipped default is PDF, DOCX, XLSX, TXT, LOG, JPG, JPEG, PNG, BMP; an empty array means this instance takes no attachments at all. `.jpg` and `.jpeg` name one format, so allowing either allows both. Changing it needs a signed-in administrator — an API key cannot widen what the instance accepts. The largest file is an operator setting too, `attachment_max_mb`, 25 MB by default (a guest's maximum is the lower of that and `guest_attachment_max_mb`, 5 MB by default, #445; see Per-file size limit, below, #673). Images (JPEG, PNG, BMP) are re-encoded to whichever of JPEG (quality 85) or PNG produces a smaller file — except an image with transparency in it, which is always PNG, because JPEG has no alpha channel and "smaller" would be comparing two different pictures. File names on disk are obfuscated (UUID-based); the original file name is preserved in the database for download.
 
 Every attachment upload — authenticated or guest — is authorized the same
 way a reply is (`CanUploadAttachment` / `CanGuestUploadAttachment`, reusing
@@ -2166,6 +2166,314 @@ reporting user's with `409 ticket_closed`. Staff and admin are unchanged (#315 �
 upload handler used to check ownership and nothing else, so a reporter
 could attach to their own Closed ticket even though the equivalent reply
 was already refused).
+
+### Per-file size limit (#673)
+
+([#673](https://github.com/PubliciaLLC/go-help-desk/issues/673), 1.3.0.) The
+largest file anyone may attach used to be a constant, `attachMaxBytes = 25 <<
+20` in `handler_attachments.go`, while the guest slider beside it ran to
+100 MB, so every figure from 26 to 100 on that slider did nothing. The limit is
+now a setting, the guest slider stops at it, and everything that assumed
+25 MB reads it instead.
+
+**The setting.** `attachment_max_mb` (`admin.KeyAttachmentMaxMB`), an integer
+number of megabytes (MiB: the bytes are `mb << 20`, as today's constant and
+`tooLargeMessage` already count them), **1 to 100, default 25**. It is a row in
+the settings table like every other key, so **there is no migration**: an
+install that never sets it reads 25, which is exactly today's constant, and
+nothing changes on upgrade. `admin.Service.AttachmentMaxMB(ctx)` reads it, with
+the rule the guest figure already has: unset, unreadable or outside 1 to 100
+reads as **25**, so a damaged row can neither lift the limit nor drop it to
+zero. Constants beside the guest ones in `domain/admin/settings.go`:
+`AttachmentMaxMBDefault = 25`, `AttachmentMaxMBMin = 1`, `AttachmentMaxMBMax =
+100`, and `ValidAttachmentMaxMB(v int) bool`. It is listed in `KnownKeys` and in
+`AuthCriticalKeys` (session-only), for the reason `attachment_allowed_types` is:
+a leaked API key must not be able to widen what this instance accepts and then
+upload it. A machine credential that sends it gets `403 session_required`.
+
+**One limit, one place.** `attachMaxBytes` is removed. The server reads the
+limit through one method, `(*Server).attachmentMaxBytes(ctx) int64` (=
+`int64(AttachmentMaxMB) << 20`), and the guest's through the existing
+`guestAttachmentMaxBytes(ctx)`, which becomes `min(guest MB, AttachmentMaxMB)
+<< 20`. The authenticated upload passes `attachmentMaxBytes` to
+`storeUploadedAttachment` where it passed the constant; the guest upload is
+unchanged in shape. Everything after that already takes `maxBytes` as a
+parameter: the body cap (`maxBytes + 1 MiB` of multipart framing), the declared
+part size, the read, and the `413 too_large` message, which names the limit that
+applied ("file exceeds 10 MB limit"). Both figures are read once per request, at
+the start, so a request is judged by one limit even if an administrator saves a
+new one while it is arriving.
+
+**Bounds: 1 to 100 MB** (the owner's proposal in the issue). 100 is the top
+because what the limit costs grows with it (below), and a help desk is not a
+file transfer service: 100 MB covers a large log bundle or a scanned document
+set, and anything bigger belongs in a link. 1 is the bottom because 0 is
+already expressed another way: an empty `attachment_allowed_types` takes no
+attachments at all, and a second way to say that would be a special case.
+
+**What scales with the limit, and what does not.** Every assumption in the
+upload path that named 25 MB is one of these four:
+
+- **The transfer deadline scales.** `bodyTransferTimeout` (five minutes, set on
+  the connection for the upload and download routes only, replacing the
+  server-wide 15 s read and 30 s write deadlines in `cmd/server/main.go`) was
+  sized as "25 MB at roughly 700 kbit/s". That rate is the rule, and the
+  minutes follow from it: `transferTimeout(n int64) time.Duration =
+  max(5 * time.Minute, time.Duration(n) * time.Second / minTransferRate)`, with
+  `minTransferRate = (25 << 20) / 300` bytes a second (≈ 700 kbit/s). Five
+  minutes at 25 MB or below (so the default, and every lower limit, is exactly
+  today's deadline), 10 at 50 MB, 20 at 100 MB. The upload passes the
+  `maxBytes` that applies to it (a guest's lower limit gets a shorter
+  deadline); the download passes the stored file's `size_bytes`, so a 100 MB
+  file stored before the limit was lowered still has time to leave. Written as
+  bytes over a rate rather than minutes per 25 MB because the product
+  `n * 5 min` overflows `time.Duration` at 100 MB. The server-wide deadlines
+  do not change: every other body is a JSON document. The longer window is
+  only open to a caller who has passed authorisation (signed in, or holding a
+  guest link that passed the guest checks), and a slow body costs a connection
+  and a goroutine, not memory, until its bytes arrive.
+- **The scan timeout scales the same way.** `antivirus.Scanner`'s 60-second
+  scan deadline was justified as "a 25 MB file over INSTREAM on a busy daemon".
+  It becomes `max(60 s, len(data) at (25 << 20) / 60 bytes a second)`: one
+  minute up to 25 MB, four at 100 MB, computed per scan from the bytes being
+  sent. The dial timeout stays five seconds.
+- **Upload memory is bounded where it can be, and stated where it cannot.**
+  `ParseMultipartForm(maxBytes)` keeps up to `maxBytes` of the file in memory
+  before spilling the rest to a temporary file, and the handler then reads the
+  whole file into a slice to hash, detect, scan and store it. At 100 MB that
+  was two in-memory copies. The parse's memory argument becomes a constant,
+  `multipartMemoryBytes = 25 << 20`, so the parse holds what it holds today and
+  anything larger spills to disk, bounded by the body cap and removed by
+  `net/http` when the request ends. At or below 25 MB this is today's behaviour
+  byte for byte. The working slice is not removed: hashing, the content
+  detector, the scanner's INSTREAM and the wrap all take the file whole, and
+  streaming them is a rewrite of the pipeline, not this issue. So an upload
+  costs roughly the limit in memory, plus a second copy while a wrap is built,
+  and the upgrade note says so for an operator choosing 100.
+- **The image caps do not scale.** `maxImagePixels` (25 megapixels) and
+  `maxDecodedBytes` (100 MB) bound what decoding costs, and the byte size of a
+  file was never that bound: a 169 KB PNG decodes to 142 MB. They stay as they
+  are at every limit; a larger byte limit only lets through larger files that
+  are not images, or images that still fit the decode budget. The comment
+  beside them that reasons from "the 25 MB upload cap" is reworded to say the
+  caps are independent of it.
+
+**The scanner has a limit of its own.** clamd closes an `INSTREAM` session
+larger than its `StreamMaxLength`, which defaults to **25 MB**, and the
+`clamav/clamav` image in the compose file ships that default. The scanner
+already reads that `ERROR size limit exceeded` reply as `Unavailable` (#167),
+so raising the limit above 25 MB without raising clamd's makes every larger
+upload `503` under `required` scanning and stored unscanned under `permissive`;
+nothing is ever called clean that was not scanned. The server cannot read
+clamd's configuration, so it does not refuse the setting. It says so instead:
+while `attachment_scan_policy` is not `off` and the value is above 25, the
+setting shows a note (below), and the upgrade note and `docker/.env.example`
+say to raise `StreamMaxLength`, `MaxFileSize` and `MaxScanSize` together to at
+least the new limit. All three, because a file over `MaxFileSize` that fits the
+stream limit is skipped and answered `OK`; setting `AlertExceedsMax yes` makes
+clamd answer `FOUND` for it instead, which this application refuses.
+
+**A reverse proxy has a limit too.** The compose file exposes the app directly,
+so nothing else is in the path. An operator who puts nginx or similar in front
+must allow a body of the limit plus 1 MB of framing (`client_max_body_size`,
+1 MB by default in nginx) and a read timeout at least the transfer deadline
+above. The upgrade note says this; the server cannot see it.
+
+**The guest limit.** `guest_attachment_max_mb` keeps its key, its default (5)
+and its reader (unset, damaged or outside 1 to 100 reads as 5). What changes is
+the save and the page:
+
+- **The effective guest limit is `min(guest, overall)`**, computed in
+  `guestAttachmentMaxBytes` on every upload and in `GET /site`'s
+  `guest_attachment_max_bytes`, so the guest page never offers more than the
+  server takes. There is no stored "effective" value: the two settings are
+  facts the administrator chose, and the lower one wins wherever it is read.
+- **PATCH refuses a guest value above the overall limit.** The ceiling is the
+  overall limit **as it will be after this PATCH**: `attachment_max_mb` from
+  the same body when the body carries a valid one, else the stored
+  `AttachmentMaxMB`. So `{"attachment_max_mb": 50, "guest_attachment_max_mb":
+  40}` is accepted in one request from a default install, and
+  `{"attachment_max_mb": 10, "guest_attachment_max_mb": 20}` is refused whole,
+  nothing stored. Refused as `400 bad_request`, "guest_attachment_max_mb must
+  be between 1 and N MB, the per-file limit for every upload" with N the
+  ceiling. Validated after `attachment_max_mb`'s own check, so a bad overall
+  value is the error named. The old 1-to-100 check is this check with N = 100.
+- **Lowering the overall limit below the stored guest value is accepted**, and
+  the guest value is left as stored. The guest is held to the overall limit
+  until either changes, and raising the overall limit again restores the guest
+  figure the administrator chose. Rewriting the guest row would be a change
+  nobody asked for, made silently, and it would lose the figure; refusing the
+  lower overall limit would make an administrator who wants to tighten uploads
+  edit a second setting first. A guest value is refused only when it is the
+  value being saved. The settings page sends only the keys that changed
+  (#394), so an untouched guest value never travels with a later save and
+  never trips this check.
+
+**Who reads the limit.** Three places outside the upload handler:
+
+- **`GET /me`** gains `attachment_max_bytes` (integer, always present for a
+  person; not on a machine credential's `/me`, which has no uploader UI). The
+  reply composer and the new-ticket page pass it to `AttachmentUpload` as
+  `maxBytes`, which until now defaulted to a 25 MB literal; with the field
+  absent (an older server) the component keeps 25 MB. Without this a raised
+  limit would be refused in the browser before the server saw the file. On
+  `/me` rather than `/site` because only signed-in people use it; `/site`
+  already carries the guest figure.
+- **`GET /site`**: unchanged in shape; `guest_attachment_max_bytes` is the
+  effective guest limit as above.
+- **MCP**: no tool takes a file (`MaxRequestBody` is 1 MiB and
+  `list_attachments` is read-only), so MCP changes nothing.
+
+**The settings page.** The control is its own component,
+`frontend/src/components/admin/AttachmentSizeLimitSection.tsx`, a `Section`
+titled **File size** rendered by `AttachmentsPanel` directly under **Uploads**
+in `SettingsPage.tsx`, and taking only what it shows: `value?: number` (the
+stored `attachment_max_mb`, absent when unset), `onChange(mb)`, and
+`scanning: boolean` (`attachment_scan_policy` is not `off`). It reads no
+query and no page state of its own, so #674's move to a **File Attachments**
+page is moving one JSX line.
+
+- A `BoundedNumberInput` labelled **Largest file anyone may attach**, `min 1`,
+  `max 100`, hint "1 to 100 MB. Default 25.", followed by "MB". Unset shows 25.
+  A displayed value is the reader's: absent or outside 1 to 100 shows 25.
+- Under it, one sentence: "Applies to every upload: staff, requesters and
+  guests. Guests are held to the lower of this and their own limit."
+- While `scanning` and the value is above 25, an amber note (the
+  `role="note"` style the guest slider uses): "Your virus scanner must accept
+  files this large. clamd refuses anything over its StreamMaxLength, 25 MB
+  unless you changed it, and a file it refuses cannot be scanned: with
+  scanning required it is refused, with scanning permissive it is stored
+  unscanned. Raise StreamMaxLength, MaxFileSize and MaxScanSize to at least
+  N MB." Not shown at 25 or below, or with scanning off.
+
+The guest controls stay where they are (General → Submissions; #674 moves them
+to **Guest Access**). `GuestSizeSlider` loses its literal range:
+
+- `instanceMaxMB` becomes the slider's `max` (`min` stays 1), and its value
+  is the overall limit in force, `num('attachment_max_mb')` with the reader's
+  fallback of 25. The ticks become two, `1 MB` and `{max} MB`, at the ends; a
+  fixed `[1, 25, 50, 75, 100]` row has no meaning for a range that moves.
+- The position is `min(stored, max)`, where a stored value outside 1 to 100,
+  or none, is 5 (the reader's rule). The old fallback treated anything above
+  the slider's top as invalid and showed 5, which would misreport a stored 20
+  under a limit of 10 as 5.
+- When the stored value is above `max`, the existing amber note says:
+  "Saved as {stored} MB. Every upload is limited to {max} MB, so guests are
+  held to {max} MB until you raise that limit or lower this one." and
+  `aria-valuetext` is "{max} MB, saved as {stored} MB, limited by the per-file
+  limit". Moving the slider writes a value within range and the note goes; not
+  touching it sends nothing.
+- The description above the slider loses "25 MB" and reads "The largest file a
+  guest may attach. It can never exceed the per-file limit for every upload,
+  {max} MB, set under Attachments."
+- On the Settings page, editing `attachment_max_mb` moves the guest slider's
+  top in the same render, before saving, so the page never shows a guest value
+  the save would refuse.
+
+The after-upgrade wizard's guest step uses the same component with the same
+rule (`settings.attachment_max_mb`, fallback 25) and the same sentence; it
+offers no control for the overall limit, because nothing about it changed on
+upgrade.
+
+**Phone layout.** Nothing new: the input is the `BoundedNumberInput` the guest
+cap already uses, full width under its label below `sm`, and the note wraps.
+The admin-page width checks (Small screens) cover the Attachments tab at 320
+and 375 pixels with the note shown.
+
+**Docs.** `openapi.yaml`: `attachment_max_mb` in the settings schema (integer,
+1 to 100, default 25, session-only) and in `PATCH /admin/settings`'
+description; `guest_attachment_max_mb`'s range becomes "1 to
+attachment_max_mb"; `attachment_max_bytes` on the `/me` user schema; every
+"25 MB" in the upload, guest-upload and `/site` descriptions becomes "the
+per-file limit, `attachment_max_mb`, 25 MB by default". `upgrade-notes-1.3.0.md`:
+under the guest-upload heading (#445) the size line now says the slider runs to
+the per-file limit and a guest value above it is refused; a new entry under New
+features, *Administrators Can Set the Largest Upload (#673)*, with the default
+(nothing changes), the bounds, the clamd and proxy limits, and the memory cost.
+`docker/.env.example` gains the three clamd settings next to `CLAMAV_ADDR`.
+
+**Tests.**
+
+- `domain/admin`: `AttachmentMaxMB` reads 25 when unset and for 0, -1, 101 and a
+  string; reads a stored 1, 50, 100 as stored. `KnownKeys` and
+  `AuthCriticalKeys` contain it (the existing reflection test covers the
+  first).
+- `server` (Postgres): **default 25 behaves as today**: a 25 MiB file is `201`,
+  25 MiB + 1 is `413` naming "25 MB", with the setting unset. **A lower limit
+  refuses larger files** naming it: at 10, a 10 MiB file is `201` and 10 MiB + 1
+  is `413` "file exceeds 10 MB limit", through both the declared-size and the
+  read check, and a body over the cap is the same `413`. **A raised limit takes
+  larger files**: at 30, a 26 MiB file is `201`.
+- PATCH: 1, 25, 100 accepted; 0, 101, "25", null, 1.5 refused `400` and not
+  stored; an API key gets `403 session_required`.
+- **Guest held to the lower of the two**: guest 20, overall 10 refuses a 10 MiB
+  + 1 file with "10 MB"; guest 5, overall 10 refuses 5 MiB + 1 with "5 MB";
+  `GET /site` reports `min` in both.
+- **Guest PATCH refuses above the overall limit**: guest 26 at the default is
+  `400` naming 25, and not stored; guest 40 with `attachment_max_mb: 50` in the
+  same body is `204` and both are stored; `{attachment_max_mb: 10,
+  guest_attachment_max_mb: 20}` is `400` and neither is stored. The existing
+  `TestGuestAttachmentsSetting_ValidatesOneToOneHundredMB` is rewritten
+  accordingly: 26 to 100 are accepted once the overall limit is 100, and the
+  instance-cap test sets the guest to 25 rather than 100.
+- **Lowering below the stored guest value**: guest 20 stored, then
+  `attachment_max_mb: 10` is `204`; the guest row still reads 20; a guest
+  upload of 10 MiB + 1 is `413` "10 MB"; raising to 25 again lets a 15 MiB
+  guest file in.
+- `/me` carries `attachment_max_bytes` for each role, `26214400` by default.
+- Pure: `transferTimeout` is 5 min at 0, 1 MiB and 25 MiB, 10 min at 50 MiB, 20
+  min at 100 MiB, and does not overflow at 101 MiB; the scan timeout is 60 s to
+  25 MiB and 4 min at 100 MiB.
+- Frontend: `AttachmentSizeLimitSection` shows 25 when unset, reports the
+  typed value, shows the scanner note above 25 only while scanning; the
+  settings save sends `attachment_max_mb` only when changed; `GuestSizeSlider`
+  has `max` equal to the overall limit, positions a stored 20 at 10 with the
+  saved-as note, and its ticks are the two ends; raising the overall field
+  raises the slider's top before saving; `AttachmentUpload` uses the `maxBytes`
+  it is given and the composer passes `/me`'s figure; the wizard's guest
+  slider tops out at the stored overall limit.
+
+**Decisions taken without the owner.** Each can be overturned in one line.
+
+- **Bounds 1 to 100 MB, as proposed.** Rejected: capping at 25 until the
+  deadline is redesigned. The deadline scales by a stated rate instead, so the
+  assumptions hold to 100.
+- **The transfer deadline is the limit at ≈ 700 kbit/s, never below five
+  minutes.** Rejected: one fixed longer deadline (say 20 minutes) for every
+  limit, which would hold a default install's slow connections four times
+  longer than today for nothing.
+- **The download deadline follows the file's stored size, not the current
+  limit.** Rejected: the current limit, which cuts off a large file stored
+  before the limit was lowered.
+- **The scan timeout scales with the bytes too.** Rejected: leaving 60 s, which
+  the code's own comment sized for 25 MB.
+- **The multipart parse keeps at most 25 MB in memory; no new upload
+  concurrency limit.** Rejected: a process-wide byte budget for uploads like
+  `imageWork`. It is the right shape if memory becomes the problem, but it is a
+  new behaviour (queued uploads) that the issue did not ask for; the upgrade
+  note states the cost instead.
+- **The image caps do not move.** Rejected: scaling them with the byte limit;
+  they bound decoding, which the byte size never bounded.
+- **No check against clamd's StreamMaxLength; a note on the page and in the
+  docs.** Rejected: refusing values above 25 while scanning is on, which would
+  refuse the operator who has already raised clamd's limit.
+- **Lowering the overall limit keeps the stored guest value.** Rejected:
+  clamping the guest row to the new limit (a silent second change that loses
+  the figure) and refusing the lower overall limit (makes tightening a
+  two-step edit).
+- **The guest ceiling is the overall limit after the PATCH**, so both can be
+  raised in one request. Rejected: the stored value only, which would make
+  "raise both" two requests in a fixed order.
+- **`attachment_max_mb` is session-only.** Rejected: allowing API keys, as for
+  ordinary configuration; it widens what the instance accepts, like
+  `attachment_allowed_types`.
+- **The browser learns the limit from `/me.attachment_max_bytes`.** Rejected:
+  `/site`, which anyone can read and no anonymous page needs.
+- **The control is a number field, not a slider.** Rejected: a second slider;
+  the value is set once, and a number field is what the guest cap and hourly
+  rate beside it use.
+- **The guest slider's ticks become the two ends.** Rejected: quarter marks of a
+  range that moves, which land on odd numbers.
 
 ### Attachment scanning
 
@@ -3448,7 +3756,8 @@ so they are not removed as dead weight:
   reason to refuse. That converts the next gap in the estimate from a way
   through into a refusal, which is worth more than any single thing the
   estimate knows. A limit on how many images are decoded at once bounds the
-  process rather than the request.
+  process rather than the request. Neither bound depends on the per-file
+  byte limit (`attachment_max_mb`, #673), and neither moves when it does.
 - **Security headers** on every response: a content security policy, `nosniff`,
   `X-Frame-Options: DENY` and a referrer policy. The uploaded logo is served
   with a stricter, sandboxed policy, so a file that got past the upload check
