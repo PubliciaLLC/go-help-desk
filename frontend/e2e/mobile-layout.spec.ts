@@ -116,7 +116,7 @@ test.describe('the sidebar is reachable, not just absent', () => {
     // Scoped to the nav landmark, not the whole page: DashboardPage has its
     // own cards linking to /tickets, so an unscoped name query is ambiguous.
     await trigger.click()
-    await expect(page.getByRole('navigation').getByRole('link', { name: 'Tickets', exact: true })).toBeVisible()
+    await expect(page.getByRole('navigation').getByRole('link', { name: 'Assigned to Me', exact: true })).toBeVisible()
 
     await page.keyboard.press('Escape')
     await expect(page.getByRole('navigation')).toBeHidden()
@@ -127,7 +127,7 @@ test.describe('the sidebar is reachable, not just absent', () => {
     await page.goto('/dashboard')
 
     await page.getByRole('button', { name: /menu|navigation/i }).click()
-    await expect(page.getByRole('navigation').getByRole('link', { name: 'Tickets', exact: true })).toBeVisible()
+    await expect(page.getByRole('navigation').getByRole('link', { name: 'Assigned to Me', exact: true })).toBeVisible()
 
     // Widening past md (768px) is what a phone rotating to landscape, or a
     // window being resized, looks like. Without a listener for this, the
@@ -244,7 +244,7 @@ test.describe('#414: the ticket list toolbar stacks instead of squeezing the sea
   const cases = [
     { name: 'reporter', me: ME_REPORTER, below: ['Include closed'] },
     { name: 'staff', me: ME_STAFF, below: ['Include closed', 'Jump to ticket'] },
-    { name: 'admin', me: ME_ADMIN, below: ['mine', 'Include closed', 'Jump to ticket'] },
+    { name: 'admin', me: ME_ADMIN, below: ['Include closed', 'Jump to ticket'] },
   ]
   for (const c of cases) {
     test(`${c.name}: search has its own row, the other controls wrap below it`, async ({ page }) => {

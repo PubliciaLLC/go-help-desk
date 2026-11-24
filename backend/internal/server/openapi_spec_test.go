@@ -1251,7 +1251,15 @@ func TestOpenAPISpec_SLAAlertsDocumented(t *testing.T) {
 	schemas, _ := comps["schemas"].(map[string]any)
 	userSchema, _ := schemas["User"].(map[string]any)
 	userProps, _ := userSchema["properties"].(map[string]any)
-	emailNotes, _ := userProps["email_notifications"].(map[string]any)
+	// email_notifications lives on MeUser's extension (#676), not on User.
+	meSchema, _ := schemas["MeUser"].(map[string]any)
+	meAll, _ := meSchema["allOf"].([]any)
+	var meProps map[string]any
+	if len(meAll) == 2 {
+		meExt, _ := meAll[1].(map[string]any)
+		meProps, _ = meExt["properties"].(map[string]any)
+	}
+	emailNotes, _ := meProps["email_notifications"].(map[string]any)
 	emailNotesProps, _ := emailNotes["properties"].(map[string]any)
 	settings, _ := schemas["SettingsValues"].(map[string]any)
 	settingsProps, _ := settings["properties"].(map[string]any)
@@ -1269,8 +1277,8 @@ func TestOpenAPISpec_SLAAlertsDocumented(t *testing.T) {
 	}{
 		{"schemas.User.required lists email_notify_sla", slices.Contains(stringList(userSchema["required"]), "email_notify_sla")},
 		{"schemas.User.properties.email_notify_sla", userProps["email_notify_sla"] != nil},
-		{"schemas.User.properties.email_notifications.properties.sla", emailNotesProps["sla"] != nil},
-		{"schemas.User.properties.email_notifications.required lists sla", slices.Contains(stringList(emailNotes["required"]), "sla")},
+		{"schemas.MeUser.email_notifications.properties.sla", emailNotesProps["sla"] != nil},
+		{"schemas.MeUser.email_notifications.required lists sla", slices.Contains(stringList(emailNotes["required"]), "sla")},
 		{"PATCH /me/email-preferences requestBody.email_notify_sla", reqProps["email_notify_sla"] != nil},
 		{"schemas.SettingsValues.properties.sla_alerts_enabled", settingsProps["sla_alerts_enabled"] != nil},
 		{"schemas.SettingsValues.properties.staff_email_sla_override", settingsProps["staff_email_sla_override"] != nil},
@@ -1280,4 +1288,175 @@ func TestOpenAPISpec_SLAAlertsDocumented(t *testing.T) {
 			t.Errorf("%s: %s is not documented", specFile, c.name)
 		}
 	}
+}
+
+// ── ticket list views (#676) ───────────────────────────────────────────────
+
+// specParam returns the named query parameter of an operation, or nil.
+func specParam(root map[string]any, o specOp, name string) map[string]any {
+	for _, p := range operationParams(root, o) {
+		if p["name"] == name && p["in"] == "query" {
+			return p
+		}
+	}
+	return nil
+}
+
+// specEnum returns the enum of a schema as a set of strings.
+func specEnum(v any) map[string]bool {
+	out := map[string]bool{}
+	m, _ := v.(map[string]any)
+	list, _ := m["enum"].([]any)
+	for _, x := range list {
+		s, _ := x.(string)
+		out[s] = true
+	}
+	return out
+}
+
+// specSchema resolves a JSON pointer to a schema map, failing the test if it
+// does not resolve.
+func specSchema(t *testing.T, root map[string]any, ptr string) map[string]any {
+	t.Helper()
+	v, ok := resolvePointer(root, ptr)
+	m, _ := v.(map[string]any)
+	if !ok || m == nil {
+		t.Fatalf("%s does not resolve", ptr)
+	}
+	return m
+}
+
+// specResponse200 returns the application/json schema of an operation's 200.
+func specResponse200(o specOp) map[string]any {
+	resp, _ := o.op["responses"].(map[string]any)
+	r, _ := resp["200"].(map[string]any)
+	content, _ := r["content"].(map[string]any)
+	j, _ := content["application/json"].(map[string]any)
+	s, _ := j["schema"].(map[string]any)
+	return s
+}
+
+func TestOpenAPISpec_TicketListViews(t *testing.T) {
+	doc := loadSpec(t)
+	root := doc.root
+	fail := func(format string, args ...any) { t.Errorf(format, args...) }
+
+	t.Run("scope names the six queues and has no closed enum", func(t *testing.T) {
+		op := doc.ops["GET /api/v1/tickets"]
+		p := specParam(root, op, "scope")
+		if p == nil {
+			t.Fatalf("%s has no scope query parameter", op)
+		}
+		// The server answers an unknown value as mine, so a closed enum would
+		// make generated clients refuse what it accepts.
+		if got := specEnum(p["schema"]); len(got) != 0 {
+			t.Errorf("scope has an enum %v; the server tolerates other values", got)
+		}
+		d, _ := p["description"].(string)
+		for _, q := range []string{"mine", "assigned_to_me", "my_groups", "unassigned", "all", "visible"} {
+			if !strings.Contains(d, q) {
+				t.Errorf("scope description does not name %q", q)
+			}
+		}
+		if !strings.Contains(d, "only admins can use this scope") {
+			t.Errorf("scope description does not carry the unchanged 403 text: %q", d)
+		}
+	})
+
+	t.Run("held_by is a query parameter with three values", func(t *testing.T) {
+		op := doc.ops["GET /api/v1/tickets"]
+		p := specParam(root, op, "held_by")
+		if p == nil {
+			t.Fatalf("%s has no held_by query parameter", op)
+		}
+		want := map[string]bool{"nobody": true, "me": true, "others": true}
+		if got := specEnum(p["schema"]); !reflect.DeepEqual(got, want) {
+			fail("held_by enum is %v, want %v", got, want)
+		}
+	})
+
+	t.Run("me and email-preferences answer with MeUser", func(t *testing.T) {
+		oneOf, _ := specResponse200(doc.ops["GET /api/v1/me"])["oneOf"].([]any)
+		if len(oneOf) != 2 {
+			t.Fatalf("GET /me 200 is not oneOf two schemas")
+		}
+		if ref, _ := oneOf[0].(map[string]any); ref["$ref"] != "#/components/schemas/MeUser" {
+			fail("GET /me 200 user branch is %v, want $ref MeUser", oneOf[0])
+		}
+		if ref := specResponse200(doc.ops["PATCH /api/v1/me/email-preferences"])["$ref"]; ref != "#/components/schemas/MeUser" {
+			fail("PATCH /me/email-preferences 200 is %v, want $ref MeUser", ref)
+		}
+	})
+
+	t.Run("MeUser is User plus the /me fields, with can_use_available_queue required", func(t *testing.T) {
+		me := specSchema(t, root, "#/components/schemas/MeUser")
+		all, _ := me["allOf"].([]any)
+		if len(all) != 2 {
+			t.Fatalf("MeUser is not allOf User and an extension: %v", me)
+		}
+		if ref, _ := all[0].(map[string]any); ref["$ref"] != "#/components/schemas/User" {
+			fail("MeUser allOf[0] is %v, want $ref User", all[0])
+		}
+		ext, _ := all[1].(map[string]any)
+		props, _ := ext["properties"].(map[string]any)
+		for _, name := range []string{"can_create_api_keys", "api_key_max_lifetime_years", "sla_enabled", "email_notifications", "can_use_available_queue"} {
+			if _, ok := props[name]; !ok {
+				fail("MeUser does not declare %s", name)
+			}
+		}
+		if cuaq, _ := props["can_use_available_queue"].(map[string]any); cuaq["type"] != "boolean" {
+			fail("can_use_available_queue is %v, want type boolean", cuaq["type"])
+		}
+		if !slices.Contains(stringList(ext["required"]), "can_use_available_queue") {
+			fail("MeUser does not require can_use_available_queue")
+		}
+	})
+
+	t.Run("the shared User schema does not carry the new field", func(t *testing.T) {
+		u := specSchema(t, root, "#/components/schemas/User")
+		props, _ := u["properties"].(map[string]any)
+		if _, ok := props["can_use_available_queue"]; ok {
+			fail("User declares can_use_available_queue; it belongs on MeUser only")
+		}
+		if slices.Contains(stringList(u["required"]), "can_use_available_queue") {
+			fail("User requires can_use_available_queue")
+		}
+		if _, ok := props["email_notifications"]; ok {
+			fail("User declares email_notifications; it belongs on MeUser only")
+		}
+	})
+
+	t.Run("the machine answer of /me has no can_use_available_queue", func(t *testing.T) {
+		oneOf, _ := specResponse200(doc.ops["GET /api/v1/me"])["oneOf"].([]any)
+		if len(oneOf) != 2 {
+			t.Fatalf("GET /me 200 is not oneOf two schemas")
+		}
+		machine, _ := oneOf[1].(map[string]any)
+		props, _ := machine["properties"].(map[string]any)
+		if _, ok := props["can_use_available_queue"]; ok {
+			fail("the machine object declares can_use_available_queue; an OAuth client has no sidebar")
+		}
+	})
+
+	t.Run("available_queue_roles is an admin or staff list, session only", func(t *testing.T) {
+		s := specSchema(t, root, "#/components/schemas/SettingsValues")
+		props, _ := s["properties"].(map[string]any)
+		p, _ := props["available_queue_roles"].(map[string]any)
+		if p == nil {
+			t.Fatalf("SettingsValues does not declare available_queue_roles")
+		}
+		if p["type"] != "array" {
+			fail("available_queue_roles type is %v, want array", p["type"])
+		}
+		items, _ := p["items"].(map[string]any)
+		if want := map[string]bool{"admin": true, "staff": true}; !reflect.DeepEqual(specEnum(items), want) {
+			fail("available_queue_roles items enum is %v, want admin and staff", specEnum(items))
+		}
+		if d, _ := p["description"].(string); !strings.Contains(d, "Session only.") {
+			fail("available_queue_roles description does not say Session only: %q", d)
+		}
+		if op := doc.ops["PATCH /api/v1/admin/settings"]; !strings.Contains(fmt.Sprint(op.op["description"]), "available_queue_roles") {
+			fail("%s does not list available_queue_roles among the session-only keys", op)
+		}
+	})
 }

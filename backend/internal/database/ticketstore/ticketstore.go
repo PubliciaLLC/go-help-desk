@@ -894,6 +894,7 @@ func (s *Store) listFilteredAt(ctx context.Context, f ticket.Filter, now time.Ti
 		ReporterOnly:  f.Visibility == ticket.VisibilityReporter,
 		ActorID:       f.ActorID,
 		Queue:         queueName(f.Queue),
+		HeldBy:        string(f.HeldBy),
 		ExcludeClosed: f.ExcludeClosed,
 		// Arrays are never nil: the SQL guard is cardinality(), and an absent
 		// filter is an empty array, not a NULL one.
@@ -929,21 +930,22 @@ func (s *Store) listFilteredAt(ctx context.Context, f ticket.Filter, now time.Ti
 	// The caller's groups, and what those groups cover, go in as plain arrays and
 	// not as subqueries: see mine_group_ids and the scoped arms in the query for
 	// why the planner needs to be handed them. Never nil, like the other arrays.
-	// Read only for the cases that use them: the queue "mine", and staff under
+	// Read only for the cases that use them: the queues "mine" and "my_groups", and staff under
 	// scope enforcement.
+	mineGroups := f.Queue == ticket.QueueMine || f.Queue == ticket.QueueMyGroups
 	p.MineGroupIds = []uuid.UUID{}
 	p.ScopeGroupIds = []uuid.UUID{}
 	p.ScopeCategoryIds = []uuid.UUID{}
 	p.ScopeTypeCategoryIds = []uuid.UUID{}
 	p.ScopeTypeIds = []uuid.UUID{}
 	scoped := f.Visibility == ticket.VisibilityScoped
-	if f.Queue == ticket.QueueMine || scoped {
+	if mineGroups || scoped {
 		groups, err := s.q.ListGroupsForUser(ctx, f.ActorID)
 		if err != nil {
 			return ticket.ListResult{}, fmt.Errorf("listing the caller's groups: %w", err)
 		}
 		for _, g := range groups {
-			if f.Queue == ticket.QueueMine {
+			if mineGroups {
 				p.MineGroupIds = append(p.MineGroupIds, g.ID)
 			}
 			if scoped {
@@ -1039,6 +1041,10 @@ func queueName(q ticket.Queue) string {
 		return "mine"
 	case ticket.QueueUnassigned:
 		return "unassigned"
+	case ticket.QueueAssignedToMe:
+		return "assigned_to_me"
+	case ticket.QueueMyGroups:
+		return "my_groups"
 	}
 	return "any"
 }

@@ -40,6 +40,10 @@ export interface User {
   /** The longest a new API key may live, in years (1 to 5), or -1 for no limit
    *  (#450). Only on /me; absent reads as the default of 2. */
   api_key_max_lifetime_years?: number
+  /** Whether the Available view may be opened (#676): true for an
+   *  administrator, for staff while an administrator ticks Staff, false for a
+   *  requester. Only on /me; absent reads as no. */
+  can_use_available_queue?: boolean
   /** Whether SLA tracking is on. Only on /me, only for staff and
    *  administrators. Absent means unknown (a requester, or the server could not
    *  read the setting), never off: the ticket list shows its SLA filter,

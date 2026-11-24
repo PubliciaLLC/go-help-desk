@@ -39,6 +39,15 @@ func TestListScale(t *testing.T) {
 		{"staff-rare-type", ticket.Filter{ActorID: id("b4"), Visibility: ticket.VisibilityScoped, Queue: ticket.QueueAny}},
 		{"staff-no-group-mine", ticket.Filter{ActorID: id("b2"), Visibility: ticket.VisibilityAll, Queue: ticket.QueueMine}},
 		{"admin-mine", ticket.Filter{ActorID: id("a1"), Visibility: ticket.VisibilityAll, Queue: ticket.QueueMine}},
+		// The queues of #676. assigned_to_me and my_groups are the two arms of mine,
+		// so each should drive from one assignee index, never the created_at walk.
+		{"staff-no-group-my-groups", ticket.Filter{ActorID: id("b2"), Visibility: ticket.VisibilityAll, Queue: ticket.QueueMyGroups}},
+		{"staff-in-one-group-my-groups", ticket.Filter{ActorID: id("b1"), Visibility: ticket.VisibilityAll, Queue: ticket.QueueMyGroups}},
+		{"staff-held-by-nobody", ticket.Filter{ActorID: id("b1"), Visibility: ticket.VisibilityAll, Queue: ticket.QueueMyGroups, HeldBy: ticket.HeldNobody}},
+		{"staff-scoped-my-groups", ticket.Filter{ActorID: id("b1"), Visibility: ticket.VisibilityScoped, Queue: ticket.QueueMyGroups}},
+		{"staff-assigned-to-me", ticket.Filter{ActorID: id("b1"), Visibility: ticket.VisibilityAll, Queue: ticket.QueueAssignedToMe}},
+		{"admin-assigned-to-me", ticket.Filter{ActorID: id("a1"), Visibility: ticket.VisibilityAll, Queue: ticket.QueueAssignedToMe}},
+		{"staff-scoped-assigned-to-me", ticket.Filter{ActorID: id("b1"), Visibility: ticket.VisibilityScoped, Queue: ticket.QueueAssignedToMe}},
 		{"admin-all", ticket.Filter{ActorID: id("a1"), Visibility: ticket.VisibilityAll, Queue: ticket.QueueAny}},
 		{"requester", ticket.Filter{ActorID: id("c1"), Visibility: ticket.VisibilityReporter, Queue: ticket.QueueAny}},
 	}

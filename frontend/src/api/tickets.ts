@@ -56,7 +56,8 @@ export async function lookupRequesterById(id: string): Promise<RequesterHit | nu
 }
 
 // 'visible' is every ticket the caller can see, for staff/admin search (#444).
-export type TicketScope = 'mine' | 'unassigned' | 'all' | 'visible'
+// 'assigned_to_me' and 'my_groups' are the two halves of 'mine' (#676).
+export type TicketScope = 'mine' | 'assigned_to_me' | 'my_groups' | 'unassigned' | 'all' | 'visible'
 
 export async function listTickets(params?: {
   assignee_group_id?: string

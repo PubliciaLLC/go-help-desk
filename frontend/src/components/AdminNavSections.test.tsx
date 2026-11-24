@@ -16,7 +16,9 @@ const router = vi.hoisted(() => ({ pathname: '/dashboard' }))
 vi.mock('@tanstack/react-router', () => ({
   useRouterState: () => ({ location: { pathname: router.pathname } }),
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  Link: ({ to, children, ...rest }: any) => <a href={to} {...rest}>{children}</a>,
+  Link: ({ to, search, children, ...rest }: any) => (
+    <a href={search ? `${to}?${new URLSearchParams(search).toString()}` : to} {...rest}>{children}</a>
+  ),
 }))
 
 import { Layout } from './Layout'
@@ -114,7 +116,9 @@ describe('structure', () => {
     renderAt('/dashboard')
     const nav = document.querySelector('nav') as HTMLElement
     const outside = Array.from(nav.querySelectorAll('a')).filter((a) => !panelOf('Admin').contains(a))
-    expect(outside.map((a) => a.textContent)).toEqual(['Dashboard', 'Tickets'])
+    expect(outside.map((a) => a.textContent)).toEqual([
+      'Dashboard', 'Assigned to Me', "My Group's Tickets", 'Available', 'Search',
+    ])
   })
 
   // The 14 admin pages plus Audit Log, which used to sit above them.
@@ -316,7 +320,7 @@ describe('visibility by role', () => {
     for (const s of SECTIONS) {
       await user.click(heading(s.name))
       const names = linkNames()
-      expect(names.slice(0, 2)).toEqual(['Dashboard', 'Tickets'])
+      expect(names.slice(0, 5)).toEqual(['Dashboard', 'Assigned to Me', "My Group's Tickets", 'Available', 'Search'])
       for (const [label, href] of s.links) {
         expect(names.filter((n) => n === label), label).toHaveLength(1)
         expect(within(panelOf(s.name)).getByRole('link', { name: label }).getAttribute('href')).toBe(href)
@@ -331,9 +335,13 @@ describe('visibility by role', () => {
   it.each(['staff', 'user'] as const)('%s: Dashboard and Tickets, no Admin, no Audit Log', (role) => {
     renderAt('/dashboard', role)
 
+    // Staff see the Tickets views (#676); a requester keeps the one link.
+    const tickets = role === 'staff'
+      ? [['Assigned to Me', '/tickets?view=me'], ["My Group's Tickets", '/tickets?view=groups'], ['Search', '/tickets?view=search']]
+      : [['Tickets', '/tickets']]
     expect(screen.queryAllByRole('link', { hidden: true }).map((a) => [a.textContent, a.getAttribute('href')])).toEqual([
       ['Dashboard', '/dashboard'],
-      ['Tickets', '/tickets'],
+      ...tickets,
       ['Your account', '/account'],
     ])
     expect(document.querySelectorAll('[aria-controls]')).toHaveLength(0)

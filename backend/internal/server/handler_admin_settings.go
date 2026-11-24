@@ -551,6 +551,22 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// Who may open the Available view (#676). A JSON array of role names; only
+	// admin and staff, since a requester has no queues to be available from.
+	if raw, ok := body[admin.KeyAvailableQueueRoles]; ok {
+		var roles []string
+		if err := unmarshalSetting(raw, admin.KeyAvailableQueueRoles, &roles); err != nil {
+			handleError(w, err)
+			return
+		}
+		for _, role := range roles {
+			if role != "admin" && role != "staff" {
+				Error(w, http.StatusBadRequest, "bad_request",
+					"available_queue_roles may list only admin and staff")
+				return
+			}
+		}
+	}
 	if raw, ok := body[admin.KeyReopenTargetStatusName]; ok {
 		var name string
 		if err := unmarshalSetting(raw, admin.KeyReopenTargetStatusName, &name); err != nil {

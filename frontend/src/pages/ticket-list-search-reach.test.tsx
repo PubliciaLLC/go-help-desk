@@ -4,13 +4,15 @@ import { renderWithQuery } from '@/test/render'
 import { api } from '@/api/client'
 import { useAuthStore } from '@/store/auth'
 
-// #444: a staff or admin search covers every ticket the viewer can see
-// (scope=visible), whatever queue is selected, and the "Only <queue>" chip
-// narrows it back to the queue.
+// #444, reshaped by #676: the Search view covers every ticket the viewer can
+// see (scope=visible); on a queue view text and filters narrow within the queue,
+// and the "Only <queue>" chip that widened and narrowed it is gone.
+
+const search = vi.hoisted(() => ({ value: {} as Record<string, unknown> }))
 
 vi.mock('@tanstack/react-router', () => ({
   useNavigate: () => vi.fn(),
-  useSearch: () => ({ status: undefined, reporter: undefined }),
+  useSearch: () => search.value,
   useRouterState: () => ({ location: { pathname: '/tickets' } }),
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   Link: ({ to, children, ...rest }: any) => (
@@ -45,6 +47,7 @@ function ticketCalls(): Record<string, unknown>[] {
 }
 
 beforeEach(() => {
+  search.value = {}
   get = vi.spyOn(api, 'get').mockImplementation((() => Promise.resolve({ data: [] })) as never)
 })
 
@@ -53,41 +56,40 @@ async function typeSearch(text: string) {
 }
 
 describe('search reach for staff', () => {
-  it('an empty box asks for the queue, exactly as before, and shows no label or chip', async () => {
+  it('an empty box on the default view asks for the tickets assigned to them, and shows no label or chip', async () => {
     setRole('staff')
     renderWithQuery(<TicketListPage />)
     await waitFor(() => expect(ticketCalls().length).toBeGreaterThan(0))
 
-    expect(ticketCalls().every(p => p.scope === 'mine' && p.q === undefined)).toBe(true)
+    expect(ticketCalls().every(p => p.scope === 'assigned_to_me' && p.q === undefined)).toBe(true)
     expect(screen.queryByText('Searching all tickets you can see')).toBeNull()
     expect(screen.queryByRole('button', { name: /^Only/ })).toBeNull()
   })
 
-  it('typing searches everything visible and says so', async () => {
+  it.each(['me', 'groups'] as const)('typing on the %s view stays in the queue', async view => {
     setRole('staff')
+    search.value = { view }
     renderWithQuery(<TicketListPage />)
     await typeSearch('printer')
 
-    await screen.findByText('Searching all tickets you can see')
-    await waitFor(() => expect(ticketCalls().at(-1)).toMatchObject({ q: 'printer', scope: 'visible' }))
+    await waitFor(() =>
+      expect(ticketCalls().at(-1)).toMatchObject({ q: 'printer', scope: view === 'me' ? 'assigned_to_me' : 'my_groups' }),
+    )
+    expect(ticketCalls().some(p => p.scope === 'visible')).toBe(false)
+    expect(screen.queryByText('Searching all tickets you can see')).toBeNull()
+    expect(screen.queryByRole('button', { name: /^Only/ })).toBeNull()
   })
 
-  it('the chip narrows to the queue, and clicking it again widens it', async () => {
+  it('the Search view covers everything visible and says so, with an empty box too', async () => {
     setRole('staff')
+    search.value = { view: 'search' }
     renderWithQuery(<TicketListPage />)
-    await typeSearch('printer')
-
-    const chip = await screen.findByRole('button', { name: 'Only my tickets' })
-    expect(chip.getAttribute('aria-pressed')).toBe('false')
-
-    fireEvent.click(chip)
-    await waitFor(() => expect(ticketCalls().at(-1)).toMatchObject({ q: 'printer', scope: 'mine' }))
-    expect(screen.queryByText('Searching all tickets you can see')).toBeNull()
-    expect(screen.getByRole('button', { name: /Only my tickets/ }).getAttribute('aria-pressed')).toBe('true')
-
-    fireEvent.click(screen.getByRole('button', { name: /Only my tickets/ }))
-    await waitFor(() => expect(ticketCalls().at(-1)).toMatchObject({ q: 'printer', scope: 'visible' }))
     await screen.findByText('Searching all tickets you can see')
+    await waitFor(() => expect(ticketCalls().at(-1)).toMatchObject({ scope: 'visible' }))
+
+    await typeSearch('printer')
+    await waitFor(() => expect(ticketCalls().at(-1)).toMatchObject({ q: 'printer', scope: 'visible' }))
+    expect(screen.queryByRole('button', { name: /^Only/ })).toBeNull()
   })
 })
 
@@ -97,7 +99,7 @@ describe('search reach for requesters', () => {
     renderWithQuery(<TicketListPage />)
     await typeSearch('printer')
 
-    await waitFor(() => expect(ticketCalls().at(-1)).toMatchObject({ q: 'printer' }))
+    await waitFor(() => expect(ticketCalls().at(-1)).toMatchObject({ q: 'printer', scope: 'mine' }))
     expect(ticketCalls().some(p => p.scope === 'visible')).toBe(false)
     expect(screen.queryByText('Searching all tickets you can see')).toBeNull()
     expect(screen.queryByRole('button', { name: /^Only/ })).toBeNull()
@@ -114,68 +116,24 @@ describe('whitespace', () => {
 
     expect(ticketCalls().some(p => p.scope === 'visible')).toBe(false)
     expect(screen.queryByText('Searching all tickets you can see')).toBeNull()
-    expect(screen.queryByRole('button', { name: /^Only/ })).toBeNull()
-  })
-})
-
-describe('the chip resets so every new search starts wide', () => {
-  async function chipOn() {
-    setRole('admin')
-    renderWithQuery(<TicketListPage />)
-    await typeSearch('printer')
-    fireEvent.click(await screen.findByRole('button', { name: 'Only my tickets' }))
-    await screen.findByRole('button', { name: /Only my tickets/ })
-  }
-
-  it('clearing the box turns it off', async () => {
-    await chipOn()
-    await typeSearch('')
-    await typeSearch('toner')
-    await waitFor(() => expect(ticketCalls().at(-1)).toMatchObject({ q: 'toner', scope: 'visible' }))
-  })
-
-  it('changing the queue turns it off', async () => {
-    await chipOn()
-    fireEvent.click(screen.getByRole('button', { name: 'unassigned' }))
-    await waitFor(() => expect(ticketCalls().at(-1)).toMatchObject({ q: 'printer', scope: 'visible' }))
-    expect(screen.getByRole('button', { name: 'Only unassigned' }).getAttribute('aria-pressed')).toBe('false')
-  })
-
-  it('a box of only spaces turns it off', async () => {
-    await chipOn()
-    await typeSearch('   ')
-    expect(screen.getByRole('button', { name: /Only my tickets/ }).getAttribute('aria-pressed')).toBe('false')
-  })
-
-  it('refining the same search keeps it on', async () => {
-    await chipOn()
-    await typeSearch('printer jam')
-    await waitFor(() => expect(ticketCalls().at(-1)).toMatchObject({ q: 'printer jam', scope: 'mine' }))
-  })
-})
-
-describe('admin All queue', () => {
-  it('shows the label, with no chip', async () => {
-    setRole('admin')
-    renderWithQuery(<TicketListPage />)
-    fireEvent.click(screen.getByRole('button', { name: 'all' }))
-    await typeSearch('printer')
-
-    await screen.findByText('Searching all tickets you can see')
-    expect(screen.queryByRole('button', { name: /^Only/ })).toBeNull()
   })
 })
 
 describe('the label', () => {
-  it('is a polite live region that is in the page before it has anything to say', async () => {
+  it('is a polite live region that is in the page before it has anything to say', () => {
     setRole('staff')
+    search.value = { view: 'me' }
     const { container } = renderWithQuery(<TicketListPage />)
     const region = container.querySelector('[aria-live="polite"]')
     expect(region).not.toBeNull()
     expect(region!.textContent).toBe('')
+  })
 
-    await typeSearch('printer')
-
+  it('says what Search covers in the same region', async () => {
+    setRole('staff')
+    search.value = { view: 'search' }
+    const { container } = renderWithQuery(<TicketListPage />)
+    const region = container.querySelector('[aria-live="polite"]')
     const label = await screen.findByText('Searching all tickets you can see')
     expect(label).toBe(region)
   })

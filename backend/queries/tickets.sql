@@ -425,11 +425,17 @@ WHERE
       )
     )
   )
-  -- queue: 'any' | 'mine' | 'unassigned'. Set by the handler, never the caller.
+  -- queue: 'any' | 'mine' | 'assigned_to_me' | 'my_groups' | 'unassigned'. Set by
+  -- the handler, never the caller. (#676: assigned_to_me and my_groups are the two
+  -- halves of mine; held_by below splits my_groups three ways.)
   AND (
     sqlc.arg(queue)::text = 'any'
     OR (sqlc.arg(queue)::text = 'unassigned'
         AND t.assignee_user_id IS NULL AND t.assignee_group_id IS NULL)
+    OR (sqlc.arg(queue)::text = 'assigned_to_me'
+        AND t.assignee_user_id = sqlc.arg(actor_id)::uuid)
+    OR (sqlc.arg(queue)::text = 'my_groups'
+        AND t.assignee_group_id = ANY(sqlc.arg(mine_group_ids)::uuid[]))
     -- mine_group_ids is the caller's groups, read by the store just before this
     -- runs and passed as a plain array. That is deliberate: the planner cannot
     -- know how many groups a subquery will return, assumes a lot, and then walks
@@ -452,6 +458,13 @@ WHERE
   AND (sqlc.narg(item_id)::uuid IS NULL OR t.item_id = sqlc.narg(item_id)::uuid)
   AND (sqlc.narg(assignee_user_id)::uuid IS NULL OR t.assignee_user_id = sqlc.narg(assignee_user_id)::uuid)
   AND (sqlc.narg(assignee_group_id)::uuid IS NULL OR t.assignee_group_id = sqlc.narg(assignee_group_id)::uuid)
+  -- held_by (#676): who personally holds the ticket, relative to the caller.
+  -- '' is no restriction. Only the assignee user is read, never the group.
+  AND (sqlc.arg(held_by)::text = ''
+       OR (sqlc.arg(held_by)::text = 'nobody' AND t.assignee_user_id IS NULL)
+       OR (sqlc.arg(held_by)::text = 'me' AND t.assignee_user_id = sqlc.arg(actor_id)::uuid)
+       OR (sqlc.arg(held_by)::text = 'others' AND t.assignee_user_id IS NOT NULL
+           AND t.assignee_user_id <> sqlc.arg(actor_id)::uuid))
   AND (sqlc.narg(reporter_id)::uuid IS NULL OR t.reporter_user_id = sqlc.narg(reporter_id)::uuid)
   -- requester_pattern is '%' || LIKE-escaped text || '%', built in the store.
   -- It matches the ticket's guest fields and the reporting account's name and

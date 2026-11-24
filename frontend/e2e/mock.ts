@@ -14,6 +14,8 @@ export const ME_STAFF = {
   mfa_enabled: false,
   created_at: '2026-01-01T00:00:00Z',
   updated_at: '2026-01-01T00:00:00Z',
+  // #676: the setting is off by default (admins only), so Available is not listed.
+  can_use_available_queue: false,
 }
 
 export const ME_REPORTER = {
@@ -34,6 +36,7 @@ export const ME_ADMIN = {
   mfa_enabled: false,
   created_at: '2026-01-01T00:00:00Z',
   updated_at: '2026-01-01T00:00:00Z',
+  can_use_available_queue: true,
 }
 
 export const STATUSES = [

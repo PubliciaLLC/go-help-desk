@@ -6,7 +6,7 @@ import type { Priority, SourceChannel, Status } from '@/api/types'
 import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
 import { MIN_QUERY, queryLength } from './requester'
-import { CHANNELS, PRIORITIES, SLA_STATES, type TicketSearch } from '@/lib/ticketSearch'
+import { CHANNELS, PRIORITIES, SLA_STATES, type FilterKey, type TicketSearch } from '@/lib/ticketSearch'
 import { useFilterLookups } from '@/lib/useFilterLookups'
 import { useRequesterById } from '@/lib/useRequesterById'
 
@@ -228,6 +228,7 @@ export function TicketFilters({
   slaOn,
   statuses,
   layout,
+  offered,
 }: {
   value: TicketSearch
   onChange: (patch: Partial<TicketSearch>) => void
@@ -236,8 +237,12 @@ export function TicketFilters({
   slaOn: boolean
   statuses: Status[]
   layout: Layout
+  // The filters the view offers (VIEW_FILTERS); all of them when absent. One it
+  // leaves out is not shown, so it cannot be set from here.
+  offered?: readonly FilterKey[]
 }) {
   const uid = useId()
+  const offers = (k: FilterKey) => offered === undefined || offered.includes(k)
   const { categories, types, items, staff: people, groups } = useFilterLookups(value, { staff, wantPeople: true })
   // The dialog keeps the rarely used fields behind a button; the panel has room.
   const [more, setMore] = useState(false)
@@ -333,7 +338,7 @@ export function TicketFilters({
         ))}
       </Group>
     ),
-    requester: staff && (
+    requester: staff && offers('requester') && (
       <RequesterField reporter={value.reporter} requester={value.requester} layout={layout} onChange={onChange} />
     ),
     category: selectOf('Category', 'Any category', value.category, categories, v =>
@@ -350,6 +355,7 @@ export function TicketFilters({
     item: selectOf('Item', 'Any item', value.item, items, v => onChange({ item: v }), !value.type),
     assignee:
       staff &&
+      offers('assignee') &&
       selectOf(
         'Assignee',
         'Anyone',
@@ -359,6 +365,7 @@ export function TicketFilters({
       ),
     group:
       staff &&
+      offers('group') &&
       selectOf('Group', 'Any group', value.group, groups, v => onChange({ group: v })),
     sla:
       staff &&
@@ -396,6 +403,17 @@ export function TicketFilters({
     ),
   }
 
+  // What is behind the button, named from what is in it.
+  const moreNames = [
+    'item',
+    fields.assignee && 'assignee',
+    fields.group && 'group',
+    fields.updated && 'last updated',
+    fields.channel && 'came in by',
+    fields.sla && 'SLA',
+  ].filter(Boolean)
+  const moreLabel = `More filters: ${moreNames.join(', ')}`
+
   if (dialog) {
     return (
       <div className="space-y-5">
@@ -411,7 +429,7 @@ export function TicketFilters({
           onClick={() => setMore(v => !v)}
           className="flex min-h-11 w-full items-center justify-between gap-3 rounded-md text-left text-sm text-blue-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
         >
-          <span>{staff ? 'More filters: item, assignee, group, last updated, came in by' + (slaOn ? ', SLA' : '') : 'More filters: item'}</span>
+          <span>{moreLabel}</span>
           <ChevronDownIcon aria-hidden="true" className={'h-4 w-4 shrink-0 transition-transform ' + (more ? 'rotate-180' : '')} />
         </button>
         {showMore && (
@@ -435,7 +453,7 @@ export function TicketFilters({
       {fields.priority}
       <div className="col-span-2 grid grid-cols-1 gap-y-4 lg:grid-cols-2 lg:gap-x-6">
         {fields.requester}
-        {staff && <div className="space-y-4">{fields.assignee}{fields.group}</div>}
+        {(fields.assignee || fields.group) && <div className="space-y-4">{fields.assignee}{fields.group}</div>}
       </div>
       {fields.category}
       {fields.type}

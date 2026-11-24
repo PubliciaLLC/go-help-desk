@@ -33,6 +33,8 @@ vi.mock('@/api/passkeys', async (orig) => {
 })
 
 vi.mock('@/api/auth', () => ({
+  // The sidebar asks /me for a staff member's views (#676).
+  getMe: vi.fn(),
   changePassword: vi.fn(),
   enrollMFAStart: vi.fn(),
   enrollMFAConfirm: vi.fn(),

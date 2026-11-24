@@ -70,7 +70,12 @@ func TestParseListFilter_Valid(t *testing.T) {
 			return slices.Equal(f.SourceChannels, []SourceChannel{ChannelWeb, ChannelPhone})
 		}},
 		{"sla", "sla=at_risk", func(f Filter) bool { return f.SLA == SLAAtRisk }},
-		{"empty values are absent", "q=&reporter_id=&status_id=&priority=&sla=&sort=&order=&created_after=", func(f Filter) bool {
+		{"held_by nobody", "held_by=nobody", func(f Filter) bool { return f.HeldBy == HeldNobody }},
+		{"held_by me", "held_by=me", func(f Filter) bool { return f.HeldBy == HeldMe }},
+		{"held_by others", "held_by=others", func(f Filter) bool { return f.HeldBy == HeldOthers }},
+		{"held_by empty is absent", "held_by=", func(f Filter) bool { return f.HeldBy == "" }},
+		{"held_by sent twice uses the first", "held_by=others&held_by=me", func(f Filter) bool { return f.HeldBy == HeldOthers }},
+		{"empty values are absent", "q=&reporter_id=&status_id=&priority=&sla=&held_by=&sort=&order=&created_after=", func(f Filter) bool {
 			return reflect.DeepEqual(f, Filter{})
 		}},
 		{"unknown parameters are ignored", "colour=red&scope=mine&limit=5", func(f Filter) bool { return reflect.DeepEqual(f, Filter{}) }},
@@ -99,6 +104,8 @@ func TestParseListFilter_Invalid(t *testing.T) {
 		{"priority", "priority=urgent", "invalid priority"},
 		{"source_channel", "source_channel=fax", "invalid source_channel"},
 		{"sla", "sla=ok", "invalid sla"},
+		{"held_by unknown", "held_by=everyone", "invalid held_by"},
+		{"held_by is case sensitive", "held_by=Me", "invalid held_by"},
 		{"created_after", "created_after=yesterday", "invalid created_after"},
 		{"date only is not RFC 3339", "created_before=2026-11-01", "invalid created_before"},
 		{"updated_after", "updated_after=x", "invalid updated_after"},
@@ -263,6 +270,7 @@ var filterRaw = map[string]string{
 	"ExcludeClosed":   "include_closed=false",
 	"SourceChannels":  "source_channel=web",
 	"SLA":             "sla=breached",
+	"HeldBy":          "held_by=me",
 }
 
 // Fields of Filter that a request never sets. Listing them here is how a new
@@ -311,7 +319,7 @@ func TestRequesterRules_OnlyAllowedListKeys(t *testing.T) {
 func TestAllowedFor_FilterByRole(t *testing.T) {
 	staffOnly := map[string]bool{
 		"ReporterID": true, "Requester": true, "UpdatedAfter": true, "UpdatedBefore": true,
-		"AssigneeUserID": true, "AssigneeGroupID": true, "SourceChannels": true, "SLA": true,
+		"AssigneeUserID": true, "AssigneeGroupID": true, "SourceChannels": true, "SLA": true, "HeldBy": true,
 	}
 	for field, raw := range filterRaw {
 		for _, r := range allRoles {
