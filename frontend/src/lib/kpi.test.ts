@@ -260,10 +260,26 @@ describe('comparisonText', () => {
       },
     },
     {
-      name: 'from zero on a higher-is-better measure: good',
+      name: 'from zero on a higher-is-better measure: an increase, so good',
+      change: ch('points', 'from_zero', null),
+      measure: 'sla_met_rate',
+      want: {
+        text: 'Up from 0 in the previous period',
+        direction: 'up',
+        tone: 'good',
+        srText: 'Up from 0 in the previous period',
+      },
+    },
+    {
+      name: 'from zero on a neutral measure: grey',
       change: ch('relative', 'from_zero', null),
       measure: 'created',
-      want: { text: 'Up from 0 in the previous period', direction: 'up', tone: 'neutral', srText: 'Up from 0 in the previous period' },
+      want: {
+        text: 'Up from 0 in the previous period',
+        direction: 'up',
+        tone: 'neutral',
+        srText: 'Up from 0 in the previous period',
+      },
     },
     {
       name: 'no previous data: grey',
@@ -305,6 +321,30 @@ describe('comparisonText', () => {
     expect(got.tone).toBe(tone)
     expect(got.direction).toBe(up ? 'up' : 'down')
     expect(got.text.startsWith(up ? '▲' : '▼')).toBe(true)
+  })
+
+  // The states with no figure to compare, and from_zero, for every `better`
+  // and both kinds. from_zero is always an increase, so its tone follows
+  // `better`; no_previous and no_current never colour anything.
+  const stateMatrix = betters.flatMap((better) =>
+    (['relative', 'points'] as const).flatMap((kind) =>
+      (['from_zero', 'no_previous', 'no_current'] as const).map((state) => ({ better, kind, state }))
+    )
+  )
+  it.each(stateMatrix)('state $state for better=$better, $kind', ({ better, kind, state }) => {
+    const m: KpiMeasure = { key: 'created', label: 'x', unit: 'count', better }
+    const got = comparisonText(ch(kind, state, null), m)
+    if (state === 'from_zero') {
+      expect(got.direction).toBe('up')
+      expect(got.tone).toBe(better === 'neutral' ? 'neutral' : better === 'higher' ? 'good' : 'bad')
+      expect(got.text).toBe('Up from 0 in the previous period')
+      expect(got.srText).toBe(got.text)
+    } else {
+      expect(got.direction).toBe('none')
+      expect(got.tone).toBe('neutral')
+      expect(got.text).toBe(state === 'no_previous' ? 'No data for the previous period' : '')
+      expect(got.srText).toBe(got.text)
+    }
   })
 })
 
