@@ -2,6 +2,7 @@ package ticket_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -43,4 +44,12 @@ func TestService_VolumeByDay(t *testing.T) {
 			require.Equal(t, []volumeCall{{f, "Europe/London", now}}, h.store.volumeCalls)
 		})
 	}
+}
+
+// DESIGN.md "Dashboard" gives a volume day as {"date", "created", "resolved"};
+// the type is marshalled as it stands, so its tags are the wire contract.
+func TestDayVolume_JSONShape(t *testing.T) {
+	b, err := json.Marshal(ticket.DayVolume{Day: "2026-10-26", Created: 3, Resolved: 2})
+	require.NoError(t, err)
+	require.JSONEq(t, `{"date":"2026-10-26","created":3,"resolved":2}`, string(b))
 }

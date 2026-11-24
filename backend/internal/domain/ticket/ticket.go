@@ -718,7 +718,7 @@ var (
 // closed_at when never resolved) falls on it. Day is the local date,
 // "YYYY-MM-DD".
 type DayVolume struct {
-	Day      string `json:"day"`
+	Day      string `json:"date"`
 	Created  int64  `json:"created"`
 	Resolved int64  `json:"resolved"`
 }
