@@ -165,8 +165,8 @@ func (s *Scanner) Scan(ctx context.Context, data []byte) Result {
 		return unavailable("setting deadline", err)
 	}
 	// The deadline bounds a hung daemon; this bounds a client that gave up.
-	// Without it a cancelled upload still holds a goroutine, its 25 MB, and a
-	// clamd worker for the full minute — and clamd has a small thread pool, so
+	// Without it a cancelled upload still holds a goroutine, its bytes (up to the
+	// attachment_max_mb limit), and a clamd worker for the whole scan timeout — and clamd has a small thread pool, so
 	// a handful of abandoned uploads can deny scanning to everyone else, which
 	// under PolicyRequired denies attachments to everyone else.
 	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })

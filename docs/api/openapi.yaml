@@ -11328,7 +11328,8 @@ components:
           description: >-
             The largest file any upload may be, in bytes (attachment_max_mb, #673), so
             the browser can refuse one before sending it. Always present on GET /me for
-            a signed-in person, and absent from a machine credential's /me. The login
+            a signed-in person and for an API key (its /me answers as its owner's account), and
+            absent from an OAuth client's /me. The login
             response's user does not carry it; read it from GET /me.
         email_notifications:
           type: object

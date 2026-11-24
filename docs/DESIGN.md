@@ -2347,7 +2347,8 @@ the save and the page:
 **Who reads the limit.** Three places outside the upload handler:
 
 - **`GET /me`** gains `attachment_max_bytes` (integer, always present for a
-  person; not on a machine credential's `/me`, which has no uploader UI). The
+  person, and for an API key, whose `/me` answers as its owner's account; not on an
+  OAuth client's `/me`, which has a different shape and no uploader UI). The
   reply composer (`components/ticket/ReplyComposer.tsx`) and the new-ticket
   page pass it to `AttachmentUpload` as `maxBytes`, which until now defaulted
   to a 25 MB literal. Without this a raised limit would be refused in the

@@ -10,7 +10,8 @@ import (
 
 // #673: GET /me carries attachment_max_bytes, the instance-wide per-file limit
 // in bytes, for every account role so the client can cap its file picker. It
-// is absent on the machine-credential /me, whose shape does not change.
+// is absent on an OAuth client's /me, whose shape does not change (an API key's /me
+// answers as its owner and carries it).
 func TestMe_AttachmentMaxBytes(t *testing.T) {
 	const mib = 1 << 20
 	h, cleanup := newHarness(t)
