@@ -237,12 +237,20 @@ const statusInvalidNameIDPolicy = "urn:oasis:names:tc:SAML:2.0:status:InvalidNam
 // issue a persistent NameID answers the request with a status error, which the
 // library reports as a bare 403 page that tells the person nothing. That one
 // case is sent to the login page with a code it has a message for; every
-// other failure keeps the library's handler (a 403 and a log line), because
-// what an unsigned error response says is not something to build more on.
+// other failure keeps the library's handler (a 403 and a log line).
+//
+// What this does and does not prove. The library has checked the response's
+// destination, InResponseTo, issue time and issuer before it looks at the
+// status, but not its signature: it returns the bad status first, so an error
+// response with a missing or invalid signature still gets here. (Identity
+// providers commonly leave error responses unsigned, so requiring one would
+// break this.) An unproven response can therefore trigger the one fixed
+// redirect below. Nothing from the response is shown or followed: the target
+// and the message are constants.
 func onACSError(w http.ResponseWriter, r *http.Request, err error) {
-	// Only a response the library parsed and refused for its status. A response
-	// that failed for any other reason (signature, issuer, InResponseTo) is
-	// unproven, whatever its XML says.
+	// Only a response the library refused for its status. The status check is
+	// what the nested code belongs to; any other failure is not this case,
+	// whatever the XML says.
 	var invalid *saml.InvalidResponseError
 	var badStatus saml.ErrBadStatus
 	if errors.As(err, &invalid) && errors.As(invalid.PrivateErr, &badStatus) && refusesNameIDPolicy(invalid.Response) {

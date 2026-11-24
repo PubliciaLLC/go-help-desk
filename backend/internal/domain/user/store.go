@@ -81,9 +81,11 @@ type Store interface {
 	SoftDeleteUnlessLastAdmin(ctx context.Context, id uuid.UUID) (bool, error)
 	SetRoleUnlessLastAdmin(ctx context.Context, id uuid.UUID, role string) (bool, error)
 
-	// GetByEmailAnyState is the one row holding this address, live or deleted,
-	// person or service account (ErrNotFound when none does). GetByEmail is the
-	// login lookup and hides the ones that must not sign in.
+	// GetByEmailAnyState is the row holding this address, ignoring case, live
+	// or deleted, person or service account (ErrNotFound when none does). When
+	// legacy rows differ only in case it picks one deterministically: live,
+	// then the exact lower-case address, then not SAML-created, then oldest.
+	// GetByEmail is the login lookup and hides the ones that must not sign in.
 	GetByEmailAnyState(ctx context.Context, email string) (User, error)
 	// RelinkSAMLSubject replaces the SAML subject of a live, enabled account
 	// that SAML created, and returns it. False means the row no longer meets
@@ -94,11 +96,11 @@ type Store interface {
 	// deleted row that holds it, in one transaction: the old row's address
 	// becomes deleted-<id>@invalid and its SAML and OIDC subjects are cleared, so the row,
 	// and whatever points at it, stays. samlCreatedOnly limits what may be
-	// freed to a row SAML created. It returns the id of the row it freed, or
-	// the zero UUID when there was none, and a unique-violation error or
+	// freed to a row SAML created. It returns the ids of the rows it freed, none
+	// when there were none, and a unique-violation error or
 	// ErrEmailTaken when a live row holds the address (or another create got
 	// there first).
-	CreateReleasingDeleted(ctx context.Context, u User, samlCreatedOnly bool) (released uuid.UUID, err error)
+	CreateReleasingDeleted(ctx context.Context, u User, samlCreatedOnly bool) (released []uuid.UUID, err error)
 
 	Create(ctx context.Context, u User) error
 	GetByID(ctx context.Context, id uuid.UUID) (User, error)

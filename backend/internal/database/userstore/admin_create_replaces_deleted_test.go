@@ -235,3 +235,22 @@ func TestAdminCreate_LegacyMixedCaseRows(t *testing.T) {
 		require.Equal(t, 1, e.count(t, `SELECT count(*) FROM users WHERE lower(email) = 'legacy4@example.com'`))
 	})
 }
+
+// Two deleted rows that differ only in case (legacy data) are both released by
+// one create, and each gets its own audit entry.
+func TestAdminCreate_ReleasesEveryDeletedTwinAndAuditsEach(t *testing.T) {
+	e := newSAMLEnv(t)
+	a, b := uuid.New(), uuid.New()
+	e.exec(t, `INSERT INTO users (id, email, display_name, role, deleted_at) VALUES ($1, 'Dt@Example.com', 'A', 'user', now()), ($2, 'dT@Example.com', 'B', 'user', now())`, a, b)
+
+	got, err := e.adminCreate("dt@example.com", "New", nil)
+	require.NoError(t, err)
+	for _, id := range []uuid.UUID{a, b} {
+		require.Equal(t, "deleted-"+id.String()+"@invalid", e.row(t, id).Email)
+		entries, err := e.audit.ListByEntity(e.ctx, "user", id, 10, 0)
+		require.NoError(t, err)
+		released := findAction(entries, "email_released")
+		require.NotNil(t, released, "every released row is audited")
+		require.Equal(t, got.ID.String(), released.After["replaced_by_user_id"])
+	}
+}

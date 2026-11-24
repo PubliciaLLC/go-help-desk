@@ -231,19 +231,18 @@ func (s *Service) CreateByAdmin(ctx context.Context, in CreateUserInput, actorID
 // releaseAudit records that a deleted account gave up its address to a new
 // one, on both rows. Ids only: neither address nor any subject is written.
 // Best effort and detached, like every user audit entry (writeAuditEntry).
-func (s *Service) releaseAudit(ctx context.Context, released, replacement uuid.UUID, actorID *uuid.UUID) {
-	if released == uuid.Nil {
-		return
-	}
+func (s *Service) releaseAudit(ctx context.Context, released []uuid.UUID, replacement uuid.UUID, actorID *uuid.UUID) {
 	ctx = context.WithoutCancel(ctx)
-	s.writeAuditEntry(ctx, audit.Entry{
-		ActorID: actorID, EntityType: "user", EntityID: released, Action: "email_released",
-		After: map[string]any{"replaced_by_user_id": replacement.String()},
-	})
-	s.writeAuditEntry(ctx, audit.Entry{
-		ActorID: actorID, EntityType: "user", EntityID: replacement, Action: "replaced_deleted_user",
-		After: map[string]any{"previous_user_id": released.String()},
-	})
+	for _, id := range released {
+		s.writeAuditEntry(ctx, audit.Entry{
+			ActorID: actorID, EntityType: "user", EntityID: id, Action: "email_released",
+			After: map[string]any{"replaced_by_user_id": replacement.String()},
+		})
+		s.writeAuditEntry(ctx, audit.Entry{
+			ActorID: actorID, EntityType: "user", EntityID: replacement, Action: "replaced_deleted_user",
+			After: map[string]any{"previous_user_id": id.String()},
+		})
+	}
 }
 
 // newUser validates in and builds the row, hashing the password if given.
@@ -1681,14 +1680,14 @@ var ErrEmailTaken = errors.New("that email address is already in use, possibly b
 // isUniqueViolation reports whether a store error is Postgres refusing a
 // duplicate row. Matched on the SQLSTATE rather than the message, which is
 // localised and names tables this layer should not be reading.
+func isUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23505"
+}
+
 // addressTaken is whether a create failed because a live account holds the
 // address: the unique index, or the store's own check for a holder whose
 // address differs only in case.
 func addressTaken(err error) bool {
 	return isUniqueViolation(err) || errors.Is(err, ErrEmailTaken)
-}
-
-func isUniqueViolation(err error) bool {
-	var pgErr *pgconn.PgError
-	return errors.As(err, &pgErr) && pgErr.Code == "23505"
 }

@@ -663,8 +663,12 @@ type Querier interface {
 	// and every write has lower-cased the address only since v1.2.0, so an older
 	// row can be 'Legacy@Example.com' and an exact match would miss it and let a
 	// second account be made for the same person. Nothing in the schema stops
-	// 'A@x' and 'a@x' both existing, so more than one row can match: a live one
-	// wins over a deleted one, the oldest over a newer.
+	// 'A@x' and 'a@x' both existing (only legacy data can: every write
+	// lower-cases now), so more than one row can match. The order is the answer
+	// to "which one is the holder": a live row over a deleted one; then the row
+	// whose address is exactly the lower-cased input, which is the one the unique
+	// index sees as holding it; then a row SAML did not create over one it did, so
+	// a deleted local account keeps blocking; then the oldest.
 	GetUserByEmailAnyState(ctx context.Context, lower string) (User, error)
 	GetUserByID(ctx context.Context, id uuid.UUID) (User, error)
 	GetUserByIDAdmin(ctx context.Context, id uuid.UUID) (User, error)
@@ -1131,8 +1135,9 @@ type Querier interface {
 	// saml_created_only narrows it to rows SAML created (a SAML sign-in recreates
 	// those and leaves a deleted local account blocking); an administrator
 	// creating an account passes false. Matched ignoring case, like
-	// GetUserByEmailAnyState; the rows it matches are all deleted.
-	ReleaseDeletedUserEmail(ctx context.Context, arg ReleaseDeletedUserEmailParams) (uuid.UUID, error)
+	// GetUserByEmailAnyState, so legacy rows that differ only in case are all
+	// released by one call, and every id comes back so each can be audited.
+	ReleaseDeletedUserEmail(ctx context.Context, arg ReleaseDeletedUserEmailParams) ([]uuid.UUID, error)
 	// Replaces the SAML subject of an account that was created by SAML, when the
 	// identity provider sends a NameID the account does not know. The conditions
 	// are asked at the write, not only by the caller, so an account that was

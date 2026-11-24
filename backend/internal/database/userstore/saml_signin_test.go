@@ -3,6 +3,7 @@ package userstore_test
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -556,4 +557,60 @@ func TestSAMLSignIn_AddressIsValidatedBeforeTheAllowlist(t *testing.T) {
 			require.ErrorIs(t, err, tc.want)
 		})
 	}
+}
+
+// Before addresses were lower-cased (v1.2.0) a person could end up with two
+// rows whose addresses differ only in case; the unique index is case-sensitive
+// and let both in. Nothing writes such a pair now: every write lower-cases, so
+// the only twins are legacy data. Which of them a sign-in meets must not depend
+// on which is older. The exact (lower-case) row is the one the unique index
+// treats as holding the address, so it decides.
+func TestSAMLSignIn_LegacyTwins(t *testing.T) {
+	insert := func(t *testing.T, e *samlEnv, addr, role, subject string, age time.Duration, deleted bool) uuid.UUID {
+		t.Helper()
+		id := uuid.New()
+		e.exec(t, `INSERT INTO users (id, email, display_name, role, saml_subject, created_at, deleted_at)
+			VALUES ($1, $2, 'Twin', $3, $4, now() - $5::interval, CASE WHEN $6 THEN now() END)`,
+			id, addr, role, subject, fmt.Sprintf("%d seconds", int(age.Seconds())), deleted)
+		return id
+	}
+
+	t.Run("an older live local row with other capitals does not hide the exact SAML row", func(t *testing.T) {
+		e := newSAMLEnv(t)
+		insert(t, e, "Twin@Example.com", "admin", "", 48*time.Hour, false)
+		saml := insert(t, e, "twin@example.com", "user", "dead-transient", time.Hour, false)
+
+		got, err := e.signIn("persistent-twin", "twin@example.com", "Twin")
+		require.NoError(t, err)
+		require.Equal(t, saml, got.ID)
+		require.Equal(t, "persistent-twin", e.row(t, saml).SAMLSubject)
+	})
+
+	t.Run("an exact local row is not taken over because an older SAML row has other capitals", func(t *testing.T) {
+		e := newSAMLEnv(t)
+		insert(t, e, "Twin2@Example.com", "user", "dead-transient", 48*time.Hour, false)
+		local := insert(t, e, "twin2@example.com", "admin", "", time.Hour, false)
+
+		_, err := e.signIn("persistent-twin2", "twin2@example.com", "Twin")
+		require.ErrorIs(t, err, user.ErrEmailTaken)
+		require.Empty(t, e.row(t, local).SAMLSubject)
+	})
+
+	t.Run("two deleted twins: a deleted local row keeps blocking whichever is older", func(t *testing.T) {
+		for _, localOlder := range []bool{true, false} {
+			t.Run(fmt.Sprintf("local older: %v", localOlder), func(t *testing.T) {
+				e := newSAMLEnv(t)
+				localAge, samlAge := 48*time.Hour, time.Hour
+				if !localOlder {
+					localAge, samlAge = samlAge, localAge
+				}
+				insert(t, e, "DTwin@Example.com", "user", "", localAge, true)
+				samlRow := insert(t, e, "dTwin@Example.com", "user", "old", samlAge, true)
+
+				_, err := e.signIn("persistent-dtwin", "dtwin@example.com", "Twin")
+				require.ErrorIs(t, err, user.ErrEmailTaken, "local row older: %v", localOlder)
+				require.Equal(t, "dTwin@Example.com", e.row(t, samlRow).Email, "nothing was released")
+			})
+		}
+	})
 }

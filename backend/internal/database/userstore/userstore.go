@@ -51,20 +51,16 @@ func (s *Store) Create(ctx context.Context, u user.User) error {
 // changed), and its insert meets the first one's account: a unique violation
 // (or user.ErrEmailTaken, from the check for a live holder in another case)
 // for the caller to report as "taken", not a fault.
-func (s *Store) CreateReleasingDeleted(ctx context.Context, u user.User, samlCreatedOnly bool) (uuid.UUID, error) {
-	var released uuid.UUID
+func (s *Store) CreateReleasingDeleted(ctx context.Context, u user.User, samlCreatedOnly bool) ([]uuid.UUID, error) {
+	var released []uuid.UUID
 	err := database.InTx(ctx, s.db, s.q, func(q *dbgen.Queries) error {
-		id, err := q.ReleaseDeletedUserEmail(ctx, dbgen.ReleaseDeletedUserEmailParams{
+		ids, err := q.ReleaseDeletedUserEmail(ctx, dbgen.ReleaseDeletedUserEmailParams{
 			Email: u.Email, SamlCreatedOnly: samlCreatedOnly,
 		})
-		switch {
-		case err == nil:
-			released = id
-		case errors.Is(err, sql.ErrNoRows):
-			// Nothing deleted held it; the insert says whether anything else does.
-		default:
+		if err != nil {
 			return fmt.Errorf("releasing deleted address: %w", err)
 		}
+		released = ids // none: nothing deleted held it; the checks below say whether anything else does
 		// The unique index refuses an exact match only. A legacy row stored
 		// with other capitals is still a live holder of this address.
 		held, err := q.LiveUserHoldsEmail(ctx, u.Email)
@@ -77,7 +73,7 @@ func (s *Store) CreateReleasingDeleted(ctx context.Context, u user.User, samlCre
 		return create(ctx, q, u)
 	})
 	if err != nil {
-		return uuid.Nil, err
+		return nil, err
 	}
 	return released, nil
 }

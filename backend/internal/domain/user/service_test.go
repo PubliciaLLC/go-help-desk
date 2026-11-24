@@ -100,8 +100,8 @@ func (f *fakeUserStore) RelinkSAMLSubject(context.Context, uuid.UUID, string, st
 	return user.User{}, false, nil
 }
 
-func (f *fakeUserStore) CreateReleasingDeleted(ctx context.Context, u user.User, _ bool) (uuid.UUID, error) {
-	return uuid.Nil, f.Create(ctx, u)
+func (f *fakeUserStore) CreateReleasingDeleted(ctx context.Context, u user.User, _ bool) ([]uuid.UUID, error) {
+	return nil, f.Create(ctx, u)
 }
 
 func (f *fakeUserStore) GetByID(_ context.Context, id uuid.UUID) (user.User, error) {

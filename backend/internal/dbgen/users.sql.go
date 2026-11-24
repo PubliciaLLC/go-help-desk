@@ -571,7 +571,7 @@ func (q *Queries) GetUserByEmail(ctx context.Context, email string) (User, error
 
 const getUserByEmailAnyState = `-- name: GetUserByEmailAnyState :one
 SELECT id, email, display_name, role, password_hash, mfa_secret, mfa_enabled, saml_subject, created_at, updated_at, deleted_at, disabled, oidc_subject, mfa_failed_attempts, mfa_locked_until, service_account, email_notify_assigned, email_notify_activity, email_notify_group, must_change_password, email_notify_sla FROM users WHERE lower(email) = lower($1)
-ORDER BY (deleted_at IS NULL) DESC, created_at, id
+ORDER BY (deleted_at IS NULL) DESC, (email = lower($1)) DESC, (saml_subject = '') DESC, created_at, id
 LIMIT 1
 `
 
@@ -584,8 +584,12 @@ LIMIT 1
 // and every write has lower-cased the address only since v1.2.0, so an older
 // row can be 'Legacy@Example.com' and an exact match would miss it and let a
 // second account be made for the same person. Nothing in the schema stops
-// 'A@x' and 'a@x' both existing, so more than one row can match: a live one
-// wins over a deleted one, the oldest over a newer.
+// 'A@x' and 'a@x' both existing (only legacy data can: every write
+// lower-cases now), so more than one row can match. The order is the answer
+// to "which one is the holder": a live row over a deleted one; then the row
+// whose address is exactly the lower-cased input, which is the one the unique
+// index sees as holding it; then a row SAML did not create over one it did, so
+// a deleted local account keeps blocking; then the oldest.
 func (q *Queries) GetUserByEmailAnyState(ctx context.Context, lower string) (User, error) {
 	row := q.db.QueryRowContext(ctx, getUserByEmailAnyState, lower)
 	var i User
@@ -1224,7 +1228,7 @@ func (q *Queries) RehashUserPassword(ctx context.Context, arg RehashUserPassword
 	return result.RowsAffected()
 }
 
-const releaseDeletedUserEmail = `-- name: ReleaseDeletedUserEmail :one
+const releaseDeletedUserEmail = `-- name: ReleaseDeletedUserEmail :many
 UPDATE users
 SET email = 'deleted-' || id::text || '@invalid',
     saml_subject = '',
@@ -1251,12 +1255,29 @@ type ReleaseDeletedUserEmailParams struct {
 // saml_created_only narrows it to rows SAML created (a SAML sign-in recreates
 // those and leaves a deleted local account blocking); an administrator
 // creating an account passes false. Matched ignoring case, like
-// GetUserByEmailAnyState; the rows it matches are all deleted.
-func (q *Queries) ReleaseDeletedUserEmail(ctx context.Context, arg ReleaseDeletedUserEmailParams) (uuid.UUID, error) {
-	row := q.db.QueryRowContext(ctx, releaseDeletedUserEmail, arg.Email, arg.SamlCreatedOnly)
-	var id uuid.UUID
-	err := row.Scan(&id)
-	return id, err
+// GetUserByEmailAnyState, so legacy rows that differ only in case are all
+// released by one call, and every id comes back so each can be audited.
+func (q *Queries) ReleaseDeletedUserEmail(ctx context.Context, arg ReleaseDeletedUserEmailParams) ([]uuid.UUID, error) {
+	rows, err := q.db.QueryContext(ctx, releaseDeletedUserEmail, arg.Email, arg.SamlCreatedOnly)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []uuid.UUID
+	for rows.Next() {
+		var id uuid.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const relinkSAMLSubject = `-- name: RelinkSAMLSubject :one
