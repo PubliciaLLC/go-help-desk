@@ -58,6 +58,25 @@ export function slaTargetText(t: SLATargetStatus): string {
 }
 
 /**
+ * A duration in whole seconds for the Reports page: "under 1 min", "59 min",
+ * "1 h 1 min", "23 h 59 min", "1 d 1 h", "400 d". Minutes are dropped once the
+ * figure is in days, and zero parts are dropped throughout.
+ */
+export function fmtDuration(seconds: number): string {
+  if (seconds < 60) return 'under 1 min'
+  const mins = Math.floor(seconds / 60)
+  if (mins < 60) return `${mins} min`
+  const hours = Math.floor(mins / 60)
+  if (hours < 24) {
+    const rem = mins % 60
+    return rem ? `${hours} h ${rem} min` : `${hours} h`
+  }
+  const days = Math.floor(hours / 24)
+  const rem = hours % 24
+  return rem ? `${days} d ${rem} h` : `${days} d`
+}
+
+/**
  * How long ago an instant was, floored to one unit: "just now" under a minute
  * (and for an instant in the future, which clock skew makes possible), then
  * "N minute(s) ago", "N hour(s) ago" and "N day(s) ago". There are no weeks,
