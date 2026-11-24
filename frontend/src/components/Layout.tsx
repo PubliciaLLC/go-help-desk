@@ -1,4 +1,4 @@
-import { useEffect, useId, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import * as Dialog from '@radix-ui/react-dialog'
 import { Link, useRouterState } from '@tanstack/react-router'
 import { useQuery } from '@tanstack/react-query'
@@ -13,6 +13,7 @@ import { BrandLogo } from '@/components/BrandLogo'
 import { Button } from '@/components/ui/button'
 import { TicketIcon, UsersIcon, SettingsIcon, LogOutIcon, HomeIcon, FolderIcon, CircleDotIcon, ShieldIcon, UsersRoundIcon, TagIcon, SlidersIcon, KeyIcon, MessageSquareTextIcon, PlugIcon, WebhookIcon, RouteIcon, MenuIcon,
   UserIcon, HistoryIcon, MailIcon, ChevronDownIcon, WrenchIcon, ChartColumnIcon,
+  ToggleRightIcon, PaletteIcon, PaperclipIcon, DoorOpenIcon, LockIcon, EyeOffIcon,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { User } from '@/api/types'
@@ -22,17 +23,24 @@ interface NavItemProps {
   icon: React.ReactNode
   label: string
   onNavigate?: () => void
-  // The links inside an Admin section: a little shorter, so a six-link section
-  // and the three headings still fit a laptop screen. Back to full height for a
-  // finger.
+  // The links inside an Admin section: a little shorter, so a nine-link section
+  // (System, #674) and the Admin headings still fit a laptop screen. Back to
+  // full height for a finger.
   dense?: boolean
 }
 
 function NavItem({ to, icon, label, onNavigate, dense }: NavItemProps) {
   const { location } = useRouterState()
   const active = location.pathname === to || location.pathname.startsWith(to + '/')
+  // A link that becomes the current page is brought into view, so a page in a
+  // tall section is never out of sight on arrival (#674).
+  const ref = useRef<HTMLAnchorElement>(null)
+  useEffect(() => {
+    if (active) ref.current?.scrollIntoView?.({ block: 'nearest' })
+  }, [active])
   return (
     <Link
+      ref={ref}
       to={to}
       onClick={onNavigate}
       className={cn(
@@ -78,13 +86,21 @@ const ADMIN_SECTIONS = [
       { to: '/admin/api-keys', label: 'API Keys', icon: <KeyIcon className="h-4 w-4" /> },
       { to: '/admin/oauth-clients', label: 'OAuth Clients', icon: <PlugIcon className="h-4 w-4" /> },
       { to: '/admin/webhooks', label: 'Webhooks', icon: <WebhookIcon className="h-4 w-4" /> },
-      { to: '/admin/email-templates', label: 'Email Templates', icon: <MailIcon className="h-4 w-4" /> },
     ],
   },
+  // Email Templates is on the Email settings page now (#674), a tab beside
+  // Notifications, so it has no link of its own here.
   {
     id: 'system', label: 'System',
     items: [
-      { to: '/admin/settings', label: 'Settings', icon: <SettingsIcon className="h-4 w-4" /> },
+      { to: '/admin/settings/general', label: 'General', icon: <SettingsIcon className="h-4 w-4" /> },
+      { to: '/admin/settings/features', label: 'Features', icon: <ToggleRightIcon className="h-4 w-4" /> },
+      { to: '/admin/settings/branding', label: 'Branding', icon: <PaletteIcon className="h-4 w-4" /> },
+      { to: '/admin/settings/email', label: 'Email', icon: <MailIcon className="h-4 w-4" /> },
+      { to: '/admin/settings/attachments', label: 'File Attachments', icon: <PaperclipIcon className="h-4 w-4" /> },
+      { to: '/admin/settings/guest-access', label: 'Guest Access', icon: <DoorOpenIcon className="h-4 w-4" /> },
+      { to: '/admin/settings/authentication', label: 'Authentication', icon: <LockIcon className="h-4 w-4" /> },
+      { to: '/admin/settings/privacy', label: 'Privacy', icon: <EyeOffIcon className="h-4 w-4" /> },
       { to: '/admin/audit', label: 'Audit Log', icon: <HistoryIcon className="h-4 w-4" /> },
     ],
   },

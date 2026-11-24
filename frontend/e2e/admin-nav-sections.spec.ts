@@ -19,12 +19,18 @@ const SECTIONS = [
   },
   {
     name: 'Integrations',
+    links: [['API Keys', '/admin/api-keys'], ['OAuth Clients', '/admin/oauth-clients'], ['Webhooks', '/admin/webhooks']],
+  },
+  {
+    name: 'System',
     links: [
-      ['API Keys', '/admin/api-keys'], ['OAuth Clients', '/admin/oauth-clients'],
-      ['Webhooks', '/admin/webhooks'], ['Email Templates', '/admin/email-templates'],
+      ['General', '/admin/settings/general'], ['Features', '/admin/settings/features'],
+      ['Branding', '/admin/settings/branding'], ['Email', '/admin/settings/email'],
+      ['File Attachments', '/admin/settings/attachments'], ['Guest Access', '/admin/settings/guest-access'],
+      ['Authentication', '/admin/settings/authentication'], ['Privacy', '/admin/settings/privacy'],
+      ['Audit Log', '/admin/audit'],
     ],
   },
-  { name: 'System', links: [['Settings', '/admin/settings'], ['Audit Log', '/admin/audit']] },
 ] as const
 
 // The collapsed server-notice bar above the shell: two problems, so the bar
@@ -58,12 +64,13 @@ const HEADROOM = 24
 
 test.describe('the headings fit with headroom to spare, notice bar showing', () => {
   // One page in each section, so each section gets its turn as the open one.
-  // Tickets is the long one (six links) and the case that decides the height.
+  // System is the long one now (nine links, #674) and Tickets was (six): they
+  // are the cases that decide the height.
   const pages = [
     { open: 'People', path: '/admin/users' },
     { open: 'Tickets', path: '/admin/categories' },
     { open: 'Integrations', path: '/admin/webhooks' },
-    { open: 'System', path: '/admin/settings' },
+    { open: 'System', path: '/admin/settings/general' },
   ]
   for (const height of [768, 800, 900]) {
     for (const p of pages) {
@@ -93,11 +100,21 @@ test.describe('the headings fit with headroom to spare, notice bar showing', () 
           expect(box.y + box.height, `${name} is below the window`).toBeLessThanOrEqual(height)
           headroom[name] = navBottom - (box.y + box.height)
         }
-        // The last thing in the nav: a link when the section open is System.
-        const lastLinkBottom = await nav.evaluate((el) =>
-          Math.max(...Array.from(el.querySelectorAll('a')).filter((a) => a.getClientRects().length > 0).map((a) => a.getBoundingClientRect().bottom)),
-        )
-        headroom['last link'] = navBottom - lastLinkBottom
+        if (p.open === 'System') {
+          // The one section too tall for every screen: System's nine links
+          // can run past the bottom of the nav, which scrolls. Its fallback
+          // (DESIGN.md, #674) asserts the current link instead, and NavItem
+          // brings that link into view on arrival.
+          await expect(nav.getByRole('link', { name: 'General', exact: true }), 'current link is not fully in view')
+            .toBeInViewport({ ratio: 1 })
+        } else {
+          // The last thing in the nav: a link, when the section open is not
+          // System.
+          const lastLinkBottom = await nav.evaluate((el) =>
+            Math.max(...Array.from(el.querySelectorAll('a')).filter((a) => a.getClientRects().length > 0).map((a) => a.getBoundingClientRect().bottom)),
+          )
+          headroom['last link'] = navBottom - lastLinkBottom
+        }
 
         for (const [name, room] of Object.entries(headroom)) {
           expect(room, `${name} has ${Math.round(room)}px above the bottom of the nav; wants ${HEADROOM}`).toBeGreaterThanOrEqual(HEADROOM)
