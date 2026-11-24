@@ -339,7 +339,11 @@ function SidebarContent({ user, adminNav, branding, onNavigate, onLogout }: Side
       {/* Tight on purpose: the Reports item (#131) is 32px of the 768-pixel
           budget (admin-nav-sections.spec.ts), paid for by the Admin toggle, the
           nav's and the footer's padding and the Sign out button being as dense
-          as the links. Touch targets are unchanged (pointer-coarse sizes). */}
+          as the links. Touch targets are unchanged (pointer-coarse sizes).
+          System has nine links (#674) and no longer fits 768 or 800 pixels
+          high with every heading and the last link in view: there the nav
+          scrolls (overflow-y-auto), and the fit test asserts only that the
+          current link is in view, which NavItem brings into view on arrival. */}
       <nav className="flex-1 space-y-1 overflow-y-auto px-3 py-1">
         <NavItem to="/dashboard" icon={<HomeIcon className="h-4 w-4" />} label="Dashboard" onNavigate={onNavigate} dense />
         {user?.role === 'staff' || user?.role === 'admin' ? (

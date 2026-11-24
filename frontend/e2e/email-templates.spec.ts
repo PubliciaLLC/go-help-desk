@@ -86,8 +86,9 @@ async function fits(page: Page) {
 
 test('the list fits at 320px', async ({ page }) => {
   await mockTemplates(page)
-  await page.goto('/admin/email-templates')
-  await expect(page.getByRole('heading', { level: 1, name: 'Email templates' })).toBeVisible()
+  await page.goto('/admin/settings/email/templates')
+  await expect(page.getByRole('heading', { level: 1, name: 'Email' })).toBeVisible()
+  await expect(page.getByRole('heading', { level: 2, name: 'Email templates' })).toBeVisible()
   await expect(page.getByRole('button', { name: /Reset your password/ })).toBeVisible()
   await expect(page.getByText('Broken')).toBeVisible()
   await fits(page)
@@ -95,7 +96,9 @@ test('the list fits at 320px', async ({ page }) => {
 
 test('the editor is one column, its buttons wrap, and the preview sits below it', async ({ page }) => {
   await mockTemplates(page)
-  await page.goto('/admin/email-templates?t=ticket_created')
+  // The old address still works (#674 redirects it) and lands on the Templates tab.
+  await page.goto('/admin/settings/email/templates?t=ticket_created')
+  await expect(page).toHaveURL(/\/admin\/settings\/email\/templates\?t=ticket_created$/)
   const body = page.getByLabel('Body')
   await expect(body).toBeVisible()
   await fits(page)
@@ -120,7 +123,7 @@ test('the editor is one column, its buttons wrap, and the preview sits below it'
 
 test('an invalid draft shows its error beside the field and cannot be saved', async ({ page }) => {
   const saved = await mockTemplates(page)
-  await page.goto('/admin/email-templates?t=ticket_created')
+  await page.goto('/admin/settings/email/templates?t=ticket_created')
   const body = page.getByLabel('Body')
   const save = page.getByRole('button', { name: 'Save' })
   await expect(body).toBeVisible()
@@ -149,7 +152,7 @@ test('an invalid draft shows its error beside the field and cannot be saved', as
 
 test('a 300 character word in the draft does not widen the page', async ({ page }) => {
   await mockTemplates(page)
-  await page.goto('/admin/email-templates?t=ticket_created')
+  await page.goto('/admin/settings/email/templates?t=ticket_created')
   const body = page.getByLabel('Body')
   await body.fill(`{{.TicketURL}} ${LONG}`)
   await expect(page.getByText(/Sample/)).toBeVisible()
@@ -180,7 +183,7 @@ test('the HTML preview sandbox alone keeps a script from running', async ({ page
     window.addEventListener('message', (e) => (window as unknown as { __messages: string[] }).__messages.push(String(e.data)))
   })
   await mockTemplates(page, { previewHTML: HOSTILE })
-  await page.goto('/admin/email-templates?t=ticket_created')
+  await page.goto('/admin/settings/email/templates?t=ticket_created')
   await page.getByLabel('HTML').fill('<p>draft</p>')
   const frame = page.locator('iframe[title="HTML preview"]')
   await expect(frame).toBeVisible()
@@ -222,7 +225,7 @@ test('the HTML preview sandbox alone keeps a script from running', async ({ page
 
 test('the HTML preview fits at 320px', async ({ page }) => {
   await mockTemplates(page, { previewHTML: '<table width="900"><tr><td>wide</td></tr></table>' })
-  await page.goto('/admin/email-templates?t=ticket_created')
+  await page.goto('/admin/settings/email/templates?t=ticket_created')
   await page.getByLabel('HTML').fill('<p>draft</p>')
   const frame = page.locator('iframe[title="HTML preview"]')
   await expect(frame).toBeVisible()
@@ -239,7 +242,7 @@ test.describe('touch targets', () => {
     test(`every control is at least 44px tall at ${width}px`, async ({ page }) => {
       await page.setViewportSize({ width, height: 844 })
       await mockTemplates(page)
-      await page.goto('/admin/email-templates?t=ticket_created')
+      await page.goto('/admin/settings/email/templates?t=ticket_created')
       await expect(page.getByLabel('Body')).toBeVisible()
       // Send test and Save are disabled until the first check lands; they still have a size.
       const targets = [
