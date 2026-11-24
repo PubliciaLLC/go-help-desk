@@ -218,9 +218,9 @@ docker compose up -d      <span style="color:#22c55e"># pulls the published imag
         <img src="screenshots/02-dashboard.png" alt="Dashboard with ticket counts for New, In Progress, Pending, Resolved and Closed, and a By Client section listing three requesters" loading="lazy" />
         <span>Dashboard</span>
       </button>
-      <button class="scr-thumb" data-src="screenshots/03-ticket-list.png" data-caption="Ticket queue: search by number, subject or description, filter to Mine, Unassigned or All, and include closed tickets">
-        <img src="screenshots/03-ticket-list.png" alt="Ticket queue listing nine tickets with their status and priority; closed tickets are left out until Include closed is ticked" loading="lazy" />
-        <span>Ticket queue</span>
+      <button class="scr-thumb scr-thumb-fit" data-src="screenshots/42-ticket-list-filters-and-sort.png" data-caption="Ticket list: filters for status, priority, category, requester, assignee, group, dates, channel and SLA, a sort on every column, and a Search replies box">
+        <img src="screenshots/42-ticket-list-filters-and-sort.png" alt="Ticket list with the Filters panel open and four filters on, shown as chips under it, above a table with sortable Ticket, Subject, Status, Priority, SLA, Created and Updated headings" loading="lazy" />
+        <span>Ticket list and filters</span>
       </button>
       <button class="scr-thumb" data-src="screenshots/05-ticket-detail.png" data-caption="Ticket detail: the timeline and replies, with the assignee, status, tags, linked tickets and followers alongside">
         <img src="screenshots/05-ticket-detail.png" alt="Ticket detail with a timeline, a public reply, an internal note, the start of the reply box, and assignee, status, tags, linked tickets and followers panels alongside" loading="lazy" />
@@ -399,8 +399,8 @@ docker compose up -d      <span style="color:#22c55e"># pulls the published imag
         <div class="feature-icon">
           <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
         </div>
-        <h3>Full-Text Search</h3>
-        <p>Relevance-ranked Postgres full-text search across subject and description, word-prefix matched as you type — no more guessing the exact substring.</p>
+        <h3>Search and Filters</h3>
+        <p>Relevance-ranked Postgres full-text search across subject, description and, if you want it, replies, matched by word prefix as you type. Filter by status, priority, category, requester, assignee, group, dates, channel and SLA, and sort on any column. <a href="docs/tickets.html#tickets-search">Read about search →</a></p>
       </div>
 
       <div class="feature-card">
@@ -504,7 +504,7 @@ docker compose up -d      <span style="color:#22c55e"># pulls the published imag
           <li>✓ Email + webhooks</li>
           <li>✓ Docker deploy</li>
           <li>✓ Canned responses</li>
-          <li>✓ Full-text search</li>
+          <li>✓ Search, filters and reply search</li>
           <li>✓ Attachment security</li>
           <li>✓ Guest submission</li>
           <li>✓ Audit log with retention</li>

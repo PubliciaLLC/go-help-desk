@@ -93,7 +93,7 @@
       <li><a href="#tickets-formatting">Formatting Text</a></li>
       <li><a href="#tickets-custom-fields">Custom Fields</a></li>
       <li><a href="#tickets-attachments">Attachments</a></li>
-      <li><a href="#tickets-search">Search</a></li>
+      <li><a href="#tickets-search">Search and Filters</a></li>
       <li><a href="#tickets-phone">On a Phone</a></li>
     </ul>
   </div>
@@ -609,22 +609,108 @@
 <p>The server checks at startup, and again before each upload, that <code>ATTACHMENT_DIR</code> and its <code>tickets</code> subfolder exist and can be written. While it cannot, an upload from anyone, a guest included, is refused with <code>503 attachments_unavailable</code> before the file is read, and administrators see an <em>Attachment uploads are disabled</em> banner. Files already stored can still be downloaded while the directory is readable.</p>
 
 
-<h2 id="tickets-search">Search</h2>
+<h2 id="tickets-search">Search and filters</h2>
 
-<h3>Live search</h3>
-<p>The search bar at the top of the ticket list searches across <strong>tracking number</strong>, <strong>subject</strong>, and <strong>description</strong>, the latter two powered by Postgres full-text search and ranked by relevance. Results appear after you type at least 2 characters (with a short debounce). A spinner is shown while results load.</p>
+<p>The ticket list has a search box, a <em>Filters</em> button and sortable column headings. <span class="badge-new">New in 1.3.0</span> The filters, the sorting and the reply search are new. The search box and the queue buttons were there before.</p>
+
+<img src="../screenshots/42-ticket-list-filters-and-sort.png" alt="The Tickets page as a staff member sees it, with the Filters panel open: Status (In Progress and Pending ticked), Priority (High ticked), Requester, Assignee, Group, Category, Type, Item, SLA, Created dates, Last updated dates and Came in by. Under the panel are chips for each active filter, the line Searching all tickets you can see with an Only my tickets chip, and a table sorted by Updated, newest first, with sortable Ticket, Subject, Status, Priority, SLA, Created and Updated headings" width="1440" height="1301" loading="lazy" style="width:100%;height:auto;max-width:1440px;border:1px solid var(--border);border-radius:8px;" />
+<p style="margin:0.4rem 0 1.25rem;font-size:0.85rem;color:var(--muted);">The ticket list with the Filters panel open and four filters on. Each one shows as a chip with its own ×.</p>
+
+<h3 id="tickets-search-box">The search box</h3>
+<p>The box searches <strong>tracking number</strong>, <strong>subject</strong> and <strong>description</strong>. The last two use Postgres full-text search and are ranked by relevance. Results load as you type, after a short pause, with no minimum length. A spinner shows while they load.</p>
 <ul>
   <li>Tracking number searches use a <strong>prefix match</strong>: typing <code>GHD-2026-0</code> matches all tickets in that series.</li>
-  <li>Subject and description searches tokenize your query into words and <strong>prefix-match each one</strong> — e.g. <code>print jam</code> matches a ticket containing a word starting with "print" and a word starting with "jam", in any order or field. A match in the <strong>subject</strong> ranks above one only in the description.</li>
+  <li>Subject and description searches split your text into words and <strong>prefix-match each one</strong>. <code>print jam</code> matches a ticket with a word starting with "print" and a word starting with "jam", in any order or field. A match in the <strong>subject</strong> ranks above one only in the description.</li>
+  <li>Postgres ignores common English words such as "it", so searching for just "IT" finds nothing.</li>
   <li>Users only see results from their own tickets. Staff and administrators search <strong>every ticket they can see</strong>, whatever queue is selected, and the results area says <em>Searching all tickets you can see</em>. With <em>Limit staff to their group scope</em> off, that is every ticket. With it on, it is the tickets reported by or assigned to the staff member, tickets assigned to one of their groups, and tickets in a category or type their groups cover. Nothing is searched that the staff member could not open.</li>
-  <li>An <em>Only my tickets</em> or <em>Only unassigned</em> chip, shown while you search from the <em>Mine</em> or <em>Unassigned</em> queue, narrows the search to that queue; click it again to widen it. The chip is not offered on an administrator's <em>All</em> queue, which is already everything. It switches off when you clear the search box or change queue, so every new search starts wide. A box with only spaces counts as empty, and with an empty box the queue is shown as usual.</li>
+  <li>An <em>Only my tickets</em> or <em>Only unassigned</em> chip, shown while you search from the <em>Mine</em> or <em>Unassigned</em> queue, narrows the search to that queue; click it again to widen it. The chip is not offered on an administrator's <em>All</em> queue, which is already everything. It switches off when you clear the search box and every filter, or change queue, so every new search starts wide. A box with only spaces counts as empty.</li>
+  <li><strong>A filter does the same.</strong> For staff and administrators, a filter with nothing typed in the box also covers every ticket they can see, not just the selected queue. The exception is a filter that names a set of tickets, such as Requester or Group: it has no queue at all.</li>
 </ul>
 
-<h3>On a phone</h3>
-<p>On a narrow screen the search box takes a full row of its own, so it is no longer squeezed. The tracking number on a ticket stays on one line. Long text on a ticket is covered under <a href="#tickets-phone">Tickets on a phone</a>.</p>
+<h3 id="tickets-filters">Filters</h3>
+<p>Click <em>Filters</em> to open the panel. Each change applies at once, and the button shows how many filters are on. Filters combine with <strong>and</strong>: a ticket must match all of them. A filter can only narrow what you can already see. It never shows a ticket you could not open.</p>
+<table>
+  <thead><tr><th>Filter</th><th>What it does</th><th>Who sees it</th></tr></thead>
+  <tbody>
+    <tr><td>Status</td><td>One or more statuses.</td><td>Everyone</td></tr>
+    <tr><td>Priority</td><td>One or more of critical, high, medium and low.</td><td>Everyone</td></tr>
+    <tr><td>Category, Type, Item</td><td>Narrow step by step: choose a category, then a type under it, then an item. Choosing a category matches every type and item under it.</td><td>Everyone</td></tr>
+    <tr><td>Created</td><td>A from date and a to date, both included.</td><td>Everyone</td></tr>
+    <tr><td>Requester</td><td>Pick a person from the suggestions, or type part of a name or email address (at least 2 characters) to match anywhere in it. Typed text also matches the name and address on <em>guest</em> tickets, and accounts that have since been deleted. Upper and lower case do not matter.</td><td>Staff and administrators</td></tr>
+    <tr><td>Assignee, Group</td><td>Tickets assigned to one person, or to one group. With <em>Limit staff to their group scope</em> on, staff can only choose a group they belong to.</td><td>Staff and administrators</td></tr>
+    <tr><td>Last updated</td><td>A from date and a to date for when the ticket last changed.</td><td>Staff and administrators</td></tr>
+    <tr><td>Came in by</td><td>Web, Email / guest, Phone, API or MCP. See <a href="#tickets-source">How a ticket arrived</a>.</td><td>Staff and administrators</td></tr>
+    <tr><td>SLA</td><td>Breached or At risk, the same two states the list's SLA indicator shows. It is only offered while SLA tracking is on.</td><td>Staff and administrators</td></tr>
+  </tbody>
+</table>
+<ul>
+  <li>Dates are in <strong>your own time zone</strong>, as your browser reports it.</li>
+  <li>Each active filter shows as a chip under the box, with an <em>×</em> to remove it and a <em>Clear all</em> link. The filters are kept in the address, so a link to a filtered list opens the same list for the person you send it to, within what they are allowed to see.</li>
+  <li>Requesters get the same panel with only the filters that make sense for their own tickets: Status, Priority, Category, Type, Item and Created.</li>
+  <li><em>Include closed</em> leaves closed tickets out unless it is ticked. A Status filter that names Closed shows closed tickets whatever <em>Include closed</em> says.</li>
+  <li>The Requester filter works whatever <em>Mask requester names in Audit Trail</em> is set to. That setting changes what the audit views display. It does not stop a staff member who can see a ticket from searching by its requester's name.</li>
+</ul>
 
-<h3>Jump to ticket (staff and admin)</h3>
-<p>Staff and admins can submit the search form (press Enter or click <em>Jump to ticket</em>) to navigate directly to a ticket by its exact tracking number or UUID. If no match is found, an inline error is shown.</p>
+<h3 id="tickets-sort">Sorting</h3>
+<p>Click a column heading to sort by it, and click again to reverse the order. The sortable columns are <strong>Ticket</strong> (the number), <strong>Subject</strong>, <strong>Status</strong>, <strong>Priority</strong>, <strong>SLA</strong> (while SLA tracking is on), <strong>Created</strong> and <strong>Updated</strong>. The line above the table says how the list is sorted now.</p>
+<ul>
+  <li>With no sort chosen, a search is ordered by <strong>best match</strong>, and a list with no search is newest first. Clicking a heading replaces best match. <em>Sort by best match</em> brings it back.</li>
+  <li>Priority and SLA sort most urgent first the first time. Created and Updated sort newest first. The other columns sort in ascending order.</li>
+  <li>The sort is kept in the address, like the filters.</li>
+  <li>The Created and Updated headings appear when the window is wide. On a narrower window and on a phone, a <em>Sort by</em> menu with a reverse button covers every column.</li>
+  <li>Requesters can sort by ticket number, subject, status, priority and created date. They are never sent when staff last touched a ticket, or the SLA, so those are not offered.</li>
+</ul>
+
+<h3 id="tickets-search-replies">Search replies</h3>
+<p>The <em>Search replies</em> box is under the search box. It is <strong>ticked by default</strong> and only matters when there is text in the search box. With it ticked, a ticket also matches when <strong>one reply</strong> holds every word you typed. Words match as prefixes, as in the subject.</p>
+
+<img src="../screenshots/43-ticket-list-reply-match.png" alt="A search for fuser with Search replies ticked. Two tickets are listed, each with a line under its subject. The first says Public reply, Nov 3, with the word fuser highlighted in yellow in a short excerpt. The second says Internal note, Nov 4, in an amber label, with fuser highlighted in its excerpt" width="1440" height="900" loading="lazy" style="width:100%;height:auto;max-width:1440px;border:1px solid var(--border);border-radius:8px;" />
+<p style="margin:0.4rem 0 1.25rem;font-size:0.85rem;color:var(--muted);">A staff member's search for "fuser". Each ticket that matched through a reply shows where the words were.</p>
+
+<ul>
+  <li>A ticket found through a reply shows a short excerpt under its subject, with each matched word highlighted. A label says whether the words were in a <em>Public reply</em> or an <em>Internal note</em>, and the date. The excerpt never names the author.</li>
+  <li><strong>The words have to be in one reply.</strong> Words found in different replies do not combine, and neither do a word in a reply and a word in the subject.</li>
+  <li>A ticket that matches on its own subject or description ranks ahead of one that only matches through a reply.</li>
+  <li><strong>Internal notes are never shown to requesters.</strong> Staff and administrators search public replies and internal notes. A requester searches public replies only, and never sees an excerpt of an internal note, even on a ticket that matched by its subject. The server decides this from the person's role, and nothing a browser or script sends can change it.</li>
+  <li>Only the <strong>first 50,000 characters</strong> of a reply are searched. A word after that in a very long reply is not found.</li>
+  <li>Untick <em>Search replies</em> to search subject, description and number only.</li>
+</ul>
+
+<h4 id="tickets-search-limits">Limits on reply search</h4>
+<p>Reply search is built to stay quick on a help desk with millions of replies, and it has limits:</p>
+<ul>
+  <li>It looks at the <strong>2,000 newest</strong> matching replies you may see. Filters such as Status are applied after that, so a word that is in a very large number of replies can miss an older ticket that a filter would have kept. Use a more specific word.</li>
+  <li>The reply part of a search has a <strong>five-second</strong> limit. If it runs out, the search is answered from ticket text only, and the page says so.</li>
+</ul>
+
+<h4 id="tickets-search-notices">The two notices</h4>
+<p>When the page could not search the replies, an amber notice appears above the list. The results are still right for subjects, descriptions and tracking numbers.</p>
+
+<img src="../screenshots/44-ticket-list-replies-not-searched.png" alt="A search for printer with an amber notice above the table: Replies weren't fully searched, so tickets that matched only through a reply may be missing. Try a narrower search, or search again" width="1440" height="900" loading="lazy" style="width:100%;height:auto;max-width:1440px;border:1px solid var(--border);border-radius:8px;" />
+<p style="margin:0.4rem 0 1.25rem;font-size:0.85rem;color:var(--muted);">The notice when the five-second limit ran out.</p>
+
+<img src="../screenshots/45-ticket-list-reply-index-preparing.png" alt="The same search with a different amber notice above the table: Reply search is still being prepared, so these results cover ticket subjects and descriptions only. Try again later to include replies" width="1440" height="900" loading="lazy" style="width:100%;height:auto;max-width:1440px;border:1px solid var(--border);border-radius:8px;" />
+<p style="margin:0.4rem 0 1.25rem;font-size:0.85rem;color:var(--muted);">The notice while the reply index is still being built after an upgrade.</p>
+
+<ul>
+  <li><strong>Replies weren't fully searched.</strong> The five-second limit ran out. Tickets that matched only through a reply may be missing. Try a narrower search, or search again.</li>
+  <li><strong>Reply search is still being prepared.</strong> The server is still building its reply index after the upgrade. Results cover ticket subjects and descriptions only until it finishes. Try again later. See <a href="upgrading-1.3.0.html#reply-search">Upgrading to 1.3.0: reply search</a>.</li>
+</ul>
+
+<h3 id="tickets-jump">Jump to ticket (staff and admin)</h3>
+<p>Staff and admins can type an exact tracking number or UUID in the search box and click <em>Jump to ticket</em> to go straight to that ticket. If no match is found, an inline error is shown.</p>
+
+<h3 id="tickets-search-phone">On a phone</h3>
+<p>On a narrow screen the search box takes a full row of its own, so it is no longer squeezed. <em>Filters</em> opens a full-screen dialog. Changes in it wait until you tap <em>Show results</em>, and <em>Clear all</em> empties it. Results are cards, with the reply excerpt under the subject and the sort menu above them. Bulk selection is for a desktop-width screen only. Long text on a ticket is covered under <a href="#tickets-phone">Tickets on a phone</a>.</p>
+
+<div style="display:flex;flex-wrap:wrap;gap:1rem;align-items:flex-start;">
+<img src="../screenshots/46-mobile-ticket-filters.png" alt="The Filters dialog on a phone: Status, Priority, Requester, Category, Type and Created, with Clear all and Show results buttons at the bottom" width="390" height="844" loading="lazy" style="width:100%;height:auto;max-width:260px;border:1px solid var(--border);border-radius:8px;" />
+<img src="../screenshots/47-mobile-ticket-reply-match.png" alt="A search for fuser on a phone: two ticket cards, each with a line under the subject showing a public reply and an internal note with the word fuser highlighted" width="390" height="856" loading="lazy" style="width:100%;height:auto;max-width:260px;border:1px solid var(--border);border-radius:8px;" />
+</div>
+<p style="margin:0.4rem 0 1.25rem;font-size:0.85rem;color:var(--muted);">The filters dialog, and results with a reply excerpt, on a phone.</p>
+
+<h3 id="tickets-search-not-yet">Not in 1.3.0</h3>
+<p>Tags and custom fields are not filters. There is no fuzzy or typo-tolerant matching, and no saved searches.</p>
 
 <h2 id="tickets-phone">Tickets on a phone</h2>
 
