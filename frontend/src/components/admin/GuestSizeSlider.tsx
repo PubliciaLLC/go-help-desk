@@ -1,32 +1,36 @@
 import { useId } from 'react'
 
-// A guest's per-file maximum (#445): 1 to 100 MB in steps of 1, 5 by default.
-// Stored as whole megabytes in guest_attachment_max_mb.
+// A guest's per-file maximum (#445, #673): 1 MB up to the per-file limit for
+// every upload, 5 by default. Stored as whole megabytes in
+// guest_attachment_max_mb.
 //
-// The instance-wide attachment maximum is lower than the top of the range and
-// wins where it applies. The slider still lets the administrator pick above
-// it, because the range is their intent; it says so rather than letting a
-// figure the server will not honour pass for the limit in force.
+// The per-file limit is the slider's top, so the slider never offers a figure
+// the server would not honour. A stored value above it (the limit was lowered
+// after the guest figure was chosen) is shown at the top with a note, because
+// the guest is held to the limit until either changes and the stored figure is
+// left alone.
 
 const MIN = 1
-const MAX = 100
+const STORED_MAX = 100
 const DEFAULT_MB = 5
-const TICKS = [1, 25, 50, 75, 100]
 
 export function GuestSizeSlider({ value, onChange, instanceMaxMB, disabled }: {
   value?: number
   onChange: (mb: number) => void
-  /** The instance-wide attachment maximum, in MB. */
+  /** The per-file limit for every upload, in MB: the slider's top. */
   instanceMaxMB: number
   disabled?: boolean
 }) {
   const id = useId()
   const noteId = useId()
-  const mb = value !== undefined && value >= MIN && value <= MAX ? value : DEFAULT_MB
-  const capped = mb > instanceMaxMB
+  const max = instanceMaxMB
+  // The reader's rule: none, or outside 1 to 100, is 5.
+  const stored = value !== undefined && value >= MIN && value <= STORED_MAX ? value : DEFAULT_MB
+  const mb = Math.min(stored, max)
+  const capped = stored > max
 
   function set(n: number) {
-    onChange(Math.min(MAX, Math.max(MIN, n)))
+    onChange(Math.min(max, Math.max(MIN, n)))
   }
 
   // A native range already moves with the arrows; this makes one megabyte per
@@ -41,7 +45,7 @@ export function GuestSizeSlider({ value, onChange, instanceMaxMB, disabled }: {
       set(MIN)
     } else if (e.key === 'End') {
       e.preventDefault()
-      set(MAX)
+      set(max)
     }
   }
 
@@ -54,18 +58,18 @@ export function GuestSizeSlider({ value, onChange, instanceMaxMB, disabled }: {
         id={id}
         type="range"
         min={MIN}
-        max={MAX}
+        max={max}
         step={1}
         value={mb}
         disabled={disabled}
-        aria-valuetext={capped ? `${mb} MB, limited to ${instanceMaxMB} MB by the instance-wide maximum` : `${mb} MB`}
+        aria-valuetext={capped ? `${mb} MB, saved as ${stored} MB, limited by the per-file limit` : `${mb} MB`}
         aria-describedby={capped ? noteId : undefined}
         onChange={(e) => set(Number(e.target.value))}
         onKeyDown={onKeyDown}
         className="w-full"
       />
       <div data-testid="guest-size-ticks" className="flex justify-between text-xs text-gray-500" aria-hidden="true">
-        {TICKS.map((t) => <span key={t}>{t} MB</span>)}
+        {[MIN, max].map((t) => <span key={t}>{t} MB</span>)}
       </div>
       <p className="text-sm text-gray-700" aria-hidden="true">{mb} MB</p>
       {capped && (
@@ -74,7 +78,7 @@ export function GuestSizeSlider({ value, onChange, instanceMaxMB, disabled }: {
           role="note"
           className="rounded border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800"
         >
-          This instance accepts at most {instanceMaxMB} MB per file, so guests are held to {instanceMaxMB} MB whatever is chosen here.
+          Saved as {stored} MB. Every upload is limited to {max} MB, so guests are held to {max} MB until you raise that limit or lower this one.
         </p>
       )}
     </div>

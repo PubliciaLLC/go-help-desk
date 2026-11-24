@@ -588,7 +588,27 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Guest uploads (#445). The size is a slider of 1 to 100 MB; a value off it
+	// The per-file limit (#673), 1 to 100 MB. Refused rather than clamped, for
+	// the reason the guest figure is: the reader would replace a bad value with
+	// the default and the number typed would not be the number in force. It is
+	// checked before the guest figure because that one is judged against it.
+	var overallMB int
+	if raw, ok := body[admin.KeyAttachmentMaxMB]; ok {
+		if err := unmarshalSetting(raw, admin.KeyAttachmentMaxMB, &overallMB); err != nil {
+			handleError(w, err)
+			return
+		}
+		if !admin.ValidAttachmentMaxMB(overallMB) {
+			Error(w, http.StatusBadRequest, "bad_request", "attachment_max_mb must be between 1 and 100")
+			return
+		}
+	} else {
+		overallMB = s.adminSvc.AttachmentMaxMB(r.Context())
+	}
+
+	// Guest uploads (#445). The size is a slider of 1 MB up to the per-file
+	// limit as it will be once this body is applied (the body's own
+	// attachment_max_mb, validated above, else the stored one). A value off it
 	// is refused, not clamped, because the reader would replace it with the
 	// default and the number typed would not be the number in force. The
 	// switch is checked for type for the same reason: "yes" stored as a
@@ -599,8 +619,9 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 			handleError(w, err)
 			return
 		}
-		if !admin.ValidGuestAttachmentMaxMB(mb) {
-			Error(w, http.StatusBadRequest, "bad_request", "guest_attachment_max_mb must be between 1 and 100")
+		if mb < admin.GuestAttachmentMaxMBMin || mb > overallMB {
+			Error(w, http.StatusBadRequest, "bad_request", fmt.Sprintf(
+				"guest_attachment_max_mb must be between 1 and %d MB, the per-file limit for every upload", overallMB))
 			return
 		}
 	}

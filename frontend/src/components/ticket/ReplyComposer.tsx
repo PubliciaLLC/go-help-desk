@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { addReply, uploadAttachment, listTicketCannedResponses } from '@/api/tickets'
+import { getMe } from '@/api/auth'
 import { extractError } from '@/api/client'
+import { useAuthStore } from '@/store/auth'
 import { AttachmentUpload, type UploadState } from '@/components/AttachmentUpload'
 import { Button } from '@/components/ui/button'
 import { TextLimit } from '@/components/TextLimit'
@@ -102,6 +104,7 @@ export interface ReplyComposerProps {
  */
 export function ReplyComposer({ ticketId, isStaffOrAdmin }: ReplyComposerProps) {
   const qc = useQueryClient()
+  const { user } = useAuthStore()
 
   const [body, setBody] = useState('')
   const [internal, setInternal] = useState(false)
@@ -118,6 +121,9 @@ export function ReplyComposer({ ticketId, isStaffOrAdmin }: ReplyComposerProps) 
     queryFn: () => listTicketCannedResponses(ticketId),
     enabled: isStaffOrAdmin,
   })
+
+  // The per-file limit is the instance's, which only /me carries (#673).
+  const { data: me } = useQuery({ queryKey: ['me'], queryFn: getMe, retry: false })
 
   const mutation = useMutation({
     mutationFn: () => addReply(ticketId, body, internal, notify),
@@ -258,6 +264,7 @@ export function ReplyComposer({ ticketId, isStaffOrAdmin }: ReplyComposerProps) 
           uploadStates={uploadStates}
           disabled={busy}
           maxFiles={5}
+          maxBytes={me?.attachment_max_bytes ?? user?.attachment_max_bytes}
         />
 
         {error && <p role="alert" className="text-sm text-red-600">{error}</p>}

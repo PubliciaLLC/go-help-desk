@@ -19,7 +19,7 @@ import (
 // read, so a body that trickles in for longer than WriteTimeout used to be
 // stored and then answered on a dead connection: the client saw a network
 // error for an upload that had already committed, and its retry made a
-// duplicate. See bodyTransferTimeout.
+// duplicate. See transferTimeout.
 //
 // httptest's default server has no timeouts, so the real ones are scaled down
 // (30s becomes 1s) on a server built for the purpose.
