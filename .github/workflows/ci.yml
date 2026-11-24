@@ -336,6 +336,12 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      # The compose file's attachments-init service, run against the image
+      # just built and a root-owned directory (what Docker makes on a fresh
+      # Linux host). The server runs as uid 100 and could not write there.
+      - name: Compose makes the attachments directory writable
+        run: IMAGE=ghd:ci scripts/check-compose-attachments.sh
+
       # Building an image proves it compiles, not that it starts. Issue #43 was
       # a build failure; the class of problem it belongs to — a container that
       # builds and then dies, or starts and serves nothing — was invisible to

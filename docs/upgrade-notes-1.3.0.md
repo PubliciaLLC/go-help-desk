@@ -886,6 +886,8 @@ At startup the server checks that `ATTACHMENT_DIR` (default `/data/attachments`,
 
 Before this, an unwritable directory showed up as a failed upload partway through.
 
+**Docker Compose installs fix the owner for you.** The server runs as uid 100 / gid 101, and on a fresh Linux host Docker creates the bind-mounted `docker/data/attachments` as `root:root`, which the server cannot write to. The compose file now runs a short `attachments-init` container before the app starts; it creates the directory if it is missing and sets its owner to 100:101 when it is not already (it leaves a directory that is already right alone, so a restart does not touch every stored file). Nothing to do on an upgrade from 1.2: the directory already has that owner. If you do not use the compose file, make `ATTACHMENT_DIR` writable by uid 100 / gid 101 yourself, for example `chown -R 100:101 /path/to/attachments`.
+
 ### Tickets Left Assigned to a Deleted User Go Back to the Queue (#524)
 
 In 1.2.x, deleting a user left their open tickets pointing at them. Such a ticket showed as "Unassigned" on its page, was not in the unassigned queue, and was in nobody's "assigned to me". 1.3.0's delete returns the user's open tickets to the queue (and writes an `unassigned` audit entry for each); **migration `000053` does the same, once, for the tickets a 1.2.x delete had already stranded.**
