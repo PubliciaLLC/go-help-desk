@@ -133,7 +133,7 @@
 
 <ol>
   <li><strong>Is the caller allowed?</strong> Uploading needs a signed-in account. A reporting user may upload only to their own ticket. The guest API's upload, <code>POST /api/v1/guest/attachments</code>, takes the same steps once the guest's link is checked; guests can upload only while an administrator has turned on <em>Guests may attach files</em> (it is off by default), and the guest page offers an <em>Add files</em> button then. See <a href="tickets.html#tickets-attachments">Attachments</a>.</li>
-  <li><strong>Is it within 25 MB?</strong> Checked three times — the request body is capped before it is parsed, then the size the upload declares is checked, then the bytes actually read. Over that is <code>413 too_large</code> whichever check catches it.</li>
+  <li><strong>Is it within the per-file limit?</strong> The limit is <code>attachment_max_mb</code>, 25 MB unless an administrator sets it to something from 1 to 100 MB; a guest's own, lower limit applies to guests. Checked three times — the request body is capped before it is parsed, then the size the upload declares is checked, then the bytes actually read. Over that is <code>413 too_large</code> whichever check catches it.</li>
   <li><strong>Is the filename storable, and honest?</strong> It must be valid UTF-8, contain no NUL byte, contain no control character and no text-direction override (the characters that make <code>invoice&lt;U+202E&gt;txt.pdf</code> display as <code>invoicefdp.txt</code>), and be 255 bytes or shorter. Anything else is <code>400 invalid_filename</code>.</li>
   <li><strong>Is the extension one this instance accepts?</strong> Checked against the operator's allowed-types list, before the file body is read. Anything else is <code>415 unsupported_type</code>.</li>
   <li><strong>What are the bytes?</strong> The content detector and the SHA-256 both run here, on the file exactly as uploaded.</li>
@@ -438,18 +438,19 @@
   <li><strong>The quarantine password is not confidentiality.</strong> It is published, and ZipCrypto is weak on purpose.</li>
   <li><strong>The Sec-Fetch-Dest check cannot reach everything.</strong> Absent headers are allowed, and same-origin page script can fetch the bytes and render them itself. Nothing on the server can tell that apart from a download.</li>
   <li><strong>The expanded reputation list does not mark which line the row's summary came from.</strong> The summary names its service, and the API sends an <code>inline</code> flag on the matching entry, but the ticket page does not draw it.</li>
-  <li><strong>Scanner health is a banner, plus a status block.</strong> <code>GET /api/v1/admin/security-warnings</code> reports what scanning is actually doing, with a live reachability check. Administrators see a banner only when it matters: <em>Attachment scanner unreachable</em> on every page while the policy is not <code>off</code> and the scanner does not answer, and <em>Attachments are not being scanned</em> on an instance that holds attachments but has never had a scan policy or scanner address set. <em>Admin → System → Settings → Attachments → Malware scanning</em> shows the policy, whether an address is configured and whether the scanner answers, so a healthy scanner can be seen as healthy there. The banner is not shown for a policy an administrator saved as <em>Do not scan</em>.</li>
+  <li><strong>Scanner health is a banner, plus a status block.</strong> <code>GET /api/v1/admin/security-warnings</code> reports what scanning is actually doing, with a live reachability check. Administrators see a banner only when it matters: <em>Attachment scanner unreachable</em> on every page while the policy is not <code>off</code> and the scanner does not answer, and <em>Attachments are not being scanned</em> on an instance that holds attachments but has never had a scan policy or scanner address set. <em>Admin → System → File Attachments → Malware scanning</em> shows the policy, whether an address is configured and whether the scanner answers, so a healthy scanner can be seen as healthy there. The banner is not shown for a policy an administrator saved as <em>Do not scan</em>.</li>
 </ul>
 
 
 <h2 id="attach-settings">The settings behind all of this</h2>
 
-<p>Every one of these lives under <em>Admin → System → Settings → Attachments</em>, and every one is <strong>session-gated</strong>: an API key or OAuth client cannot change them, because they decide what this instance will hold and where customers' file hashes go. The full reference, with defaults and what changes when you change each one, is in the <a href="admin-guide.html#admin-attachments">Admin Guide</a>.</p>
+<p>Every one of these lives under <em>Admin → System → File Attachments</em>, and every one is <strong>session-gated</strong>: an API key or OAuth client cannot change them, because they decide what this instance will hold and where customers' file hashes go. The full reference, with defaults and what changes when you change each one, is in the <a href="admin-guide.html#admin-attachments">Admin Guide</a>.</p>
 
 <table class="param-table">
   <thead><tr><th>Setting</th><th>Default</th><th>What it decides</th></tr></thead>
   <tbody>
     <tr><td>attachment_allowed_types</td><td>9 extensions</td><td>What this instance will accept at all.</td></tr>
+    <tr><td>attachment_max_mb <span class="badge-new">New in 1.3.0</span></td><td><code>25</code></td><td>The largest file anyone may attach, 1 to 100 MB. Guests are held to the lower of this and their own limit.</td></tr>
     <tr><td>attachment_scan_policy</td><td><code>required</code>*</td><td>What an unscannable upload means.</td></tr>
     <tr><td>attachment_scan_address</td><td>unset</td><td>Overrides <code>CLAMAV_ADDR</code>.</td></tr>
     <tr><td>attachment_infected_handling</td><td><code>refuse</code></td><td>Refuse an identified file, or quarantine it.</td></tr>
@@ -461,6 +462,8 @@
 </table>
 
 <p style="font-size:0.85em;color:var(--muted);margin-top:-0.5rem;">* <code>required</code> where a scanner address is configured, <code>off</code> where none is.</p>
+
+<p><strong>If you raise <code>attachment_max_mb</code> above 25</strong>, check the scanner and any reverse proxy first. The shipped <code>clamav/clamav:stable</code> image accepts up to 100 MB, so it needs no change. A clamd older than 0.105, or one tuned down, needs <code>StreamMaxLength</code> and <code>MaxFileSize</code> of at least the new limit: a file over <code>StreamMaxLength</code> is not scanned (refused with <code>503</code> under <code>required</code>, stored unscanned under <code>permissive</code>), and a file over a lowered <code>MaxFileSize</code> is skipped and answered clean unless <code>AlertExceedsMax yes</code> is set. A proxy must allow a request body of the limit plus 1 MB. Its read timeout must be at least the upload deadline: five minutes up to 25 MB, 20 minutes at 100 MB.</p>
 
 </main>
 </div>
