@@ -1280,18 +1280,21 @@ const setUserEmailPreferences = `-- name: SetUserEmailPreferences :exec
 UPDATE users
 SET email_notify_assigned = COALESCE($1, email_notify_assigned),
     email_notify_activity = COALESCE($2, email_notify_activity),
-    email_notify_group    = COALESCE($3, email_notify_group)
-WHERE id = $4 AND deleted_at IS NULL
+    email_notify_group    = COALESCE($3, email_notify_group),
+    email_notify_sla      = COALESCE($4, email_notify_sla)
+WHERE id = $5 AND deleted_at IS NULL
 `
 
 type SetUserEmailPreferencesParams struct {
 	Assigned sql.NullBool `json:"assigned"`
 	Activity sql.NullBool `json:"activity"`
 	Grp      sql.NullBool `json:"grp"`
+	Sla      sql.NullBool `json:"sla"`
 	ID       uuid.UUID    `json:"id"`
 }
 
-// The person's staff-email switches (#441), each changed only when given.
+// The person's staff-email switches (#441, and the SLA-alerts switch of #670),
+// each changed only when given.
 // Narrow for the reason UpdateUserProfile is: UpdateUser writes a whole row
 // from an earlier read, and must not be the way a choice made a moment ago is
 // put back. updated_at is left alone; the account itself did not change.
@@ -1300,6 +1303,7 @@ func (q *Queries) SetUserEmailPreferences(ctx context.Context, arg SetUserEmailP
 		arg.Assigned,
 		arg.Activity,
 		arg.Grp,
+		arg.Sla,
 		arg.ID,
 	)
 	return err

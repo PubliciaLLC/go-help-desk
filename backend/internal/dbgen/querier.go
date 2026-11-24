@@ -1221,7 +1221,8 @@ type Querier interface {
 	// of two.
 	SetSLAResolvedAndFirstResponse(ctx context.Context, arg SetSLAResolvedAndFirstResponseParams) (int64, error)
 	SetSetting(ctx context.Context, arg SetSettingParams) error
-	// The person's staff-email switches (#441), each changed only when given.
+	// The person's staff-email switches (#441, and the SLA-alerts switch of #670),
+	// each changed only when given.
 	// Narrow for the reason UpdateUserProfile is: UpdateUser writes a whole row
 	// from an earlier read, and must not be the way a choice made a moment ago is
 	// put back. updated_at is left alone; the account itself did not change.

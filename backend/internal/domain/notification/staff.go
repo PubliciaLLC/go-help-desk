@@ -7,7 +7,7 @@ import "github.com/google/uuid"
 // an administrator's override of each; this file is that rule and nothing
 // else, so it can be read and tested without a database or a mail server.
 
-// StaffSwitch names one of the three per-user email switches. A switch is
+// StaffSwitch names one of the four per-user email switches. A switch is
 // also the REASON a person is being considered for an email: the same person
 // can be a candidate for two reasons (the assignee who also belongs to the
 // assigned group), and is mailed once if either reason passes.
@@ -27,6 +27,10 @@ const (
 	// following exists (PR-D of #464); it is here so the switch rule and the
 	// send-time check are settled first. It answers to the activity switch.
 	SwitchFollow StaffSwitch = "follow"
+	// SwitchSLA: a target on a ticket of mine (assigned, in my group and
+	// unheld, or followed) breached or is at risk (#670). It decides those two
+	// events alone; the activity and group switches do not apply to them.
+	SwitchSLA StaffSwitch = "sla"
 )
 
 // OverrideMode is an administrator's decision about one switch for everyone.
@@ -49,15 +53,17 @@ func ValidOverrideMode(s string) bool {
 	return false
 }
 
-// StaffPrefs is one person's own three switches.
+// StaffPrefs is one person's own switches.
 type StaffPrefs struct {
 	Assigned, Activity, Group bool
+	SLA                       bool
 }
 
 // StaffOverrides is the administrator's decision for each switch. The zero
 // value defers every switch to the user.
 type StaffOverrides struct {
 	Assigned, Activity, Group OverrideMode
+	SLA                       OverrideMode
 }
 
 // Allows reports whether the switch sw is on for a person with prefs p: the
@@ -73,6 +79,8 @@ func (o StaffOverrides) Allows(sw StaffSwitch, p StaffPrefs) bool {
 		mode, own = o.Activity, p.Activity
 	case SwitchGroup:
 		mode, own = o.Group, p.Group
+	case SwitchSLA:
+		mode, own = o.SLA, p.SLA
 	}
 	switch mode {
 	case OverrideOn:
@@ -94,6 +102,8 @@ func (o StaffOverrides) Forced(sw StaffSwitch) bool {
 		mode = o.Activity
 	case SwitchGroup:
 		mode = o.Group
+	case SwitchSLA:
+		mode = o.SLA
 	}
 	return mode == OverrideOn || mode == OverrideOff
 }
