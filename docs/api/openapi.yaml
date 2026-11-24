@@ -280,7 +280,7 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [configured, live, metadata_url, metadata_xml, cert_pem, sp_metadata_url, sp_acs_url]
+                required: [configured, live, metadata_url, metadata_xml, cert_pem, cert_not_after, cert_generated, sp_metadata_url, sp_acs_url]
                 properties:
                   configured:
                     type: boolean
@@ -305,7 +305,24 @@ paths:
                       private key is never returned.
                   cert_pem:
                     type: string
-                    description: The service provider certificate in PEM form. Empty when unset.
+                    description: >-
+                      The service provider certificate in PEM form, which is public: the
+                      administrator downloads it for an identity provider that wants it. Empty
+                      when unset. The server generates the certificate and key when
+                      the administrator saves IdP metadata with none stored, so this is empty
+                      only before the first save that has metadata.
+                  cert_not_after:
+                    type: [string, 'null']
+                    format: date-time
+                    description: >-
+                      When the stored certificate expires. null when no certificate is stored or
+                      what is stored cannot be read.
+                  cert_generated:
+                    type: boolean
+                    description: >-
+                      True when the stored certificate is one this server generated (self-signed,
+                      organisation "Go Help Desk", not a CA); false for one the administrator
+                      uploaded, and when none is stored. Read off the certificate.
                   sp_metadata_url:
                     type: string
                     description: >-
@@ -336,7 +353,20 @@ paths:
         document that is not SAML metadata, has no IDPSSODescriptor, or has no
         signing certificate that parses as X.509 is refused with
         invalid_saml_metadata, and one over 262144 bytes with
-        saml_metadata_too_large. With metadata_xml nothing is fetched. The
+        saml_metadata_too_large. With metadata_xml nothing is fetched.
+        The service provider certificate and key are made by the server, not
+        uploaded: when, after the request's fields are applied to the stored ones,
+        IdP metadata is set and neither a certificate nor a key is stored, the
+        server generates a self-signed RSA 2048 pair (SHA-256, valid ten years,
+        subject CN the host of the server's base URL, organisation Go Help Desk)
+        and stores it, once even when saves race, and never over a stored pair. The
+        change is audited (entity setting, action saml_cert_generated) without any
+        key material. A pair sent in cert_pem and key_pem together is used as it
+        always was. Sending only one of them, or two that do not match, is refused
+        with invalid_cert_key. regenerate_cert true replaces the stored pair with a
+        newly generated one and reloads SAML with it (action saml_cert_regenerated):
+        the identity provider has to be given the new certificate if it pinned the
+        old one. It cannot be combined with cert_pem or key_pem. The
         identity provider's metadata is then loaded once (fetched, for a URL),
         from the candidate settings, before anything is saved. If no active administrator could sign
         in afterwards (a failed fetch counts as SAML being unusable), the save is
@@ -369,10 +399,21 @@ paths:
                   description: The identity provider's metadata XML. Omitted or null keeps the stored value; "" clears it. Returned by GET.
                 cert_pem:
                   type: [string, 'null']
-                  description: The service provider certificate in PEM form. Omitted or null keeps the stored value; "" clears it.
+                  description: >-
+                    The service provider certificate in PEM form, to use one's own instead of the generated
+                    one. Optional, and sent together with key_pem or not at all. Omitted or null keeps the
+                    stored value; "" clears it (a save with metadata then finds none stored and generates one).
                 key_pem:
                   type: [string, 'null']
-                  description: The service provider private key in PEM form. Omitted or null keeps the stored value; "" clears it. Never returned by any endpoint.
+                  description: >-
+                    The service provider private key in PEM form, sent together with cert_pem or not at all.
+                    Omitted or null keeps the stored value; "" clears it. Never returned by any endpoint.
+                regenerate_cert:
+                  type: boolean
+                  description: >-
+                    true generates a new certificate and key and replaces the stored pair, whether it was
+                    generated or uploaded, then reloads SAML. false or omitted does nothing. Refused with
+                    invalid_cert_key together with cert_pem or key_pem.
       responses:
         '204':
           $ref: '#/components/responses/NoContent'
@@ -395,7 +436,8 @@ paths:
           description: >-
             bad_request: the body is not JSON, or the save would leave no active
             administrator able to sign in. invalid_cert_key: the certificate and
-            private key are invalid or do not match. saml_metadata_conflict: the
+            private key are invalid or do not match, only one of them was supplied, or
+            regenerate_cert was sent with one of them. saml_metadata_conflict: the
             save would leave both metadata_url and metadata_xml set.
             invalid_saml_metadata: metadata_xml does not parse, is not SAML
             metadata, has no IDPSSODescriptor, or has no signing certificate
