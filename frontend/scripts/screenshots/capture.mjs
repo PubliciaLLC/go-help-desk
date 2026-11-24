@@ -132,10 +132,11 @@ const SHOTS = [
     },
   },
   {
-    file: '03-ticket-list.png', phase: 'main', role: 'admin', path: '/tickets', vp: DESK,
+    file: '03-ticket-list.png', phase: 'main', role: 'admin', path: '/tickets?view=search', vp: DESK,
     async prepare(page) {
-      // Admin defaults to "Mine", which is empty for Alex. Show every ticket.
-      await page.getByRole('button', { name: 'all', exact: true }).click()
+      // Admin defaults to Assigned to Me, which is empty for Alex. Since #676
+      // the old "all" scope button is the Search view, which lists every
+      // ticket the viewer can see.
       await waitVisible(page.getByText('GHD-2026-000001', { exact: true }))
     },
   },
