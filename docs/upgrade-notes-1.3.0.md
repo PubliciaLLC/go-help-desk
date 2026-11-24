@@ -248,7 +248,7 @@ What to check: an API key that files tickets does not need `users:read` to use `
 
 ### Tickets Record How They Arrived (#130)
 
-Staff and administrators see a small "via web", "via API", "via MCP", "via guest form" or "via phone" next to the opened date on the ticket page, and `source_channel` on the ticket object in REST and MCP `get_ticket`. Requesters and guests never receive it. When a member of staff files for someone else on the New ticket page they get **How did this reach you?**: Web (the default) or Phone call. There is no list filter for it yet. Existing tickets read `web`: see *Existing Tickets Are Marked `web`* under Breaking changes.
+Staff and administrators see a small "via web", "via API", "via MCP", "via guest form" or "via phone" next to the opened date on the ticket page, and `source_channel` on the ticket object in REST and MCP `get_ticket`. Requesters and guests never receive it. When a member of staff files for someone else on the New ticket page they get **How did this reach you?**: Web (the default) or Phone call. Staff and administrators can filter the ticket list by channel, on the ticket list page, with `source_channel` on `GET /api/v1/tickets` and on MCP `list_tickets`; a filter is meaningful only from the upgrade date. Existing tickets read `web`: see *Existing Tickets Are Marked `web`* under Breaking changes.
 
 ### Markdown in Ticket Text (#443)
 
