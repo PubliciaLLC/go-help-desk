@@ -55,6 +55,17 @@ describe('AvailableQueueSection', () => {
     expect((staff as HTMLInputElement).checked).toBe(false)
   })
 
+  it('cannot save while the settings failed to load: Save and Staff are disabled', async () => {
+    // Without the stored value the box would read unticked, and one click would
+    // overwrite a stored [admin, staff] with [admin].
+    vi.spyOn(api, 'get').mockRejectedValue(refusedWith(500, 'down'))
+    renderWithQuery(<AvailableQueueSection />)
+
+    const staff = await screen.findByRole('checkbox', { name: 'Staff' })
+    await waitFor(() => expect((screen.getByRole('button', { name: 'Save' }) as HTMLButtonElement).disabled).toBe(true))
+    expect((staff as HTMLInputElement).disabled).toBe(true)
+  })
+
   it('ticking Staff saves both roles', async () => {
     settingsAre({})
     // eslint-disable-next-line @typescript-eslint/no-explicit-any

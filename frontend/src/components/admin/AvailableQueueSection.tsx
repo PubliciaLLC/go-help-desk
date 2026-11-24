@@ -27,7 +27,7 @@ function storedStaff(settings: Record<string, unknown> | undefined): boolean {
 
 export function AvailableQueueSection() {
   const qc = useQueryClient()
-  const { data: settings, isLoading } = useQuery({
+  const { data: settings } = useQuery({
     queryKey: QUERY_KEY,
     queryFn: getSettings,
   })
@@ -72,7 +72,7 @@ export function AvailableQueueSection() {
             type="checkbox"
             className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
             checked={staff}
-            disabled={isLoading}
+            disabled={!settings}
             onChange={(e) => setDraft(e.target.checked)}
           />
           Staff
@@ -93,7 +93,7 @@ export function AvailableQueueSection() {
         <Button
           type="button"
           size="sm"
-          disabled={isLoading || save.isPending}
+          disabled={!settings || save.isPending}
           onClick={() => {
             setError('')
             save.mutate()
