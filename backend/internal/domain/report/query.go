@@ -3,6 +3,7 @@ package report
 import (
 	"net/url"
 	"slices"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
@@ -23,6 +24,9 @@ var PriorityOrder = []ticket.Priority{
 	ticket.PriorityMedium,
 	ticket.PriorityLow,
 }
+
+// earliestFrom is the earliest from a request may name.
+var earliestFrom = time.Date(1970, time.January, 1, 0, 0, 0, 0, time.UTC)
 
 // maxPriorities is how many priority values one request may name: all four.
 const maxPriorities = 4
@@ -85,6 +89,8 @@ func ParseQuery(q url.Values) (Query, error) {
 		out.Priorities = append(out.Priorities, p)
 	}
 	slices.SortFunc(out.Priorities, comparePriority)
+	// A value sent twice is one filter; the count limit above still counts both.
+	out.Priorities = slices.Compact(out.Priorities)
 
 	if v := q.Get("assignee_group_id"); v != "" {
 		id, err := uuid.Parse(v)
@@ -109,6 +115,11 @@ func (q Query) Period(today Day) (Period, error) {
 	p := Period{From: *q.From, To: *q.To}
 	if p.From.Time().After(p.To.Time()) {
 		return Period{}, invalid("from must not be after to")
+	}
+	// The previous period starts as many days before from; a date near year 1
+	// would put it before the year Postgres can represent, a 500 instead of a 400.
+	if p.From.Time().Before(earliestFrom) {
+		return Period{}, invalid("from is too early")
 	}
 	if p.Days() > MaxDays {
 		return Period{}, invalid("the range is longer than 366 days")

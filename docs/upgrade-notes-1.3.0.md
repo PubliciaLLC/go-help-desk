@@ -341,7 +341,7 @@ A **Reports** item in the sidebar, between Tickets and Admin, shows how the desk
 - **Each measure, in one line.** Volume compares tickets **created** in the period with tickets **resolved** in it. The other period measures count the tickets **finished** in the period: resolved, or closed without ever being resolved.
   - **Time to resolve**: from creation to finishing, less the time Pending, as a median and a 90th percentile. Time in Resolved before a reopen is included.
   - **First response**: the median time to the first response, as the SLA measured it, less the time Pending before it.
-  - **SLA attainment**: the share of tracked tickets, those with an SLA record when they finished, whose response and resolution targets were both met.
+  - **SLA attainment**: the share of tracked tickets, those with a current SLA record when they finished (a ticket whose SLA was removed, by a priority change, a reclassification or a reopen, is left out), whose response and resolution targets were both met.
   - **Reopen rate**: the share of finished tickets that were reopened at least once.
   - **Backlog**: open tickets by age in whole days since creation, in four buckets: 0 to 2, 3 to 7, 8 to 30 and over 30.
   - **Workload**: open tickets by assignee and by group, with a row for tickets with no person and one for tickets with no group.

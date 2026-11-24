@@ -3151,7 +3151,7 @@ paths:
           required: false
           description: >-
             Last day of the period, inclusive, YYYY-MM-DD. A malformed date is 400 "invalid to"; a to before
-            from is "from must not be after to"; a range of more than 366 days is "the range is longer than
+            from is "from must not be after to"; a from before 1970-01-01 is "from is too early"; a range of more than 366 days is "the range is longer than
             366 days". A to after today is allowed; its days count zero.
           schema: {type: string, format: date}
         - name: category_id

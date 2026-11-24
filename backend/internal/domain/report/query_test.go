@@ -90,6 +90,11 @@ func TestParseQuery(t *testing.T) {
 			wantErr: "from and to go together",
 		},
 		{
+			name: "a repeated priority is kept once",
+			q:    url.Values{"priority": {"high", "low", "high"}},
+			want: report.Query{Priorities: []ticket.Priority{ticket.PriorityHigh, ticket.PriorityLow}},
+		},
+		{
 			name:    "bad from",
 			q:       url.Values{"from": {"2026-02-29"}, "to": {"2026-03-01"}},
 			wantErr: "invalid from",
@@ -221,6 +226,16 @@ func TestQueryPeriod(t *testing.T) {
 			name: "a to after today is allowed",
 			q:    report.Query{From: ptrDay(t, "2026-11-20"), To: ptrDay(t, "2026-12-05")},
 			want: report.Period{From: mustDay(t, "2026-11-20"), To: mustDay(t, "2026-12-05")},
+		},
+		{
+			name:    "a range from before 1970 is refused, so the previous period stays a real date",
+			q:       report.Query{From: ptrDay(t, "1969-12-31"), To: ptrDay(t, "1970-01-02")},
+			wantErr: "from is too early",
+		},
+		{
+			name: "1970-01-01 is the earliest from",
+			q:    report.Query{From: ptrDay(t, "1970-01-01"), To: ptrDay(t, "1970-01-02")},
+			want: report.Period{From: mustDay(t, "1970-01-01"), To: mustDay(t, "1970-01-02")},
 		},
 		{
 			name:    "only one of from and to, built by hand",
