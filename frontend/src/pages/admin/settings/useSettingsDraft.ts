@@ -69,30 +69,33 @@ export function useSettingsDraft(): SettingsDraft {
      Keyed by settings key rather than held as one value, which is the whole
      point: a shared field would paste one service's key into another's
      account. */
-  // The keys the operator has edited since the draft was last seeded or saved.
-  const edited = useRef(new Set<string>())
-
   const [secrets, setSecrets] = useState<Record<string, string>>({})
   const [cleared, setCleared] = useState<Record<string, boolean>>({})
+
+  /* The keys the operator has edited and not yet saved, with the value they
+     last set. A refetch keeps these and follows the fresh data for every other
+     key, so a section's own save or the window regaining focus cannot undo an
+     unsaved edit, and with it whatever the page showed only while that edit
+     stood. A key put back to its stored value is not held: it is not an edit,
+     and another administrator's change to it must come through. */
+  const edited = useRef(new Map<string, unknown>())
 
   const query = useQuery({ queryKey: SETTINGS_KEY, queryFn: getSettings })
   const settings = query.data
 
+  /* This seeds local form state from a react-query result, the
+     cascading-render pattern react-hooks/set-state-in-effect warns about
+     (https://react.dev/learn/you-might-not-need-an-effect). Suppressed, not
+     refactored: switching the lint gate on should not also change how the admin
+     forms behave. TODO: derive the state, or remount the form with a key. */
+  /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     if (!settings) return
-    // Fresh data wins for every key the operator has not touched. A key they
-    // edited keeps their value until a save clears the mark (see `set`), so a
-    // refetch from elsewhere (a section's own save, the window regaining
-    // focus) cannot undo an unsaved edit and with it whatever the page showed
-    // only while that edit stood.
-    const keep = edited.current
-    setLocal((s) => {
-      if (s === null || keep.size === 0) return settings
-      const kept: Record<string, unknown> = {}
-      for (const k of keep) if (k in s) kept[k] = s[k]
-      return { ...settings, ...kept }
-    })
+    const kept: Record<string, unknown> = {}
+    for (const [k, v] of edited.current) kept[k] = v
+    setLocal({ ...settings, ...kept })
   }, [settings])
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   const draft = local ?? {}
 
@@ -104,10 +107,13 @@ export function useSettingsDraft(): SettingsDraft {
       // Only what the operator changed (#394), with the guest clamp (#673); see
       // buildSettingsPatch.
       const patch = buildSettingsPatch(settings, draft, secrets, cleared)
+      // What was edited as of this send: an edit made while the save is pending
+      // is not in the patch, and is still an unsaved edit afterwards.
+      const sent = new Map(edited.current)
       const res = await updateSettings(patch)
       // The save that turned ticket scope on is the one whose warning is about
       // OAuth clients; an SSO warning shares the field and gets no such link.
-      return { ...res, aboutClients: patch.ticket_scope_enforced === true }
+      return { ...res, aboutClients: patch.ticket_scope_enforced === true, sent }
     },
     onSuccess: async (res) => {
       setSaved(true)
@@ -117,8 +123,11 @@ export function useSettingsDraft(): SettingsDraft {
       // including a key typed but not yet accepted.
       setSecrets({})
       setCleared({})
-      // The edits are saved: the fresh dump, awaited below, replaces the draft.
-      edited.current.clear()
+      // The edits that were sent are saved: the fresh dump, awaited below,
+      // replaces them. One edited again since the send keeps its mark.
+      for (const [k, v] of res.sent) {
+        if (Object.is(edited.current.get(k), v)) edited.current.delete(k)
+      }
       setTimeout(() => setSaved(false), 2500)
       qc.invalidateQueries({ queryKey: ['site-config'] })
       // The scan policy and address feed the banner and the scanner status;
@@ -139,8 +148,13 @@ export function useSettingsDraft(): SettingsDraft {
       ),
   })
 
+  function mark(key: string, v: unknown) {
+    if (JSON.stringify(v) === JSON.stringify(settings?.[key])) edited.current.delete(key)
+    else edited.current.set(key, v)
+  }
+
   function set(key: string, v: unknown) {
-    edited.current.add(key)
+    mark(key, v)
     setLocal((s) => ({ ...s, [key]: v }))
   }
 
@@ -163,12 +177,11 @@ export function useSettingsDraft(): SettingsDraft {
     setStr: set,
     setStrArr: set,
     toggleStrArr: (key, item, checked) => {
-      edited.current.add(key)
-      setLocal((s) => {
-        const current = asStrArr((s ?? {})[key])
-        const next = checked ? [...new Set([...current, item])] : current.filter((x) => x !== item)
-        return { ...s, [key]: next }
-      })
+      // Built from the last value set, which is what the draft will hold: two
+      // toggles in one tick each see the other's result.
+      const current = asStrArr(edited.current.has(key) ? edited.current.get(key) : draft[key])
+      const next = checked ? [...new Set([...current, item])] : current.filter((x) => x !== item)
+      set(key, next)
     },
     secret: (key) => secrets[key] ?? '',
     setSecret: (key, v) => setSecrets((s) => ({ ...s, [key]: v })),

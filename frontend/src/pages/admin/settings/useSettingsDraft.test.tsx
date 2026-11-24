@@ -241,6 +241,47 @@ describe('useSettingsDraft', () => {
     expect(result.current.dirty).toBe(false)
   })
 
+  it('keeps an edit made while a save is pending, and stays dirty for it', async () => {
+    const { result, queryClient } = setup()
+    await loaded(result)
+    let release: () => void = () => {}
+    patchSpy.mockImplementationOnce(((_url: string, body: Record<string, unknown>) =>
+      new Promise((resolve) => {
+        release = () => {
+          dump = { ...dump, ...body }
+          resolve({ data: undefined })
+        }
+      })) as never)
+    act(() => result.current.setBool('sla_enabled', true)) // A, sent
+    act(() => result.current.save())
+    await waitFor(() => expect(result.current.isPending).toBe(true))
+    act(() => result.current.setBool('ticket_scope_enforced', true)) // B, after the send
+    await act(async () => release())
+    await waitFor(() => expect(result.current.isPending).toBe(false))
+    await waitFor(() => expect(result.current.stored?.sla_enabled).toBe(true))
+    expect(patchSpy.mock.calls[0][1]).toEqual({ sla_enabled: true })
+    expect(result.current.bool('ticket_scope_enforced')).toBe(true)
+    expect(result.current.dirty).toBe(true)
+    // A was saved, so it follows the server again.
+    dump = { ...dump, sla_enabled: false }
+    await act(async () => { await queryClient.invalidateQueries({ queryKey: ['admin', 'settings'] }) })
+    await waitFor(() => expect(result.current.bool('sla_enabled')).toBe(false))
+    expect(result.current.bool('ticket_scope_enforced')).toBe(true)
+  })
+
+  it('does not hold an edit that was put back, so another change to that key is followed', async () => {
+    const { result, queryClient } = setup()
+    await loaded(result)
+    act(() => result.current.setBool('sla_enabled', true))
+    act(() => result.current.setBool('sla_enabled', false))
+    expect(result.current.dirty).toBe(false)
+    // Someone else turns it on.
+    dump = { ...dump, sla_enabled: true }
+    await act(async () => { await queryClient.invalidateQueries({ queryKey: ['admin', 'settings'] }) })
+    await waitFor(() => expect(result.current.bool('sla_enabled')).toBe(true))
+    expect(result.current.dirty).toBe(false)
+  })
+
   it('keeps the edited marks when the save is refused', async () => {
     const { result, queryClient } = setup()
     await loaded(result)
