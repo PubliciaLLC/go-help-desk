@@ -158,9 +158,10 @@ export function useSettingsDraft(): SettingsDraft {
     if (!settings) return
     setSeeded(true)
     const L = live.current
-    // A dump that arrives while no save is in flight is newer than a save that
-    // went through without its fetch; it takes over from `saved`.
-    putLayers(withoutNoopEdits(L.sent ? L : { ...L, saved: null }, settings))
+    // Any dump fetched now is newer than what an earlier save wrote (that save
+    // has settled), so it takes over from `saved`, in flight or not: `sent`
+    // still covers the keys of a save in flight.
+    putLayers(withoutNoopEdits({ ...L, saved: null }, settings))
   }, [settings, query.dataUpdatedAt]) // a fetch that changed nothing is a dump too
   /* eslint-enable react-hooks/set-state-in-effect */
 
@@ -168,7 +169,8 @@ export function useSettingsDraft(): SettingsDraft {
   const draft: Values = { ...settings, ...layers.saved, ...layers.sent, ...layers.edits }
 
   // The dump's age when the PATCH answered: a fetch that has landed since has
-  // the saved values in it. Compared with the dump's own stamp, not a clock.
+  // the saved values in it. Compared with the stamp the dump itself carries, not
+  // with a timestamp taken separately.
   const dumpStamp = useRef(0)
   // A save is on its way, from the click: a second click is ignored.
   const saving = useRef(false)
@@ -201,8 +203,18 @@ export function useSettingsDraft(): SettingsDraft {
       setWarning(res.warning ? { text: res.warning, aboutClients: res.aboutClients } : null)
       // Only on success: a refused save leaves every edit where it was,
       // including a key typed but not yet accepted.
-      setSecrets({})
-      setCleared({})
+      // The write-only keys the save carried; one typed (or ticked) while it was
+      // on its way, or typed over, is still to be saved.
+      setSecrets((s) => {
+        const left = { ...s }
+        for (const [k, v] of Object.entries(res.patch)) if (v !== '' && (left[k] ?? '').trim() === v) delete left[k]
+        return left
+      })
+      setCleared((c) => {
+        const left = { ...c }
+        for (const [k, v] of Object.entries(res.patch)) if (v === '' && left[k]) delete left[k]
+        return left
+      })
       // What was sent is saved. A key the operator has set again since keeps its edit.
       const L = live.current
       const edits = { ...L.edits }

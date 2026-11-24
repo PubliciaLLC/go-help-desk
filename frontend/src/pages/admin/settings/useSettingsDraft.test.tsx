@@ -592,6 +592,92 @@ describe('useSettingsDraft: around a save', () => {
     })
   })
 
+  // The dump that lands while a later save is in flight is newer than what the
+  // earlier save (whose fetch failed) wrote; it takes over from it at once.
+  describe('a dump that lands while a later save is in flight', () => {
+    async function setUpEarlierSaveWithFailedFetch() {
+      dump = { ...DUMP, b: 1 }
+      const hook = setup()
+      await loaded(hook.result)
+      const p1 = holdPatch()
+      act(() => hook.result.current.setNum('b', 2))
+      act(() => hook.result.current.save())
+      await waitFor(() => expect(hook.result.current.isPending).toBe(true))
+      vi.spyOn(api, 'get').mockRejectedValueOnce(new Error('down'))
+      await act(async () => p1.ok())
+      await waitFor(() => expect(hook.result.current.isPending).toBe(false))
+      expect(hook.result.current.num('b')).toBe(2) // from the earlier save, the dump is stale
+      dump = { ...dump, b: 0 } // another administrator
+      const p2 = holdPatch()
+      act(() => hook.result.current.setBool('sla_enabled', true))
+      act(() => hook.result.current.save())
+      await waitFor(() => expect(hook.result.current.isPending).toBe(true))
+      await refetch(hook.queryClient) // a focus refetch lands meanwhile
+      await waitFor(() => expect(hook.result.current.stored?.b).toBe(0))
+      return { ...hook, p2 }
+    }
+
+    it('takes over from the earlier save when the later save is refused', async () => {
+      const h = await setUpEarlierSaveWithFailedFetch()
+      await act(async () => h.p2.no())
+      await waitFor(() => expect(h.result.current.isPending).toBe(false))
+      expect(h.result.current.num('b')).toBe(0)
+      expect(h.result.current.bool('sla_enabled')).toBe(true)
+      expect(h.result.current.dirty).toBe(true)
+    })
+
+    it('takes over from the earlier save when the later save goes through but its fetch fails', async () => {
+      const h = await setUpEarlierSaveWithFailedFetch()
+      vi.spyOn(api, 'get').mockRejectedValueOnce(new Error('down'))
+      await act(async () => h.p2.ok())
+      await waitFor(() => expect(h.result.current.isPending).toBe(false))
+      expect(h.result.current.num('b')).toBe(0)
+      expect(h.result.current.bool('sla_enabled')).toBe(true)
+      expect(h.result.current.dirty).toBe(false)
+    })
+  })
+
+  it('keeps a write-only key typed while a save was in flight, if the save did not carry it', async () => {
+    const { result } = setup()
+    await loaded(result)
+    const p = holdPatch()
+    act(() => result.current.setBool('sla_enabled', true))
+    act(() => result.current.save())
+    await waitFor(() => expect(result.current.isPending).toBe(true))
+    act(() => result.current.setSecret('virustotal_api_key', 'x'))
+    act(() => result.current.setSecretCleared('metadefender_api_key', true))
+    await act(async () => p.ok())
+    await waitFor(() => expect(result.current.isPending).toBe(false))
+    expect(result.current.secret('virustotal_api_key')).toBe('x')
+    expect(result.current.secretCleared('metadefender_api_key')).toBe(true)
+    expect(result.current.dirty).toBe(true)
+  })
+
+  it('clears the write-only key the save carried, but not what was typed over it afterwards', async () => {
+    const { result } = setup()
+    await loaded(result)
+    const p = holdPatch()
+    act(() => result.current.setSecret('virustotal_api_key', 'one'))
+    act(() => result.current.save())
+    await waitFor(() => expect(result.current.isPending).toBe(true))
+    act(() => result.current.setSecret('virustotal_api_key', 'two'))
+    await act(async () => p.ok())
+    await waitFor(() => expect(result.current.isPending).toBe(false))
+    expect(patchSpy.mock.calls[0][1]).toEqual({ virustotal_api_key: 'one' })
+    expect(result.current.secret('virustotal_api_key')).toBe('two')
+  })
+
+  it('clears a write-only key the save carried', async () => {
+    const { result } = setup()
+    await loaded(result)
+    act(() => result.current.setSecret('virustotal_api_key', 'one'))
+    act(() => result.current.setSecretCleared('metadefender_api_key', true))
+    act(() => result.current.save())
+    await waitFor(() => expect(result.current.saved).toBe(true))
+    expect(result.current.secret('virustotal_api_key')).toBe('')
+    expect(result.current.secretCleared('metadefender_api_key')).toBe(false)
+  })
+
   it('ignores a second Save while one is in flight, and loses nothing', async () => {
     const { result } = setup()
     await loaded(result)

@@ -1867,7 +1867,10 @@ export function useSettingsDraft(): SettingsDraft
   - **saved**: what earlier saves wrote whose fresh fetch failed (otherwise
     absent): the dump is then older than what was saved, so this stays as the
     base under the edits, the form keeps showing what was saved and is not
-    dirty, until the next dump (a fetch that changed nothing counts) takes over;
+    dirty, until the next dump takes over. Any dump fetched after that save
+    settled does so at once (a fetch that changed nothing counts), also one
+    that lands while a later save is in flight: it is newer than what the
+    earlier save wrote, and `sent` still covers the keys of the later one;
   - **the dump**: the query's data.
 
   What is under the edits (sent, then saved, then the dump) is the base an edit
@@ -1881,8 +1884,9 @@ export function useSettingsDraft(): SettingsDraft
   dropped. A successful save drops the edits equal to what it sent; the rest
   stay, and a key put back to its pre-save value during the save stays an edit
   and is saved next. The save settles after the fresh settings have been
-  asked for: if the dump's own stamp (`dataUpdatedAt`) advanced, `sent` is
-  dropped; if not (the fetch failed), `sent` joins `saved`. A refused save
+  asked for: if the dump's own stamp (`dataUpdatedAt`) advanced past the one read when
+  the PATCH answered (no comparison with a separately taken timestamp), `sent`
+  is dropped; if not (the fetch failed), `sent` joins `saved`. A refused save
   gives back only the keys it sent, with the operator's values, as edits (before
   anything is dropped); `saved` is left as it was, so what an earlier save wrote
   does not become an unsaved edit. The page is still dirty and Save sends them
@@ -1892,7 +1896,9 @@ export function useSettingsDraft(): SettingsDraft
   `dirty` is the patch of the composed draft against the base (the dump with
   `saved` over it), and a key whose edit equals the base never makes it dirty.
   This applies to every System page, not only Authentication. The write-only
-  keys in `secrets` and `cleared` are not part of the draft and are unaffected.
+  keys in `secrets` and `cleared` are not part of the draft. A successful save
+  clears the ones its patch carried (a secret only if it still holds what was
+  sent); one typed or ticked while the save was on its way stays.
   Separately, "Save SAML config" empties the private key box once saved (the
   key is write-only and is not sent again).
 - **`dirty`** is `!isPending && Object.keys(buildSettingsPatch(…)).length > 0`.
