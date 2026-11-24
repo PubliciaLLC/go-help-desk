@@ -132,7 +132,7 @@
 
 <p>The admin pages are under <strong>Admin</strong> in the sidebar when you are signed in as an administrator. Admin expands into four sections: <strong>People</strong> (Users, Groups, Roles), <strong>Tickets</strong> (Categories, Statuses, Tags, Custom Fields, Canned Responses, Routing), <strong>Integrations</strong> (API Keys, OAuth Clients, Webhooks) and <strong>System</strong> (General, Features, Branding, Email, File Attachments, Guest Access, Authentication, Privacy, Audit Log). On an admin page, Admin and the section that holds that page are open and the other sections are closed. You can open or close a section yourself; a section you close stays closed until you go to another page, and away from the admin pages the menu shows what you last left open. Paths in this guide are written in full, for example <em>Admin → System → General</em>. All configuration in this guide is done through the admin panel unless a restart is required (only for environment variable changes).</p>
 
-<p>Staff and administrators also have <strong>Tickets</strong> views (Assigned to Me, My Group's Tickets, Available and Search) and <strong>Reports</strong> in the sidebar, outside the Admin menu. Who may open the <em>Available</em> view is set under <a href="#admin-available-queue">Available queue</a>.</p>
+<p>Administrators and staff also have <strong>Tickets</strong> views (Assigned to Me, My Group's Tickets, Search, and Available where allowed) and <strong>Reports</strong> in the sidebar, outside the Admin menu. Who may open the <em>Available</em> view is set under <a href="#admin-available-queue">Available queue</a>.</p>
 
 <p id="admin-settings-pages"><strong>Settings are pages under System</strong> <span class="badge-new">New in 1.3.0</span><br />Each group of settings is its own page under <em>Admin → System</em>, and each page holds only its own sections. <strong>Email Templates</strong> is no longer under Integrations: it is the <em>Templates</em> tab of the Email page, next to <em>Notifications</em>.</p>
 
@@ -274,7 +274,7 @@ Facilities
     </tr>
     <tr>
       <td><strong>User</strong></td>
-      <td>Can submit tickets and view their own tickets. Can add replies while the ticket is open. Can reopen a Resolved ticket by replying within the configured reopen window. Cannot see other users' tickets. Has no ticket views and no Reports: Tickets is the list of their own tickets, and the dashboard shows one count, <em>Your tickets</em>.</td>
+      <td>Can submit tickets and view their own tickets. Can add replies while the ticket is open. Can reopen a Resolved ticket by replying within the configured reopen window. Cannot see other users' tickets. Has no ticket views and no Reports: Tickets is the list of their own tickets, and the dashboard adds one count, <em>Your tickets</em>, above the status cards.</td>
     </tr>
   </tbody>
 </table>
@@ -397,11 +397,11 @@ Facilities
 <p>This is intentional: you should never be unable to escalate a ticket to a specialist because of routing rules.</p>
 
 <h3 id="admin-available-queue">Available queue <span class="badge-new">New in 1.3.0</span></h3>
-<p>Staff and administrators have an <em>Available</em> view in the sidebar. It lists tickets that have no group and no person assigned. <strong>Administrators always see it. Staff see it only when you tick <em>Staff</em></strong> under <em>Admin → System → Privacy → Available queue</em>, directly after Ticket visibility. Anyone who can see such a ticket still finds it through the <em>Search</em> view.</p>
+<p>Administrators, and the staff you allow, have an <em>Available</em> view in the sidebar. It lists tickets that have no group and no person assigned. <strong>Administrators always see it. Staff see it only when you tick <em>Staff</em></strong> under <em>Admin → System → Privacy → Available queue</em>, directly after Ticket visibility. Anyone who can see such a ticket still finds it through the <em>Search</em> view.</p>
 <ul>
-  <li><strong>The boxes.</strong> <em>Administrators</em> is ticked and cannot be unticked. <em>Staff</em> is the only choice. The default is administrators only, on a new install and on an upgraded one, and nothing is changed for you on upgrade.</li>
+  <li><strong>The boxes.</strong> <em>Administrators</em> is ticked and cannot be unticked. <em>Staff</em> is the only choice. The default is administrators only, on a new install and on an upgraded one, and nothing is changed for you on upgrade. The section has its own <em>Save</em> button; the page's <em>Save changes</em> does not save it, and the <em>Leave without saving?</em> dialog does not cover it.</li>
   <li><strong>Why you may want it on.</strong> While <em>Limit staff to their group scope</em> is on, staff see only the available tickets in their groups' categories. Tick <em>Staff</em> if your staff pick up new tickets themselves: otherwise they find them only through Search. The page shows this note only while Limit staff to their group scope is on.</li>
-  <li><strong>Session only.</strong> The setting (<code>available_queue_roles</code>) needs a signed-in administrator. An API key or OAuth client that sends it is refused with <code>403 session_required</code>, because widening who sees which tickets is a permission change. It accepts <code>admin</code> and <code>staff</code> only; anything else, <code>user</code> included, is refused with <code>400</code>.</li>
+  <li><strong>Session only.</strong> The setting (<code>available_queue_roles</code>) needs a signed-in administrator. An API key or OAuth client that sends it is refused with <code>403 session_required</code>, because widening who sees which tickets is a permission change. It accepts <code>admin</code> and <code>staff</code> only (an empty list is accepted and means administrators only); anything else, <code>user</code> included, is refused with <code>400</code>.</li>
   <li><strong>OAuth clients follow staff.</strong> An OAuth client acts as a staff-level service user, so ticking Staff lets it ask for the available tickets too.</li>
 </ul>
 
@@ -1072,7 +1072,7 @@ function verifySignature(secret, body, header) {
   <li>The bar checks again when the window regains focus and when you open Details, so a fixed problem stops showing within seconds. Long commands in a notice wrap, so the bar fits a phone. Only administrators see it. The same information is available from <code>GET /api/v1/admin/security-warnings</code>.</li>
 </ul>
 
-<p>The administrator's dashboard also has a <strong>health card</strong> at the top. It lists up to four things that need attention, each with a link to where it is fixed: a newer release is available; SLA tracking is on but its alerts are off (<em>Admin → System → Email → Notifications → SLA alerts</em>); the passkey requirement is suspended because passkeys are unavailable (<em>Admin → System → Authentication → Multi-factor authentication</em>); and the attachment scanner is unreachable while scanning is on (<em>Admin → System → File Attachments → Malware scanning</em>). With nothing to report it is one line, <em>No problems to report.</em> If it cannot load, it says so, with a <em>Retry</em> button, and never says all is well. It has no Hide.</p>
+<p>The administrator's dashboard also has a <strong>health card</strong> at the top. It lists up to four things that need attention, each with a link to where it is fixed: a newer release is available; SLA tracking is on but its alerts are off (<em>Admin → System → Email → Notifications → SLA alerts</em>); the passkey requirement is suspended because passkeys are unavailable (<em>Admin → System → Authentication → Multi-factor authentication</em>); and the attachment scanner is unreachable while scanning is on (<em>Admin → System → File Attachments → Malware scanning</em>). With nothing to report it is one line, <em>No problems to report.</em> If it cannot load, it says so, with a <em>Retry</em> button, and does not say all is well. It has no Hide.</p>
 
 <h2 id="admin-audit">Audit log</h2>
 
