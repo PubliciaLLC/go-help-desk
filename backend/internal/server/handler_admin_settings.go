@@ -1256,6 +1256,13 @@ type securityWarnings struct {
 	// need an administrator to re-save the SAML settings. Absent otherwise.
 	SAMLMetadataRefresh *samlRefreshStatus `json:"saml_metadata_refresh,omitempty"`
 
+	// SAMLRequiredNotLoaded is set while saml_enabled ("Require SAML for staff
+	// and users") is on and SAML is not loaded: every staff and user password
+	// sign-in is refused and there is no SAML button, so they cannot sign in.
+	// Read from live state on each request, so it clears with no restart. Absent
+	// otherwise, whatever the SAML fields hold while the switch is off.
+	SAMLRequiredNotLoaded *samlRequiredStatus `json:"saml_required_not_loaded,omitempty"`
+
 	// Update is set when the opt-in update check (#170) has found a release
 	// newer than the one running. Absent otherwise, including while the check
 	// is off. Read from the stored answer: this endpoint never causes a request.
@@ -1398,6 +1405,7 @@ func (s *Server) handleGetSecurityWarnings(w http.ResponseWriter, r *http.Reques
 		Update:                    update,
 		SAMLIdPCertificate:        s.samlIdPCertificateWarning(),
 		SAMLMetadataRefresh:       s.samlMetadataRefreshWarning(r.Context()),
+		SAMLRequiredNotLoaded:     s.samlRequiredNotLoadedWarning(r.Context()),
 		ReopenTarget:              reopen,
 		InsecureSecrets:           s.cfg.InsecureSecrets(),
 		AttachmentScanning:        s.scanStatus(r.Context()),
@@ -1406,6 +1414,27 @@ func (s *Server) handleGetSecurityWarnings(w http.ResponseWriter, r *http.Reques
 		Passkeys:                  s.passkeyStatus(r.Context()),
 		Email:                     s.emailStatus(r.Context()),
 	})
+}
+
+// samlRequiredStatus says why SAML is not loaded: "incomplete" when the stored
+// IdP metadata, certificate or key is missing, "not_loaded" when all three are
+// saved and the middleware is still not running (the metadata did not load, or
+// it was refused).
+type samlRequiredStatus struct {
+	Reason string `json:"reason"`
+}
+
+// samlRequiredNotLoadedWarning is the standing form of the warning a save gives
+// (samlRequiredButNotLoadedWarning): nil unless saml_enabled is on while SAML is
+// not loaded.
+func (s *Server) samlRequiredNotLoadedWarning(ctx context.Context) *samlRequiredStatus {
+	if !s.adminSvc.SAMLEnabled(ctx) || s.samlReachableNow() {
+		return nil
+	}
+	if !samlFieldsLookConfigured(s.storedSAMLSettings(ctx)) {
+		return &samlRequiredStatus{Reason: "incomplete"}
+	}
+	return &samlRequiredStatus{Reason: "not_loaded"}
 }
 
 func (s *Server) passkeyStatus(ctx context.Context) passkeyStatus {
