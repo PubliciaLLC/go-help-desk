@@ -30,3 +30,13 @@ func TestTransferTimeout(t *testing.T) {
 		})
 	}
 }
+
+// The multipart parse keeps at most this much of an upload in memory and
+// spills the rest to a temporary file. It is a constant, not the per-file
+// limit, so raising the limit to 100 MB does not raise what the parse holds
+// (#673). At or below 25 MiB behaviour is what it always was.
+func TestMultipartMemoryBytes_IsPinnedAt25MiB(t *testing.T) {
+	if multipartMemoryBytes != 25<<20 {
+		t.Fatalf("multipartMemoryBytes = %d, want %d", multipartMemoryBytes, 25<<20)
+	}
+}

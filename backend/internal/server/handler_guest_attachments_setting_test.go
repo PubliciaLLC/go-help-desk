@@ -22,7 +22,7 @@ import (
 const (
 	guestUploadsKey  = "guest_attachments_enabled"
 	guestMaxMBKey    = "guest_attachment_max_mb"
-	globalCapMB      = 25 // attachMaxBytes in handler_attachments.go
+	globalCapMB      = 25 // the default of attachment_max_mb
 	guestRefusalBody = `{"error":{"code":"not_found","message":"not found"}}` + "\n"
 )
 
@@ -107,7 +107,7 @@ func TestGuestAttachmentsSetting_TheInstanceMaximumCapsTheGuestLimit(t *testing.
 	defer cleanup()
 	_, token := seedGuestTicket(t, h)
 	setGuestUploads(t, h, true)
-	setGuestMaxMB(t, h, 100)
+	setGuestMaxMB(t, h, 25) // not 100: task 4 refuses a guest figure above the overall one
 
 	res := uploadGuestAttachment(t, h, token, "big.txt", bytes.Repeat([]byte("a"), globalCapMB<<20+1))
 	body := readBody(t, res)
