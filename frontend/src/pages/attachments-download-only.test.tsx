@@ -93,7 +93,8 @@ describe('attachments are never rendered inline', () => {
   // guarding. A count still fails on a new renderer, and survives the file
   // being reordered.
   //
-  // BrandLogo.tsx and SettingsPage.tsx are the instance logo: an
+  // BrandLogo.tsx and the Identity settings section are the instance logo (the
+  // section moved out of SettingsPage.tsx in #674, same renderer): an
   // admin-uploaded image served from its own route under a policy that blocks
   // scripts (see logoCSP in security_headers.go). MFAEnrollForm.tsx is the
   // TOTP enrolment QR code, a data: URL the server generates during MFA
@@ -115,7 +116,7 @@ describe('attachments are never rendered inline', () => {
     'src/components/BrandLogo.tsx': 1,
     'src/components/MFAEnrollForm.tsx': 1,
     'src/pages/AccountPage.tsx': 1,
-    'src/pages/admin/SettingsPage.tsx': 1,
+    'src/pages/admin/settings/sections/IdentitySection.tsx': 1,
     // #158: the email template editor's HTML preview. Not an attachment: it is
     // markup an administrator typed, returned by the preview endpoint, shown in
     // an <iframe sandbox=""> (no scripts, opaque origin) under a CSP meta that
