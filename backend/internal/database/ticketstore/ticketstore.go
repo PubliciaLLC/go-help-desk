@@ -17,6 +17,7 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/database"
 	"github.com/publiciallc/go-help-desk/backend/internal/dbgen"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/group"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/report"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 )
@@ -285,6 +286,22 @@ func (s *Store) CTIIsCoherent(ctx context.Context, categoryID uuid.UUID, typeID,
 		return false, fmt.Errorf("checking classification: %w", err)
 	}
 	return ok.Bool, nil
+}
+
+// PlacementNames reads the names behind the ids of a ticket's state in one
+// statement. A level that is not set or whose row is gone is "".
+func (s *Store) PlacementNames(ctx context.Context, st notification.TicketState) (notification.Placement, error) {
+	r, err := s.q.GetPlacementNames(ctx, dbgen.GetPlacementNamesParams{
+		CategoryID: st.CategoryID,
+		TypeID:     database.NullUUID(st.TypeID),
+		ItemID:     database.NullUUID(st.ItemID),
+		GroupID:    database.NullUUID(st.AssigneeGroupID),
+		UserID:     database.NullUUID(st.AssigneeUserID),
+	})
+	if err != nil {
+		return notification.Placement{}, fmt.Errorf("reading placement names: %w", err)
+	}
+	return notification.Placement{Category: r.Category, Type: r.TypeName, Item: r.Item, Group: r.GroupName, Assignee: r.Assignee}, nil
 }
 
 // ArchivedCTINode names the first archived level among the ids given

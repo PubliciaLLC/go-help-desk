@@ -480,6 +480,14 @@ This adds a database table through a migration that runs at start-up.
 
 A retry that is dropped (the hook was disabled, paused because its API key, or that key's owner, is no longer active, or unsubscribed from the event, its ticket filter no longer admits the ticket, or the body cannot be built) now shows in History as **Dropped** with the reason. Before, its entry stayed on "Retrying" for ever. **Migration 000051** adds the `dropped` result and a `drop_reason` column to the history table; existing entries are unchanged, and the down migration turns dropped entries into `other`. The history API adds `result: "dropped"` and a `drop_reason` field, present only on dropped entries. Changing a hook's URL still clears the whole history, as before, so after a URL change you see an empty History rather than a dropped entry (`url_changed` appears only for an attempt that was in flight at that moment).
 
+### Webhooks: Slack and Teams new-ticket messages name the category and who holds it
+
+A `ticket.created` message to a Slack or Teams hook now has up to two more lines under the subject: the classification as `Category > Type > Item` (only the levels the ticket has), and `Group: IT Support · Assignee: Jordan Blake` (only the parts it has), or `Unassigned` when it has neither. In Teams each is a subtle line of the same card, so a long name wraps. Nothing else is added, and Discord, Jira and every other event are unchanged.
+
+Every Slack and Teams hook that gets the message gets both lines, whatever events it lists: who holds a new ticket is a fact about the ticket as filed, including where routing placed it, and is not a separate `ticket.assigned` notice. A later reassignment is not in the created message and still reaches only hooks that list `ticket.assigned`. A Redeliver names the ticket's current holder, as it already uses the current subject.
+
+The names are read when the message is sent, from the ids the ticket was filed with, so a category, group or person renamed in between is named as it is then. The raw JSON body, its fields and the OpenAPI schemas are unchanged, there is no migration, and nothing new is stored. If the names cannot be read the message goes without the lines and the reason is logged.
+
 ### Webhooks: a ticket filter (#413)
 
 A hook can now be limited to tickets in chosen categories, priorities or assigned groups (Admin, Webhooks, Ticket filter), or inverted to send for every ticket that does not match. A hook with no filter, which is every hook after the upgrade, behaves exactly as before. The raw payload is not changed by a filter.

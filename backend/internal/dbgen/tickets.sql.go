@@ -644,6 +644,56 @@ func (q *Queries) GetAttachmentByID(ctx context.Context, id uuid.UUID) (Attachme
 	return i, err
 }
 
+const getPlacementNames = `-- name: GetPlacementNames :one
+SELECT
+    COALESCE((SELECT c.name FROM categories c WHERE c.id = $1::uuid), '')::text AS category,
+    COALESCE((SELECT ty.name FROM types ty WHERE ty.id = $2::uuid), '')::text AS type_name,
+    COALESCE((SELECT it.name FROM items it WHERE it.id = $3::uuid), '')::text AS item,
+    COALESCE((SELECT g.name FROM groups g WHERE g.id = $4::uuid), '')::text AS group_name,
+    COALESCE((SELECT u.display_name FROM users u
+              WHERE u.id = $5::uuid AND u.deleted_at IS NULL), '')::text AS assignee
+`
+
+type GetPlacementNamesParams struct {
+	CategoryID uuid.UUID     `json:"category_id"`
+	TypeID     uuid.NullUUID `json:"type_id"`
+	ItemID     uuid.NullUUID `json:"item_id"`
+	GroupID    uuid.NullUUID `json:"group_id"`
+	UserID     uuid.NullUUID `json:"user_id"`
+}
+
+type GetPlacementNamesRow struct {
+	Category  string `json:"category"`
+	TypeName  string `json:"type_name"`
+	Item      string `json:"item"`
+	GroupName string `json:"group_name"`
+	Assignee  string `json:"assignee"`
+}
+
+// The names behind a ticket's classification and holder, for a Slack or Teams
+// ticket.created message: one statement, one round trip, whatever is set. A
+// NULL id, a row that is gone and a deleted account all read as ” and the
+// caller leaves that level out. An assignee's name is the display name only,
+// and a deleted account has none to show.
+func (q *Queries) GetPlacementNames(ctx context.Context, arg GetPlacementNamesParams) (GetPlacementNamesRow, error) {
+	row := q.db.QueryRowContext(ctx, getPlacementNames,
+		arg.CategoryID,
+		arg.TypeID,
+		arg.ItemID,
+		arg.GroupID,
+		arg.UserID,
+	)
+	var i GetPlacementNamesRow
+	err := row.Scan(
+		&i.Category,
+		&i.TypeName,
+		&i.Item,
+		&i.GroupName,
+		&i.Assignee,
+	)
+	return i, err
+}
+
 const getTicketByID = `-- name: GetTicketByID :one
 SELECT id, tracking_number, subject, description, category_id, type_id, item_id, priority, status_id, assignee_user_id, assignee_group_id, reporter_user_id, guest_email, resolution_notes, resolved_at, closed_at, created_at, updated_at, guest_name, guest_phone, pending_since, sla_paused_seconds, reopen_count, last_reopened_at, paused_seconds_at_last_reopen, description_format, source_channel FROM tickets WHERE id = $1
 `

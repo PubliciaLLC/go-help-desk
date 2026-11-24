@@ -2938,6 +2938,12 @@ func (s *Service) ListResolvedBefore(ctx context.Context, before time.Time, limi
 	return s.store.ListResolvedBefore(ctx, before, s.sys.resolvedID, limit)
 }
 
+// PlacementNames is the names behind a ticket state's ids, for a Slack or Teams
+// ticket.created message (see notification.Placement).
+func (s *Service) PlacementNames(ctx context.Context, st notification.TicketState) (notification.Placement, error) {
+	return s.store.PlacementNames(ctx, st)
+}
+
 // ListStatuses returns all configured statuses.
 func (s *Service) ListStatuses(ctx context.Context) ([]Status, error) {
 	return s.statuses.ListStatuses(ctx)

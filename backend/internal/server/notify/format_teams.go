@@ -36,6 +36,10 @@ type teamsTextBlock struct {
 	Weight string `json:"weight,omitempty"`
 	Wrap   bool   `json:"wrap"`
 	Text   string `json:"text"`
+	// IsSubtle and Spacing are for the placement lines, quieter than the
+	// subject above them. Both are absent from every other block.
+	IsSubtle bool   `json:"isSubtle,omitempty"`
+	Spacing  string `json:"spacing,omitempty"`
 }
 
 type teamsAction struct {
@@ -47,7 +51,8 @@ type teamsAction struct {
 // renderTeams builds a message envelope carrying one Adaptive Card.
 //
 // body[0] is always "[Ref] Headline". Then, each only when present: the
-// Subject, the "Also" line naming the change's other kinds, and the Body (a
+// Subject, the placement lines of a new ticket (category path, then group and
+// assignee, each its own subtle block), the "Also" line naming the change's other kinds, and the Body (a
 // public reply only — an internal note has no block for it, not an empty one). actions is
 // always the single Action.OpenUrl back to the ticket. No mention entities
 // are emitted, so user-chosen text cannot page anyone through this format.
@@ -65,6 +70,13 @@ func renderTeams(s summary) ([]byte, error) {
 	}
 	if s.Subject != "" {
 		body = append(body, teamsTextBlock{Type: "TextBlock", Wrap: true, Text: escapeChatMarkdown(s.Subject)})
+	}
+	// Where a new ticket landed: one subtle line each, wrapping. The names are
+	// admin-written text and pass through escapeChatMarkdown like the subject, so
+	// a "[name](url)" or "*" in one is literal.
+	for _, l := range s.Placement {
+		body = append(body, teamsTextBlock{Type: "TextBlock", Wrap: true, IsSubtle: true, Spacing: "Small",
+			Text: escapeChatMarkdown(l)})
 	}
 	if s.Also != "" {
 		body = append(body, teamsTextBlock{Type: "TextBlock", Wrap: true, Text: escapeChatMarkdown(s.Also)})

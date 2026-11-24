@@ -221,6 +221,13 @@ type Event struct {
 	Subject    string `json:"-"`
 	StatusName string `json:"-"`
 
+	// Placement is the names of where a new ticket landed, for the Slack and
+	// Teams ticket.created message. Unlike Subject it is never queued: the
+	// outbox row holds the ids (Ticket) and the dispatcher reads the names when
+	// it builds the message, on every attempt. Nil means "not read", which a
+	// renderer shows as nothing at all, never as "unassigned".
+	Placement *Placement `json:"-"`
+
 	// TargetWebhook, when set, makes the event a delivery to that one hook
 	// instead of an announcement to all of them: the webhook channel's queued
 	// row is first fanned out into one row per subscribed hook, so each hook
@@ -247,6 +254,15 @@ type TicketState struct {
 	TypeID          *uuid.UUID `json:"type_id,omitempty"`
 	ItemID          *uuid.UUID `json:"item_id,omitempty"`
 	ReopenCount     int        `json:"reopen_count,omitempty"`
+}
+
+// Placement is the names behind the ids of a TicketState: the classification
+// and who holds the ticket. Display names only, as an administrator sees them in
+// the help desk. A level that is not set, or whose row is gone, is "": the
+// caller cannot tell the two apart and does not need to.
+type Placement struct {
+	Category, Type, Item string
+	Group, Assignee      string
 }
 
 // AllKinds is what the event announces: its Kinds, or just its Type when it

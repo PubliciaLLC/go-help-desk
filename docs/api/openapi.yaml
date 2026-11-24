@@ -13280,8 +13280,13 @@ components:
         The body shape a delivery uses.
         raw sends the event as ids-only JSON (no subject, tracking number, address or
         text; see createWebhook). The other four are chat or ITSM shapes and keep their
-        subject, tracking number, status and public reply text. An omitted or empty
-        payload_format is stored as raw.
+        subject, tracking number, status and public reply text. A slack or teams
+        message for ticket.created also names the classification (Category > Type >
+        Item) and who holds it (Group, Assignee, or Unassigned when nobody holds it),
+        whatever events the hook lists. These are read when the message is built
+        (a Redeliver names the ticket's current holder) and are not part of any
+        request or response schema. An omitted or empty payload_format is stored as
+        raw.
       type: string
       enum: [raw, slack, teams, discord, jira]
     WebhookFilter:

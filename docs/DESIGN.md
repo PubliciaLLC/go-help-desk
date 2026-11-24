@@ -6810,6 +6810,97 @@ the headline:
   `ticket.reopened`). In Jira that is the `status` key; a hook on
   `ticket.assigned` alone does not learn the status of a change that also moved
   it.
+- **Placement (`ticket.created`, Slack and Teams only).** Under the subject, a
+  new-ticket message names where the ticket landed, in at most two short lines
+  (`placementLines`, `notify/format.go`):
+  1. The classification as `Category > Type > Item`, only the levels the ticket
+     has: `Hardware`, `Hardware > Printer`, `Hardware > Printer > Toner`. A
+     ticket always has a category, so the line is absent only when the name
+     cannot be read (the category was deleted).
+  2. The holder as `Group: IT Support · Assignee: Jordan Blake`, only the parts
+     the ticket has: `Group: IT Support`, `Assignee: Jordan Blake`. When it has
+     neither, the line is `Unassigned`.
+
+  Nothing else is added. Priority, status, requester and description are not
+  shown: the status of a new ticket is always New, the requester and the text are
+  what the subject and the link are for, and a chat card that grows a field a
+  release soon becomes a card nobody reads. Discord and Jira are not changed;
+  they could take the same two lines by reading `summary.Placement`, which is
+  the whole of the work.
+
+  *Where the names come from.* The event carries ids only: `Event.Ticket`
+  (`TicketState`) holds the category, type, item, group and assignee ids as
+  committed, and the raw body sends none of them. The names are therefore
+  **read at send time from those ids**, with one statement
+  (`Store.PlacementNames`, scalar sub-selects, one round trip), by the
+  dispatcher before it renders, and held in a new `Event.Placement`
+  (`json:"-"`, never stored in the outbox, never in the raw body). The other
+  choice, putting names in the event inside the creation transaction, was
+  rejected: it adds up to five reads to the hot path of every ticket whether or
+  not any hook wants them, it puts names (content) into every outbox row where
+  today a chat row holds only the subject and tracking number, and it would
+  need the same read added again to a Redeliver, which rebuilds from the ticket
+  as it is. Reading at send time costs one statement per Slack or Teams
+  delivery of a created event, and nothing for a raw, Discord or Jira hook.
+  Which ids are used: the ones in the event, so a message says where the ticket
+  was filed, not where it is a few seconds later. A Redeliver replaces them with
+  the ticket's current ones, as it does for the subject.
+
+  *Renames and deletions.* The id is fixed and the name is read when the
+  message is built, so a category, group or person renamed between the commit
+  and the send, or between two attempts of a retry, is named as it is then. That
+  is what a reader sees in the help desk, and it is acceptable: the message is a
+  pointer to the ticket, not a record. A level whose row is gone has no name and
+  is left out; a ticket whose assignee id has no readable name (a deleted
+  account) says nothing about the assignee and is **not** called Unassigned,
+  because it was assigned (the ticket page likewise says "Former staff member"
+  rather than "Unassigned").
+  `Unassigned` is decided from the ids, never from a missing name.
+
+  *Retries.* The read runs on every attempt, before the POST. If it fails the
+  message is sent without the lines, and the failure is logged at warn. The
+  lines are an addition to a message that was complete without them in 1.3
+  betas; a database that cannot answer one select should not be able to hold a
+  notification back, and failing the attempt instead would leave the row's
+  content in the outbox past the scrub, which only runs after a failed POST.
+
+  *What a hook may learn.* Every Slack and Teams hook that is sent a created
+  message gets both lines, whatever else it subscribes to. The holder is a fact
+  about the ticket as filed, not a separate change the channel did not ask
+  about: routing runs inside the create transaction, the created and assigned
+  kinds are merged into one event, and `Event.Ticket` is the state after
+  routing, so `Unassigned` cannot be false at creation. (The status name and
+  the Also line are gated by kind because they would otherwise name a change
+  the hook did not subscribe to, an internal note above all; the holder of a
+  new ticket is not that.) It is not a privilege boundary either: whoever
+  edits a hook can add `ticket.assigned`, and the subject the hook already
+  receives says more than a group name does. A later assignment is not part of
+  the created message; it follows the "as filed" rule above, and the hook hears
+  about it only if it subscribes to `ticket.assigned`. A **Redeliver** swaps in
+  the ticket's current ids, as it does for the subject, so a replayed created
+  message names the classification and the **current** holder (or `Unassigned`
+  if nobody holds it now), which can differ from the original.
+
+  *Rendering.* Slack: each line is a line of the text, `&`, `<` and `>` escaped
+  like the subject (the `>` between levels becomes `&gt;`, which Slack shows as
+  `>`); `*`, `_` and `~` in a name are left as they are, as they are in the
+  subject, because mrkdwn has no escape for them and the worst a name can do is
+  bold itself. Teams: each line is its own `TextBlock` with `wrap`, `isSubtle`
+  and `spacing: "Small"`, in the card's existing 1.4 schema, put through the same
+  `escapeChatMarkdown` as the subject, so a `[name](url)`, `*`, `_`, `` ` ``
+  or `|` in a name is literal text; the JSON is built by `encoding/json`, so a
+  quote, `&`, `<` or any Unicode cannot break it. Names have every
+  run of whitespace, line and paragraph separators included, collapsed to one
+  space and are cut at 100 characters, so nobody can forge a line of the card
+  or fill it with a pasted paragraph. A name that itself contains ` > ` or
+  ` · Assignee: ` reads as an extra level or a second part: names are written by
+  administrators, and this is accepted. Not done, because the subject has the
+  same behaviour: escaping list markers and backslashes in Teams text.
+
+  *Generic subscribers.* Nothing changes: the raw body is built from an allow
+  list that does not include the placement, the OpenAPI schemas are unchanged,
+  and the existing raw-body pins pass untouched. Only the description of
+  `WebhookPayloadFormat` says what the two formats now show.
 
 **Requester email.** One mail per change at most. The recipient is decided once
 per change, when the change is raised:
