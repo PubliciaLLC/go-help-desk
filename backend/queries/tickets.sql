@@ -1069,3 +1069,115 @@ WHERE
   AND t.created_at >= w.since_at AND t.created_at < w.until_at
 GROUP BY t.priority
 ORDER BY n DESC, t.priority;
+
+-- name: KPIOpenByAge :many
+-- The open tickets now (no finish instant: by the invariant migration 000028
+-- repaired, exactly the tickets not in a Resolved or Closed system status) by
+-- whole days of age, capped at 31, so at most 32 rows; report.BacklogBuckets
+-- are applied to them in Go. Visibility block and filters are KPIPeriod's.
+SELECT LEAST(floor(EXTRACT(EPOCH FROM sqlc.arg(now)::timestamptz - t.created_at) / 86400), 31)::int AS age_days,
+       count(*)::bigint AS n
+FROM tickets t
+WHERE
+  -- visibility: begin
+  (
+    sqlc.arg(unrestricted)::bool
+    OR (
+      sqlc.arg(reporter_only)::bool
+      AND t.reporter_user_id = sqlc.arg(actor_id)::uuid
+    )
+    OR (
+      NOT sqlc.arg(unrestricted)::bool
+      AND NOT sqlc.arg(reporter_only)::bool
+      AND (
+        t.reporter_user_id = sqlc.arg(actor_id)::uuid
+        OR t.assignee_user_id = sqlc.arg(actor_id)::uuid
+        OR t.assignee_group_id = ANY(sqlc.arg(scope_group_ids)::uuid[])
+        OR t.category_id = ANY(sqlc.arg(scope_category_ids)::uuid[])
+        OR (t.type_id = ANY(sqlc.arg(scope_type_ids)::uuid[])
+            AND (t.category_id, t.type_id) IN (SELECT c.id, ty.id
+                FROM unnest(sqlc.arg(scope_type_category_ids)::uuid[]) WITH ORDINALITY AS c(id, n)
+                JOIN unnest(sqlc.arg(scope_type_ids)::uuid[]) WITH ORDINALITY AS ty(id, n) ON ty.n = c.n))
+      )
+    )
+  )
+  -- visibility: end
+  AND (sqlc.narg(category_id)::uuid IS NULL OR t.category_id = sqlc.narg(category_id)::uuid)
+  AND (cardinality(sqlc.arg(priorities)::text[]) = 0 OR t.priority = ANY(sqlc.arg(priorities)::text[]))
+  AND (sqlc.narg(assignee_group_id)::uuid IS NULL OR t.assignee_group_id = sqlc.narg(assignee_group_id)::uuid)
+  AND COALESCE(t.resolved_at, t.closed_at) IS NULL
+GROUP BY 1
+ORDER BY 1;
+
+-- name: KPIOpenByAssignee :many
+-- The open tickets now by the person holding them, named as they are now
+-- (deleted and disabled people too). The row with no person has a NULL key.
+-- Visibility block and filters are KPIPeriod's.
+SELECT t.assignee_user_id, u.display_name, count(*)::bigint AS n
+FROM tickets t
+LEFT JOIN users u ON u.id = t.assignee_user_id
+WHERE
+  -- visibility: begin
+  (
+    sqlc.arg(unrestricted)::bool
+    OR (
+      sqlc.arg(reporter_only)::bool
+      AND t.reporter_user_id = sqlc.arg(actor_id)::uuid
+    )
+    OR (
+      NOT sqlc.arg(unrestricted)::bool
+      AND NOT sqlc.arg(reporter_only)::bool
+      AND (
+        t.reporter_user_id = sqlc.arg(actor_id)::uuid
+        OR t.assignee_user_id = sqlc.arg(actor_id)::uuid
+        OR t.assignee_group_id = ANY(sqlc.arg(scope_group_ids)::uuid[])
+        OR t.category_id = ANY(sqlc.arg(scope_category_ids)::uuid[])
+        OR (t.type_id = ANY(sqlc.arg(scope_type_ids)::uuid[])
+            AND (t.category_id, t.type_id) IN (SELECT c.id, ty.id
+                FROM unnest(sqlc.arg(scope_type_category_ids)::uuid[]) WITH ORDINALITY AS c(id, n)
+                JOIN unnest(sqlc.arg(scope_type_ids)::uuid[]) WITH ORDINALITY AS ty(id, n) ON ty.n = c.n))
+      )
+    )
+  )
+  -- visibility: end
+  AND (sqlc.narg(category_id)::uuid IS NULL OR t.category_id = sqlc.narg(category_id)::uuid)
+  AND (cardinality(sqlc.arg(priorities)::text[]) = 0 OR t.priority = ANY(sqlc.arg(priorities)::text[]))
+  AND (sqlc.narg(assignee_group_id)::uuid IS NULL OR t.assignee_group_id = sqlc.narg(assignee_group_id)::uuid)
+  AND COALESCE(t.resolved_at, t.closed_at) IS NULL
+GROUP BY t.assignee_user_id, u.display_name;
+
+-- name: KPIOpenByGroup :many
+-- The open tickets now by the group holding them. The row with no group has a
+-- NULL key. Visibility block and filters are KPIPeriod's.
+SELECT t.assignee_group_id, g.name, count(*)::bigint AS n
+FROM tickets t
+LEFT JOIN groups g ON g.id = t.assignee_group_id
+WHERE
+  -- visibility: begin
+  (
+    sqlc.arg(unrestricted)::bool
+    OR (
+      sqlc.arg(reporter_only)::bool
+      AND t.reporter_user_id = sqlc.arg(actor_id)::uuid
+    )
+    OR (
+      NOT sqlc.arg(unrestricted)::bool
+      AND NOT sqlc.arg(reporter_only)::bool
+      AND (
+        t.reporter_user_id = sqlc.arg(actor_id)::uuid
+        OR t.assignee_user_id = sqlc.arg(actor_id)::uuid
+        OR t.assignee_group_id = ANY(sqlc.arg(scope_group_ids)::uuid[])
+        OR t.category_id = ANY(sqlc.arg(scope_category_ids)::uuid[])
+        OR (t.type_id = ANY(sqlc.arg(scope_type_ids)::uuid[])
+            AND (t.category_id, t.type_id) IN (SELECT c.id, ty.id
+                FROM unnest(sqlc.arg(scope_type_category_ids)::uuid[]) WITH ORDINALITY AS c(id, n)
+                JOIN unnest(sqlc.arg(scope_type_ids)::uuid[]) WITH ORDINALITY AS ty(id, n) ON ty.n = c.n))
+      )
+    )
+  )
+  -- visibility: end
+  AND (sqlc.narg(category_id)::uuid IS NULL OR t.category_id = sqlc.narg(category_id)::uuid)
+  AND (cardinality(sqlc.arg(priorities)::text[]) = 0 OR t.priority = ANY(sqlc.arg(priorities)::text[]))
+  AND (sqlc.narg(assignee_group_id)::uuid IS NULL OR t.assignee_group_id = sqlc.narg(assignee_group_id)::uuid)
+  AND COALESCE(t.resolved_at, t.closed_at) IS NULL
+GROUP BY t.assignee_group_id, g.name;

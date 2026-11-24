@@ -710,6 +710,18 @@ type Querier interface {
 	// tickets are rows; Go puts the four in their fixed order with zeros. The
 	// visibility block and filters are KPIPeriod's.
 	KPICreatedByPriority(ctx context.Context, arg KPICreatedByPriorityParams) ([]KPICreatedByPriorityRow, error)
+	// The open tickets now (no finish instant: by the invariant migration 000028
+	// repaired, exactly the tickets not in a Resolved or Closed system status) by
+	// whole days of age, capped at 31, so at most 32 rows; report.BacklogBuckets
+	// are applied to them in Go. Visibility block and filters are KPIPeriod's.
+	KPIOpenByAge(ctx context.Context, arg KPIOpenByAgeParams) ([]KPIOpenByAgeRow, error)
+	// The open tickets now by the person holding them, named as they are now
+	// (deleted and disabled people too). The row with no person has a NULL key.
+	// Visibility block and filters are KPIPeriod's.
+	KPIOpenByAssignee(ctx context.Context, arg KPIOpenByAssigneeParams) ([]KPIOpenByAssigneeRow, error)
+	// The open tickets now by the group holding them. The row with no group has a
+	// NULL key. Visibility block and filters are KPIPeriod's.
+	KPIOpenByGroup(ctx context.Context, arg KPIOpenByGroupParams) ([]KPIOpenByGroupRow, error)
 	// The period measures of one period, current or previous (#131, DESIGN.md "KPI
 	// reports", SQL): the tickets created in it, and every measure of the tickets
 	// that finished in it, in one statement. The created arm is served by

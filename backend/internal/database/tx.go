@@ -33,3 +33,22 @@ func InTx(ctx context.Context, db *sql.DB, q *dbgen.Queries, fn func(q *dbgen.Qu
 	}
 	return nil
 }
+
+// InSnapshot runs fn in one read-only REPEATABLE READ transaction on db, so
+// every query fn makes reads the database as it was when the first one began
+// (the KPI reports' numbers are one snapshot, #131). It never commits anything:
+// the transaction is rolled back when fn returns.
+//
+// With a nil db it runs fn on q as it is, for the integration harness (see
+// InTx). A harness test therefore does not exercise the isolation level.
+func InSnapshot(ctx context.Context, db *sql.DB, q *dbgen.Queries, fn func(q *dbgen.Queries) error) error {
+	if db == nil {
+		return fn(q)
+	}
+	tx, err := db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
+	if err != nil {
+		return fmt.Errorf("beginning snapshot: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }() // nothing was written; this ends it
+	return fn(q.WithTx(tx))
+}

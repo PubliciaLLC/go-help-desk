@@ -2,6 +2,7 @@ package ticketstore
 
 import (
 	"context"
+	"time"
 
 	"github.com/publiciallc/go-help-desk/backend/internal/dbgen"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/report"
@@ -29,4 +30,16 @@ func KPICreatedByCategoryRows(ctx context.Context, q *dbgen.Queries, sc KPIScope
 
 func KPICreatedByPriorityRows(ctx context.Context, q *dbgen.Queries, sc KPIScope, p report.Period) ([]report.PriorityCount, error) {
 	return kpiCreatedByPriority(ctx, q, sc, p)
+}
+
+func KPIOpenByAgeRows(ctx context.Context, q *dbgen.Queries, sc KPIScope, now time.Time) ([]report.AgeCount, error) {
+	return kpiOpenByAge(ctx, q, sc, now)
+}
+
+func KPIOpenByAssigneeRows(ctx context.Context, q *dbgen.Queries, sc KPIScope) ([]report.Holder, error) {
+	return kpiOpenByAssignee(ctx, q, sc)
+}
+
+func KPIOpenByGroupRows(ctx context.Context, q *dbgen.Queries, sc KPIScope) ([]report.Holder, error) {
+	return kpiOpenByGroup(ctx, q, sc)
 }

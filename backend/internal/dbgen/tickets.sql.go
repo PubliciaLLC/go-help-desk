@@ -1119,6 +1119,281 @@ func (q *Queries) KPICreatedByPriority(ctx context.Context, arg KPICreatedByPrio
 	return items, nil
 }
 
+const kPIOpenByAge = `-- name: KPIOpenByAge :many
+SELECT LEAST(floor(EXTRACT(EPOCH FROM $1::timestamptz - t.created_at) / 86400), 31)::int AS age_days,
+       count(*)::bigint AS n
+FROM tickets t
+WHERE
+  -- visibility: begin
+  (
+    $2::bool
+    OR (
+      $3::bool
+      AND t.reporter_user_id = $4::uuid
+    )
+    OR (
+      NOT $2::bool
+      AND NOT $3::bool
+      AND (
+        t.reporter_user_id = $4::uuid
+        OR t.assignee_user_id = $4::uuid
+        OR t.assignee_group_id = ANY($5::uuid[])
+        OR t.category_id = ANY($6::uuid[])
+        OR (t.type_id = ANY($7::uuid[])
+            AND (t.category_id, t.type_id) IN (SELECT c.id, ty.id
+                FROM unnest($8::uuid[]) WITH ORDINALITY AS c(id, n)
+                JOIN unnest($7::uuid[]) WITH ORDINALITY AS ty(id, n) ON ty.n = c.n))
+      )
+    )
+  )
+  -- visibility: end
+  AND ($9::uuid IS NULL OR t.category_id = $9::uuid)
+  AND (cardinality($10::text[]) = 0 OR t.priority = ANY($10::text[]))
+  AND ($11::uuid IS NULL OR t.assignee_group_id = $11::uuid)
+  AND COALESCE(t.resolved_at, t.closed_at) IS NULL
+GROUP BY 1
+ORDER BY 1
+`
+
+type KPIOpenByAgeParams struct {
+	Now                  time.Time     `json:"now"`
+	Unrestricted         bool          `json:"unrestricted"`
+	ReporterOnly         bool          `json:"reporter_only"`
+	ActorID              uuid.UUID     `json:"actor_id"`
+	ScopeGroupIds        []uuid.UUID   `json:"scope_group_ids"`
+	ScopeCategoryIds     []uuid.UUID   `json:"scope_category_ids"`
+	ScopeTypeIds         []uuid.UUID   `json:"scope_type_ids"`
+	ScopeTypeCategoryIds []uuid.UUID   `json:"scope_type_category_ids"`
+	CategoryID           uuid.NullUUID `json:"category_id"`
+	Priorities           []string      `json:"priorities"`
+	AssigneeGroupID      uuid.NullUUID `json:"assignee_group_id"`
+}
+
+type KPIOpenByAgeRow struct {
+	AgeDays int32 `json:"age_days"`
+	N       int64 `json:"n"`
+}
+
+// The open tickets now (no finish instant: by the invariant migration 000028
+// repaired, exactly the tickets not in a Resolved or Closed system status) by
+// whole days of age, capped at 31, so at most 32 rows; report.BacklogBuckets
+// are applied to them in Go. Visibility block and filters are KPIPeriod's.
+func (q *Queries) KPIOpenByAge(ctx context.Context, arg KPIOpenByAgeParams) ([]KPIOpenByAgeRow, error) {
+	rows, err := q.db.QueryContext(ctx, kPIOpenByAge,
+		arg.Now,
+		arg.Unrestricted,
+		arg.ReporterOnly,
+		arg.ActorID,
+		pq.Array(arg.ScopeGroupIds),
+		pq.Array(arg.ScopeCategoryIds),
+		pq.Array(arg.ScopeTypeIds),
+		pq.Array(arg.ScopeTypeCategoryIds),
+		arg.CategoryID,
+		pq.Array(arg.Priorities),
+		arg.AssigneeGroupID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []KPIOpenByAgeRow
+	for rows.Next() {
+		var i KPIOpenByAgeRow
+		if err := rows.Scan(&i.AgeDays, &i.N); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const kPIOpenByAssignee = `-- name: KPIOpenByAssignee :many
+SELECT t.assignee_user_id, u.display_name, count(*)::bigint AS n
+FROM tickets t
+LEFT JOIN users u ON u.id = t.assignee_user_id
+WHERE
+  -- visibility: begin
+  (
+    $1::bool
+    OR (
+      $2::bool
+      AND t.reporter_user_id = $3::uuid
+    )
+    OR (
+      NOT $1::bool
+      AND NOT $2::bool
+      AND (
+        t.reporter_user_id = $3::uuid
+        OR t.assignee_user_id = $3::uuid
+        OR t.assignee_group_id = ANY($4::uuid[])
+        OR t.category_id = ANY($5::uuid[])
+        OR (t.type_id = ANY($6::uuid[])
+            AND (t.category_id, t.type_id) IN (SELECT c.id, ty.id
+                FROM unnest($7::uuid[]) WITH ORDINALITY AS c(id, n)
+                JOIN unnest($6::uuid[]) WITH ORDINALITY AS ty(id, n) ON ty.n = c.n))
+      )
+    )
+  )
+  -- visibility: end
+  AND ($8::uuid IS NULL OR t.category_id = $8::uuid)
+  AND (cardinality($9::text[]) = 0 OR t.priority = ANY($9::text[]))
+  AND ($10::uuid IS NULL OR t.assignee_group_id = $10::uuid)
+  AND COALESCE(t.resolved_at, t.closed_at) IS NULL
+GROUP BY t.assignee_user_id, u.display_name
+`
+
+type KPIOpenByAssigneeParams struct {
+	Unrestricted         bool          `json:"unrestricted"`
+	ReporterOnly         bool          `json:"reporter_only"`
+	ActorID              uuid.UUID     `json:"actor_id"`
+	ScopeGroupIds        []uuid.UUID   `json:"scope_group_ids"`
+	ScopeCategoryIds     []uuid.UUID   `json:"scope_category_ids"`
+	ScopeTypeIds         []uuid.UUID   `json:"scope_type_ids"`
+	ScopeTypeCategoryIds []uuid.UUID   `json:"scope_type_category_ids"`
+	CategoryID           uuid.NullUUID `json:"category_id"`
+	Priorities           []string      `json:"priorities"`
+	AssigneeGroupID      uuid.NullUUID `json:"assignee_group_id"`
+}
+
+type KPIOpenByAssigneeRow struct {
+	AssigneeUserID uuid.NullUUID  `json:"assignee_user_id"`
+	DisplayName    sql.NullString `json:"display_name"`
+	N              int64          `json:"n"`
+}
+
+// The open tickets now by the person holding them, named as they are now
+// (deleted and disabled people too). The row with no person has a NULL key.
+// Visibility block and filters are KPIPeriod's.
+func (q *Queries) KPIOpenByAssignee(ctx context.Context, arg KPIOpenByAssigneeParams) ([]KPIOpenByAssigneeRow, error) {
+	rows, err := q.db.QueryContext(ctx, kPIOpenByAssignee,
+		arg.Unrestricted,
+		arg.ReporterOnly,
+		arg.ActorID,
+		pq.Array(arg.ScopeGroupIds),
+		pq.Array(arg.ScopeCategoryIds),
+		pq.Array(arg.ScopeTypeIds),
+		pq.Array(arg.ScopeTypeCategoryIds),
+		arg.CategoryID,
+		pq.Array(arg.Priorities),
+		arg.AssigneeGroupID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []KPIOpenByAssigneeRow
+	for rows.Next() {
+		var i KPIOpenByAssigneeRow
+		if err := rows.Scan(&i.AssigneeUserID, &i.DisplayName, &i.N); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const kPIOpenByGroup = `-- name: KPIOpenByGroup :many
+SELECT t.assignee_group_id, g.name, count(*)::bigint AS n
+FROM tickets t
+LEFT JOIN groups g ON g.id = t.assignee_group_id
+WHERE
+  -- visibility: begin
+  (
+    $1::bool
+    OR (
+      $2::bool
+      AND t.reporter_user_id = $3::uuid
+    )
+    OR (
+      NOT $1::bool
+      AND NOT $2::bool
+      AND (
+        t.reporter_user_id = $3::uuid
+        OR t.assignee_user_id = $3::uuid
+        OR t.assignee_group_id = ANY($4::uuid[])
+        OR t.category_id = ANY($5::uuid[])
+        OR (t.type_id = ANY($6::uuid[])
+            AND (t.category_id, t.type_id) IN (SELECT c.id, ty.id
+                FROM unnest($7::uuid[]) WITH ORDINALITY AS c(id, n)
+                JOIN unnest($6::uuid[]) WITH ORDINALITY AS ty(id, n) ON ty.n = c.n))
+      )
+    )
+  )
+  -- visibility: end
+  AND ($8::uuid IS NULL OR t.category_id = $8::uuid)
+  AND (cardinality($9::text[]) = 0 OR t.priority = ANY($9::text[]))
+  AND ($10::uuid IS NULL OR t.assignee_group_id = $10::uuid)
+  AND COALESCE(t.resolved_at, t.closed_at) IS NULL
+GROUP BY t.assignee_group_id, g.name
+`
+
+type KPIOpenByGroupParams struct {
+	Unrestricted         bool          `json:"unrestricted"`
+	ReporterOnly         bool          `json:"reporter_only"`
+	ActorID              uuid.UUID     `json:"actor_id"`
+	ScopeGroupIds        []uuid.UUID   `json:"scope_group_ids"`
+	ScopeCategoryIds     []uuid.UUID   `json:"scope_category_ids"`
+	ScopeTypeIds         []uuid.UUID   `json:"scope_type_ids"`
+	ScopeTypeCategoryIds []uuid.UUID   `json:"scope_type_category_ids"`
+	CategoryID           uuid.NullUUID `json:"category_id"`
+	Priorities           []string      `json:"priorities"`
+	AssigneeGroupID      uuid.NullUUID `json:"assignee_group_id"`
+}
+
+type KPIOpenByGroupRow struct {
+	AssigneeGroupID uuid.NullUUID  `json:"assignee_group_id"`
+	Name            sql.NullString `json:"name"`
+	N               int64          `json:"n"`
+}
+
+// The open tickets now by the group holding them. The row with no group has a
+// NULL key. Visibility block and filters are KPIPeriod's.
+func (q *Queries) KPIOpenByGroup(ctx context.Context, arg KPIOpenByGroupParams) ([]KPIOpenByGroupRow, error) {
+	rows, err := q.db.QueryContext(ctx, kPIOpenByGroup,
+		arg.Unrestricted,
+		arg.ReporterOnly,
+		arg.ActorID,
+		pq.Array(arg.ScopeGroupIds),
+		pq.Array(arg.ScopeCategoryIds),
+		pq.Array(arg.ScopeTypeIds),
+		pq.Array(arg.ScopeTypeCategoryIds),
+		arg.CategoryID,
+		pq.Array(arg.Priorities),
+		arg.AssigneeGroupID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []KPIOpenByGroupRow
+	for rows.Next() {
+		var i KPIOpenByGroupRow
+		if err := rows.Scan(&i.AssigneeGroupID, &i.Name, &i.N); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const kPIPeriod = `-- name: KPIPeriod :one
 WITH w AS (
   -- since_at is the instant from_day begins in tz, until_at the instant the day

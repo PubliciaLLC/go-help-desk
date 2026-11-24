@@ -24,6 +24,7 @@ import (
 // Store implements ticket.Store and ticket.StatusStore.
 type Store struct {
 	q            *dbgen.Queries
+	db           *sql.DB // nil: KPI reads on q as it is (see NewWithDB)
 	replyCap     int
 	replyTimeout time.Duration
 }
@@ -69,6 +70,16 @@ func pageInt32(n int) int32 {
 
 func New(q *dbgen.Queries) *Store {
 	return &Store{q: q, replyCap: DefaultReplyCap, replyTimeout: DefaultReplyTimeout}
+}
+
+// NewWithDB is New with the handle KPI opens its read-only snapshot transaction
+// on. Without it (New, which the integration harness uses because it wraps each
+// test in a transaction over the Queries it gives every store) KPI runs on q as
+// it is, in whatever transaction q is bound to; see database.InSnapshot.
+func NewWithDB(q *dbgen.Queries, db *sql.DB) *Store {
+	s := New(q)
+	s.db = db
+	return s
 }
 
 // WithReplyLimits returns a Store with a different reply cap and time limit, for

@@ -238,7 +238,7 @@ func run() error {
 
 	// ── Stores ────────────────────────────────────────────────────────────────
 	uStore := userstore.NewWithDB(q, sqlDB)
-	tStore := ticketstore.New(q)
+	tStore := ticketstore.NewWithDB(q, sqlDB)
 	cStore := categorystore.New(q)
 	gStore := groupstore.New(q)
 	aStore := adminstore.New(q)

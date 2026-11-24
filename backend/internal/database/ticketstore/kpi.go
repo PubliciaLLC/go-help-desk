@@ -2,7 +2,9 @@ package ticketstore
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/publiciallc/go-help-desk/backend/internal/database"
@@ -156,4 +158,157 @@ func kpiCreatedByPriority(ctx context.Context, q *dbgen.Queries, sc kpiScope, p 
 		out[i] = report.PriorityCount{Priority: ticket.Priority(r.Priority), Count: r.N}
 	}
 	return out, nil
+}
+
+// kpiVolume is the tickets created and resolved on each day of p, oldest first,
+// zeros included. It is the dashboard's TicketVolumeByDay over p and the
+// request's filters.
+func kpiVolume(ctx context.Context, q *dbgen.Queries, sc kpiScope, p report.Period) ([]ticket.DayVolume, error) {
+	rows, err := q.TicketVolumeByDay(ctx, dbgen.TicketVolumeByDayParams{
+		Tz:                   sc.tz,
+		FromDay:              p.From.Time(),
+		ToDay:                p.To.Time(),
+		Unrestricted:         sc.unrestricted,
+		ReporterOnly:         sc.reporterOnly,
+		ActorID:              sc.actorID,
+		ScopeGroupIds:        sc.scopeGroupIDs,
+		ScopeCategoryIds:     sc.scopeCategoryIDs,
+		ScopeTypeIds:         sc.scopeTypeIDs,
+		ScopeTypeCategoryIds: sc.scopeTypeCategoryIDs,
+		CategoryID:           sc.categoryID,
+		Priorities:           sc.priorities,
+		AssigneeGroupID:      sc.groupID,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("counting ticket volume by day: %w", err)
+	}
+	out := make([]ticket.DayVolume, len(rows))
+	for i, r := range rows {
+		out[i] = ticket.DayVolume{Day: r.Day.Format("2006-01-02"), Created: r.Created, Resolved: r.Resolved}
+	}
+	return out, nil
+}
+
+// kpiOpenByAge is the open tickets now by whole days of age, capped at 31.
+func kpiOpenByAge(ctx context.Context, q *dbgen.Queries, sc kpiScope, now time.Time) ([]report.AgeCount, error) {
+	rows, err := q.KPIOpenByAge(ctx, dbgen.KPIOpenByAgeParams{
+		Now:                  now,
+		Unrestricted:         sc.unrestricted,
+		ReporterOnly:         sc.reporterOnly,
+		ActorID:              sc.actorID,
+		ScopeGroupIds:        sc.scopeGroupIDs,
+		ScopeCategoryIds:     sc.scopeCategoryIDs,
+		ScopeTypeIds:         sc.scopeTypeIDs,
+		ScopeTypeCategoryIds: sc.scopeTypeCategoryIDs,
+		CategoryID:           sc.categoryID,
+		Priorities:           sc.priorities,
+		AssigneeGroupID:      sc.groupID,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("counting open tickets by age: %w", err)
+	}
+	out := make([]report.AgeCount, len(rows))
+	for i, r := range rows {
+		out[i] = report.AgeCount{Days: int(r.AgeDays), Count: r.N}
+	}
+	return out, nil
+}
+
+// kpiOpenByAssignee is the open tickets now by the person holding them. The
+// row with no person has a nil ID and Name.
+func kpiOpenByAssignee(ctx context.Context, q *dbgen.Queries, sc kpiScope) ([]report.Holder, error) {
+	rows, err := q.KPIOpenByAssignee(ctx, dbgen.KPIOpenByAssigneeParams{
+		Unrestricted:         sc.unrestricted,
+		ReporterOnly:         sc.reporterOnly,
+		ActorID:              sc.actorID,
+		ScopeGroupIds:        sc.scopeGroupIDs,
+		ScopeCategoryIds:     sc.scopeCategoryIDs,
+		ScopeTypeIds:         sc.scopeTypeIDs,
+		ScopeTypeCategoryIds: sc.scopeTypeCategoryIDs,
+		CategoryID:           sc.categoryID,
+		Priorities:           sc.priorities,
+		AssigneeGroupID:      sc.groupID,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("counting open tickets by assignee: %w", err)
+	}
+	out := make([]report.Holder, len(rows))
+	for i, r := range rows {
+		out[i] = report.Holder{ID: database.UUIDPtr(r.AssigneeUserID), Name: nullString(r.DisplayName), Count: r.N}
+	}
+	return out, nil
+}
+
+// kpiOpenByGroup is the open tickets now by the group holding them. The row
+// with no group has a nil ID and Name.
+func kpiOpenByGroup(ctx context.Context, q *dbgen.Queries, sc kpiScope) ([]report.Holder, error) {
+	rows, err := q.KPIOpenByGroup(ctx, dbgen.KPIOpenByGroupParams{
+		Unrestricted:         sc.unrestricted,
+		ReporterOnly:         sc.reporterOnly,
+		ActorID:              sc.actorID,
+		ScopeGroupIds:        sc.scopeGroupIDs,
+		ScopeCategoryIds:     sc.scopeCategoryIDs,
+		ScopeTypeIds:         sc.scopeTypeIDs,
+		ScopeTypeCategoryIds: sc.scopeTypeCategoryIDs,
+		CategoryID:           sc.categoryID,
+		Priorities:           sc.priorities,
+		AssigneeGroupID:      sc.groupID,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("counting open tickets by group: %w", err)
+	}
+	out := make([]report.Holder, len(rows))
+	for i, r := range rows {
+		out[i] = report.Holder{ID: database.UUIDPtr(r.AssigneeGroupID), Name: nullString(r.Name), Count: r.N}
+	}
+	return out, nil
+}
+
+func nullString(n sql.NullString) *string {
+	if !n.Valid {
+		return nil
+	}
+	return &n.String
+}
+
+// KPI runs the eight queries of one request, in order, in one read-only
+// REPEATABLE READ transaction, so the numbers are one snapshot: the daily
+// series sums to the headline and the workload total equals the backlog total
+// even while tickets are being written. It implements report.Store.
+func (s *Store) KPI(ctx context.Context, req report.Request) (report.Raw, error) {
+	sc, err := s.kpiScope(ctx, req)
+	if err != nil {
+		return report.Raw{}, err
+	}
+	var raw report.Raw
+	err = database.InSnapshot(ctx, s.db, s.q, func(q *dbgen.Queries) error {
+		var err error
+		if raw.Current, err = kpiPeriod(ctx, q, sc, req.Current); err != nil {
+			return err
+		}
+		if raw.Previous, err = kpiPeriod(ctx, q, sc, req.Previous); err != nil {
+			return err
+		}
+		if raw.Days, err = kpiVolume(ctx, q, sc, req.Current); err != nil {
+			return err
+		}
+		if raw.ByCategory, err = kpiCreatedByCategory(ctx, q, sc, req.Current); err != nil {
+			return err
+		}
+		if raw.ByPriority, err = kpiCreatedByPriority(ctx, q, sc, req.Current); err != nil {
+			return err
+		}
+		if raw.Ages, err = kpiOpenByAge(ctx, q, sc, req.Now); err != nil {
+			return err
+		}
+		if raw.ByAssignee, err = kpiOpenByAssignee(ctx, q, sc); err != nil {
+			return err
+		}
+		raw.ByGroup, err = kpiOpenByGroup(ctx, q, sc)
+		return err
+	})
+	if err != nil {
+		return report.Raw{}, fmt.Errorf("reading the KPI snapshot: %w", err)
+	}
+	return raw, nil
 }
