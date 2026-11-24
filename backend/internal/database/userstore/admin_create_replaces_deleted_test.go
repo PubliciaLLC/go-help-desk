@@ -170,3 +170,68 @@ func TestAdminCreate_RacesLeaveOneLiveAccount(t *testing.T) {
 		require.Equal(t, 1, e.count(t, `SELECT count(*) FROM users WHERE email = $1`, "deleted-"+old.ID.String()+"@invalid"))
 	})
 }
+
+// The release frees every identity the old row held that is unique across all
+// rows. oidc_subject is (migration 000017, deleted rows included), so a row
+// that kept it made a person who could never sign in with OIDC again: adoption
+// found the new account by address and hit the unique index.
+func TestAdminCreate_OverADeletedOIDCAccountLeavesTheOIDCSubjectFree(t *testing.T) {
+	e := newCommittedSAMLEnv(t)
+	addr := uniqueAddr("oidc-gone")
+	sub := "oidc-sub-" + uuid.NewString()
+
+	first, err := e.svc.UpsertOIDCUser(e.ctx, sub, addr, "Oidc Person")
+	require.NoError(t, err)
+	require.NoError(t, e.svc.SoftDelete(e.ctx, first.ID))
+
+	created, err := e.svc.CreateByAdmin(e.ctx, user.CreateUserInput{Email: addr, DisplayName: "Oidc Person", Role: user.RoleUser}, nil)
+	require.NoError(t, err)
+	require.Empty(t, e.row(t, first.ID).OIDCSubject, "the retired row must not keep a subject nobody else can claim")
+
+	again, err := e.svc.UpsertOIDCUser(e.ctx, sub, addr, "Oidc Person")
+	require.NoError(t, err, "the person can sign in with OIDC again")
+	require.Equal(t, created.ID, again.ID)
+}
+
+// To bring a deleted SAML user back, they sign in through SAML. The New user
+// form makes a LOCAL account, which SAML refuses to take over (DESIGN.md, SAML
+// step 5). Pinned so it is a documented consequence and not a surprise.
+func TestAdminCreate_OverADeletedSAMLAccountMakesALocalAccountSAMLRefuses(t *testing.T) {
+	e := newCommittedSAMLEnv(t)
+	addr := uniqueAddr("saml-gone")
+	old, err := e.signIn("p-1", addr, "Person")
+	require.NoError(t, err)
+	require.NoError(t, e.svc.SoftDelete(e.ctx, old.ID))
+
+	created, err := e.adminCreate(addr, "Person", nil)
+	require.NoError(t, err)
+	require.Empty(t, e.row(t, created.ID).SAMLSubject, "a local account")
+
+	_, err = e.signIn("p-1", addr, "Person")
+	require.ErrorIs(t, err, user.ErrEmailTaken)
+}
+
+// Rows written before addresses were lower-cased (v1.2.0) can hold mixed case.
+// The unique index is case-sensitive, so it does not stop the form from making
+// a second live account beside one: the create looks for that itself.
+func TestAdminCreate_LegacyMixedCaseRows(t *testing.T) {
+	t.Run("a deleted mixed-case row is released", func(t *testing.T) {
+		e := newSAMLEnv(t)
+		id := uuid.New()
+		e.exec(t, `INSERT INTO users (id, email, display_name, role, deleted_at) VALUES ($1, 'Legacy3@Example.com', 'Old', 'user', now())`, id)
+
+		got, err := e.adminCreate("legacy3@example.com", "New", nil)
+		require.NoError(t, err)
+		require.NotEqual(t, id, got.ID)
+		require.Equal(t, "deleted-"+id.String()+"@invalid", e.row(t, id).Email)
+	})
+
+	t.Run("a live mixed-case row is not duplicated", func(t *testing.T) {
+		e := newSAMLEnv(t)
+		e.exec(t, `INSERT INTO users (id, email, display_name, role) VALUES ($1, 'Legacy4@Example.com', 'Live', 'user')`, uuid.New())
+
+		_, err := e.adminCreate("legacy4@example.com", "Second", nil)
+		require.ErrorIs(t, err, user.ErrEmailTaken)
+		require.Equal(t, 1, e.count(t, `SELECT count(*) FROM users WHERE lower(email) = 'legacy4@example.com'`))
+	})
+}

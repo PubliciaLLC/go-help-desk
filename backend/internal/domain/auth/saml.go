@@ -240,8 +240,12 @@ const statusInvalidNameIDPolicy = "urn:oasis:names:tc:SAML:2.0:status:InvalidNam
 // other failure keeps the library's handler (a 403 and a log line), because
 // what an unsigned error response says is not something to build more on.
 func onACSError(w http.ResponseWriter, r *http.Request, err error) {
+	// Only a response the library parsed and refused for its status. A response
+	// that failed for any other reason (signature, issuer, InResponseTo) is
+	// unproven, whatever its XML says.
 	var invalid *saml.InvalidResponseError
-	if errors.As(err, &invalid) && refusesNameIDPolicy(invalid.Response) {
+	var badStatus saml.ErrBadStatus
+	if errors.As(err, &invalid) && errors.As(invalid.PrivateErr, &badStatus) && refusesNameIDPolicy(invalid.Response) {
 		http.Redirect(w, r, "/login?error=saml_nameid_format", http.StatusSeeOther)
 		return
 	}

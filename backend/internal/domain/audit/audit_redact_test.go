@@ -191,3 +191,17 @@ func TestRedact_EmailTemplateHTMLIsShown(t *testing.T) {
 	require.Equal(t, `<p>Old</p><a href="{{.TicketURL}}">x</a>`, got["template_html"])
 	require.NotContains(t, got, "html", "only the template_* key is allow-listed")
 }
+
+// A deleted account giving up its address to a new one, and a SAML account
+// being relinked, are written with ids and a flag, and the audit view shows all
+// of them: without the ids the entry cannot say which rows it joins. UUIDs, so
+// no PII.
+func TestRedact_AccountReplacementKeysAreShown(t *testing.T) {
+	entry := map[string]any{"replaced_by_user_id": "u1", "previous_user_id": "u2", "saml_subject_changed": true}
+	got, _ := audit.Redact(entry, nil)
+	for k, v := range entry {
+		if got[k] != v {
+			t.Errorf("%s: got %v, want %v", k, got[k], v)
+		}
+	}
+}

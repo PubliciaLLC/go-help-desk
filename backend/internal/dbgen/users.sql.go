@@ -570,16 +570,24 @@ func (q *Queries) GetUserByEmail(ctx context.Context, email string) (User, error
 }
 
 const getUserByEmailAnyState = `-- name: GetUserByEmailAnyState :one
-SELECT id, email, display_name, role, password_hash, mfa_secret, mfa_enabled, saml_subject, created_at, updated_at, deleted_at, disabled, oidc_subject, mfa_failed_attempts, mfa_locked_until, service_account, email_notify_assigned, email_notify_activity, email_notify_group, must_change_password, email_notify_sla FROM users WHERE email = $1
+SELECT id, email, display_name, role, password_hash, mfa_secret, mfa_enabled, saml_subject, created_at, updated_at, deleted_at, disabled, oidc_subject, mfa_failed_attempts, mfa_locked_until, service_account, email_notify_assigned, email_notify_activity, email_notify_group, must_change_password, email_notify_sla FROM users WHERE lower(email) = lower($1)
+ORDER BY (deleted_at IS NULL) DESC, created_at, id
+LIMIT 1
 `
 
-// The one row that holds this address, whatever it is: live or deleted,
-// person or service account. The unique constraint on users.email is over
-// every row, so there is at most one. GetUserByEmail is the login lookup and
-// hides deleted rows and service accounts; the SAML sign-in has to see them,
-// because which of the two holds the address decides what happens.
-func (q *Queries) GetUserByEmailAnyState(ctx context.Context, email string) (User, error) {
-	row := q.db.QueryRowContext(ctx, getUserByEmailAnyState, email)
+// The row that holds this address, whatever it is: live or deleted, person or
+// service account. GetUserByEmail is the login lookup and hides deleted rows
+// and service accounts; the SAML sign-in has to see them, because which of
+// the two holds the address decides what happens.
+//
+// Compared ignoring case. The unique index on users.email is case-sensitive,
+// and every write has lower-cased the address only since v1.2.0, so an older
+// row can be 'Legacy@Example.com' and an exact match would miss it and let a
+// second account be made for the same person. Nothing in the schema stops
+// 'A@x' and 'a@x' both existing, so more than one row can match: a live one
+// wins over a deleted one, the oldest over a newer.
+func (q *Queries) GetUserByEmailAnyState(ctx context.Context, lower string) (User, error) {
+	row := q.db.QueryRowContext(ctx, getUserByEmailAnyState, lower)
 	var i User
 	err := row.Scan(
 		&i.ID,
@@ -1012,6 +1020,20 @@ func (q *Queries) ListUsersAdmin(ctx context.Context, arg ListUsersAdminParams) 
 	return items, nil
 }
 
+const liveUserHoldsEmail = `-- name: LiveUserHoldsEmail :one
+SELECT EXISTS (SELECT 1 FROM users WHERE lower(email) = lower($1) AND deleted_at IS NULL)
+`
+
+// Whether a live account holds this address, ignoring case. The unique index
+// only refuses an exact match, so a legacy mixed-case live row would not stop
+// a second live account being made beside it.
+func (q *Queries) LiveUserHoldsEmail(ctx context.Context, lower string) (bool, error) {
+	row := q.db.QueryRowContext(ctx, liveUserHoldsEmail, lower)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const lockUserForFactorWrite = `-- name: LockUserForFactorWrite :one
 SELECT id FROM users WHERE id = $1 AND deleted_at IS NULL FOR UPDATE
 `
@@ -1206,8 +1228,9 @@ const releaseDeletedUserEmail = `-- name: ReleaseDeletedUserEmail :one
 UPDATE users
 SET email = 'deleted-' || id::text || '@invalid',
     saml_subject = '',
+    oidc_subject = '',
     updated_at = now()
-WHERE email = $1
+WHERE lower(email) = lower($1)
   AND deleted_at IS NOT NULL
   AND (NOT $2::boolean OR saml_subject <> '')
 RETURNING id
@@ -1220,13 +1243,15 @@ type ReleaseDeletedUserEmailParams struct {
 
 // Frees an address held by a deleted account, so a new account can have it:
 // the old row's address becomes 'deleted-<id>@invalid' (a reserved top-level
-// domain: it cannot receive mail, and no one can sign up as it) and its SAML
-// subject is cleared. The row keeps its id, so the tickets, replies and audit
+// domain: it cannot receive mail) and its SAML and OIDC subjects are cleared.
+// The OIDC one matters: oidc_subject is unique across every row, deleted
+// included, so a retired row that kept it would stop the person ever signing
+// in with OIDC again. The row keeps its id, so the tickets, replies and audit
 // entries that point at it stay on it. Only a deleted row is ever touched.
 // saml_created_only narrows it to rows SAML created (a SAML sign-in recreates
 // those and leaves a deleted local account blocking); an administrator
-// creating an account passes false. At most one row can match: the address
-// is unique across every row.
+// creating an account passes false. Matched ignoring case, like
+// GetUserByEmailAnyState; the rows it matches are all deleted.
 func (q *Queries) ReleaseDeletedUserEmail(ctx context.Context, arg ReleaseDeletedUserEmailParams) (uuid.UUID, error) {
 	row := q.db.QueryRowContext(ctx, releaseDeletedUserEmail, arg.Email, arg.SamlCreatedOnly)
 	var id uuid.UUID

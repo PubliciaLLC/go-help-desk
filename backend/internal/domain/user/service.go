@@ -219,7 +219,7 @@ func (s *Service) CreateByAdmin(ctx context.Context, in CreateUserInput, actorID
 	}
 	released, err := s.store.CreateReleasingDeleted(ctx, u, false)
 	if err != nil {
-		if isUniqueViolation(err) {
+		if addressTaken(err) {
 			return User{}, ErrEmailTaken
 		}
 		return User{}, fmt.Errorf("creating user: %w", err)
@@ -1175,10 +1175,10 @@ func (s *Service) upsertSAMLOnce(ctx context.Context, samlSubject, email, displa
 		}
 	}
 
-	// New user — enforce domain restriction before creating.
-	if !IsEmailDomainAllowed(email, allowedDomains) {
-		return User{}, ErrDomainNotAllowed
-	}
+	// New user. The address is validated first: an IdP that sends no address
+	// attribute leaves the NameID standing in for it, and "that is not an
+	// address" must not be reported as "your domain is not allowed". Then the
+	// domain restriction, before creating.
 	u, err = s.newUser(CreateUserInput{
 		Email:       email,
 		DisplayName: displayName,
@@ -1188,9 +1188,12 @@ func (s *Service) upsertSAMLOnce(ctx context.Context, samlSubject, email, displa
 	if err != nil {
 		return User{}, err
 	}
+	if !IsEmailDomainAllowed(u.Email, allowedDomains) {
+		return User{}, ErrDomainNotAllowed
+	}
 	released, err := s.store.CreateReleasingDeleted(ctx, u, true)
 	if err != nil {
-		if isUniqueViolation(err) {
+		if addressTaken(err) {
 			// Someone took the address between the lookup and the insert;
 			// most often the same person's other request.
 			return User{}, errSAMLLostRace
@@ -1678,6 +1681,13 @@ var ErrEmailTaken = errors.New("that email address is already in use, possibly b
 // isUniqueViolation reports whether a store error is Postgres refusing a
 // duplicate row. Matched on the SQLSTATE rather than the message, which is
 // localised and names tables this layer should not be reading.
+// addressTaken is whether a create failed because a live account holds the
+// address: the unique index, or the store's own check for a holder whose
+// address differs only in case.
+func addressTaken(err error) bool {
+	return isUniqueViolation(err) || errors.Is(err, ErrEmailTaken)
+}
+
 func isUniqueViolation(err error) bool {
 	var pgErr *pgconn.PgError
 	return errors.As(err, &pgErr) && pgErr.Code == "23505"

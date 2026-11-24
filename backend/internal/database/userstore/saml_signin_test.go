@@ -487,3 +487,73 @@ func uniq(ids []uuid.UUID) map[uuid.UUID]bool {
 	}
 	return m
 }
+
+// Rows written before addresses were lower-cased (v1.2.0) can hold mixed case,
+// and the unique index is case-sensitive, so "Legacy@Example.com" and
+// "legacy@example.com" are different to it. The sign-in must still find them:
+// a second account for the same person is the failure this branch exists to
+// stop.
+func TestSAMLSignIn_LegacyMixedCaseRows(t *testing.T) {
+	t.Run("a live SAML-created row is relinked, not duplicated", func(t *testing.T) {
+		e := newSAMLEnv(t)
+		id := uuid.New()
+		e.exec(t, `INSERT INTO users (id, email, display_name, role, saml_subject) VALUES ($1, 'Legacy@Example.com', 'Legacy', 'staff', 'dead-transient')`, id)
+
+		got, err := e.signIn("persistent-legacy", "legacy@example.com", "Legacy")
+		require.NoError(t, err)
+		require.Equal(t, id, got.ID)
+		require.Equal(t, user.RoleStaff, got.Role)
+		require.Equal(t, 1, e.count(t, `SELECT count(*) FROM users WHERE lower(email) = 'legacy@example.com'`))
+		require.Equal(t, "persistent-legacy", e.row(t, id).SAMLSubject)
+	})
+
+	t.Run("a deleted SAML-created row gives up its address", func(t *testing.T) {
+		e := newSAMLEnv(t)
+		id := uuid.New()
+		e.exec(t, `INSERT INTO users (id, email, display_name, role, saml_subject, deleted_at) VALUES ($1, 'Legacy2@Example.com', 'Legacy', 'user', 'old', now())`, id)
+
+		got, err := e.signIn("persistent-legacy2", "legacy2@example.com", "Legacy")
+		require.NoError(t, err)
+		require.NotEqual(t, id, got.ID)
+		require.Equal(t, "deleted-"+id.String()+"@invalid", e.row(t, id).Email)
+		require.Equal(t, 1, e.count(t, `SELECT count(*) FROM users WHERE lower(email) = 'legacy2@example.com'`))
+	})
+
+	t.Run("a local row is still refused", func(t *testing.T) {
+		e := newSAMLEnv(t)
+		e.exec(t, `INSERT INTO users (id, email, display_name, role) VALUES ($1, 'LocalLegacy@Example.com', 'Local', 'admin')`, uuid.New())
+
+		_, err := e.signIn("some-subject", "locallegacy@example.com", "Impostor")
+		require.ErrorIs(t, err, user.ErrEmailTaken)
+		require.Equal(t, 1, e.count(t, `SELECT count(*) FROM users WHERE lower(email) = 'locallegacy@example.com'`))
+	})
+}
+
+// The address is checked before the domain allowlist. An IdP that used to send
+// the address as the NameID and sends no address attribute leaves the NameID
+// standing in for it, and that is "invalid email", not "your domain is not
+// allowed".
+func TestSAMLSignIn_AddressIsValidatedBeforeTheAllowlist(t *testing.T) {
+	cases := []struct {
+		name    string
+		email   string
+		domains []string
+		want    error
+	}{
+		{"opaque NameID as the address, allowlist set", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", []string{"example.com"}, user.ErrValidation},
+		{"opaque NameID as the address, no allowlist", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", nil, user.ErrValidation},
+		{"a good address outside the allowlist", "someone@other.example", []string{"example.com"}, user.ErrDomainNotAllowed},
+		{"a good address inside the allowlist", "someone@example.com", []string{"example.com"}, nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newSAMLEnv(t)
+			_, err := e.svc.UpsertSAMLUser(e.ctx, "subject-"+uuid.NewString(), tc.email, "Person", tc.domains)
+			if tc.want == nil {
+				require.NoError(t, err)
+				return
+			}
+			require.ErrorIs(t, err, tc.want)
+		})
+	}
+}

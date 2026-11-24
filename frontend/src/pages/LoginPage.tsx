@@ -21,7 +21,7 @@ type Step = 'credentials' | 'verify' | 'enroll' | 'passkey' | 'passkey-enroll' |
 // attacker-controlled, so the code is a key and never text (#401). A Map, not
 // an object literal, so "constructor" or "__proto__" cannot find anything.
 const SSO_ERRORS = new Map<string, string>([
-  ['email_taken', 'An account with the email address your identity provider sent already exists here and is not linked to single sign-on. Ask an administrator.'],
+  ['email_taken', 'An account with the email address your identity provider sent already exists here and was not created by single sign-on, or is held by a removed account. Ask an administrator.'],
   ['saml_nameid_format', 'Your identity provider cannot issue the persistent identifier this help desk asks for. Ask an administrator to check the single sign-on setup.'],
   ['domain_not_allowed', 'Accounts from your email domain cannot sign in here.'],
   ['account_disabled', 'This account is disabled. Ask an administrator if you need access.'],

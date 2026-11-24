@@ -92,11 +92,12 @@ type Store interface {
 	RelinkSAMLSubject(ctx context.Context, id uuid.UUID, subject, displayName string) (User, bool, error)
 	// CreateReleasingDeleted creates u after freeing u's address from a
 	// deleted row that holds it, in one transaction: the old row's address
-	// becomes deleted-<id>@invalid and its SAML subject is cleared, so the row,
+	// becomes deleted-<id>@invalid and its SAML and OIDC subjects are cleared, so the row,
 	// and whatever points at it, stays. samlCreatedOnly limits what may be
 	// freed to a row SAML created. It returns the id of the row it freed, or
-	// the zero UUID when there was none, and the plain unique-violation error
-	// when a live row holds the address (or another create got there first).
+	// the zero UUID when there was none, and a unique-violation error or
+	// ErrEmailTaken when a live row holds the address (or another create got
+	// there first).
 	CreateReleasingDeleted(ctx context.Context, u User, samlCreatedOnly bool) (released uuid.UUID, err error)
 
 	Create(ctx context.Context, u User) error

@@ -49,6 +49,7 @@ func (s *Store) Create(ctx context.Context, u user.User) error {
 // two callers want the same deleted address, the second one's release waits
 // for the first to commit, then matches nothing (the row's address has
 // changed), and its insert meets the first one's account: a unique violation
+// (or user.ErrEmailTaken, from the check for a live holder in another case)
 // for the caller to report as "taken", not a fault.
 func (s *Store) CreateReleasingDeleted(ctx context.Context, u user.User, samlCreatedOnly bool) (uuid.UUID, error) {
 	var released uuid.UUID
@@ -63,6 +64,15 @@ func (s *Store) CreateReleasingDeleted(ctx context.Context, u user.User, samlCre
 			// Nothing deleted held it; the insert says whether anything else does.
 		default:
 			return fmt.Errorf("releasing deleted address: %w", err)
+		}
+		// The unique index refuses an exact match only. A legacy row stored
+		// with other capitals is still a live holder of this address.
+		held, err := q.LiveUserHoldsEmail(ctx, u.Email)
+		if err != nil {
+			return fmt.Errorf("checking address: %w", err)
+		}
+		if held {
+			return user.ErrEmailTaken
 		}
 		return create(ctx, q, u)
 	})
