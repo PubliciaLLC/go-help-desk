@@ -53,6 +53,9 @@ function serve() {
         ],
       })
     }
+    if (url === '/staff') {
+      return Promise.resolve({ data: [{ id: 'u-9', display_name: 'Alex Admin', assignable: true }, { id: 'u-2', display_name: 'Bea Staff', assignable: true }] })
+    }
     if (url === '/statuses') {
       return Promise.resolve({ data: [{ id: 'st-new', name: 'New', kind: 'system', sort_order: 1, color: '#888', active: true, ticket_count: 1 }] })
     }
@@ -76,6 +79,14 @@ describe('the ticket page and followers', () => {
     expect(screen.getByText('Followers')).toBeTruthy()
   })
 
+  it('offers staff and admin an Add follower picker and a remove button (#695)', async () => {
+    serve()
+    renderWithQuery(<TicketDetailPage />)
+
+    expect(await screen.findByRole('combobox', { name: 'Add follower' })).toBeTruthy()
+    expect(await screen.findByRole('button', { name: 'Remove Alex Admin as a follower' })).toBeTruthy()
+  })
+
   it('names follow and unfollow in the activity feed', async () => {
     serve()
     renderWithQuery(<TicketDetailPage />)
@@ -92,6 +103,7 @@ describe('the ticket page and followers', () => {
 
     expect(screen.queryByText('Followers')).toBeNull()
     expect(screen.queryByRole('button', { name: 'Follow' })).toBeNull()
+    expect(screen.queryByRole('combobox', { name: 'Add follower' })).toBeNull()
     expect(get.mock.calls.map((c) => c[0])).not.toContain(`/tickets/${TICKET_ID}/followers`)
   })
 })
