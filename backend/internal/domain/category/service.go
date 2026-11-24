@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/google/uuid"
@@ -15,11 +16,17 @@ import (
 // check that answers with a message.
 const MaxDescription = 500
 
+// trimmable is what a description is trimmed of: Go's white space plus the byte
+// order mark, which a browser's trim() strips and TrimSpace keeps. (The other
+// difference, U+0085, Go already strips and the form strips as well.) Both sides
+// strip the same set, so a text the form accepts is not refused here for its length.
+func trimmable(r rune) bool { return unicode.IsSpace(r) || r == '\uFEFF' }
+
 // cleanDescription trims a description and refuses one that is too long or
 // holds a NUL, which text columns cannot store. Empty means none. The text is
 // otherwise kept verbatim: it is plain text, never parsed.
 func cleanDescription(d string) (string, error) {
-	d = strings.TrimSpace(d)
+	d = strings.TrimFunc(d, trimmable)
 	if n := utf8.RuneCountInString(d); n > MaxDescription {
 		return "", fmt.Errorf("description is too long: %d characters, the limit is %d: %w", n, MaxDescription, ErrValidation)
 	}

@@ -34,6 +34,11 @@ func TestService_Description(t *testing.T) {
 		{name: "501 four-byte characters is refused", in: strings.Repeat("😀", 501), wantErr: true},
 		{name: "trailing space does not count towards the limit", in: strings.Repeat("a", 500) + "   ", want: strings.Repeat("a", 500)},
 		{name: "a NUL cannot be stored", in: "a\x00b", wantErr: true},
+		// The browser's trim() and Go's TrimSpace disagree on these two; the server
+		// strips both, and the form does the same (ctiDescription.ts), so a text
+		// that passes there passes here.
+		{name: "a byte order mark at either end is trimmed", in: "\uFEFF" + strings.Repeat("a", 500) + "\uFEFF", want: strings.Repeat("a", 500)},
+		{name: "a next-line character at either end is trimmed", in: "\u0085 text \u0085", want: "text"},
 	}
 
 	ctx := context.Background()
