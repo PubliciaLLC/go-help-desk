@@ -247,6 +247,8 @@ func recordFromRow(r dbgen.SlaRecord) sla.Record {
 		ResolvedAt:                    database.TimePtr(r.ResolvedAt),
 		ResponseBreachedAt:            database.TimePtr(r.ResponseBreachedAt),
 		ResolutionBreachedAt:          database.TimePtr(r.ResolutionBreachedAt),
+		ResponseAtRiskAt:              database.TimePtr(r.ResponseAtRiskAt),
+		ResolutionAtRiskAt:            database.TimePtr(r.ResolutionAtRiskAt),
 		ResponseElapsedAtMetSeconds:   database.Int64Ptr(r.ResponseElapsedAtMetSeconds),
 		ResolutionElapsedAtMetSeconds: database.Int64Ptr(r.ResolutionElapsedAtMetSeconds),
 		StartedAt:                     database.TimePtr(r.StartedAt),

@@ -153,7 +153,7 @@ func (q *Queries) FindSLAPolicy(ctx context.Context, arg FindSLAPolicyParams) (S
 }
 
 const getCurrentSLARecordForUpdate = `-- name: GetCurrentSLARecordForUpdate :one
-SELECT ticket_id, policy_id, first_response_at, resolved_at, response_breached_at, resolution_breached_at, response_elapsed_at_met_seconds, resolution_elapsed_at_met_seconds, id, started_at, paused_seconds_at_start, superseded_at FROM sla_records WHERE ticket_id = $1 AND superseded_at IS NULL FOR UPDATE
+SELECT ticket_id, policy_id, first_response_at, resolved_at, response_breached_at, resolution_breached_at, response_elapsed_at_met_seconds, resolution_elapsed_at_met_seconds, id, started_at, paused_seconds_at_start, superseded_at, response_at_risk_at, resolution_at_risk_at FROM sla_records WHERE ticket_id = $1 AND superseded_at IS NULL FOR UPDATE
 `
 
 // The ticket's current record, locked for the duration of a re-match.
@@ -173,12 +173,14 @@ func (q *Queries) GetCurrentSLARecordForUpdate(ctx context.Context, ticketID uui
 		&i.StartedAt,
 		&i.PausedSecondsAtStart,
 		&i.SupersededAt,
+		&i.ResponseAtRiskAt,
+		&i.ResolutionAtRiskAt,
 	)
 	return i, err
 }
 
 const getLatestSupersededSLARecord = `-- name: GetLatestSupersededSLARecord :one
-SELECT ticket_id, policy_id, first_response_at, resolved_at, response_breached_at, resolution_breached_at, response_elapsed_at_met_seconds, resolution_elapsed_at_met_seconds, id, started_at, paused_seconds_at_start, superseded_at FROM sla_records WHERE ticket_id = $1 AND superseded_at IS NOT NULL
+SELECT ticket_id, policy_id, first_response_at, resolved_at, response_breached_at, resolution_breached_at, response_elapsed_at_met_seconds, resolution_elapsed_at_met_seconds, id, started_at, paused_seconds_at_start, superseded_at, response_at_risk_at, resolution_at_risk_at FROM sla_records WHERE ticket_id = $1 AND superseded_at IS NOT NULL
 ORDER BY superseded_at DESC, id DESC LIMIT 1
 `
 
@@ -201,6 +203,8 @@ func (q *Queries) GetLatestSupersededSLARecord(ctx context.Context, ticketID uui
 		&i.StartedAt,
 		&i.PausedSecondsAtStart,
 		&i.SupersededAt,
+		&i.ResponseAtRiskAt,
+		&i.ResolutionAtRiskAt,
 	)
 	return i, err
 }
@@ -224,7 +228,7 @@ func (q *Queries) GetSLAPolicy(ctx context.Context, id uuid.UUID) (SlaPolicy, er
 }
 
 const getSLARecord = `-- name: GetSLARecord :one
-SELECT ticket_id, policy_id, first_response_at, resolved_at, response_breached_at, resolution_breached_at, response_elapsed_at_met_seconds, resolution_elapsed_at_met_seconds, id, started_at, paused_seconds_at_start, superseded_at FROM sla_records WHERE ticket_id = $1 AND superseded_at IS NULL
+SELECT ticket_id, policy_id, first_response_at, resolved_at, response_breached_at, resolution_breached_at, response_elapsed_at_met_seconds, resolution_elapsed_at_met_seconds, id, started_at, paused_seconds_at_start, superseded_at, response_at_risk_at, resolution_at_risk_at FROM sla_records WHERE ticket_id = $1 AND superseded_at IS NULL
 `
 
 // The CURRENT record: a superseded row (000043) is history and is never read
@@ -246,6 +250,8 @@ func (q *Queries) GetSLARecord(ctx context.Context, ticketID uuid.UUID) (SlaReco
 		&i.StartedAt,
 		&i.PausedSecondsAtStart,
 		&i.SupersededAt,
+		&i.ResponseAtRiskAt,
+		&i.ResolutionAtRiskAt,
 	)
 	return i, err
 }
@@ -254,12 +260,14 @@ const insertSLARecord = `-- name: InsertSLARecord :exec
 INSERT INTO sla_records (
     id, ticket_id, policy_id, started_at, paused_seconds_at_start,
     first_response_at, resolved_at, response_breached_at, resolution_breached_at,
-    response_elapsed_at_met_seconds, resolution_elapsed_at_met_seconds)
+    response_elapsed_at_met_seconds, resolution_elapsed_at_met_seconds,
+    response_at_risk_at, resolution_at_risk_at)
 VALUES (
     $1, $2, $3, $5::timestamptz, $4,
     $6::timestamptz, $7::timestamptz,
     $8::timestamptz, $9::timestamptz,
-    $10::bigint, $11::bigint)
+    $10::bigint, $11::bigint,
+    $12::timestamptz, $13::timestamptz)
 `
 
 type InsertSLARecordParams struct {
@@ -274,12 +282,16 @@ type InsertSLARecordParams struct {
 	ResolutionBreachedAt          sql.NullTime  `json:"resolution_breached_at"`
 	ResponseElapsedAtMetSeconds   sql.NullInt64 `json:"response_elapsed_at_met_seconds"`
 	ResolutionElapsedAtMetSeconds sql.NullInt64 `json:"resolution_elapsed_at_met_seconds"`
+	ResponseAtRiskAt              sql.NullTime  `json:"response_at_risk_at"`
+	ResolutionAtRiskAt            sql.NullTime  `json:"resolution_at_risk_at"`
 }
 
 // A record started by a re-match: its own id, an explicit clock start (NULL
 // reads as the ticket's creation) and the ticket's pause total as of that
 // start. A staff re-match also carries the old record's facts onto it, so a
-// target already met stays met; a restart passes none.
+// target already met stays met; a restart passes none. The at-risk stamps
+// (#670) are carried like the breach stamps, so a crossing already announced is
+// not announced again.
 func (q *Queries) InsertSLARecord(ctx context.Context, arg InsertSLARecordParams) error {
 	_, err := q.db.ExecContext(ctx, insertSLARecord,
 		arg.ID,
@@ -293,6 +305,8 @@ func (q *Queries) InsertSLARecord(ctx context.Context, arg InsertSLARecordParams
 		arg.ResolutionBreachedAt,
 		arg.ResponseElapsedAtMetSeconds,
 		arg.ResolutionElapsedAtMetSeconds,
+		arg.ResponseAtRiskAt,
+		arg.ResolutionAtRiskAt,
 	)
 	return err
 }
@@ -302,19 +316,22 @@ SELECT r.ticket_id
 FROM sla_records r
 JOIN tickets      t ON t.id = r.ticket_id
 JOIN sla_policies p ON p.id = r.policy_id
+CROSS JOIN LATERAL (
+    SELECT LEAST(COALESCE(t.pending_since, $1::timestamptz), $1::timestamptz)
+           - (COALESCE(r.started_at, t.created_at)
+              + make_interval(secs => (t.sla_paused_seconds - r.paused_seconds_at_start)::double precision)) AS elapsed
+) e
 WHERE t.closed_at IS NULL
   AND r.superseded_at IS NULL
   AND (
        (r.first_response_at IS NULL AND r.response_breached_at IS NULL
-          AND COALESCE(r.started_at, t.created_at)
-              + make_interval(secs => (t.sla_paused_seconds - r.paused_seconds_at_start)::double precision)
-              + make_interval(mins => p.response_target_min)
-              <= LEAST(COALESCE(t.pending_since, $1::timestamptz), $1::timestamptz))
+          AND (e.elapsed >= make_interval(mins => p.response_target_min)
+               OR (r.response_at_risk_at IS NULL
+                   AND e.elapsed >= make_interval(secs => (p.response_target_min::bigint * 48)::double precision))))
     OR (r.resolved_at IS NULL AND r.resolution_breached_at IS NULL
-          AND COALESCE(r.started_at, t.created_at)
-              + make_interval(secs => (t.sla_paused_seconds - r.paused_seconds_at_start)::double precision)
-              + make_interval(mins => p.resolution_target_min)
-              <= LEAST(COALESCE(t.pending_since, $1::timestamptz), $1::timestamptz))
+          AND (e.elapsed >= make_interval(mins => p.resolution_target_min)
+               OR (r.resolution_at_risk_at IS NULL
+                   AND e.elapsed >= make_interval(secs => (p.resolution_target_min::bigint * 48)::double precision))))
   )
 ORDER BY t.created_at
 `
@@ -331,10 +348,19 @@ ORDER BY t.created_at
 // currently Pending, clipped to now the same way Elapsed clips with
 // at.After(*PendingSince), and now otherwise. A Pending ticket whose frozen
 // elapsed time is still under target is therefore never selected. This
-// prefilter must still return everything EvaluateBreaches would stamp — it
-// is exact via <=, agreeing with the >= that decides it in Go on a fresh read
-// of the row (an elapsed time equal to the target is a breach) — see
+// prefilter must still return everything the sweep would stamp: it is exact
+// via >=, agreeing with the >= that decides it in Go on a fresh read of the row
+// (an elapsed time equal to the target is a breach) — see
 // TestSLAStore_ListBreachCandidates's superset invariant check.
+//
+// At-risk (#670): a target is also a candidate from its 80% line, while still
+// outstanding, not breached and not already stamped at risk (an at-risk-stamped
+// target waits for its breach instead). The 80% line is target_min * 48
+// seconds, which is exact (target * 0.8 minutes), the same arithmetic as the
+// amber bucket in ListTicketsFiltered (tickets.sql). That is the SQL's second
+// copy of the 80% rule, after the bucket; Go's, sla.atRisk, is the one that
+// decides. The elapsed time is computed once, in the lateral, for both targets
+// and both thresholds: the same expression as before, now an interval.
 func (q *Queries) ListSLABreachCandidates(ctx context.Context, now time.Time) ([]uuid.UUID, error) {
 	rows, err := q.db.QueryContext(ctx, listSLABreachCandidates, now)
 	if err != nil {
@@ -404,7 +430,7 @@ func (q *Queries) ListSLAPolicies(ctx context.Context) ([]SlaPolicy, error) {
 }
 
 const listSLARecordsByTicketIDs = `-- name: ListSLARecordsByTicketIDs :many
-SELECT ticket_id, policy_id, first_response_at, resolved_at, response_breached_at, resolution_breached_at, response_elapsed_at_met_seconds, resolution_elapsed_at_met_seconds, id, started_at, paused_seconds_at_start, superseded_at FROM sla_records
+SELECT ticket_id, policy_id, first_response_at, resolved_at, response_breached_at, resolution_breached_at, response_elapsed_at_met_seconds, resolution_elapsed_at_met_seconds, id, started_at, paused_seconds_at_start, superseded_at, response_at_risk_at, resolution_at_risk_at FROM sla_records
 WHERE ticket_id = ANY($1::uuid[]) AND superseded_at IS NULL
 `
 
@@ -435,6 +461,8 @@ func (q *Queries) ListSLARecordsByTicketIDs(ctx context.Context, ticketIds []uui
 			&i.StartedAt,
 			&i.PausedSecondsAtStart,
 			&i.SupersededAt,
+			&i.ResponseAtRiskAt,
+			&i.ResolutionAtRiskAt,
 		); err != nil {
 			return nil, err
 		}
@@ -450,7 +478,7 @@ func (q *Queries) ListSLARecordsByTicketIDs(ctx context.Context, ticketIds []uui
 }
 
 const listSLARecordsForTicket = `-- name: ListSLARecordsForTicket :many
-SELECT r.ticket_id, r.policy_id, r.first_response_at, r.resolved_at, r.response_breached_at, r.resolution_breached_at, r.response_elapsed_at_met_seconds, r.resolution_elapsed_at_met_seconds, r.id, r.started_at, r.paused_seconds_at_start, r.superseded_at FROM sla_records r
+SELECT r.ticket_id, r.policy_id, r.first_response_at, r.resolved_at, r.response_breached_at, r.resolution_breached_at, r.response_elapsed_at_met_seconds, r.resolution_elapsed_at_met_seconds, r.id, r.started_at, r.paused_seconds_at_start, r.superseded_at, r.response_at_risk_at, r.resolution_at_risk_at FROM sla_records r
 JOIN tickets t ON t.id = r.ticket_id
 WHERE r.ticket_id = $1
 ORDER BY COALESCE(r.started_at, t.created_at) DESC, r.superseded_at DESC NULLS FIRST
@@ -482,6 +510,8 @@ func (q *Queries) ListSLARecordsForTicket(ctx context.Context, ticketID uuid.UUI
 			&i.StartedAt,
 			&i.PausedSecondsAtStart,
 			&i.SupersededAt,
+			&i.ResponseAtRiskAt,
+			&i.ResolutionAtRiskAt,
 		); err != nil {
 			return nil, err
 		}
@@ -690,6 +720,13 @@ type StampSLABreachesParams struct {
 	ResolutionBreachedAt sql.NullTime `json:"resolution_breached_at"`
 }
 
+// Deprecated (#670): it reports rows affected, which is 1 whenever the record is
+// current, even when every column was already set, so a caller cannot tell what
+// it newly stamped and cannot announce only that. The sweep stamps through
+// StampSLACrossings below, which reports per column what this statement set.
+// Kept, not removed: no production caller remains, but the store and its tests
+// still use it as a primitive.
+//
 // Addressed by the id of the record the caller evaluated, like SetSLAFirstResponse
 // (#623): the breach was decided from that record's clock and policy, and means
 // nothing on a record that replaced it. Zero rows is a superseded record, and the
@@ -705,6 +742,102 @@ func (q *Queries) StampSLABreaches(ctx context.Context, arg StampSLABreachesPara
 		return 0, err
 	}
 	return result.RowsAffected()
+}
+
+const stampSLACrossings = `-- name: StampSLACrossings :one
+WITH cur AS (
+    SELECT s.id, s.first_response_at, s.resolved_at,
+           s.response_breached_at, s.resolution_breached_at,
+           s.response_at_risk_at, s.resolution_at_risk_at
+    FROM sla_records s
+    WHERE s.id = $1 AND s.superseded_at IS NULL
+    FOR UPDATE
+), won AS (
+    SELECT cur.id,
+           ($2::bool
+              AND cur.first_response_at IS NULL AND cur.response_breached_at IS NULL) AS response_breach,
+           ($3::bool
+              AND cur.resolved_at IS NULL AND cur.resolution_breached_at IS NULL) AS resolution_breach,
+           ($4::bool AND NOT $2::bool
+              AND cur.first_response_at IS NULL AND cur.response_breached_at IS NULL
+              AND cur.response_at_risk_at IS NULL) AS response_at_risk,
+           ($5::bool AND NOT $3::bool
+              AND cur.resolved_at IS NULL AND cur.resolution_breached_at IS NULL
+              AND cur.resolution_at_risk_at IS NULL) AS resolution_at_risk
+    FROM cur
+), upd AS (
+    UPDATE sla_records r
+    SET response_breached_at   = CASE WHEN won.response_breach   THEN $6::timestamptz ELSE r.response_breached_at   END,
+        resolution_breached_at = CASE WHEN won.resolution_breach THEN $6::timestamptz ELSE r.resolution_breached_at END,
+        response_at_risk_at    = CASE WHEN won.response_at_risk  THEN $6::timestamptz ELSE r.response_at_risk_at    END,
+        resolution_at_risk_at  = CASE WHEN won.resolution_at_risk THEN $6::timestamptz ELSE r.resolution_at_risk_at END
+    FROM won
+    WHERE r.id = won.id
+    RETURNING r.id
+)
+SELECT won.response_breach, won.resolution_breach, won.response_at_risk, won.resolution_at_risk
+FROM won
+JOIN upd ON upd.id = won.id
+`
+
+type StampSLACrossingsParams struct {
+	ID               uuid.UUID `json:"id"`
+	ResponseBreach   bool      `json:"response_breach"`
+	ResolutionBreach bool      `json:"resolution_breach"`
+	ResponseAtRisk   bool      `json:"response_at_risk"`
+	ResolutionAtRisk bool      `json:"resolution_at_risk"`
+	At               time.Time `json:"at"`
+}
+
+type StampSLACrossingsRow struct {
+	ResponseBreach   sql.NullBool `json:"response_breach"`
+	ResolutionBreach sql.NullBool `json:"resolution_breach"`
+	ResponseAtRisk   sql.NullBool `json:"response_at_risk"`
+	ResolutionAtRisk sql.NullBool `json:"resolution_at_risk"`
+}
+
+// The sweep's one write (#670), and the only one that says what it newly set.
+// Addressed by the id of the record the caller evaluated (#623). No row back is
+// a record that is not current (a re-match superseded it): nothing was written,
+// and the next pass evaluates its replacement.
+//
+// Postgres 17 has no RETURNING OLD, so "NULL before, set after" is derived from
+// the row as the CTE locked it:
+//
+//	cur  the current record, locked FOR UPDATE. A second stamper waits here, and
+//	     (READ COMMITTED) reads the row as the first left it, so it finds the
+//	     column set and reports false. A re-match that superseded the row while
+//	     it waited drops it from cur, and nothing below runs.
+//	won  per column, whether THIS statement sets it: asked for, the target
+//	     outstanding (first_response_at / resolved_at NULL), and the column
+//	     still NULL. An at-risk column also needs the same target's breach column
+//	     NULL, and is not set by a statement that breaches that target: an
+//	     at-risk stamp is only for a target below 100%, so it is never written
+//	     beside, or after, a breach of the same target.
+//	upd  the write, which sets exactly the columns won says it does and leaves
+//	     every other column as the lock read it. Never first_response_at /
+//	     resolved_at: only the request path writes those.
+//
+// The final SELECT joins upd so a row is only reported once it has been written.
+//
+// A stamp, once set, is a fact about what happened and is never cleared here.
+func (q *Queries) StampSLACrossings(ctx context.Context, arg StampSLACrossingsParams) (StampSLACrossingsRow, error) {
+	row := q.db.QueryRowContext(ctx, stampSLACrossings,
+		arg.ID,
+		arg.ResponseBreach,
+		arg.ResolutionBreach,
+		arg.ResponseAtRisk,
+		arg.ResolutionAtRisk,
+		arg.At,
+	)
+	var i StampSLACrossingsRow
+	err := row.Scan(
+		&i.ResponseBreach,
+		&i.ResolutionBreach,
+		&i.ResponseAtRisk,
+		&i.ResolutionAtRisk,
+	)
+	return i, err
 }
 
 const supersedeSLARecord = `-- name: SupersedeSLARecord :execrows

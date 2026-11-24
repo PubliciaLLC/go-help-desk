@@ -643,7 +643,9 @@ type Querier interface {
 	// A record started by a re-match: its own id, an explicit clock start (NULL
 	// reads as the ticket's creation) and the ticket's pause total as of that
 	// start. A staff re-match also carries the old record's facts onto it, so a
-	// target already met stays met; a restart passes none.
+	// target already met stays met; a restart passes none. The at-risk stamps
+	// (#670) are carried like the breach stamps, so a crossing already announced is
+	// not announced again.
 	InsertSLARecord(ctx context.Context, arg InsertSLARecordParams) error
 	// Whether a group can be given a ticket. An unknown id used to reach the
 	// foreign key and answer 500 for what is a caller's typo.
@@ -806,10 +808,19 @@ type Querier interface {
 	// currently Pending, clipped to now the same way Elapsed clips with
 	// at.After(*PendingSince), and now otherwise. A Pending ticket whose frozen
 	// elapsed time is still under target is therefore never selected. This
-	// prefilter must still return everything EvaluateBreaches would stamp — it
-	// is exact via <=, agreeing with the >= that decides it in Go on a fresh read
-	// of the row (an elapsed time equal to the target is a breach) — see
+	// prefilter must still return everything the sweep would stamp: it is exact
+	// via >=, agreeing with the >= that decides it in Go on a fresh read of the row
+	// (an elapsed time equal to the target is a breach) — see
 	// TestSLAStore_ListBreachCandidates's superset invariant check.
+	//
+	// At-risk (#670): a target is also a candidate from its 80% line, while still
+	// outstanding, not breached and not already stamped at risk (an at-risk-stamped
+	// target waits for its breach instead). The 80% line is target_min * 48
+	// seconds, which is exact (target * 0.8 minutes), the same arithmetic as the
+	// amber bucket in ListTicketsFiltered (tickets.sql). That is the SQL's second
+	// copy of the 80% rule, after the bucket; Go's, sla.atRisk, is the one that
+	// decides. The elapsed time is computed once, in the lateral, for both targets
+	// and both thresholds: the same expression as before, now an interval.
 	ListSLABreachCandidates(ctx context.Context, now time.Time) ([]uuid.UUID, error)
 	// Severity order, most urgent first, the catch-all (no priority) last. Sorting
 	// the text gave critical, high, low, medium: "low" ahead of "medium", and a
@@ -1256,6 +1267,13 @@ type Querier interface {
 	// ON CONFLICT rather than SELECT-then-INSERT, so that two concurrent requests
 	// carrying the same cookie cannot both see "not spent" (#337).
 	SpendSAMLHandover(ctx context.Context, tokenHash []byte) (int64, error)
+	// Deprecated (#670): it reports rows affected, which is 1 whenever the record is
+	// current, even when every column was already set, so a caller cannot tell what
+	// it newly stamped and cannot announce only that. The sweep stamps through
+	// StampSLACrossings below, which reports per column what this statement set.
+	// Kept, not removed: no production caller remains, but the store and its tests
+	// still use it as a primitive.
+	//
 	// Addressed by the id of the record the caller evaluated, like SetSLAFirstResponse
 	// (#623): the breach was decided from that record's clock and policy, and means
 	// nothing on a record that replaced it. Zero rows is a superseded record, and the
@@ -1266,6 +1284,30 @@ type Querier interface {
 	// request path's first_response_at / resolved_at. A stamp, once set, is a
 	// fact about what happened (DESIGN.md) and is never cleared here.
 	StampSLABreaches(ctx context.Context, arg StampSLABreachesParams) (int64, error)
+	// The sweep's one write (#670), and the only one that says what it newly set.
+	// Addressed by the id of the record the caller evaluated (#623). No row back is
+	// a record that is not current (a re-match superseded it): nothing was written,
+	// and the next pass evaluates its replacement.
+	//
+	// Postgres 17 has no RETURNING OLD, so "NULL before, set after" is derived from
+	// the row as the CTE locked it:
+	//   cur  the current record, locked FOR UPDATE. A second stamper waits here, and
+	//        (READ COMMITTED) reads the row as the first left it, so it finds the
+	//        column set and reports false. A re-match that superseded the row while
+	//        it waited drops it from cur, and nothing below runs.
+	//   won  per column, whether THIS statement sets it: asked for, the target
+	//        outstanding (first_response_at / resolved_at NULL), and the column
+	//        still NULL. An at-risk column also needs the same target's breach column
+	//        NULL, and is not set by a statement that breaches that target: an
+	//        at-risk stamp is only for a target below 100%, so it is never written
+	//        beside, or after, a breach of the same target.
+	//   upd  the write, which sets exactly the columns won says it does and leaves
+	//        every other column as the lock read it. Never first_response_at /
+	//        resolved_at: only the request path writes those.
+	// The final SELECT joins upd so a row is only reported once it has been written.
+	//
+	// A stamp, once set, is a fact about what happened and is never cleared here.
+	StampSLACrossings(ctx context.Context, arg StampSLACrossingsParams) (StampSLACrossingsRow, error)
 	// The only write a re-match ever makes to an existing record. Every fact on
 	// the row stays as it was; the row simply stops being current.
 	SupersedeSLARecord(ctx context.Context, arg SupersedeSLARecordParams) (int64, error)

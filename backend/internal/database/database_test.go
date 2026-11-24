@@ -1161,6 +1161,8 @@ func TestSLAStore_ListBreachCandidates(t *testing.T) {
 		resolvedAt           bool
 		responseBreachedAt   bool
 		resolutionBreachedAt bool
+		responseAtRiskAt     bool
+		resolutionAtRiskAt   bool
 		closed               bool
 		noRecord             bool
 		pendingAt            time.Duration
@@ -1209,6 +1211,44 @@ func TestSLAStore_ListBreachCandidates(t *testing.T) {
 		{
 			name: "not pending, earlier pauses, elapsed exactly at target",
 			age:  70 * time.Minute, pausedSec: int64((40 * time.Minute) / time.Second), want: true,
+		},
+
+		// #670: the at-risk branches. The response target is 30 minutes (80% is
+		// 24) and the resolution target 120 (80% is 96), so a target is a
+		// candidate from its 80% line on, unless it is met, breached, or already
+		// stamped at risk (which leaves only its breach still to find).
+		{name: "response exactly at 80%", age: 24 * time.Minute, want: true},
+		{name: "response a second under 80%", age: 24*time.Minute - time.Second, want: false},
+		{name: "response between 80% and 100%", age: 27 * time.Minute, want: true},
+		{name: "response at risk already stamped, still under target", age: 27 * time.Minute, responseAtRiskAt: true, want: false},
+		{name: "response at risk already stamped, now past target", age: 31 * time.Minute, responseAtRiskAt: true, want: true},
+		{name: "response between 80% and 100%, already breached", age: 27 * time.Minute, responseBreachedAt: true, want: false},
+		{name: "response between 80% and 100%, but met", age: 27 * time.Minute, firstResponseAt: true, want: false},
+		{name: "resolution exactly at 80%, response met", age: 96 * time.Minute, firstResponseAt: true, want: true},
+		{name: "resolution a second under 80%, response met", age: 96*time.Minute - time.Second, firstResponseAt: true, want: false},
+		{name: "resolution at 80%, response already stamped", age: 100 * time.Minute, responseBreachedAt: true, want: true},
+		{
+			name: "resolution at risk already stamped, still under target",
+			age:  100 * time.Minute, firstResponseAt: true, resolutionAtRiskAt: true, want: false,
+		},
+		{
+			name: "resolution at risk already stamped, now past target",
+			age:  121 * time.Minute, firstResponseAt: true, resolutionAtRiskAt: true, want: true,
+		},
+		{name: "resolution at 80%, but resolved", age: 100 * time.Minute, firstResponseAt: true, resolvedAt: true, want: false},
+		{name: "both targets stamped at risk, both under target", age: 27 * time.Minute, responseAtRiskAt: true, resolutionAtRiskAt: true, want: false},
+		{name: "closed ticket at 80%", age: 27 * time.Minute, closed: true, want: false},
+		{
+			name: "pending, frozen elapsed exactly at 80%",
+			age:  3 * time.Hour, pendingAt: 24 * time.Minute, want: true,
+		},
+		{
+			name: "pending, frozen elapsed a second under 80%",
+			age:  3 * time.Hour, pendingAt: 24*time.Minute - time.Second, want: false,
+		},
+		{
+			name: "not pending, earlier pauses, elapsed exactly at 80%",
+			age:  64 * time.Minute, pausedSec: int64((40 * time.Minute) / time.Second), want: true,
 		},
 	}
 
@@ -1287,6 +1327,17 @@ func TestSLAStore_ListBreachCandidates(t *testing.T) {
 					rec.ResolutionBreachedAt = &stamp
 				}
 				require.NoError(t, ss.CreateRecord(ctx, rec))
+
+				// CreateRecord writes no at-risk stamp (only the sweep does); seed
+				// them the way the sweep writes them.
+				if tc.responseAtRiskAt || tc.resolutionAtRiskAt {
+					cur, err := ss.GetRecord(ctx, tk.ID)
+					require.NoError(t, err)
+					_, err = ts.StampSLACrossings(ctx, cur.ID, ticket.SLAStampRequest{
+						At: stamp, ResponseAtRisk: tc.responseAtRiskAt, ResolutionAtRisk: tc.resolutionAtRiskAt,
+					})
+					require.NoError(t, err)
+				}
 			}
 
 			got, err := ss.ListBreachCandidates(ctx, now)
@@ -1301,8 +1352,14 @@ func TestSLAStore_ListBreachCandidates(t *testing.T) {
 				rec, err := ss.GetRecord(ctx, tk.ID)
 				require.NoError(t, err)
 
+				// The at-risk branches (#670): what sla.Crossings finds due and the
+				// record has not yet stamped is what the sweep would newly stamp.
+				c := sla.Crossings(rec, policy, loaded, now)
 				goWants := (rec.ResponseBreachedAt == nil && sla.IsResponseBreached(rec, policy, loaded, now)) ||
-					(rec.ResolvedAt == nil && rec.ResolutionBreachedAt == nil && sla.IsResolutionBreached(rec, policy, loaded, now))
+					(rec.ResolvedAt == nil && rec.ResolutionBreachedAt == nil && sla.IsResolutionBreached(rec, policy, loaded, now)) ||
+					c.Breach[0].Due || c.Breach[1].Due ||
+					(c.AtRisk[0].Due && rec.ResponseAtRiskAt == nil) ||
+					(c.AtRisk[1].Due && rec.ResolutionAtRiskAt == nil)
 				if goWants {
 					require.True(t, got != nil && containsUUID(got, tk.ID), "SQL candidate query missed a ticket Go would stamp")
 				}
