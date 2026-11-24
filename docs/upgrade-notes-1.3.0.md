@@ -471,7 +471,7 @@ A retry that is dropped (the hook was disabled, paused because its API key, or t
 
 A `ticket.created` message to a Slack or Teams hook now has up to two more lines under the subject: the classification as `Category > Type > Item` (only the levels the ticket has), and `Group: IT Support · Assignee: Jordan Blake` (only the parts it has), or `Unassigned` when it has neither. In Teams each is a subtle line of the same card, so a long name wraps. Nothing else is added, and Discord, Jira and every other event are unchanged.
 
-The group and assignee follow the rule the status name and the "Also" line already follow: a hook sees who holds the ticket only if it subscribes to `ticket.assigned` (or `*`). Routing assigns a ticket as part of creating it, so a hook listing `ticket.created` alone sees the classification but no holder line; add `ticket.assigned` to its events to get one.
+Every Slack and Teams hook that gets the message gets both lines, whatever events it lists: who holds a new ticket is a fact about the ticket as filed, including where routing placed it, and is not a separate `ticket.assigned` notice. A later reassignment is not in the created message and still reaches only hooks that list `ticket.assigned`. A Redeliver names the ticket's current holder, as it already uses the current subject.
 
 The names are read when the message is sent, from the ids the ticket was filed with, so a category, group or person renamed in between is named as it is then. The raw JSON body, its fields and the OpenAPI schemas are unchanged, there is no migration, and nothing new is stored. If the names cannot be read the message goes without the lines and the reason is logged.
 

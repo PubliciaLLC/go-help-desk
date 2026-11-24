@@ -191,3 +191,29 @@ func TestPlacement_RedeliverUsesTheTicketsCurrentIds(t *testing.T) {
 	require.Contains(t, msg, "Hardware")
 	require.Equal(t, other, r.src.placeAsked[len(r.src.placeAsked)-1].CategoryID)
 }
+
+// A hook that lists only ticket.created is told who holds a ticket that routing
+// assigned in the same change, exactly as a "*" hook is (the change's kinds are
+// cut to the hook's before the message is built).
+func TestPlacement_ACreatedOnlyHookIsToldTheHolder(t *testing.T) {
+	for _, format := range []string{"slack", "teams"} {
+		t.Run(format, func(t *testing.T) {
+			rc := newReceiver(t, 200)
+			bodies := capture(rc)
+			hook := hookFor(rc.srv.URL)
+			hook.PayloadFormat = format
+			hook.Events = []string{"ticket.created"}
+			rig := newQueueRig(t, rc.srv.Client(), hook)
+			src := newFakeSource()
+			src.placement = itSupport
+			rig.disp.queue.Source = src
+
+			require.NoError(t, rig.front.Dispatch(context.Background(), placementCreatedEvent()))
+			rig.drain(t)
+
+			require.Len(t, bodies(), 1)
+			require.Contains(t, bodies()[0], "Group: IT Support")
+			require.NotContains(t, bodies()[0], "Also:", "the Also line still names only kinds the hook subscribes to")
+		})
+	}
+}

@@ -185,14 +185,13 @@ func showsPlacement(f Format) bool {
 // another name (ticket.assigned could use the holder, ticket.classified the
 // classification) widens the Type test here and reads the same Placement.
 //
-// Who holds the ticket follows the rule the status name and the Also line
-// follow: only a hook whose own kinds include ticket.assigned may learn it,
-// because routing assigns inside the create as a second kind, and a hook
-// subscribed to ticket.created alone must not be told the holder. Nor may it be
-// told "Unassigned", which would be false, so for such a hook the line is
-// absent. A ticket whose assignee has an id and no readable name (a deleted
-// account) is also absent from the line, and is never "Unassigned": it was
-// assigned. Unassigned is decided from the ids, never from a missing name.
+// Who holds the ticket is shown to every Slack and Teams hook that gets the
+// message, whatever it subscribes to: it is a fact about the ticket as filed
+// (routing assigns inside the create, and the ids are the committed ones), not a
+// separate change the hook did not ask about. A ticket whose assignee has an id
+// and no readable name (a deleted account) adds nothing to the line, and is
+// never "Unassigned": it was assigned. Unassigned is decided from the ids, never
+// from a missing name.
 func placementLines(ev notification.Event) []string {
 	p := ev.Placement
 	if p == nil || ev.Type != notification.EventTicketCreated {
@@ -222,9 +221,6 @@ func holderLine(ev notification.Event, p *notification.Placement) string {
 	if !held {
 		return "Unassigned"
 	}
-	if !slices.Contains(ev.AllKinds(), notification.EventTicketAssigned) {
-		return ""
-	}
 	var parts []string
 	if g := placementName(p.Group); g != "" {
 		parts = append(parts, "Group: "+g)
@@ -235,10 +231,11 @@ func holderLine(ev notification.Event, p *notification.Placement) string {
 	return strings.Join(parts, " · ")
 }
 
-// placementName is one name as one short line: no line break (it would forge a
-// line of the message), and no more than placementNameLimit characters.
+// placementName is one name as one short line: any run of whitespace, line
+// breaks and Unicode line separators included, is one space (a break would forge
+// a line of the message), and no more than placementNameLimit characters.
 func placementName(s string) string {
-	s = strings.TrimSpace(sanitizeSubject(s))
+	s = strings.Join(strings.Fields(s), " ")
 	if r := []rune(s); len(r) > placementNameLimit {
 		return string(r[:placementNameLimit]) + "…"
 	}

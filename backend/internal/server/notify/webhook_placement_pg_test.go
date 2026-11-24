@@ -104,7 +104,7 @@ func TestPlacement_ATicketCreatedThroughTheServiceIsDeliveredWithItsPlacement(t 
 		{"classified three deep, routed to a group and a person",
 			ticket.CreateInput{CategoryID: cat.ID, TypeID: &typ.ID, ItemID: &item.ID,
 				AutoAssign: []ticket.Assignment{{UserID: &jordan.ID, GroupID: &grp.ID}}},
-			[]string{cat.Name + "SEP", item.Name, "Group: " + grp.Name, "Assignee: " + jordan.DisplayName},
+			[]string{cat.Name + "SEP" + "TYPE" + "SEP" + item.Name, "Group: " + grp.Name, "Assignee: " + jordan.DisplayName},
 			[]string{"Unassigned"}},
 		{"category only, nobody holds it",
 			ticket.CreateInput{CategoryID: cat.ID},
@@ -113,36 +113,43 @@ func TestPlacement_ATicketCreatedThroughTheServiceIsDeliveredWithItsPlacement(t 
 	}
 	for _, tc := range cases {
 		for _, format := range []string{"slack", "teams"} {
-			t.Run(tc.name+"/"+format, func(t *testing.T) {
-				ev := create(tc.in)
-				require.NotContains(t, mustJSON(t, ev), cat.Name, "the raised event holds ids, not names")
+			// A hook on ticket.created alone is told the same as a "*" hook.
+			for _, events := range [][]string{{"*"}, {"ticket.created"}} {
+				t.Run(tc.name+"/"+format+"/"+events[0], func(t *testing.T) {
+					ev := create(tc.in)
+					require.NotContains(t, mustJSON(t, ev), cat.Name, "the raised event holds ids, not names")
 
-				rc := newReceiver(t, 200)
-				bodies := capture(rc)
-				hook := hookFor(rc.srv.URL)
-				hook.PayloadFormat = format
-				rig := newQueueRig(t, rc.srv.Client(), hook)
-				rig.disp.queue.Source = &pgSource{fakeSource: newFakeSource(), svc: svc}
-				require.NoError(t, rig.front.Dispatch(ctx, ev))
-				rig.drain(t)
+					rc := newReceiver(t, 200)
+					bodies := capture(rc)
+					hook := hookFor(rc.srv.URL)
+					hook.PayloadFormat = format
+					hook.Events = events
+					rig := newQueueRig(t, rc.srv.Client(), hook)
+					rig.disp.queue.Source = &pgSource{fakeSource: newFakeSource(), svc: svc}
+					require.NoError(t, rig.front.Dispatch(ctx, ev))
+					rig.drain(t)
 
-				require.Len(t, bodies(), 1)
-				require.True(t, json.Valid([]byte(bodies()[0])))
-				var msg any
-				require.NoError(t, json.Unmarshal([]byte(bodies()[0]), &msg))
-				flat := mustJSONString(t, msg)
-				// The separator between levels is a ">" that Slack escapes.
-				sep := " > "
-				if format == "slack" {
-					sep = " &gt; "
-				}
-				for _, w := range tc.want {
-					require.Contains(t, flat, mustJSONString(t, strings.ReplaceAll(w, "SEP", sep)), w)
-				}
-				for _, w := range tc.notWant {
-					require.NotContains(t, flat, mustJSONString(t, strings.ReplaceAll(w, "SEP", sep)), w)
-				}
-			})
+					require.Len(t, bodies(), 1)
+					require.True(t, json.Valid([]byte(bodies()[0])))
+					var msg any
+					require.NoError(t, json.Unmarshal([]byte(bodies()[0]), &msg))
+					flat := mustJSONString(t, msg)
+					// The separator between levels is a ">" that Slack escapes.
+					sep, typName := " > ", typ.Name
+					if format == "slack" {
+						sep, typName = " &gt; ", "Printer &amp; &lt;Scanner&gt; "+suffix
+					}
+					expand := func(w string) string {
+						return mustJSONString(t, strings.ReplaceAll(strings.ReplaceAll(w, "SEP", sep), "TYPE", typName))
+					}
+					for _, w := range tc.want {
+						require.Contains(t, flat, expand(w), w)
+					}
+					for _, w := range tc.notWant {
+						require.NotContains(t, flat, expand(w), w)
+					}
+				})
+			}
 		}
 	}
 }

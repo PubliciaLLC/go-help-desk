@@ -105,12 +105,11 @@ func TestSummarize_PlacementOnlyOnCreatedAndOnlyWhenRead(t *testing.T) {
 	}
 }
 
-// Group and assignee follow the rule the status name and the Also line follow:
-// a hook learns who holds the ticket only if it subscribes to assigned, or
-// there is nothing to learn. Routing makes the assignment as a second kind of
-// the create, so a created-only hook must not be told "Unassigned" (false) or
-// the holder (not its subscription).
-func TestSummarize_HolderIsHiddenFromAHookThatDoesNotSubscribeToAssigned(t *testing.T) {
+// The holder of a new ticket is a fact about the ticket as filed, so the line
+// does not depend on what the hook subscribes to: a hook that lists only
+// ticket.created, or a replay that has no kinds beyond its name, is told the
+// same as a hook on "*". Unassigned and the names both come from the ids.
+func TestSummarize_HolderDoesNotDependOnTheHooksKinds(t *testing.T) {
 	cases := []struct {
 		name  string
 		kinds []notification.EventType
@@ -118,13 +117,13 @@ func TestSummarize_HolderIsHiddenFromAHookThatDoesNotSubscribeToAssigned(t *test
 		want  []string
 	}{
 		{"created only, ticket assigned by routing", []notification.EventType{notification.EventTicketCreated},
-			heldBy(true, true), []string{"Hardware"}},
+			heldBy(true, true), []string{"Hardware", "Group: IT Support · Assignee: Jordan Blake"}},
 		{"created only, nobody holds it", []notification.EventType{notification.EventTicketCreated},
 			heldBy(false, false), []string{"Hardware", "Unassigned"}},
 		{"created and assigned", []notification.EventType{notification.EventTicketCreated, notification.EventTicketAssigned},
 			heldBy(true, true), []string{"Hardware", "Group: IT Support · Assignee: Jordan Blake"}},
-		{"no kinds (a redelivery), ticket assigned now", nil,
-			heldBy(true, false), []string{"Hardware"}},
+		{"no kinds (a redelivery), ticket held now", nil,
+			heldBy(true, true), []string{"Hardware", "Group: IT Support · Assignee: Jordan Blake"}},
 		{"no kinds (a redelivery), nobody holds it", nil,
 			heldBy(false, false), []string{"Hardware", "Unassigned"}},
 	}
@@ -142,6 +141,9 @@ func TestSummarize_HolderIsHiddenFromAHookThatDoesNotSubscribeToAssigned(t *test
 // would fill the card.
 func TestSummarize_PlacementNamesAreOneLineAndBounded(t *testing.T) {
 	long := strings.Repeat("é", 500)
+	// Any line separator or control whitespace is one space, not only CR and LF.
+	odd := summarize(createdWith(&notification.Placement{Category: "A\u2028B\u0085C\vD\tE  F"}, heldBy(false, false)), fixtureBaseURL).Placement
+	require.Equal(t, "A B C D E F", odd[0])
 	ev := createdWith(&notification.Placement{
 		Category: "Hard\r\nware", Group: "IT\nSupport", Assignee: long,
 	}, heldBy(true, true))

@@ -6710,7 +6710,8 @@ the headline:
   pointer to the ticket, not a record. A level whose row is gone has no name and
   is left out; a ticket whose assignee id has no readable name (a deleted
   account) says nothing about the assignee and is **not** called Unassigned,
-  because it was assigned (the ticket page makes the same distinction).
+  because it was assigned (the ticket page likewise says "Former staff member"
+  rather than "Unassigned").
   `Unassigned` is decided from the ids, never from a missing name.
 
   *Retries.* The read runs on every attempt, before the POST. If it fails the
@@ -6720,27 +6721,38 @@ the headline:
   notification back, and failing the attempt instead would leave the row's
   content in the outbox past the scrub, which only runs after a failed POST.
 
-  *What a hook may learn.* Group and assignee follow the rule the status name
-  and the Also line follow: they are shown only when the hook's own kinds
-  include `ticket.assigned`, or when the ticket has no assignment to show. Routing
-  assigns a ticket inside its creation, as a second kind of the same change, so a
-  hook subscribed to `ticket.created` alone sees the classification and nothing
-  about who holds the ticket, rather than `Unassigned`, which would be false. A
-  `*` hook, or one listing both names, sees it all. A Redeliver has no kinds
-  beyond its own name, as for the Also line, so a replayed message for a ticket
-  that is now assigned omits the line.
+  *What a hook may learn.* Every Slack and Teams hook that is sent a created
+  message gets both lines, whatever else it subscribes to. The holder is a fact
+  about the ticket as filed, not a separate change the channel did not ask
+  about: routing runs inside the create transaction, the created and assigned
+  kinds are merged into one event, and `Event.Ticket` is the state after
+  routing, so `Unassigned` cannot be false at creation. (The status name and
+  the Also line are gated by kind because they would otherwise name a change
+  the hook did not subscribe to, an internal note above all; the holder of a
+  new ticket is not that.) It is not a privilege boundary either: whoever
+  edits a hook can add `ticket.assigned`, and the subject the hook already
+  receives says more than a group name does. A later assignment is not part of
+  the created message; it follows the "as filed" rule above, and the hook hears
+  about it only if it subscribes to `ticket.assigned`. A **Redeliver** swaps in
+  the ticket's current ids, as it does for the subject, so a replayed created
+  message names the classification and the **current** holder (or `Unassigned`
+  if nobody holds it now), which can differ from the original.
 
   *Rendering.* Slack: each line is a line of the text, `&`, `<` and `>` escaped
   like the subject (the `>` between levels becomes `&gt;`, which Slack shows as
   `>`); `*`, `_` and `~` in a name are left as they are, as they are in the
   subject, because mrkdwn has no escape for them and the worst a name can do is
   bold itself. Teams: each line is its own `TextBlock` with `wrap`, `isSubtle`
-  and `spacing: small`, in the card's existing 1.4 schema, put through the same
+  and `spacing: "Small"`, in the card's existing 1.4 schema, put through the same
   `escapeChatMarkdown` as the subject, so a `[name](url)`, `*`, `_`, `` ` ``
   or `|` in a name is literal text; the JSON is built by `encoding/json`, so a
-  quote, `&`, `<` or any Unicode cannot break it. Names have line breaks
-  replaced by a space and are cut at 100 characters, so nobody can forge a line
-  of the card or fill it with a pasted paragraph.
+  quote, `&`, `<` or any Unicode cannot break it. Names have every
+  run of whitespace, line and paragraph separators included, collapsed to one
+  space and are cut at 100 characters, so nobody can forge a line of the card
+  or fill it with a pasted paragraph. A name that itself contains ` > ` or
+  ` · Assignee: ` reads as an extra level or a second part: names are written by
+  administrators, and this is accepted. Not done, because the subject has the
+  same behaviour: escaping list markers and backslashes in Teams text.
 
   *Generic subscribers.* Nothing changes: the raw body is built from an allow
   list that does not include the placement, the OpenAPI schemas are unchanged,
