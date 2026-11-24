@@ -269,6 +269,78 @@ describe('useSettingsDraft', () => {
     expect(result.current.bool('ticket_scope_enforced')).toBe(true)
   })
 
+  it('keeps a key put back to its pre-save value while the save is pending, and stays dirty for it', async () => {
+    const { result } = setup()
+    await loaded(result)
+    let release: () => void = () => {}
+    patchSpy.mockImplementationOnce(((_url: string, body: Record<string, unknown>) =>
+      new Promise((resolve) => {
+        release = () => {
+          dump = { ...dump, ...body }
+          resolve({ data: undefined })
+        }
+      })) as never)
+    act(() => result.current.setBool('sla_enabled', true)) // sent
+    act(() => result.current.save())
+    await waitFor(() => expect(result.current.isPending).toBe(true))
+    act(() => result.current.setBool('sla_enabled', false)) // the operator's last word: back to what it was
+    await act(async () => release())
+    await waitFor(() => expect(result.current.isPending).toBe(false))
+    await waitFor(() => expect(result.current.stored?.sla_enabled).toBe(true))
+    expect(result.current.bool('sla_enabled')).toBe(false)
+    expect(result.current.dirty).toBe(true)
+  })
+
+  it('does not keep a mark for an array that ends equal to what was sent', async () => {
+    const { result, queryClient } = setup()
+    await loaded(result)
+    let release: () => void = () => {}
+    patchSpy.mockImplementationOnce(((_url: string, body: Record<string, unknown>) =>
+      new Promise((resolve) => {
+        release = () => {
+          dump = { ...dump, ...body }
+          resolve({ data: undefined })
+        }
+      })) as never)
+    act(() => result.current.toggleStrArr('allowed', '.txt', true))
+    act(() => result.current.save())
+    await waitFor(() => expect(result.current.isPending).toBe(true))
+    // Off and on again while pending: a new array, equal to the one sent.
+    act(() => result.current.toggleStrArr('allowed', '.txt', false))
+    act(() => result.current.toggleStrArr('allowed', '.txt', true))
+    await act(async () => release())
+    await waitFor(() => expect(result.current.isPending).toBe(false))
+    await waitFor(() => expect(result.current.stored?.allowed).toEqual(['.pdf', '.txt']))
+    expect(result.current.dirty).toBe(false)
+    // Another administrator removes it; nothing here is held against that.
+    dump = { ...dump, allowed: ['.pdf'] }
+    await act(async () => { await queryClient.invalidateQueries({ queryKey: ['admin', 'settings'] }) })
+    await waitFor(() => expect(result.current.strArr('allowed')).toEqual(['.pdf']))
+  })
+
+  it('builds array toggles in one tick on each other, and from the stored list when put back', async () => {
+    const { result } = setup()
+    await loaded(result)
+    act(() => {
+      result.current.toggleStrArr('allowed', '.txt', true)
+      result.current.toggleStrArr('allowed', '.png', true)
+    })
+    expect(result.current.strArr('allowed')).toEqual(['.pdf', '.txt', '.png'])
+    act(() => {
+      result.current.toggleStrArr('allowed', '.txt', false)
+      result.current.toggleStrArr('allowed', '.png', false)
+    })
+    expect(result.current.strArr('allowed')).toEqual(['.pdf'])
+    expect(result.current.dirty).toBe(false)
+    // The first toggle puts the list back to the stored one; the second starts from it.
+    act(() => {
+      result.current.toggleStrArr('allowed', '.txt', true)
+      result.current.toggleStrArr('allowed', '.txt', false)
+      result.current.toggleStrArr('allowed', '.png', true)
+    })
+    expect(result.current.strArr('allowed')).toEqual(['.pdf', '.png'])
+  })
+
   it('does not hold an edit that was put back, so another change to that key is followed', async () => {
     const { result, queryClient } = setup()
     await loaded(result)

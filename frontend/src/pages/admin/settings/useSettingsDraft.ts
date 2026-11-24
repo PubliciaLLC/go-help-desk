@@ -39,6 +39,11 @@ export interface SettingsDraft {
   warning: { text: string; aboutClients: boolean } | null
 }
 
+// Equal by content: an array set again with the same entries is the same value.
+function sameValue(a: unknown, b: unknown): boolean {
+  return JSON.stringify(a) === JSON.stringify(b)
+}
+
 // A string array as the dump holds it, or a comma list an older store wrote.
 function asStrArr(v: unknown): string[] {
   if (Array.isArray(v)) return v as string[]
@@ -77,8 +82,12 @@ export function useSettingsDraft(): SettingsDraft {
      key, so a section's own save or the window regaining focus cannot undo an
      unsaved edit, and with it whatever the page showed only while that edit
      stood. A key put back to its stored value is not held: it is not an edit,
-     and another administrator's change to it must come through. */
+     and another administrator's change to it must come through. Except while
+     a save is on its way: the stored value is about to change, so "back to
+     what it was" is the operator's last word, and every key touched until the
+     save settles is held (`sending`). */
   const edited = useRef(new Map<string, unknown>())
+  const sending = useRef(false)
 
   const query = useQuery({ queryKey: SETTINGS_KEY, queryFn: getSettings })
   const settings = query.data
@@ -124,9 +133,9 @@ export function useSettingsDraft(): SettingsDraft {
       setSecrets({})
       setCleared({})
       // The edits that were sent are saved: the fresh dump, awaited below,
-      // replaces them. One edited again since the send keeps its mark.
+      // replaces them. One whose value changed since the send keeps its mark.
       for (const [k, v] of res.sent) {
-        if (Object.is(edited.current.get(k), v)) edited.current.delete(k)
+        if (sameValue(edited.current.get(k), v)) edited.current.delete(k)
       }
       setTimeout(() => setSaved(false), 2500)
       qc.invalidateQueries({ queryKey: ['site-config'] })
@@ -139,6 +148,7 @@ export function useSettingsDraft(): SettingsDraft {
       // draft never differs from the old dump because of a change already saved.
       await qc.invalidateQueries({ queryKey: SETTINGS_KEY })
     },
+    onSettled: () => { sending.current = false },
     onError: (err) =>
       setSaveError(
         // The server's text names the raw setting; say what an admin can do.
@@ -149,7 +159,7 @@ export function useSettingsDraft(): SettingsDraft {
   })
 
   function mark(key: string, v: unknown) {
-    if (JSON.stringify(v) === JSON.stringify(settings?.[key])) edited.current.delete(key)
+    if (!sending.current && sameValue(v, settings?.[key])) edited.current.delete(key)
     else edited.current.set(key, v)
   }
 
@@ -177,9 +187,10 @@ export function useSettingsDraft(): SettingsDraft {
     setStr: set,
     setStrArr: set,
     toggleStrArr: (key, item, checked) => {
-      // Built from the last value set, which is what the draft will hold: two
-      // toggles in one tick each see the other's result.
-      const current = asStrArr(edited.current.has(key) ? edited.current.get(key) : draft[key])
+      // Built from the last value set (the draft's own value is not up to date
+      // until the next render, so two toggles in one tick would not see each
+      // other). A key with no mark holds the stored value, so that is the base.
+      const current = asStrArr(edited.current.has(key) ? edited.current.get(key) : settings?.[key])
       const next = checked ? [...new Set([...current, item])] : current.filter((x) => x !== item)
       set(key, next)
     },
@@ -188,7 +199,10 @@ export function useSettingsDraft(): SettingsDraft {
     secretCleared: (key) => Boolean(cleared[key]),
     setSecretCleared: (key, v) => setCleared((s) => ({ ...s, [key]: v })),
     dirty,
-    save: () => saveMutation.mutate(),
+    save: () => {
+      sending.current = true
+      saveMutation.mutate()
+    },
     isPending: saveMutation.isPending,
     error: saveError,
     saved,
