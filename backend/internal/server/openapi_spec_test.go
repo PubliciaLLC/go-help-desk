@@ -47,11 +47,7 @@ var specFile = filepath.Join("..", "..", "..", "docs", "api", "openapi.yaml")
 
 // specExcludedRoutes are routes the router serves that the spec deliberately
 // does not describe, each with the reason. A stale entry fails the test.
-var specExcludedRoutes = map[string]string{
-	// #675 task 5 adds the route; task 10 (docs) writes its operation in
-	// docs/api/openapi.yaml and must delete this entry, which the test insists on.
-	"GET /api/v1/dashboard": "documented by #675 task 10, which removes this entry",
-}
+var specExcludedRoutes = map[string]string{}
 
 // specOnlyRoutes are operations the spec describes that this router does not
 // serve because they are mounted elsewhere (cmd/server's ServeMux), each with
