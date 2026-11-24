@@ -1,0 +1,75 @@
+import { api } from './client'
+import type { User } from './types'
+
+export interface LoginResponse {
+  user: User
+  mfa_needed: boolean
+  mfa_enrollment_needed: boolean
+}
+
+export async function login(email: string, password: string): Promise<LoginResponse> {
+  const res = await api.post<LoginResponse>('/auth/local/login', { email, password })
+  return res.data
+}
+
+export async function logout(): Promise<void> {
+  await api.post('/auth/local/logout')
+}
+
+export async function verifyMFA(code: string): Promise<void> {
+  await api.post('/auth/local/mfa/verify', { code })
+}
+
+export async function getMe(): Promise<User> {
+  const res = await api.get<User>('/me')
+  return res.data
+}
+
+export async function changePassword(current: string, next: string): Promise<void> {
+  await api.patch('/me/password', { current_password: current, new_password: next })
+}
+
+export async function enrollMFAStart(): Promise<{ secret: string; qr_url: string; qr_data_url: string }> {
+  const res = await api.post('/me/mfa/enroll')
+  return res.data
+}
+
+export async function enrollMFAConfirm(code: string): Promise<void> {
+  await api.post('/me/mfa/enroll/confirm', { code })
+}
+
+export interface SignupStatus {
+  enabled: boolean
+  open_registration: boolean
+  saml_enabled: boolean
+}
+
+export async function getSignupStatus(): Promise<SignupStatus> {
+  const res = await api.get<SignupStatus>('/auth/signup/status')
+  return res.data
+}
+
+export async function signup(email: string, displayName: string, password: string): Promise<void> {
+  await api.post('/auth/signup', { email, display_name: displayName, password })
+}
+
+export async function verifyEmail(token: string): Promise<LoginResponse> {
+  const res = await api.post<LoginResponse>('/auth/verify-email', { token })
+  return res.data
+}
+
+
+export interface AuthProvider {
+  name: string
+  enabled: boolean
+}
+
+export interface AuthProviders {
+  providers: AuthProvider[]
+}
+
+export async function getAuthProviders(): Promise<AuthProviders> {
+  const res = await api.get<AuthProviders>('/auth/providers')
+  return res.data
+}
+

@@ -1,0 +1,86 @@
+# ── Go ────────────────────────────────────────────────────────────────────────
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+coverage.*
+*.coverprofile
+profile.cov
+go.work
+go.work.sum
+
+# Compiled binaries
+backend/server
+backend/cmd/server/server
+
+# Dependency directories
+backend/tmp/
+backend/vendor/
+
+# ── Frontend ──────────────────────────────────────────────────────────────────
+frontend/node_modules/
+frontend/dist/
+frontend/.env
+frontend/.env.local
+frontend/.env.*.local
+
+# Embedded frontend dist (populated by Docker build, not committed)
+backend/internal/ui/dist/
+!backend/internal/ui/dist/index.html
+
+# ── Environment ───────────────────────────────────────────────────────────────
+.env
+.env.local
+.env.*.local
+
+# ── SAML / TLS (never commit private keys) ────────────────────────────────────
+*.pem
+*.key
+*.crt
+*.p12
+
+# ── IDE ───────────────────────────────────────────────────────────────────────
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# ── Serena MCP ────────────────────────────────────────────────────────────────
+.serena/
+
+# ── Playwright MCP ────────────────────────────────────────────────────────────
+.playwright-mcp/
+
+# ── OS ────────────────────────────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+
+# ── Docker runtime data ───────────────────────────────────────────────────────
+docker/data/
+
+# ── Uploads ───────────────────────────────────────────────────────────────────
+uploads/
+
+# Attachment storage. The default AttachmentDir is absolute (/data/attachments)
+# so this only catches a relative one — which is what an unset value produces,
+# and what a test harness that forgets to set it will write into the package
+# directory.
+tickets/
+
+# ── Air (live reload) ─────────────────────────────────────────────────────────
+backend/.air.toml
+
+# Agent worktrees and scratch state. These are real git checkouts living inside
+# the repo, so `git add -A` picks them up as embedded repositories and commits
+# a gitlink stub — a pointer to a commit nobody else can resolve. Ignoring them
+# is the only reliable guard; it happened once already.
+.claude/worktrees/
+.claire/
+
+# Local-only security working files: unpublished advisory drafts and saved
+# release notes. An advisory draft describes an exploitable defect before a fix
+# ships, so committing one publishes exactly what it exists to withhold.
+.security/

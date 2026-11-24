@@ -1,0 +1,4 @@
+Contact: https://github.com/PubliciaLLC/go-help-desk/security/advisories/new
+Policy: https://github.com/PubliciaLLC/go-help-desk/blob/main/SECURITY.md
+Preferred-Languages: en
+Expires: 2027-05-03T00:00:00.000Z

@@ -1,0 +1,2 @@
+ALTER TABLE users
+ADD COLUMN oidc_subject TEXT NOT NULL DEFAULT '';
