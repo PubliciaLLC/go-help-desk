@@ -1269,10 +1269,9 @@ type Querier interface {
 	SpendSAMLHandover(ctx context.Context, tokenHash []byte) (int64, error)
 	// Deprecated (#670): it reports rows affected, which is 1 whenever the record is
 	// current, even when every column was already set, so a caller cannot tell what
-	// it newly stamped and cannot announce only that. The sweep stamps through
-	// StampSLACrossings below, which reports per column what this statement set.
-	// Kept, not removed: no production caller remains, but the store and its tests
-	// still use it as a primitive.
+	// it newly stamped and cannot announce only that. StampSLACrossings below
+	// reports per column what it set, and replaces this statement on the sweep's
+	// path. Kept, not removed, until that replacement lands.
 	//
 	// Addressed by the id of the record the caller evaluated, like SetSLAFirstResponse
 	// (#623): the breach was decided from that record's clock and policy, and means
