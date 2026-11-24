@@ -76,6 +76,13 @@ type summary struct {
 	// status or group NAME would be content. "" when the change is one kind.
 	Also string
 
+	// Placement is where a new ticket landed, as at most two lines of plain
+	// text: "Hardware > Printer", then "Group: IT Support · Assignee: Jordan
+	// Blake" or "Unassigned". Only on ticket.created, only once its names have
+	// been read, and only the Slack and Teams renderers show it
+	// (placementLines). Each renderer escapes the lines for itself.
+	Placement []string
+
 	// Extra fields the JIRA body needs and no chat renderer reads. Kept on
 	// summary rather than read off Payload in format_jira.go so every
 	// renderer still goes through the one function that decides what a
@@ -144,6 +151,7 @@ func summarize(ev notification.Event, baseURL string) summary {
 		Tracking:       trackingOf(ev),
 		Headline:       headlineFor(ev, internal, linkedTicketID, linkType),
 		Also:           alsoLine(ev),
+		Placement:      placementLines(ev),
 		Subject:        sanitizeSubject(ev.Subject),
 		Body:           body,
 		StatusName:     statusFor(ev),
@@ -154,6 +162,87 @@ func summarize(ev notification.Event, baseURL string) summary {
 		LinkType:       linkType,
 		OccurredAt:     ev.OccurredAt,
 	}
+}
+
+// placementNameLimit caps one name in a placement line. Names are written by
+// administrators, but they end up in somebody else's message.
+const placementNameLimit = 100
+
+// showsPlacement reports whether f's renderer shows summary.Placement, which is
+// the whole of what decides whether its names are read: a format that would
+// ignore them costs no query. List a format here when its renderer reads it.
+func showsPlacement(f Format) bool {
+	return f == FormatSlack || f == FormatTeams
+}
+
+// placementLines is where a new ticket landed, for the message of a created
+// ticket: the classification as "Category > Type > Item" (only the levels with a
+// name), then who holds it as "Group: G · Assignee: A" (only the parts that
+// have one), or "Unassigned" when the ticket holds nothing. Plain text, one line
+// each, nothing at all for a ticket whose placement has not been read.
+//
+// Written for ticket.created; anything that wants the same two lines for
+// another name (ticket.assigned could use the holder, ticket.classified the
+// classification) widens the Type test here and reads the same Placement.
+//
+// Who holds the ticket follows the rule the status name and the Also line
+// follow: only a hook whose own kinds include ticket.assigned may learn it,
+// because routing assigns inside the create as a second kind, and a hook
+// subscribed to ticket.created alone must not be told the holder. Nor may it be
+// told "Unassigned", which would be false, so for such a hook the line is
+// absent. A ticket whose assignee has an id and no readable name (a deleted
+// account) is also absent from the line, and is never "Unassigned": it was
+// assigned. Unassigned is decided from the ids, never from a missing name.
+func placementLines(ev notification.Event) []string {
+	p := ev.Placement
+	if p == nil || ev.Type != notification.EventTicketCreated {
+		return nil
+	}
+	var lines []string
+	var levels []string
+	for _, n := range []string{p.Category, p.Type, p.Item} {
+		if n = placementName(n); n != "" {
+			levels = append(levels, n)
+		}
+	}
+	if len(levels) > 0 {
+		lines = append(lines, strings.Join(levels, " > "))
+	}
+	if h := holderLine(ev, p); h != "" {
+		lines = append(lines, h)
+	}
+	return lines
+}
+
+func holderLine(ev notification.Event, p *notification.Placement) string {
+	if ev.Ticket == nil {
+		return ""
+	}
+	held := ev.Ticket.AssigneeUserID != nil || ev.Ticket.AssigneeGroupID != nil
+	if !held {
+		return "Unassigned"
+	}
+	if !slices.Contains(ev.AllKinds(), notification.EventTicketAssigned) {
+		return ""
+	}
+	var parts []string
+	if g := placementName(p.Group); g != "" {
+		parts = append(parts, "Group: "+g)
+	}
+	if a := placementName(p.Assignee); a != "" {
+		parts = append(parts, "Assignee: "+a)
+	}
+	return strings.Join(parts, " · ")
+}
+
+// placementName is one name as one short line: no line break (it would forge a
+// line of the message), and no more than placementNameLimit characters.
+func placementName(s string) string {
+	s = strings.TrimSpace(sanitizeSubject(s))
+	if r := []rune(s); len(r) > placementNameLimit {
+		return string(r[:placementNameLimit]) + "…"
+	}
+	return s
 }
 
 // kindPhrases word a kind for the "Also" line.
