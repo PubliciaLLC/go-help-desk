@@ -809,6 +809,15 @@ export interface SecurityWarnings {
   }
 
   /**
+   * "Require SAML for staff and users" is on while SAML is not loaded, so they
+   * cannot sign in (administrators keep password sign-in). Present only while
+   * that is true, so it clears with no restart. `incomplete`: the IdP metadata,
+   * the certificate or the private key is not saved. `not_loaded`: all are
+   * saved and SAML is still not running (the metadata could not be loaded).
+   */
+  saml_required_not_loaded?: { reason: 'incomplete' | 'not_loaded' }
+
+  /**
    * A stable release newer than the one running, found by the opt-in update
    * check (#170). Absent when none was found or the check is off.
    */

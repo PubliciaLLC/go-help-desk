@@ -932,16 +932,17 @@ Empty: when every day is zero, the chart's box keeps its height and says "No tic
 - `TestSQL_DashboardQueriesShareTheListRule` (in `internal/database/ticketstore`, no database needed) reads `queries/tickets.sql`, drops comments and collapses whitespace, and fails unless `CountTicketsFiltered` equals `ListTicketsFiltered` with that select list and tail removed, and every `visibility` block in the file is identical to the list query's. A change to who may see what is then made in one place and copied, or the build fails.
 - The two new filter clauses (`awaiting_reply`, `reopened_after`) are added to `ListTicketsFiltered` and so, by the same test, to `CountTicketsFiltered`.
 
-**Admin health card.** Administrators only. It surfaces four things the app already knows and says nothing more when all is well. It is **frontend only**: it reads the two queries an administrator's page already makes, `GET /admin/security-warnings` (query key `['security-warnings']`, shared with `InsecureConfigBanner`, so no extra request and no extra scanner ping) and `GET /admin/settings` (query key `['admin', 'settings']`, shared with the settings pages through the cache). On the dashboard the settings dump is **one new request for an administrator**, refetched when the window regains focus like any query with the default `staleTime`; the warnings query is the banner's, so it adds none. No endpoint, probe or setting is added. A pure function, `adminHealthItems(warnings?, settings?) => HealthItem[]` (`frontend/src/lib/adminHealth.ts`), decides it, in this order:
+**Admin health card.** Administrators only. It surfaces five things the app already knows (four from #675, and the SAML sign-in problem added below) and says nothing more when all is well. It is **frontend only**: it reads the two queries an administrator's page already makes, `GET /admin/security-warnings` (query key `['security-warnings']`, shared with `InsecureConfigBanner`, so no extra request and no extra scanner ping) and `GET /admin/settings` (query key `['admin', 'settings']`, shared with the settings pages through the cache). On the dashboard the settings dump is **one new request for an administrator**, refetched when the window regains focus like any query with the default `staleTime`; the warnings query is the banner's, so it adds none. No endpoint, probe or setting is added. A pure function, `adminHealthItems(warnings?, settings?) => HealthItem[]` (`frontend/src/lib/adminHealth.ts`), decides it, in this order:
 
 | Item | Shown when | Severity | Says | Link |
 | --- | --- | --- | --- | --- |
 | Update available | `warnings.update` is present (the check is on and found a newer release) | info (blue) | "Version X is available (you run Y)." | the release notes, the URL the banner uses, new tab |
 | SLA alerts off | `settings.sla_enabled === true` and `settings.sla_alerts_enabled === false` (#670) | amber | "SLA tracking is on, but breach and at-risk alerts are off." | `/admin/settings/email`, "Email → Notifications → SLA alerts" |
 | Passkey requirement suspended | `warnings.passkeys.suspended_roles` is a non-empty array (#616) | amber | "The passkey requirement is suspended for <roles>: passkeys are unavailable (<reason>)." | `/admin/settings/authentication`, "Authentication → Multi-factor authentication" |
+| SAML required but not loaded | `warnings.saml_required_not_loaded` is present (see **`saml_enabled`** under SAML) | red | "SAML is required for staff and users but is not working, so they cannot sign in. Administrators can still sign in with a password." | `/admin/settings/authentication`, "Authentication → SAML" |
 | Attachment scanner down | `attachment_scanning.policy !== 'off'` and not `reachable`, the banner's own `scannerDegraded` test | red | "The attachment scanner is unreachable." plus its `effect` sentence | `/admin/settings/attachments`, "File Attachments → Malware scanning" |
 
-Each item carries its link and its place name as data (`HealthItem{id, severity, text, href, place, external}`), so a page that moves is one row to change. **The card was built after #674**, in the build plan's task 12, once the settings pages and their routes existed, so it has the final addresses from its first line: the three settings items link to `/admin/settings/email`, `/admin/settings/authentication` and `/admin/settings/attachments`, and `place` is the table's wording (the sidebar's, "Page → Section"). A test pins each `href` and each `place`. There was never an interim `/admin/settings` link and nothing is retargeted; the update item's `href` is the release-notes URL. The card reads `warnings.passkeys.suspended_roles` (#616) and `settings.sla_alerts_enabled` (#670), both in this build's base; a server that does not send one shows nothing for its item. A key that is absent (a server older than the frontend) shows nothing for its item; the function never infers a problem from a missing field. The card has no Hide: it states what is true now, and the banner's Hide, including "Hide until the next release" for the update, governs only the banner. When there is no item, the card is **one muted line**, "No problems to report.", so an administrator can tell "checked and fine" from "not loaded". If either query has failed, the card says "Health checks could not be loaded." with a Retry button that refetches both; it never says "No problems" on a failure.
+Each item carries its link and its place name as data (`HealthItem{id, severity, text, href, place, external}`), so a page that moves is one row to change. **The card was built after #674**, in the build plan's task 12, once the settings pages and their routes existed, so it has the final addresses from its first line: its four settings items link to `/admin/settings/email` (SLA alerts), `/admin/settings/authentication` (the passkey item and the SAML item) and `/admin/settings/attachments` (the scanner), and `place` is the table's wording (the sidebar's, "Page → Section"). A test pins each `href` and each `place`. There was never an interim `/admin/settings` link and nothing is retargeted; the update item's `href` is the release-notes URL. The card reads `warnings.passkeys.suspended_roles` (#616) and `settings.sla_alerts_enabled` (#670), both in this build's base; a server that does not send one shows nothing for its item. A key that is absent (a server older than the frontend) shows nothing for its item; the function never infers a problem from a missing field. The card has no Hide: it states what is true now, and the banner's Hide, including "Hide until the next release" for the update, governs only the banner. When there is no item, the card is **one muted line**, "No problems to report.", so an administrator can tell "checked and fine" from "not loaded". If either query has failed, the card says "Health checks could not be loaded." with a Retry button that refetches both; it never says "No problems" on a failure. **Which banner problems the card repeats.** The card is a short list, not a mirror of the banner: the secrets, the unwritable attachment directory and the email problems stay banner-only. The SAML item is on it because it has the same shape as the passkey item: a sign-in posture an administrator set that strands people, fixed on a settings page the card can link to. The card still adds no request: the field rides on the banner's query.
 
 **States.** The status cards keep their own query and spinner. The dashboard query (`['dashboard', tz]`, `staleTime` 60 s, refetched on window focus) feeds the strip, the list and the trend: while it loads, each block shows the existing `Spinner` in a box of its final height (no jump); if it fails, one inline message replaces the three blocks, "The dashboard summary could not be loaded.", with **Retry**, and the status cards and By Client still show.
 
@@ -999,7 +1000,7 @@ The dashboard draws `AreaChart` with `labels` the 30 dates, series Created (blue
 - `awaiting_reply` is a staff and administrator filter only. A requester who sends it is refused like any other staff-only filter (`403`, "awaiting_reply is not available to requesters", through the `requesterRules` row with `requesterOK` false), and a requester's dashboard has no "awaiting my reply" cell. The reason: the clause reads the current role of the newest public reply's author, which a requester is never sent, so letting them filter would disclose, ticket by ticket, whether that author is now staff or an administrator, against the rule that a requester may filter or sort only on what they are sent. Rejected: letting requesters filter and documenting the disclosure (a rule with a written exception is no longer a rule, and the dashboard cell is the only thing that wanted it), and a `requesterThreadKeys` list naming `public_replies` as a source a requester is sent (the replies are sent, but not the role the clause reads, so the row would pass the allowed-list test for the wrong reason).
 - MCP reads `awaiting_reply` with the boolean arguments (`listArgBool`), like `include_closed`. Rejected: a string argument through `listFilterParams` (it would accept `"true"` and refuse `true`, unlike every other boolean on the tool).
 - The relative age is a new `fmtAgo` in `lib/format.ts`, floored to minutes, hours or days. Rejected: `Intl.RelativeTimeFormat` with auto units (it says "last week" and "2 months ago", which is vaguer than a row needs) and a date library.
-- The health card is built after #616, #670 and #674, so its three settings links are the final `/admin/settings/email`, `/admin/settings/authentication` and `/admin/settings/attachments` from the start. Rejected: building it before #674 with interim `/admin/settings` links and retargeting them later (a second change to the same three rows, and an address that opens the wrong page in between), and two link sets chosen at run time. The order of the work is: #675's other blocks, then #674's pages, then the card.
+- The health card is built after #616, #670 and #674, so its settings links (three when it was built, four with the SAML item) are the final `/admin/settings/email`, `/admin/settings/authentication` and `/admin/settings/attachments` from the start. Rejected: building it before #674 with interim `/admin/settings` links and retargeting them later (a second change to the same rows, and an address that opens the wrong page in between), and two link sets chosen at run time. The order of the work is: #675's other blocks, then #674's pages, then the card.
 - #675's build starts after #676's code is merged. Rejected: building against #676's open branch (two moving bases) or re-creating its names here.
 - `awaiting_reply` is offered in the page on Assigned to Me and My Group's Tickets only; the API accepts it everywhere for staff and administrators. Rejected: offering it on Search and Available, where it would cost a reply lookup per ticket across the whole desk.
 - A requester gets a strip of one cell (Your tickets) and nothing else new. Rejected: an "Awaiting your reply" cell (it needs the staff-only `awaiting_reply` filter, see above), no new block for requesters (the owner said they see their own tickets' summary), and a trend or attention list of their own few tickets.
@@ -1010,6 +1011,7 @@ The dashboard draws `AreaChart` with `labels` the 30 dates, series Created (blue
 - The trend counts days in the browser's time zone, sent as `tz`, validated by Postgres. Rejected: UTC days (today's bar would be wrong for most of the world) and embedding Go's time zone database to validate in Go (a binary change for one parameter).
 - Resolved is `COALESCE(resolved_at, closed_at)`, the current state, with an index added for it. Rejected: the audit trail as history (a second source, and pruned by retention), and no index (a sequential scan of tickets on every dashboard load).
 - The health card is frontend only, reading the security warnings and the settings the page already loads. Rejected: a health endpoint (a second source of truth for the same facts) and adding `sla_alerts` to the security warnings (it is a setting, which the page can already read).
+- The SAML sign-in problem is a field of `GET /admin/security-warnings`, which does not contradict the line above. `sla_alerts_enabled` is a stored setting the page already reads. Whether SAML is *loaded* is the running server's state (an identity provider that did not answer, a key that does not match its certificate), which no setting and no existing field carries; `GET /auth/providers` says it, but is public and says nothing about `saml_enabled`. So the server computes it, as it does `attachment_storage`. Rejected: deriving it in the page from the settings dump (`configured` is not `live`, and the dump cannot tell a metadata URL that answered from one that did not) and a second request to `GET /admin/saml` (`live`) from the banner (an extra request on every admin page for one notice).
 - The card shows the update even if the banner's notice was hidden, and has no Hide of its own. Rejected: honouring the banner's Hide (the card is a status, not a notice).
 - An all-clear card is one muted line. Rejected: hiding the card, which cannot be told apart from a card that failed to load.
 - The chart has no text inside the SVG and stretches to its container. Rejected: measuring the container (a resize observer) to draw text in the SVG.
@@ -1023,7 +1025,7 @@ The dashboard draws `AreaChart` with `labels` the 30 dates, series Created (blue
 - *Domain*: `ParseListFilter` reads `awaiting_reply` `true`, `false`, empty and refuses `yes`; `AllowedFor` allows `awaiting_reply=true` to staff and administrators and refuses a requester with `FilterForbidden` and "awaiting_reply is not available to requesters" (and allows `awaiting_reply=false`); `TestFilter_EveryFieldIsClassified` passes with `AwaitingReply` in `filterRaw` and `requesterRules` (`requesterOK` false) and `ReopenedAfter` in `serverSetFields`; `TestAllowedFor_FilterByRole` lists `AwaitingReply` as staff-only; `TestRequesterRules_OnlyAllowedListKeys` is unchanged and passes; `dashboard.Cells` per role and `slaOn` (keys, order, scope, criteria; no two cells for one role share a key); each cell's filter equals what `ParseListFilter` and `ResolveQueue` make of the table's parameter string for that role; `PickAttention`: order, one ticket once under its first reason, the limit, fewer than five, all empty, `Since` is `CreatedAt` for the first three reasons and `LastReopenedAt` for `reopened`, and `CreatedAt` when that is nil.
 - *REST, Postgres*: per role the response's keys and nulls; **with `ticket_scope_enforced` on, a scoped staff member's counts, attention rows and trend include nothing outside their scope**, and the same caller with enforcement off sees the wider numbers; each cell's count equals the length of `GET /tickets` with that cell's parameters for the same caller; an attention row's `since` is its ticket's `created_at`, and on a `reopened` row the ticket's reopen instant; SLA off: no `sla_*` cell and no SLA reason; staff not ticked for Available: no `unassigned` reason, ticked: present and scoped; `tz` absent (UTC), valid, too long, bad characters and unknown (`400` with each message); an API key without `tickets:read` is `403`; `GET /tickets?awaiting_reply=true` as staff, and as a requester `403` "awaiting_reply is not available to requesters", and `awaiting_reply=maybe` is `400`.
 - *MCP*: `list_tickets` with `awaiting_reply: true` lists what REST lists for the same staff caller, a requester sending it is refused in REST's words, and `false` lists what no argument lists; the string `"true"`, a number and an object are refused with "invalid awaiting_reply"; the tool schema declares it a boolean.
-- *Frontend*: `geometry.ts` (`niceCeiling` at 0, 1, 7, 10, 11, 999; points for one, two and thirty values; paths for none); `AreaChart` renders one area and line per series, the hidden table with every value, the empty text, and throws on a length mismatch; `lib/dashboard.ts`: for every cell, `toApiParams(parseTicketSearch(link))` gives exactly the table's parameters (the table above, copied into the Go test and this one); `QueueStrip` per role, the SLA cells' colours at zero and above, links; `fmtAgo` at 0 s, 59 s, 60 s, 61 min, 23 h 59 min, 24 h, 1 day and 2 days, 120 days and a future instant (singular and plural each); `NeedsAttention` rows, badges, "opened …" from `since` and "reopened …" from `since` on a reopened row, wrapping subject and the empty text; `VolumeTrend` totals and empty; the page per role shows the right blocks and keeps the status cards and By Client; the failure message and Retry; `adminHealthItems` table over each item present, absent and with keys missing, each item's `place` and `href` as the table above gives them: the final addresses and places (`/admin/settings/email`, `/admin/settings/authentication` and `/admin/settings/attachments` for the three settings items, the release-notes URL for the update). The card is built after #674, so there was never an interim link; the card's quiet line and its failure state; the ticket list parses, shows, clears and sends `awaiting_reply` for staff, offers it only on Assigned to Me and My Group's Tickets, and drops it from a requester's request.
+- *Frontend*: `geometry.ts` (`niceCeiling` at 0, 1, 7, 10, 11, 999; points for one, two and thirty values; paths for none); `AreaChart` renders one area and line per series, the hidden table with every value, the empty text, and throws on a length mismatch; `lib/dashboard.ts`: for every cell, `toApiParams(parseTicketSearch(link))` gives exactly the table's parameters (the table above, copied into the Go test and this one); `QueueStrip` per role, the SLA cells' colours at zero and above, links; `fmtAgo` at 0 s, 59 s, 60 s, 61 min, 23 h 59 min, 24 h, 1 day and 2 days, 120 days and a future instant (singular and plural each); `NeedsAttention` rows, badges, "opened …" from `since` and "reopened …" from `since` on a reopened row, wrapping subject and the empty text; `VolumeTrend` totals and empty; the page per role shows the right blocks and keeps the status cards and By Client; the failure message and Retry; `adminHealthItems` table over each item present, absent and with keys missing, each item's `place` and `href` as the table above gives them: the final addresses and places (`/admin/settings/email`, `/admin/settings/authentication` and `/admin/settings/attachments` for the four settings items, the release-notes URL for the update). The card is built after #674, so there was never an interim link; the card's quiet line and its failure state; the ticket list parses, shows, clears and sends `awaiting_reply` for staff, offers it only on Assigned to Me and My Group's Tickets, and drops it from a requester's request.
 - *e2e*: the dashboard at 375 px and 1280 px for an administrator, a staff member and a requester, with a 300-character subject in the attention list: no horizontal scroll, the strip's cells at least 44 px tall on a touch profile.
 
 ### KPI reports
@@ -1835,43 +1837,77 @@ export function useSettingsDraft(): SettingsDraft
     null`, a `useState` initialiser. A page opened with the dump already
     cached (from another settings page) is seeded in its first render and
     shows its sections at once, with no spinner.
-  - The seeding effect is today's for an untouched draft (see the third
-    change below for what it keeps).
-  - `isLoading` is `query.isLoading || (query.data !== undefined && local
-    === null)`. It is true while the read is in flight, and for the one
-    render between the data arriving and the effect copying it. The shell
+  - Since the third change below, `local` is a `seeded` flag, set by the
+    effect when the dump has been seen (and initially true when the dump is
+    cached); the draft itself is composed from the layers.
+  - `isLoading` is `query.isLoading || (query.data !== undefined &&
+    !seeded)`. It is true while the read is in flight, and for the one
+    render between the data arriving and the effect seeing it. The shell
     shows its spinner in both, so no section mounts on an empty draft.
-  - The accessors and `buildSettingsPatch` read `local ?? {}`. A failed read
-    has no data, so `isLoading` is false and the page renders with an empty
-    draft, as today.
+  - The accessors and `buildSettingsPatch` read the composed draft, empty
+    for a failed read. A failed read has no data, so `isLoading` is false and
+    the page renders with an empty draft, as today.
 
   No section changes. A section that seeds its own state at mount sees the
   stored value, whichever way the page was opened.
-- **A third change: a refetch does not overwrite what the operator has edited
-  (`fix/saml-settings-save`).** The seeding effect used to copy every fresh dump
-  over the whole draft, so any refetch silently reset an unsaved edit, and with
-  it anything that was only shown while that edit stood. Two things refetch the
-  dump: the window regaining focus (the query's `staleTime` is 0, so for
-  instance closing the certificate file picker refetches), and, since this
-  change, "Save SAML config", which also invalidates `['admin', 'settings']`
-  because the save changes the `saml_*` keys the dump carries. The draft
-  therefore keeps the **edited keys**, each with the value last set:
-  `setBool`, `setNum`, `setStr`, `setStrArr` and `toggleStrArr` record theirs.
-  When fresh data arrives, an edited key keeps the operator's value and every
-  other key follows the fresh data; the first seeding, with nothing edited,
-  copies everything as before. A key put back to the stored value is not an
-  edit and is not held, so another administrator's later change to it comes
-  through. A successful save clears the marks of the keys that were edited as
-  of the send and have not been edited again since; a key edited while the
-  save was pending keeps its mark and its value, and the page stays dirty for
-  it. After the save the draft is the fresh dump again for everything else (the
-  save stays pending until that dump has arrived, see the first change). A
-  refused save keeps every mark and edit. This applies to every System page,
-  not only Authentication. The write-only keys in `secrets` and `cleared` were
-  never in the draft and are unaffected. Separately, "Save SAML config" empties
-  the private key box once saved (the key is write-only and is not sent again).
+- **A third change: the draft is layers, so a refetch does not overwrite what
+  the operator has edited (`fix/saml-settings-save`).** The seeding effect used
+  to copy every fresh dump over the whole draft, so any refetch silently reset
+  an unsaved edit, and with it anything that was only shown while that edit
+  stood. Two things refetch the dump: the window regaining focus (the query's
+  `staleTime` is 0, so for instance closing the certificate file picker
+  refetches), and, since this change, "Save SAML config", which also
+  invalidates `['admin', 'settings']` because the save changes the `saml_*`
+  keys the dump carries. The hook no longer copies the dump into `local`. A
+  key's value is the first of these layers that has it:
+  - **edits**: what the operator last set, for the keys they changed
+    (`setBool`, `setNum`, `setStr`, `setStrArr`, `toggleStrArr`);
+  - **sent**: the keys the save in flight carries, with the values the
+    operator set, from the send until the save settles. When the PATCH answers
+    they become the values the server now holds (for the guest figure that can
+    be a clamp of what was typed);
+  - **saved**: what earlier saves wrote whose fresh fetch failed (otherwise
+    absent): the dump is then older than what was saved, so this stays as the
+    base under the edits, the form keeps showing what was saved and is not
+    dirty, until the next dump takes over. Any dump fetched after that save
+    settled does so at once (a fetch that changed nothing counts), also one
+    that lands while a later save is in flight: it is newer than what the
+    earlier save wrote, and `sent` still covers the keys of the later one;
+  - **the dump**: the query's data.
+
+  What is under the edits (sent, then saved, then the dump) is the base an edit
+  is judged against. Setting a key compares the new value, by content, with its
+  base. Equal: the edit is deleted. Otherwise it is recorded. So a key put back
+  to what the dump holds is not held and another administrator's later change to
+  it comes through. A key the save in flight carries is always held as an edit,
+  whatever its value, so setting it again, toggling it, or a dump that arrives
+  meanwhile cannot drop it: it is judged when the save settles. When the dump
+  changes and when a save settles, the other edits that equal their base are
+  dropped. A successful save drops the edits equal to what it sent; the rest
+  stay, and a key put back to its pre-save value during the save stays an edit
+  and is saved next. The save settles after the fresh settings have been
+  asked for: if the dump's own stamp (`dataUpdatedAt`) advanced past the one read when
+  the PATCH answered (no comparison with a separately taken timestamp), `sent`
+  is dropped; if not (the fetch failed), `sent` joins `saved`. A refused save
+  gives back only the keys it sent, with the operator's values, as edits (before
+  anything is dropped); `saved` is left as it was, so what an earlier save wrote
+  does not become an unsaved edit. The page is still dirty and Save sends them
+  again. A second click on Save while one is in flight is ignored. A toggle of
+  an array starts from the draft's current value in whichever layer holds it,
+  including the window between the PATCH answer and the fresh settings.
+  `dirty` is the patch of the composed draft against the base (the dump with
+  `saved` over it), and a key whose edit equals the base never makes it dirty.
+  This applies to every System page, not only Authentication. The write-only
+  keys in `secrets` and `cleared` are not part of the draft. A successful save
+  clears the ones its patch carried: a box is emptied if it still holds what it
+  held when the patch was built, so a removal save also discards a key typed
+  under the ticked "remove" (the patch carries `''` for it), and a key typed over
+  it, or a key typed or ticked for another setting, while the save was on its
+  way stays.
+  Separately, "Save SAML config" empties the private key box once saved (the
+  key is write-only and is not sent again).
 - **`dirty`** is `!isPending && Object.keys(buildSettingsPatch(…)).length > 0`.
-  While `local` is `null` the patch is empty, so a page that is still loading
+  While there is no dump the patch is empty, so a page that is still loading
   is never dirty.
 
 Sections receive the draft as one prop, `draft: SettingsDraft`, instead of
@@ -1952,14 +1988,15 @@ of these changes to the new name:
 | `AdminHealthCard` / `adminHealthItems`, SLA alerts off item (#675) | — (new in this build) | `href` `/admin/settings/email`, `place` "Email → Notifications → SLA alerts" |
 | same, passkey requirement suspended item (#675) | — (new in this build) | `href` `/admin/settings/authentication`, `place` "Authentication → Multi-factor authentication" |
 | same, attachment scanner down item (#675) | — (new in this build) | `href` `/admin/settings/attachments`, `place` "File Attachments → Malware scanning" |
+| same, SAML required but not loaded item | — (new) | `href` `/admin/settings/authentication`, `place` "Authentication → SAML" |
 
-The last three rows are the dashboard's health card (#675). They are links, not
+The last four rows are the dashboard's health card (#675; the fourth, the SAML sign-in problem, was added after the card). They are links, not
 plain-text notices. The card did not exist in this base (see **This build's
 base**), so their "Today" cell is "— (new in this build)": nothing shipped with
 an interim address and nothing is retargeted. **The plan's task 12 built the
 card once the pages existed, directly with the "After" values**, and tests each
 target (`/admin/settings/email`, `/admin/settings/authentication`,
-`/admin/settings/attachments`) and each `place`. The update item's `href` (the
+`/admin/settings/attachments`) and each `place`, the SAML row's included. The update item's `href` (the
 release-notes URL) is as the #675 section specifies. The #675 section's text
 (**Admin health card**, **Build order** and Decisions) says the card was built
 after #674 with these addresses.
@@ -1968,8 +2005,7 @@ The notices stay plain text. None of them was a link to a settings tab
 before, because a tab had no address, and making them links is not part of
 this issue. The only links into settings today are the template notice (its
 new address is in the table above) and Email's own link to templates, which
-is removed. The admin health card adds three more, built in this
-branch with their final addresses (see the last three rows of the table
+is removed. The admin health card adds four more, built with their final addresses (see the last four rows of the table
 above), so none of them is ever a link to `/admin/settings`. The links out of
 settings (Open OAuth clients, and the user page's OAuth-clients links) keep
 their target. The backend `warning` string
@@ -2068,7 +2104,13 @@ apply to each page, as they did to each tab:
   - An edit survives a refetch of the dump; a key the operator did not
     edit follows it; a successful save clears the edited keys, so the next
     refetch is followed in full; an edit made while a save is pending is kept
-    and still dirty; an edit put back to the stored value is not held.
+    and still dirty, also when it was set back to its pre-save value; an edit
+    put back to the stored value, with no save pending, is not held; a refused
+    save keeps every value it sent, dirty, also after the same value was set
+    again or another key's fetch landed meanwhile; a refused save after one
+    whose fetch failed gives back only its own keys; a save whose fresh fetch
+    failed still shows what was saved (the clamped figure, for the guest size)
+    and is not dirty; a second Save in flight is ignored.
   - A refused save keeps the edits and `dirty`.
   - The `email_required` message is shown.
   - `aboutClients` is set only when the patch turns `ticket_scope_enforced`
@@ -2880,6 +2922,14 @@ on a passkey-grade assertion, otherwise a passkey step follows the SSO.
   - Pinned by `TestRefreshSAML_*` and `TestNewSAMLMiddleware_HTTPSOnly`.
 - **Reloads are serialised (#619).** Reading the stored settings, building from them (a network fetch of up to 15 seconds) and committing are done under one lock per provider (`samlReloadMu`, `oidcReloadMu`), held by startup, the hourly refresh, the `PATCH /admin/settings` reload, and the `PUT /admin/saml` and `PUT /admin/oidc` saves. An older reload therefore cannot commit after a newer one and put the old configuration back live (pinned by `TestReloadSAML_ANewerReloadIsNotOverwrittenByAnOlderSlowOne` and `TestReloadOIDC_ANewerReloadIsNotOverwrittenByAnOlderSlowOne`). The hourly refresh holds the SAML lock across its metadata fetch, so a SAML save or a settings PATCH that reloads can wait up to 15 seconds, about once an hour; the lock is deliberately not narrowed to the commit.
 - **`saml_enabled`** (the "Require SAML for staff and users" toggle) is a separate, stricter posture an operator opts into: it removes password login for non-administrators (`user.IsLocalAuthAllowed`; refused with `403 saml_required`), and `GET /auth/providers` says so with `local_admin_only` (true exactly when `saml_enabled` is on; `local` stays true, since the password form is still offered). `GET /auth/providers` is JSON, and its `saml` and `oidc` entries mean *loaded and able to sign someone in now*, not *switched on*: an identity provider that did not answer no longer gets a button that leads to a 503 (#421). The toggle's hint says that SAML is switched on by "Save SAML config", and that this switch only turns off password sign-in for staff and users (administrators keep password sign-in). **A save that leaves it on while SAML is not loaded still succeeds, with a warning.** Then every staff and user password sign-in is refused and `GET /auth/providers` offers no SAML button, so those accounts have no way in. `PATCH /admin/settings` answers `200 {"warning": "..."}` (the same field the stranding and OAuth-client warnings use) when, after the save has been applied and SAML reloaded, `saml_enabled` is true, SAML is not loaded, and the body set `saml_enabled` or any SAML metadata, certificate or key field (so removing the SAML config while the switch is on says so too). `PUT /admin/saml` adds the same sentence when its save leaves SAML not loaded while `saml_enabled` is true. It is a warning and not a refusal: administrators are unaffected (they keep password sign-in), so no instance is locked out, and the setting is the administrator's to choose; the settings page shows the warning after its Save. No warning when SAML is loaded, and none when `saml_enabled` is false. Pinned by `TestPatchSettings_SAMLEnabledWithoutLiveSAMLWarns`.
+- **A server problem while `saml_enabled` is on and SAML is not loaded.** The save-time warning above is said once, to whoever saved. The state it describes outlasts the save (the identity provider can stop answering, a restart can find it down, another administrator can remove the key), so it is also a standing server problem, listed with the others. It is the only one of its kind: **a problem is something broken now, or a switch an administrator set whose purpose the current state defeats.** A feature left unset is not (the same rule as email, which is a warning only once signup or guest submission needs it, and as the attachment scanner, which is quiet when its policy is "off"). So there is nothing to say while `saml_enabled` is off, **whatever state the SAML fields are in**: complete or not, loaded or not, the instance works and the page already shows `configured` and `live`. (A half-filled SAML form with the switch off is an operator part-way through setting it up.)
+  - **Condition**, read on each `GET /admin/security-warnings` from live state (`adminSvc.SAMLEnabled` and `samlReachableNow()`, the same two facts the save warning uses), so it clears by itself the moment SAML loads, the switch is turned off, or a save removes the requirement, with no restart and no timer, like `attachment_storage`: `saml_enabled` is on **and** SAML is not loaded. The four combinations: enabled and not loaded, a problem; enabled and loaded, none; disabled and not loaded, none; disabled and loaded, none. A metadata URL that fails to load, or metadata that is refused, while the switch is on is the first case (SAML is then not loaded); the hourly refresh retries it and the problem clears when it loads.
+  - **Field**: `saml_required_not_loaded: {reason}`, an object present only while the condition holds (absent otherwise, as `saml_idp_certificate` is). `reason` is `incomplete` when the stored IdP metadata (URL or XML), certificate or key is missing (`samlFieldsLookConfigured` is false), and `not_loaded` when all are saved but the middleware is not running (the metadata did not load, or the pair is unusable). Additive; an older frontend ignores it, a newer one reading an older server sees no field and shows nothing.
+  - **Clears at once after the fix.** The security warnings are read with a five-minute `staleTime`, so the saves that can fix the problem ask for them again: "Save SAML config" (`SAMLSettingsSection`) invalidates `['security-warnings']` in its `onSuccess`, and the settings pages' own Save does (`useSettingsDraft`, which turning the switch off goes through). Pinned by `saml-required-clears.test.tsx` (the bar goes away after each save with no refocus, no Details click and no reload) and by `e2e/saml-server-problem.spec.ts`.
+  - **Who**: administrators only, as the endpoint is (`403` for staff and users, `401` anonymously). It is not on the public `/site` payload: it says how sign-in is configured.
+  - **Banner**: id `saml-required-not-loaded`, red (`failure`: people cannot sign in now), signature the `reason`. Title, for both reasons: "Staff and users cannot sign in: SAML is required but is not working" (not "not set up": with `not_loaded` everything is saved and SAML is not running). Body, one paragraph, word for word as `InsecureConfigBanner.tsx` renders it and `InsecureConfigBanner.saml-required.test.tsx` pins it. Its first sentence is `"Require SAML for staff and users" is on, so staff and users can sign in only with SAML, but ` followed by the cause. For `incomplete` the cause is `the identity provider's metadata, the certificate or the private key is missing.` For `not_loaded` it is `SAML could not be loaded: the identity provider's metadata could not be fetched or was refused, or the certificate and private key do not work together. The server tries again every hour, and saving the SAML configuration tries again now.` (The server cannot tell which cause it was, so both are named. The hourly retry is the one `RefreshSAML` makes for settings that never loaded; a save retries at once.) Then, for both: `Until that is fixed their password sign-in is refused and the login page has no SAML button. Administrators can still sign in with a password. ` a link, `Open System → Authentication → SAML` (a plain anchor to `/admin/settings/authentication`, as the other notices), and ` to fix it, or turn off "Require SAML for staff and users" there. This goes away by itself once SAML is loaded or the switch is off.` **Hide** is the banner's: for the session, by id, severity and signature, returning at the next sign-in while the problem remains. Counted in "N server problems need attention", listed under Details.
+  - **Card**: the item in the **Admin health card** table, red, from the same field, with the same text for both reasons (the banner says which), no Hide of its own.
+  - **Not covered**: OIDC has no equivalent notice; `oidc_enabled` is a sign-in method and not a requirement that removes the password form. Pinned by `TestGetSecurityWarnings_SAMLRequiredNotLoaded` (the table above, the two reasons, the clearing without restart, administrators only), `InsecureConfigBanner.saml-required.test.tsx`, `adminHealth.test.ts`, `AdminHealthCard.test.tsx` and `e2e/saml-server-problem.spec.ts`.
 - **Admin failsafe**: administrators can still sign in with a local password.
 - **First sign-in provisioning.** A known SAML subject signs in and has its email and display name refreshed from the assertion (the domain allowlist is not applied again). An unknown subject creates a `User`-role account, provided the email's domain passes `allowed_email_domains` (an empty list is unrestricted for this path). It never adopts an existing local account by email: an address already held by another account is refused (`/login?error=email_taken`). The email comes from `email`, `mail`, the LDAP `mail` OID or Entra ID's `…/claims/emailaddress`, falling back to the NameID. The name comes from `displayName`, Entra ID's `…/identity/claims/displayname`, `cn` or `name`, then the given name (`givenName`, `firstName` or `…/claims/givenname`) and surname (`sn`, `lastName` or `…/claims/surname`), either alone if only one is sent, then Entra ID's `…/claims/name` (ranked last because Entra fills it with the user principal name), falling back to the email (#461; `TestSAMLIdentity`). A blank value counts as absent. Each sign-in of a known subject rewrites the stored name, and the email when it is valid, from these, so an IdP that starts sending a name, or a release that starts reading one, changes the display name at the next sign-in. Other refusals redirect to `/login?error=` with `domain_not_allowed`, `account_disabled`, `account_link_refused`, `invalid_assertion`, `email_not_verified`, `sso_session_used` or `invalid_email` (an address that needs quotation marks, see Guest Submission). The login page shows a fixed message for each of these codes and a generic one for any other; it never displays text from the query string. An SSO sign-in counts as having passed MFA, **except for a role in `passkey_required_roles`** (#616c): that role is let in only when the assertion is passkey-grade, namely `authnmethodsreferences` (under its `Name` or `FriendlyName`) containing `fido` or `hwk` **together with** `http://schemas.microsoft.com/claims/multipleauthn`. Otherwise the session is pending (`MFAPassed` false, `PasskeyOwed` true) and the browser is redirected to `/login?sso_step=<code>` instead of `/`, where `<code>` is `passkey` (the account has a key: use it), `passkey_enroll` (register one) or `verify_then_passkey_enroll` (an authenticator code, then register one). The login page reads the code through an allowlist and ignores an unknown value; it only chooses the screen, and the server enforces the step whatever the URL says. With no live pending session behind it (a bookmark, or the 5 or 15 minute window ran out) that step cannot succeed, so it carries a **Start over** button: it signs out any partial session, removes `sso_step` from the URL and shows the ordinary credentials form. With passkeys unavailable (#494) the requirement is suspended and the redirect is to `/`. **The accepted values are documented for Microsoft Entra ID only.** Okta and Google Workspace values are unverified and none is invented, so those providers fall through to the local passkey step. All accepted values, and the check for whether MFA was asserted, live in one file, `backend/internal/domain/auth/ssofactor.go`. Whether an SSO sign-in counts as having proved a factor is under Passkeys above.
 
@@ -3246,7 +3296,7 @@ need attention", or the notice's own title when there is exactly one, with a
 notice. Red marks something broken now (unwritable attachment storage, a
 scanner that is down, under either policy: `required` refuses uploads and
 `permissive` stores files unscanned right now; insecure secrets; email not being
-delivered); configuration notices are amber. An `info` severity (neutral blue)
+delivered; SAML required for staff and users while SAML is not loaded); configuration notices are amber. An `info` severity (neutral blue)
 exists for good news such as an available update: it never turns the bar red,
 is not counted as a problem, and is announced politely as a status. **Hide** removes one notice
 for the current session: it is kept in `sessionStorage` by notice id, severity

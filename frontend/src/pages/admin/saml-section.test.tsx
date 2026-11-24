@@ -116,6 +116,41 @@ describe('SAML section', () => {
     await waitFor(async () => expect(await navigator.clipboard.readText()).toBe(ACS))
   })
 
+  it('keeps the private key text when the SAML save fails, and lets the same file be chosen again', async () => {
+    vi.spyOn(api, 'put').mockRejectedValue({
+      isAxiosError: true,
+      message: 'Request failed with status code 400',
+      response: { data: { error: { code: 'invalid_cert_key', message: 'certificate and private key do not match' } } },
+    })
+    const { user, container } = await openPage()
+    // The file inputs are on the page only while the administrator is replacing the pair.
+    await user.click(screen.getByRole('button', { name: 'Replace…' }))
+    const KEY = '-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----'
+    const keyInput = () => container.querySelector('input[type="file"][accept=".pem,.key"]') as HTMLInputElement
+    const file = new File([KEY], 'sp.key', { type: 'application/x-pem-file' })
+
+    await user.upload(keyInput(), file)
+    await waitFor(() => expect(container.querySelector('textarea')).not.toBeNull())
+    // Reset so the same file can be chosen again, as the metadata input does.
+    expect(keyInput().value).toBe('')
+    await user.click(screen.getByRole('button', { name: 'Save SAML config' }))
+    await screen.findByRole('alert')
+
+    expect((container.querySelector('textarea') as HTMLTextAreaElement).value).toBe(KEY)
+  })
+
+  it('resets the certificate file input, so the same file can be chosen again', async () => {
+    const { user, container } = await openPage()
+    await user.click(screen.getByRole('button', { name: 'Replace…' }))
+    const CERT = '-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----'
+    const certInput = container.querySelector('input[type="file"][accept=".pem,.crt,.cer"]') as HTMLInputElement
+
+    await user.upload(certInput, new File([CERT], 'sp.crt', { type: 'application/x-pem-file' }))
+    await waitFor(() => expect(container.querySelector('textarea')).not.toBeNull())
+    expect(certInput.value).toBe('')
+    expect((container.querySelector('textarea') as HTMLTextAreaElement).value).toBe(CERT)
+  })
+
   it('says Copied in a status line, and says so when the clipboard is refused', async () => {
     const { user } = await openPage()
     const entity = screen.getByText(ENTITY_ID).parentElement!

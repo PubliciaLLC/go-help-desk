@@ -131,6 +131,9 @@ function SAMLSection() {
       qc.invalidateQueries({ queryKey: ['admin', 'saml'] })
       // The same save changed the saml_* settings the page's dump carries.
       qc.invalidateQueries({ queryKey: ['admin', 'settings'] })
+      // Whether SAML is loaded decides the "SAML is required but is not working"
+      // notice in the server problems bar; it must not wait for a refocus.
+      qc.invalidateQueries({ queryKey: ['security-warnings'] })
     },
     onError: (err) => setSaveError(extractError(err)),
   })
@@ -148,6 +151,8 @@ function SAMLSection() {
       setWarning(res.warning ?? '')
       qc.invalidateQueries({ queryKey: ['admin', 'saml'] })
       qc.invalidateQueries({ queryKey: ['admin', 'settings'] })
+      // The reload with the new pair can be what makes SAML work.
+      qc.invalidateQueries({ queryKey: ['security-warnings'] })
     },
     onError: (err) => setRegenerateError(extractError(err)),
   })
@@ -292,7 +297,12 @@ function SAMLSection() {
               </div>
               <input ref={certFileRef} type="file" accept=".pem,.crt,.cer" className="hidden"
                 aria-label="SP certificate file"
-                onChange={(e) => { const f = e.target.files?.[0]; if (f) readFile(f, setCertPEM) }} />
+                onChange={(e) => {
+                  const f = e.target.files?.[0]
+                  if (f) readFile(f, setCertPEM)
+                  // So the same file can be chosen again after an edit.
+                  e.target.value = ''
+                }} />
               {certPEM && (
                 <textarea rows={4}
                   aria-label="SP certificate"
@@ -308,7 +318,11 @@ function SAMLSection() {
               </div>
               <input ref={keyFileRef} type="file" accept=".pem,.key" className="hidden"
                 aria-label="SP private key file"
-                onChange={(e) => { const f = e.target.files?.[0]; if (f) readFile(f, setKeyPEM) }} />
+                onChange={(e) => {
+                  const f = e.target.files?.[0]
+                  if (f) readFile(f, setKeyPEM)
+                  e.target.value = ''
+                }} />
               {keyPEM && (
                 <textarea rows={4}
                   aria-label="SP private key"
