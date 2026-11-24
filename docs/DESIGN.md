@@ -95,10 +95,23 @@ changes for an instance until an administrator writes one.
      category and a type selector, staff and administrators add an item, so a
      requester sees at most the type's text (an item is never chosen there).
   2. **Guest form** (`/submit`): the category selector only (a guest is given no
-     type or item, see Guest submission). **A description on a category open to
-     guests is therefore public**: anyone who can open `/submit`, which needs no
-     account, can read it, and so can anyone who calls the public catalogue
-     endpoints while guest submission is on. The admin form says so.
+     type or item, see Guest submission).
+
+  **Who can read a description: every active one, at every level.** The
+  catalogue routes (`GET /categories`, `/categories/{id}/types`, `.../items`)
+  are open to anyone while guest submission is on, and to any signed-in user
+  always, and they serve the description of **every active category, type and
+  item**, not only the category the guest form shows: a guest or a requester
+  never *chooses* a type or an item there, but can still read the text by
+  calling the route. An **archived** entry is not served to anyone but staff and
+  administrators, and neither are the children of an archived parent (archiving
+  does not cascade, so the lists check the parent: a guest or requester gets an
+  empty list under an archived category or type). The admin form says all of
+  this. **Decision (kept, not filtered):** type and item descriptions are not
+  withheld from the anonymous routes. The rule is one sentence and the same as
+  for names (a guest can already read every active type and item *name*); a
+  second, per-caller shape of the same list would be a special case in every
+  handler that serves it, for text that is public by design.
   3. **Reclassify** on the ticket page (the **Classification** card's Edit mode,
      staff and administrators): the same three selectors, so the same text
      beneath them. It is shown only while editing, not in the read-only display
@@ -121,13 +134,23 @@ changes for an instance until an administrator writes one.
   chooser is the mechanism.
 - **Admin.** **Admin → Categories** gets an optional **Description** on create
   and edit for all three levels: a multi-line field with a live
-  "N / 500" counter that turns to an error at 501 and disables Save. It sits in
-  the node's expanded panel (edit, beside **Groups** and **Fields**) and under
-  the name in the Add category / type / item forms (create). It says what the
-  text is for and who can read it: "Shown beneath the chooser on the new-ticket
-  form. Plain text. Anyone who can pick this category can read it, including
-  visitors on the guest form when guest submission is on." Archiving, restoring
-  and deleting are unchanged, and an archived row keeps its description.
+  "N / 500" counter that turns to an error at 501 and disables Save. The counter
+  and the limit both count the **trimmed** text (padding is neither counted nor
+  stored). It sits in the node's expanded panel (edit, beside **Groups** and
+  **Fields**) and under the name in the Add category / type / item forms
+  (create). The same hint is under the field at all three levels: "Shown beneath
+  the Category / Type / Item chooser on the new-ticket form, the guest form
+  (categories only) and the reclassify card on a ticket. Plain text, no
+  formatting; line breaks are kept. This text is public: while guest submission
+  is on, anyone can read the description of every active category, type and
+  item, and any signed-in user can read them at any time. Do not put anything
+  here you would not put on a public web page." (`DESCRIPTION_HINT`,
+  `DescriptionField.tsx`.) The box follows the row when another administrator
+  changes it, unless something has been typed in it. What counts as padding:
+  Go's white space plus U+FEFF, on the server; the form strips the same set
+  (`trimDescription`), because a browser's `trim()` and Go's `TrimSpace`
+  disagree on U+FEFF and U+0085. Archiving, restoring and deleting are
+  unchanged, and an archived row keeps its description.
 - **API (additive).** `description` (string, `""` for none) is in the response of
   every endpoint that returns a category, type or item: the admin CRUD under
   `/admin/categories`, the catalogue the forms read (`GET /categories`,
@@ -3261,7 +3284,7 @@ in 1.2.0.
   - **One migration.** 000054 adds `attachments.uploaded_by_guest BOOLEAN NOT NULL DEFAULT false`, so the cap can count only guest uploads (nothing recorded who uploaded a file). The settings themselves are rows read with defaults and need none; files guests attached before the upgrade are not counted.
   - **Where the control is.** The guest ticket page (`/g`) shows **Add files** on an open ticket when `GET /site` says `guest_attachments_enabled`, with the effective per-file limit in `guest_attachment_max_bytes` (the lower of the two figures, so the page never promises more than the server takes). Files go up one after another as they are chosen, to `POST /guest/attachments` with the `Authorization: Guest` header; there is no draft, because a guest's attachment belongs to the ticket and not to a reply. The server's own reason is shown for a refusal. There is no control on the submission page (`/submit`): the link that identifies the ticket is emailed after the ticket exists, so a guest attaches from that link. The page does not list the guest's uploads (the guest read has no attachment list) and renders none of their content; attachments stay download-only.
 - Unauthenticated users submit a ticket at `/submit` and receive a **tracking number**
-- Guest ticket form collects: **name** (required), **email** (required), **phone** (optional), subject, description, and category (active only — no type or item). The chosen category's description, when it has one, is shown beneath the selector (see Ticket Classification → Descriptions); it is public to anyone who can open the form
+- Guest ticket form collects: **name** (required), **email** (required), **phone** (optional), subject, description, and category (active only — no type or item). The chosen category's description, when it has one, is shown beneath the selector (see Ticket Classification → Descriptions); it is public to anyone who can open the form, and so is the description of every active type and item (the catalogue routes serve them to anyone while guest submission is on)
 - The tracking number can be referenced when following up with the help desk by phone or email
 - No account creation required
 
@@ -4986,7 +5009,7 @@ Serves both the frontend SPA and external integrations.
 - `GET /api/v1/setup/status` — whether first-run setup is needed; `POST /api/v1/setup` creates the first administrator (and the first category, see Ticket Classification). It answers `409 already_configured` once **any** user row exists, disabled and deleted accounts included, so setup never reopens.
 - `/api/v1/auth/*` — `POST /local/login`, `POST /local/logout`, `GET /providers`, `POST /oauth/token` (OAuth client credentials), the SAML and OIDC sign-in routes, and `GET /signup/status`, `POST /signup`, `GET` and `POST /verify-email` (see Authentication). `POST /local/mfa/verify` and `POST /local/passkey/*` need the session the password step produced and are refused to machine credentials.
 - `/api/v1/guest/*` — `POST /tickets` (submit), `GET /fields?category_id=` (the custom fields the form offers, #627) and `POST /resend` (re-request a link) are public, throttled, and answer `404` while guest submission is off. `GET /ticket`, `POST /follow-up`, `POST /replies` and `POST /attachments` are authenticated by the per-ticket link token alone (see Guest Submission); `POST /follow-up`, `GET /ticket`, `POST /replies` and `POST /attachments` answer `404` while guest submission is off (#424).
-- `GET /api/v1/categories` and its `/{id}/types` and `/{id}/types/{typeId}/items` children — public **only while guest submission is on**, because the guest form needs them; otherwise they require a fully signed-in caller (a session that has passed MFA and owes no password change, an API key or an OAuth token; a half-signed-in session gets `403` like every other route). Active entries for a guest or a reporting user, all of them for staff and administrators.
+- `GET /api/v1/categories` and its `/{id}/types` and `/{id}/types/{typeId}/items` children — public **only while guest submission is on**, because the guest form needs them; otherwise they require a fully signed-in caller (a session that has passed MFA and owes no password change, an API key or an OAuth token; a half-signed-in session gets `403` like every other route). Active entries for a guest or a reporting user, all of them for staff and administrators; nothing under an archived parent for anyone else. Each entry carries its `description`.
 
 Everything else under `/api/v1` requires a session, API key or OAuth token, and the role and scope rules below.
 

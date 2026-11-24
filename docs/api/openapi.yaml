@@ -11698,8 +11698,9 @@ components:
         Optional guidance an administrator wrote for a category, type or item, shown beneath the
         Category / Type / Item chooser on the ticket forms (1.3.0). Plain text of at most 500
         characters (characters, not bytes), with newlines; it is never Markdown or HTML, so a client
-        must render it as text. The empty string means none. The text of a category open to guests is
-        public: anyone who can read the catalogue can read it.
+        must render it as text. The empty string means none. The description of every active category,
+        type and item is public: the catalogue routes serve it to anyone while guest submission is on, and
+        to any signed-in user always.
       type: string
       maxLength: 500
     Category:
