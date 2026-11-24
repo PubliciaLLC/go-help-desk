@@ -171,9 +171,9 @@ describe('dates are the viewer\'s own', () => {
 })
 
 describe('toApiParams', () => {
-  const staff = { staff: true, admin: false, onlyQueue: false, slaOn: true }
-  const admin = { staff: true, admin: true, onlyQueue: false, slaOn: true }
-  const requester = { staff: false, admin: false, onlyQueue: false, slaOn: false }
+  const staff = { staff: true, admin: false, canUseAvailable: false, slaOn: true }
+  const admin = { staff: true, admin: true, canUseAvailable: true, slaOn: true }
+  const requester = { staff: false, admin: false, canUseAvailable: false, slaOn: false }
 
   it('names every filter the way the API does', () => {
     const p = toApiParams(
@@ -246,36 +246,78 @@ describe('toApiParams', () => {
     expect(toApiParams({ page: 3 }, staff)).toMatchObject({ limit: 50, offset: 100 })
   })
 
-  it('a staff search with any filter covers everything they can see', () => {
-    expect(toApiParams({ q: 'x' }, staff).scope).toBe('visible')
-    expect(toApiParams({ priority: ['high'] }, staff).scope).toBe('visible')
-    expect(toApiParams({ sla: 'breached' }, staff).scope).toBe('visible')
+  // The page always writes a view, and the API scope is derived from it
+  // (DESIGN.md, Ticket list views). Text and filters narrow within the view.
+  it.each([
+    ['me', 'assigned_to_me'],
+    ['groups', 'my_groups'],
+    ['available', 'unassigned'],
+    ['search', 'visible'],
+  ] as const)('the %s view sends scope=%s', (view, scope) => {
+    expect(toApiParams({ view }, admin).scope).toBe(scope)
+    // Text and filters do not change it: a queue stays that queue.
+    expect(toApiParams({ view, q: 'x', priority: ['high'] }, admin).scope).toBe(scope)
   })
 
-  it('with no filter, the queue is the queue', () => {
-    expect(toApiParams({}, staff).scope).toBe('mine')
+  it('an address with no view is read as the view the translation would give it', () => {
+    expect(toApiParams({}, staff).scope).toBe('assigned_to_me')
+    expect(toApiParams({ q: 'x' }, staff).scope).toBe('visible')
     expect(toApiParams({ scope: 'unassigned' }, admin).scope).toBe('unassigned')
   })
 
-  it('the Only <queue> chip narrows a search back to the queue', () => {
-    expect(toApiParams({ q: 'x' }, { ...staff, onlyQueue: true }).scope).toBe('mine')
-    expect(toApiParams({ q: 'x', scope: 'unassigned' }, { ...admin, onlyQueue: true }).scope).toBe('unassigned')
+  it('the old Only <queue> widening is gone: text in a queue stays in the queue', () => {
+    expect(toApiParams({ view: 'me', q: 'x' }, staff).scope).toBe('assigned_to_me')
+    expect(toApiParams({ view: 'groups', sla: 'breached' }, staff).scope).toBe('my_groups')
   })
 
-  it('the closed toggle and the sort do not count as filters', () => {
-    expect(toApiParams({ closed: true, sort: 'subject' }, staff).scope).toBe('mine')
+  it('the closed toggle and the sort do not change the scope', () => {
+    expect(toApiParams({ view: 'me', closed: true, sort: 'subject' }, staff).scope).toBe('assigned_to_me')
   })
 
-  it('names a person or an account, and the queue is then not sent (the server overrides it)', () => {
-    expect(toApiParams({ reporter: ID_A }, staff)).toMatchObject({ reporter_id: ID_A })
-    expect(toApiParams({ reporter: ID_A }, staff).scope).toBeUndefined()
-    expect(toApiParams({ requester: 'whit' }, staff).scope).toBeUndefined()
-    expect(toApiParams({ group: 'g1' }, staff).scope).toBeUndefined()
+  // REVIEW AMENDMENT: today's page sends no scope when a reporter, a requester
+  // or a group is set, and the server reads an absent scope as mine, which would
+  // widen the list. The scope is always sent.
+  it('always sends the scope, even when a group, a requester or an account is named', () => {
+    expect(toApiParams({ view: 'groups', group: ID_A }, staff)).toMatchObject({ scope: 'my_groups', assignee_group_id: ID_A })
+    expect(toApiParams({ view: 'me', requester: 'whit' }, staff)).toMatchObject({ scope: 'assigned_to_me', requester: 'whit' })
+    expect(toApiParams({ view: 'me', reporter: ID_A }, staff)).toMatchObject({ scope: 'assigned_to_me', reporter_id: ID_A })
+    expect(toApiParams({ view: 'search', reporter: ID_A }, staff).scope).toBe('visible')
   })
 
-  it('only an administrator picks another queue', () => {
-    expect(toApiParams({ scope: 'all' }, staff).scope).toBe('mine')
-    expect(toApiParams({ scope: 'all' }, admin).scope).toBe('all')
+  it('held_by is sent on My Group\'s Tickets and nowhere else', () => {
+    expect(toApiParams({ view: 'groups', held_by: 'nobody' }, staff)).toMatchObject({ scope: 'my_groups', held_by: 'nobody' })
+    expect(toApiParams({ view: 'groups', held_by: 'me' }, staff).held_by).toBe('me')
+    expect(toApiParams({ view: 'groups', held_by: 'others' }, staff).held_by).toBe('others')
+    expect(toApiParams({ view: 'groups' }, staff)).not.toHaveProperty('held_by')
+    for (const view of ['me', 'available', 'search'] as const) {
+      expect(toApiParams({ view, held_by: 'me' }, admin), view).not.toHaveProperty('held_by')
+    }
+  })
+
+  it('a view the viewer may not use is Assigned to Me', () => {
+    expect(toApiParams({ view: 'available' }, staff).scope).toBe('assigned_to_me')
+    expect(toApiParams({ view: 'available' }, { ...staff, canUseAvailable: true }).scope).toBe('unassigned')
+  })
+
+  it('drops the filters a view does not offer, even if the address carries them', () => {
+    const all = { assignee: 'u1', group: 'g1', reporter: ID_A, requester: 'whit', priority: ['high' as const] }
+    const me = toApiParams({ view: 'me', ...all }, staff)
+    expect(me).not.toHaveProperty('assignee_user_id')
+    expect(me).toMatchObject({ assignee_group_id: 'g1', reporter_id: ID_A, priority: ['high'] })
+
+    const available = toApiParams({ view: 'available', ...all }, admin)
+    for (const k of ['assignee_user_id', 'assignee_group_id', 'reporter_id', 'requester']) {
+      expect(available, k).not.toHaveProperty(k)
+    }
+    expect(available).toMatchObject({ scope: 'unassigned', priority: ['high'] })
+
+    for (const view of ['groups', 'search'] as const) {
+      expect(toApiParams({ view, ...all }, staff), view).toMatchObject({
+        assignee_user_id: 'u1',
+        assignee_group_id: 'g1',
+        reporter_id: ID_A,
+      })
+    }
   })
 
   describe('for a requester', () => {
@@ -315,7 +357,7 @@ describe('toApiParams', () => {
 })
 
 describe('toApiParams while SLA tracking is not known to be on', () => {
-  const off = { staff: true, admin: false, onlyQueue: false, slaOn: false }
+  const off = { staff: true, admin: false, canUseAvailable: false, slaOn: false }
 
   it('drops the SLA filter and the SLA sort, which the server would answer 400', () => {
     const p = toApiParams({ sla: 'breached', sort: 'sla', order: 'desc', priority: ['high'] }, off)

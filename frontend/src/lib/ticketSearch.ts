@@ -32,7 +32,33 @@ const NATURAL_ORDER: Record<SortKey, SortOrder> = {
 // same leak as filtering on it), so the server answers 403.
 const REQUESTER_SORTS: SortKey[] = ['number', 'subject', 'status', 'priority', 'created']
 
+// The address's old queue, read only to translate a link made before views
+// (#676). The page never writes it and the API scope is derived from the view.
 export type Queue = 'mine' | 'unassigned' | 'all'
+
+// The ticket list's views (#676): Assigned to Me, My Group's Tickets,
+// Available and Search. A requester has none.
+export const VIEWS = ['me', 'groups', 'available', 'search'] as const
+export type View = (typeof VIEWS)[number]
+
+// Who personally holds a ticket, relative to the viewer: the three filters of
+// My Group's Tickets. Absent is "All".
+export const HELD_BY = ['nobody', 'me', 'others'] as const
+export type HeldBy = (typeof HELD_BY)[number]
+
+export const VIEW_NAME: Record<View, string> = {
+  me: 'Assigned to Me',
+  groups: "My Group's Tickets",
+  available: 'Available',
+  search: 'Search',
+}
+
+export const HELD_BY_LABEL: Record<HeldBy | 'all', string> = {
+  all: 'All',
+  nobody: 'Group queue',
+  me: 'Assigned to me',
+  others: 'Assigned to others',
+}
 
 // Dates are YYYY-MM-DD in the address and become instants in the viewer's own
 // timezone (owner decision S8) when sent.
@@ -41,6 +67,9 @@ export interface TicketSearch {
   // Stored only when off: searching replies is the page's default.
   replies?: false
   scope?: Queue
+  view?: View
+  // Kept only with view=groups.
+  held_by?: HeldBy
   status?: string[]
   priority?: Priority[]
   category?: string
@@ -88,6 +117,18 @@ const FILTER_FIELDS: Record<FilterKey, (keyof TicketSearch)[]> = {
 }
 
 const FILTER_KEYS = Object.keys(FILTER_FIELDS) as FilterKey[]
+
+// The filters each view offers. Assigned to Me leaves out Assignee (it is always
+// me); Available leaves out Assignee and Group (always empty for that queue) and
+// Requester (the server lets a named set replace the unassigned queue, which
+// would list tickets that are not available). A filter a view does not offer is
+// neither shown nor sent, even if the address carries it.
+export const VIEW_FILTERS: Record<View, readonly FilterKey[]> = {
+  me: FILTER_KEYS.filter(k => k !== 'assignee'),
+  groups: FILTER_KEYS,
+  available: FILTER_KEYS.filter(k => k !== 'assignee' && k !== 'group' && k !== 'requester'),
+  search: FILTER_KEYS,
+}
 
 // --- URL to state ------------------------------------------------------------
 
@@ -166,10 +207,13 @@ export function parseTicketSearch(raw: Record<string, unknown>): TicketSearch {
   const sort = oneOf(raw.sort, SORT_KEYS)
   const page = Number(raw.page)
   const reporter = id(raw.reporter)
+  const view = oneOf(raw.view, VIEWS)
   const s: TicketSearch = {
     q: text(raw.q),
     replies: isOff(raw.replies) ? false : undefined,
     scope: oneOf(raw.scope, ['mine', 'unassigned', 'all'] as const),
+    view,
+    held_by: view === 'groups' ? oneOf(raw.held_by, HELD_BY) : undefined,
     status: ids(raw.status),
     priority: listOf(raw.priority, PRIORITIES),
     category: id(raw.category),
@@ -221,11 +265,18 @@ export function isFilterActive(s: TicketSearch, key: FilterKey): boolean {
 // link opened by one counts just those: the badge should match what is applied.
 const REQUESTER_FILTER_KEYS: FilterKey[] = ['status', 'priority', 'category', 'created']
 
-export function activeFilterCount(s: TicketSearch, staff = true): number {
+// `offered` is what the view offers (VIEW_FILTERS): a filter it leaves out is
+// not applied, so it is not counted.
+export function activeFilterCount(s: TicketSearch, staff = true, offered: readonly FilterKey[] = FILTER_KEYS): number {
   // A type or item alone (no category) is not a thing the form can make, and a
   // typed address can: count it once, under the category.
   return FILTER_KEYS.filter(
-    k => k !== 'type' && k !== 'item' && (staff || REQUESTER_FILTER_KEYS.includes(k)) && isFilterActive(s, k),
+    k =>
+      k !== 'type' &&
+      k !== 'item' &&
+      offered.includes(k) &&
+      (staff || REQUESTER_FILTER_KEYS.includes(k)) &&
+      isFilterActive(s, k),
   ).length
 }
 
@@ -310,19 +361,21 @@ export interface Viewer {
   // Staff or administrator.
   staff: boolean
   admin: boolean
-  // The "Only <queue>" chip is on: a search stays in the selected queue.
-  onlyQueue: boolean
+  // GET /me said this person may open the Available view (an administrator
+  // always may).
+  canUseAvailable: boolean
   // GET /me said SLA tracking is on. The SLA filter and sort are refused with
   // 400 while it is off, so they are not sent unless it is known to be on.
   slaOn: boolean
 }
 
-export type ApiQueue = Queue | 'visible'
+export type ApiQueue = 'mine' | 'assigned_to_me' | 'my_groups' | 'unassigned' | 'all' | 'visible'
 
 export interface TicketListParams {
   q?: string
   search_replies?: boolean
   scope?: ApiQueue
+  held_by?: HeldBy
   status_id?: string[]
   include_closed?: boolean
   priority?: Priority[]
@@ -345,21 +398,60 @@ export interface TicketListParams {
   offset: number
 }
 
+// --- Views -------------------------------------------------------------------
+
+export interface ViewViewer {
+  staff: boolean
+  admin: boolean
+  canUseAvailable: boolean
+}
+
+// The view an address should carry, or undefined for a requester, who has none.
+// An address with a view keeps it (a view the viewer may not use is Assigned to
+// Me, with no error: a colleague's shared link must not greet them with a 403).
+// One without is a link made before #676 and is translated (DESIGN.md, Ticket
+// list views, Addresses): text or any filter is Search, which is what a staff
+// search that narrowed covered before; scope=all is Search; scope=unassigned is
+// Available; anything else is Assigned to Me.
+export function resolveView(raw: object, viewer: ViewViewer): View | undefined {
+  if (!viewer.staff) return undefined
+  const s = parseTicketSearch(raw as Record<string, unknown>)
+  let view: View = s.view ?? (hasNarrowing(s) || s.scope === 'all' ? 'search' : s.scope === 'unassigned' ? 'available' : 'me')
+  if (view === 'available' && !(viewer.admin || viewer.canUseAvailable)) view = 'me'
+  return view
+}
+
+// The address that replaces the one the page was opened with: the resolved
+// view written, scope dropped, held_by kept only on My Group's Tickets. A
+// requester's view, scope and held_by are dropped.
+export function translateAddress(raw: object, viewer: ViewViewer): TicketSearch {
+  const s = parseTicketSearch(raw as Record<string, unknown>)
+  const view = resolveView(s, viewer)
+  return toUrlSearch({ ...s, scope: undefined, view, held_by: view === 'groups' ? s.held_by : undefined })
+}
+
+const SCOPE_OF_VIEW: Record<View, ApiQueue> = {
+  me: 'assigned_to_me',
+  groups: 'my_groups',
+  available: 'unassigned',
+  search: 'visible',
+}
+
 // The request for a search. Anything a requester may not use is dropped here
 // rather than sent: the server answers 403 to the whole request, and a link
 // copied from a colleague's staff search would otherwise show a requester an
 // error instead of their own tickets.
-// Whether the search names a set of tickets of its own (an account, free text
-// or a group), so the queue does not apply and the page sends none.
-export function namesASet(s: TicketSearch, staff: boolean): boolean {
-  return staff && Boolean(s.reporter || s.requester || s.group)
-}
-
+//
+// A staff member's request always carries the scope of the view. A search that
+// names a reporter, a requester or a group would otherwise send none, and the
+// server reads an absent scope as mine, which would widen the list.
 export function toApiParams(s: TicketSearch, viewer: Viewer): TicketListParams {
   const p: TicketListParams = { limit: PAGE_SIZE, offset: ((s.page ?? 1) - 1) * PAGE_SIZE }
   const set = <K extends keyof TicketListParams>(k: K, v: TicketListParams[K] | undefined) => {
     if (isSet(v)) p[k] = v as TicketListParams[K]
   }
+  const view = resolveView(s, viewer)
+  const offers = (k: FilterKey) => view === undefined || VIEW_FILTERS[view].includes(k)
 
   const q = (s.q ?? '').trim()
   set('q', q || undefined)
@@ -378,10 +470,12 @@ export function toApiParams(s: TicketSearch, viewer: Viewer): TicketListParams {
   set('created_before', s.created_to ? dayEnd(s.created_to) : undefined)
 
   if (viewer.staff) {
-    set('assignee_user_id', s.assignee)
-    set('assignee_group_id', s.group)
-    set('reporter_id', s.reporter)
-    set('requester', s.requester)
+    if (offers('assignee')) set('assignee_user_id', s.assignee)
+    if (offers('group')) set('assignee_group_id', s.group)
+    if (offers('requester')) {
+      set('reporter_id', s.reporter)
+      set('requester', s.requester)
+    }
     set('updated_after', s.updated_from ? dayStart(s.updated_from) : undefined)
     set('updated_before', s.updated_to ? dayEnd(s.updated_to) : undefined)
     set('source_channel', s.channel)
@@ -393,12 +487,12 @@ export function toApiParams(s: TicketSearch, viewer: Viewer): TicketListParams {
     p.order = s.order ?? NATURAL_ORDER[s.sort]
   }
 
-  // These three name a set of tickets of their own, so the server ignores the
-  // queue and the page does not send one.
-  if (!namesASet(s, viewer.staff)) {
-    // Non-administrators are always on "mine": the server refuses the others.
-    const queue: Queue = viewer.admin ? (s.scope ?? 'mine') : 'mine'
-    p.scope = viewer.staff && hasNarrowing(s) && !viewer.onlyQueue ? 'visible' : queue
+  // A requester has no views: their request is what it was before #676.
+  if (view === undefined) {
+    p.scope = 'mine'
+  } else {
+    p.scope = SCOPE_OF_VIEW[view]
+    if (view === 'groups') set('held_by', s.held_by)
   }
   return p
 }

@@ -66,16 +66,20 @@ export function FilterChips({
   search,
   names,
   staff,
+  offered = ORDER,
   onClear,
   onClearAll,
 }: {
   search: TicketSearch
   names: ChipNames
   staff: boolean
+  // The filters the view offers (VIEW_FILTERS). One it leaves out is not
+  // applied, so a chip for it would claim a filter that is not.
+  offered?: readonly FilterKey[]
   onClear: (key: FilterKey) => void
   onClearAll: () => void
 }) {
-  const shown = ORDER.filter(k => isFilterActive(search, k) && (staff || !STAFF_ONLY.includes(k)))
+  const shown = ORDER.filter(k => offered.includes(k) && isFilterActive(search, k) && (staff || !STAFF_ONLY.includes(k)))
   if (shown.length === 0) return null
 
   const value = (k: FilterKey): ReactNode => {
