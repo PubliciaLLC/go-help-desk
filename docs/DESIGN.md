@@ -815,7 +815,7 @@ A requester's dashboard otherwise is what it was: the status cards already count
 
 **The endpoint.** `GET /api/v1/dashboard?tz=<IANA zone>`, mounted with the ticket router's middleware (`RequireRole(admin, staff, user)`, `RequireMFA`, `RequireResource(tickets)`), so an API key or OAuth client needs `tickets:read`, as for `GET /tickets`. It reads nothing from the request but `tz`.
 
-- `tz`: the time zone the trend's days are counted in, the browser's (`Intl.DateTimeFormat().resolvedOptions().timeZone`). Absent or empty is `UTC`. At most 64 bytes of `A-Z a-z 0-9 _ + - /`, otherwise `400 bad_request` "invalid tz". A name Postgres does not know is `400 bad_request` "unknown time zone" (the trend query is run first and its SQLSTATE `22023` is mapped through the store sentinel `ticket.ErrUnknownTimeZone`). The zone is passed to Postgres as a parameter and only ever used in `AT TIME ZONE`.
+- `tz`: the time zone the trend's days are counted in, the browser's (`Intl.DateTimeFormat().resolvedOptions().timeZone`). Absent or empty is `UTC`. At most 64 bytes of `A-Z a-z 0-9 _ + - /`, otherwise `400 bad_request` "invalid tz". A name Postgres does not know is `400 bad_request` "unknown time zone" for a staff member or administrator, the callers who get a trend (a requester runs no trend, so their zone is checked for form only) (the trend query is run first and its SQLSTATE `22023` is mapped through the store sentinel `ticket.ErrUnknownTimeZone`). The zone is passed to Postgres as a parameter and only ever used in `AT TIME ZONE`.
 - The response, for staff and administrators:
 
 ```json

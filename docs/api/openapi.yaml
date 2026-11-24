@@ -2056,7 +2056,7 @@ paths:
           GET /tickets returns it to this caller. The reasons, in order: breached and
           at_risk (SLA tracking on, oldest first), unassigned (the Available queue
           rule: administrators, and staff while Staff is ticked under Available),
-          and reopened (reopened in the last 7 days, most recent first). A ticket is
+          and reopened (reopened in the last 7 days, most recently updated first). A ticket is
           listed once, under its first reason. since is created_at for the first
           three reasons and the time it was last reopened for reopened. An empty
           list means nothing needs attention.
@@ -2082,7 +2082,9 @@ paths:
           description: >-
             The IANA time zone the trend's days are counted in, for example Europe/London. Absent or empty is
             UTC. At most 64 bytes of A-Z, a-z, 0-9, _, +, - and /. Any other value is 400 bad_request,
-            "invalid tz"; a name the database does not know is 400 bad_request, "unknown time zone".
+            "invalid tz"; a name the database does not know is 400 bad_request, "unknown time zone", but only for
+            staff and administrators, the callers who get a trend: a requester runs no trend, so their zone is
+            checked for form only.
           schema:
             type: string
             maxLength: 64
