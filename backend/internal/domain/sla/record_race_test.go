@@ -115,7 +115,7 @@ func TestRecordWrite_RetriesOnTheRecordThatReplacedIt(t *testing.T) {
 				}
 			}
 
-			require.NoError(t, w.run(sla.NewService(store), tk, at))
+			require.NoError(t, w.run(sla.NewService(store, nil), tk, at))
 
 			cur := store.records[tk.ID]
 			require.Equal(t, next.ID, cur.ID)
@@ -143,7 +143,7 @@ func TestRecordWrite_ARestartDropsAReadingFromBeforeIt(t *testing.T) {
 				}
 			}
 
-			require.NoError(t, w.run(sla.NewService(store), tk, at))
+			require.NoError(t, w.run(sla.NewService(store, nil), tk, at))
 
 			cur := store.records[tk.ID]
 			require.Equal(t, next.ID, cur.ID)
@@ -165,7 +165,7 @@ func TestRecordWrite_AReadingFromBeforeTheRecordStartedIsNeverWritten(t *testing
 			rec.StartedAt = &started
 			store.records[tk.ID] = rec
 
-			require.NoError(t, w.run(sla.NewService(store), tk, at))
+			require.NoError(t, w.run(sla.NewService(store, nil), tk, at))
 
 			require.Zero(t, w.calls(store.fakeSLAStore))
 			require.Nil(t, w.fact(store.records[tk.ID]))
@@ -183,7 +183,7 @@ func TestRecordWrite_AReadingAtTheRecordStartCounts(t *testing.T) {
 			rec.StartedAt = &at
 			store.records[tk.ID] = rec
 
-			require.NoError(t, w.run(sla.NewService(store), tk, at))
+			require.NoError(t, w.run(sla.NewService(store, nil), tk, at))
 
 			require.NotNil(t, w.fact(store.records[tk.ID]))
 		})
@@ -201,7 +201,7 @@ func TestRecordWrite_GivesUpAfterThreeAttempts(t *testing.T) {
 				replaceRecord(store.fakeSLAStore, tk.ID, flip[read%2], nil)
 			}
 
-			err := w.run(sla.NewService(store), tk, at)
+			err := w.run(sla.NewService(store, nil), tk, at)
 
 			require.ErrorIs(t, err, sla.ErrRecordSuperseded)
 			require.Equal(t, 3, store.recordReads)
@@ -220,7 +220,7 @@ func TestRecordWrite_ARecordRemovedMeanwhileIsNotAnError(t *testing.T) {
 			store, tk, _, _, at := raceFixture(t)
 			store.onPolicyRead = func(read int) { delete(store.records, tk.ID) }
 
-			require.NoError(t, w.run(sla.NewService(store), tk, at))
+			require.NoError(t, w.run(sla.NewService(store, nil), tk, at))
 		})
 	}
 }
@@ -239,7 +239,7 @@ func TestSweepBreaches_ARecordSupersededBeforeTheStampIsSkipped(t *testing.T) {
 	tickets := newFakeTickets()
 	tickets.tickets[tk.ID] = tk
 
-	res, err := sla.NewService(store).SweepBreaches(context.Background(), tickets, at)
+	res, err := sla.NewService(store, sweepAtomic(store.fakeSLAStore, tickets)).SweepBreaches(context.Background(), tickets, at, true)
 
 	require.NoError(t, err)
 	require.Equal(t, sla.SweepResult{Evaluated: 1, Stamped: 0}, res)

@@ -9,6 +9,7 @@ import { Select } from '@/components/ui/select'
 import { Card, CardContent, CardHeader } from '@/components/ui/card'
 import { LifetimeSlider } from '@/components/admin/LifetimeSlider'
 import { GuestSizeSlider } from '@/components/admin/GuestSizeSlider'
+import { shownAttachmentMaxMB } from '@/lib/attachmentLimit'
 import { BoundedNumberInput } from '@/components/admin/BoundedNumberInput'
 import { UPDATE_CHECK_DETAIL, UPDATE_CHECK_LABEL } from '@/lib/updateCheck'
 
@@ -77,6 +78,7 @@ const STAFF_EMAIL_KEYS = [
   'staff_email_assigned_override',
   'staff_email_activity_override',
   'staff_email_group_override',
+  'staff_email_sla_override',
 ]
 const OVERRIDE_TEXT: Record<string, string> = {
   user: 'Each person chooses',
@@ -103,6 +105,10 @@ function StaffEmailStep({ settings, draft, set, unset }: StepProps) {
         Staff can be emailed when a ticket is assigned to them or their group, and when a requester replies on a ticket
         that is theirs. Upgrading from 1.2 turned them off, so that no staff email started without you deciding it. Email
         only has an effect once it is set up on the server.
+      </p>
+      <p className="text-sm text-gray-700">
+        The fourth, SLA alerts, is mail about an SLA target that has breached or is at risk of breaching. It follows the
+        same choice; the SLA alerts setting under Features decides whether those alerts are sent at all.
       </p>
       <p className="text-sm text-gray-700">
         Currently: {same ? OVERRIDE_TEXT[stored[0]] ?? stored[0] : 'a mix of settings'}.
@@ -204,6 +210,9 @@ function GuestUploadsStep({ settings, get, set }: StepProps) {
   const on = get('guest_attachments_enabled') === true
   const num = (key: string, fallback: number | undefined) =>
     typeof get(key) === 'number' ? (get(key) as number) : fallback
+  // The per-file limit (#673) is the slider's top. Nothing about it changed on
+  // upgrade, so the wizard shows the stored figure and offers no control.
+  const limitMB = shownAttachmentMaxMB(settings.attachment_max_mb)
   return (
     <div className="space-y-3">
       <p className="text-sm text-gray-700">
@@ -227,12 +236,13 @@ function GuestUploadsStep({ settings, get, set }: StepProps) {
         </label>
       </div>
       <p className="text-sm text-gray-500">
-        The largest file can never exceed this instance&rsquo;s own attachment maximum of 25 MB.
+        The largest file a guest may attach. It can never exceed the per-file limit for every upload, {limitMB} MB, set
+        under Attachments.
       </p>
       <GuestSizeSlider
         value={num('guest_attachment_max_mb', undefined)}
         onChange={(v) => set('guest_attachment_max_mb', v)}
-        instanceMaxMB={25}
+        instanceMaxMB={limitMB}
         disabled={!on}
       />
       <div className="flex flex-wrap gap-x-8 gap-y-4">

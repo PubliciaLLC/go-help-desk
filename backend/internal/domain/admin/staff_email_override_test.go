@@ -17,17 +17,18 @@ func TestStaffEmailOverrides(t *testing.T) {
 	ctx := context.Background()
 	user := notification.OverrideUser
 
-	t.Run("unset is the person's own choice for all three", func(t *testing.T) {
+	t.Run("unset is the person's own choice for all four", func(t *testing.T) {
 		svc := admin.NewService(newFakeAdminStore())
-		require.Equal(t, notification.StaffOverrides{Assigned: user, Activity: user, Group: user}, svc.StaffEmailOverrides(ctx))
+		require.Equal(t, notification.StaffOverrides{Assigned: user, Activity: user, Group: user, SLA: user}, svc.StaffEmailOverrides(ctx))
 	})
 
 	t.Run("each key is read for its own switch", func(t *testing.T) {
 		svc := admin.NewService(newFakeAdminStore())
 		require.NoError(t, svc.SetString(ctx, admin.KeyStaffEmailAssignedOverride, "on"))
 		require.NoError(t, svc.SetString(ctx, admin.KeyStaffEmailActivityOverride, "off"))
+		require.NoError(t, svc.SetString(ctx, admin.KeyStaffEmailSLAOverride, "off"))
 		require.Equal(t, notification.StaffOverrides{
-			Assigned: notification.OverrideOn, Activity: notification.OverrideOff, Group: user,
+			Assigned: notification.OverrideOn, Activity: notification.OverrideOff, Group: user, SLA: notification.OverrideOff,
 		}, svc.StaffEmailOverrides(ctx))
 	})
 
@@ -36,6 +37,7 @@ func TestStaffEmailOverrides(t *testing.T) {
 		require.NoError(t, svc.SetRaw(ctx, admin.KeyStaffEmailAssignedOverride, []byte(`"ON"`)))
 		require.NoError(t, svc.SetRaw(ctx, admin.KeyStaffEmailActivityOverride, []byte(`true`)))
 		require.NoError(t, svc.SetRaw(ctx, admin.KeyStaffEmailGroupOverride, []byte(`null`)))
-		require.Equal(t, notification.StaffOverrides{Assigned: user, Activity: user, Group: user}, svc.StaffEmailOverrides(ctx))
+		require.NoError(t, svc.SetRaw(ctx, admin.KeyStaffEmailSLAOverride, []byte(`"bogus"`)))
+		require.Equal(t, notification.StaffOverrides{Assigned: user, Activity: user, Group: user, SLA: user}, svc.StaffEmailOverrides(ctx))
 	})
 }

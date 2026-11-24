@@ -12,10 +12,17 @@ import (
 )
 
 // Service evaluates SLA policies against tickets.
-type Service struct{ store Store }
+type Service struct {
+	store  Store
+	atomic ticket.Atomic // the sweep's stamp and its event commit through this
+}
 
-// NewService returns a Service backed by the given Store.
-func NewService(store Store) *Service { return &Service{store: store} }
+// NewService returns a Service backed by the given Store. atomic is what
+// SweepBreaches stamps and raises through (#670); a Service that never sweeps
+// may pass nil, and SweepBreaches then refuses to stamp.
+func NewService(store Store, atomic ticket.Atomic) *Service {
+	return &Service{store: store, atomic: atomic}
+}
 
 // AttachPolicy finds the best matching SLA policy for a ticket and creates an
 // SLA record for it. Called when a new ticket is created.
@@ -170,16 +177,19 @@ func (s *Service) recordOnCurrentRecord(ctx context.Context, t ticket.Ticket, at
 }
 
 // EvaluateBreaches checks whether a ticket has breached its SLA targets and
-// stamps the breach timestamps if so. Called per ticket, from the periodic
-// sweep (see SweepBreaches) or directly, as service_test.go still does.
+// stamps the breach timestamps if so, announcing nothing.
+//
+// Deprecated: the sweep no longer calls it (#670). SweepBreaches stamps and
+// announces in one transaction through ticket.Store.StampSLACrossings, which
+// reports what it newly set; this one cannot, and cannot stamp at-risk. Kept,
+// with its contract, because service_test.go still exercises it directly.
 func (s *Service) EvaluateBreaches(ctx context.Context, t ticket.Ticket, now time.Time) error {
 	_, err := s.evaluate(ctx, t, now)
 	return err
 }
 
 // evaluate is EvaluateBreaches' implementation. It reports whether it wrote a
-// new breach stamp, so SweepBreaches can count it, without changing
-// EvaluateBreaches' own exported signature.
+// new breach stamp.
 //
 // A newly-detected breach is written through StampBreaches, not UpdateRecord.
 // UpdateRecord is a full-row read-modify-write, and the sweep's read and
@@ -227,29 +237,39 @@ func (s *Service) evaluate(ctx context.Context, t ticket.Ticket, now time.Time) 
 
 // TicketGetter is what SweepBreaches needs from the ticket layer: the full
 // row, so whatever fields the pause-aware elapsed calculation reads (see
-// sla.Elapsed) reach evaluate() rather than a partial struct built from the
-// candidate query's own columns, which would silently evaluate as never
-// paused.
+// sla.Elapsed) reach the sweep's decision rather than a partial struct built
+// from the candidate query's own columns, which would silently evaluate as
+// never paused.
 type TicketGetter interface {
 	GetByID(ctx context.Context, id uuid.UUID) (ticket.Ticket, error)
 }
 
-// SweepResult reports how many candidates a SweepBreaches pass looked at and
-// how many of those it actually stamped a new breach for.
+// SweepResult reports what one SweepBreaches pass did. Evaluated counts the
+// candidates it looked at without failing; Stamped, the tickets on which its
+// statement newly set at least one stamp column; Announced, the tickets it
+// raised an event for; Stale, the crossings it stamped silently because they
+// were not fresh (the caller logs this one count, not a line per ticket).
 type SweepResult struct {
 	Evaluated int
 	Stamped   int
+	Announced int
+	Stale     int
 }
 
 // SweepBreaches evaluates every current breach candidate once. Called on a
 // schedule (see cmd/server/main.go).
 //
-// A failure loading or evaluating one ticket does not stop the pass; every
-// such failure is collected and returned together via errors.Join, alongside
-// the counts of what did succeed. The pass stops early only when ctx is
-// done, between candidates, so a cancelled sweep does not start work it
-// cannot finish.
-func (s *Service) SweepBreaches(ctx context.Context, tickets TicketGetter, now time.Time) (SweepResult, error) {
+// Each ticket is one ticket.Atomic transaction: the stamp statement, then at
+// most one raise of the event the fresh crossings it newly set call for. The
+// stamps and the outbox rows commit together or not at all (#670). announce
+// false (the sla_alerts_enabled setting off) still stamps, and raises nothing.
+//
+// A failure loading or sweeping one ticket does not stop the pass; every such
+// failure is collected and returned together via errors.Join, alongside the
+// counts of what did succeed. The pass stops early only when ctx is done,
+// between candidates, so a cancelled sweep does not start work it cannot
+// finish.
+func (s *Service) SweepBreaches(ctx context.Context, tickets TicketGetter, now time.Time, announce bool) (SweepResult, error) {
 	var res SweepResult
 
 	ids, err := s.store.ListBreachCandidates(ctx, now)
@@ -267,14 +287,18 @@ func (s *Service) SweepBreaches(ctx context.Context, tickets TicketGetter, now t
 			errs = append(errs, fmt.Errorf("loading ticket %s for SLA sweep: %w", id, err))
 			continue
 		}
-		stamped, err := s.evaluate(ctx, t, now)
+		out, err := s.sweepTicket(ctx, t, now, announce)
 		if err != nil {
-			errs = append(errs, fmt.Errorf("evaluating SLA breaches for ticket %s: %w", id, err))
+			errs = append(errs, fmt.Errorf("sweeping SLA crossings for ticket %s: %w", id, err))
 			continue
 		}
 		res.Evaluated++
-		if stamped {
+		res.Stale += out.stale
+		if out.stamped {
 			res.Stamped++
+		}
+		if out.announced {
+			res.Announced++
 		}
 	}
 	return res, errors.Join(errs...)

@@ -129,13 +129,14 @@ var choiceSettings = map[string]choiceSetting{
 	admin.KeyStaffEmailAssignedOverride: staffEmailOverrideSetting,
 	admin.KeyStaffEmailActivityOverride: staffEmailOverrideSetting,
 	admin.KeyStaffEmailGroupOverride:    staffEmailOverrideSetting,
+	admin.KeyStaffEmailSLAOverride:      staffEmailOverrideSetting,
 	// Anything else reads as biweekly, never "never". Decoded bare for compatibility, as above.
 	admin.KeyAttachmentReputationRefresh: {admin.ValidReputationRefresh, admin.ReputationRefreshBiweekly,
 		"invalid_reputation_refresh", "reputation refresh must be one of: weekly, biweekly, monthly, quarterly, never",
 		false, "reputation refresh must be a string"},
 }
 
-// staffEmailOverrideSetting is shared by the three staff-email overrides: same
+// staffEmailOverrideSetting is shared by the four staff-email overrides: same
 // values, same refusal, same reader fallback.
 var staffEmailOverrideSetting = choiceSetting{notification.ValidOverrideMode, string(notification.OverrideUser),
 	"invalid_staff_email_override", "a staff email override must be one of: user, on, off",
@@ -483,10 +484,11 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// The update check (#170) and the post-upgrade wizard's seen flag: booleans
-	// and nothing else. A string "true", a number or an object would be stored
-	// and read back as off, so the operator would believe they had chosen.
-	for _, key := range []string{admin.KeyUpdateCheckEnabled, admin.KeyPostUpgrade130Seen} {
+	// The update check (#170), the post-upgrade wizard's seen flag and the SLA
+	// alerts switch (#670): booleans and nothing else. A string "true", a number
+	// or an object would be stored and read back as off, so the operator would
+	// believe they had chosen.
+	for _, key := range []string{admin.KeyUpdateCheckEnabled, admin.KeyPostUpgrade130Seen, admin.KeySLAAlertsEnabled} {
 		if raw, ok := body[key]; ok {
 			var on bool
 			if err := unmarshalSetting(raw, key, &on); err != nil {
@@ -524,6 +526,27 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	if raw, ok := body[admin.KeyMFAEnforcedRoles]; ok {
 		var roles []string
 		if err := unmarshalSetting(raw, admin.KeyMFAEnforcedRoles, &roles); err != nil {
+			handleError(w, err)
+			return
+		}
+	}
+	// The same list shape, with the elements checked: a role no account holds
+	// would be accepted and silently do nothing, and the administrator would
+	// believe a requirement was in force (#616c).
+	if raw, ok := body[admin.KeyPasskeyRequiredRoles]; ok {
+		var roles []string
+		if err := unmarshalSetting(raw, admin.KeyPasskeyRequiredRoles, &roles); err != nil {
+			handleError(w, err)
+			return
+		}
+		for _, role := range roles {
+			if !user.Role(role).Valid() {
+				Error(w, http.StatusBadRequest, "bad_request",
+					"passkey_required_roles may only list admin, staff or user")
+				return
+			}
+		}
+		if err := s.refusePasskeySelfLockout(r.Context(), authmw.GetActor(r), roles); err != nil {
 			handleError(w, err)
 			return
 		}
@@ -581,7 +604,27 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Guest uploads (#445). The size is a slider of 1 to 100 MB; a value off it
+	// The per-file limit (#673), 1 to 100 MB. Refused rather than clamped, for
+	// the reason the guest figure is: the reader would replace a bad value with
+	// the default and the number typed would not be the number in force. It is
+	// checked before the guest figure because that one is judged against it.
+	var overallMB int
+	if raw, ok := body[admin.KeyAttachmentMaxMB]; ok {
+		if err := unmarshalSetting(raw, admin.KeyAttachmentMaxMB, &overallMB); err != nil {
+			handleError(w, err)
+			return
+		}
+		if !admin.ValidAttachmentMaxMB(overallMB) {
+			Error(w, http.StatusBadRequest, "bad_request", "attachment_max_mb must be between 1 and 100")
+			return
+		}
+	} else {
+		overallMB = s.adminSvc.AttachmentMaxMB(r.Context())
+	}
+
+	// Guest uploads (#445). The size is a slider of 1 MB up to the per-file
+	// limit as it will be once this body is applied (the body's own
+	// attachment_max_mb, validated above, else the stored one). A value off it
 	// is refused, not clamped, because the reader would replace it with the
 	// default and the number typed would not be the number in force. The
 	// switch is checked for type for the same reason: "yes" stored as a
@@ -592,8 +635,9 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 			handleError(w, err)
 			return
 		}
-		if !admin.ValidGuestAttachmentMaxMB(mb) {
-			Error(w, http.StatusBadRequest, "bad_request", "guest_attachment_max_mb must be between 1 and 100")
+		if mb < admin.GuestAttachmentMaxMBMin || mb > overallMB {
+			Error(w, http.StatusBadRequest, "bad_request", fmt.Sprintf(
+				"guest_attachment_max_mb must be between 1 and %d MB, the per-file limit for every upload", overallMB))
 			return
 		}
 	}
@@ -708,8 +752,8 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 
 	// The staff-email overrides (#441). A typo would be read as "leave it to
 	// the user", so an administrator who meant to force a switch off would
-	// believe they had; refused by name instead.
-	for _, key := range []string{admin.KeyStaffEmailAssignedOverride, admin.KeyStaffEmailActivityOverride, admin.KeyStaffEmailGroupOverride} {
+	// believe they had; refused by name instead. The fourth is the SLA switch (#670).
+	for _, key := range []string{admin.KeyStaffEmailAssignedOverride, admin.KeyStaffEmailActivityOverride, admin.KeyStaffEmailGroupOverride, admin.KeyStaffEmailSLAOverride} {
 		if refuseChoice(w, body, key) {
 			return
 		}
@@ -1069,6 +1113,44 @@ func (s *Server) ssoSettingsWarning(ctx context.Context, body map[string]json.Ra
 	return s.refuseIfOrphaning(ctx, samlFieldsLookConfigured(c), oidcFieldsLookConfigured(cfg))
 }
 
+// refusePasskeySelfLockout is the #300 guard's shape for passkey_required_roles
+// (#616c): a save that newly lists the saving administrator's own role is
+// refused unless they hold a passkey. The aim is that an administrator does not
+// require a passkey of their own role before they have shown they can hold one:
+// one who cannot create a passkey on their device or browser would be stuck at
+// the registration step at their next sign-in. 400 bad_request, as
+// ErrWouldOrphanInstance is.
+//
+// Only a newly listed own role matters: when the stored list already names the
+// saver's role, or the new list does not, the save changes nothing about their
+// own exposure, so any other edit (a removal included) is never refused. It
+// applies whether or not mfa_enabled is on, since turning that on later would
+// activate the policy under the saver. A machine credential cannot reach this
+// (the key is auth-critical), so the actor is a signed-in person. A save racing
+// the deletion of the saver's last key is accepted, as #300's race is, and so
+// is a key bound to an old relying-party ID (BASE_URL moved): it counts as held
+// but cannot sign in.
+func (s *Server) refusePasskeySelfLockout(ctx context.Context, a *authmw.Actor, roles []string) error {
+	role := string(a.Role)
+	if !slices.Contains(roles, role) || slices.Contains(s.adminSvc.PasskeyRequiredRoles(ctx), role) {
+		return nil
+	}
+	n, err := s.passkeyStore.CountForUser(ctx, a.UserID)
+	if err != nil {
+		return fmt.Errorf("counting passkeys: %w", err)
+	}
+	if n > 0 {
+		return nil
+	}
+	if !s.passkeysAvailable() {
+		return fmt.Errorf("%w: your role cannot be listed in passkey_required_roles because you have no passkey, "+
+			"and passkeys are not available on this instance: BASE_URL must be a domain name (or localhost); "+
+			"fix that, register a passkey on your Account page, then save again", user.ErrValidation)
+	}
+	return fmt.Errorf("%w: your role cannot be listed in passkey_required_roles because you have no passkey: "+
+		"register a passkey on your Account page first, then save again", user.ErrValidation)
+}
+
 // refuseNullSetting is unmarshalSetting's null half, for the settings whose
 // wrong-type refusal already has wording clients see and which must keep it.
 func refuseNullSetting(raw json.RawMessage, name string) error {
@@ -1211,6 +1293,11 @@ type passkeyStatus struct {
 	Available bool `json:"available"`
 	// Reason is why not, in the library's words. Empty when Available.
 	Reason string `json:"reason"`
+	// SuspendedRoles are the roles whose passkey requirement (#616c) is not
+	// being enforced because passkeys are unavailable: TOTP is accepted for
+	// them until BASE_URL is fixed. Always an array; empty unless passkeys are
+	// unavailable, MFA is on and passkey_required_roles lists a role.
+	SuspendedRoles []string `json:"suspended_roles"`
 }
 
 // emailStatus never carries a credential or an address: names of unset
@@ -1309,20 +1396,24 @@ func (s *Server) handleGetSecurityWarnings(w http.ResponseWriter, r *http.Reques
 		AttachmentScanning:        s.scanStatus(r.Context()),
 		AttachmentStorage:         storageStatus{Writable: problem == "", Problem: problem},
 		OAuthClientsWithoutGroups: unscoped,
-		Passkeys:                  s.passkeyStatus(),
+		Passkeys:                  s.passkeyStatus(r.Context()),
 		Email:                     s.emailStatus(r.Context()),
 	})
 }
 
-func (s *Server) passkeyStatus() passkeyStatus {
+func (s *Server) passkeyStatus(ctx context.Context) passkeyStatus {
 	if s.passkeysAvailable() {
-		return passkeyStatus{Available: true}
+		return passkeyStatus{Available: true, SuspendedRoles: []string{}}
 	}
 	reason := s.passkeysReason
 	if reason == "" {
 		reason = "BASE_URL cannot be used as a passkey domain"
 	}
-	return passkeyStatus{Reason: reason}
+	suspended := []string{}
+	if s.adminSvc.MFAEnabled(ctx) {
+		suspended = append(suspended, s.adminSvc.PasskeyRequiredRoles(ctx)...)
+	}
+	return passkeyStatus{Reason: reason, SuspendedRoles: suspended}
 }
 
 func (s *Server) emailStatus(ctx context.Context) emailStatus {

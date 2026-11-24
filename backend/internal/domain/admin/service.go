@@ -259,12 +259,23 @@ func (s *Service) GuestAttachmentsEnabled(ctx context.Context) bool {
 // GuestAttachmentMaxMB is a guest's per-file maximum in megabytes (#445), 1 to
 // 100, 5 until an administrator says otherwise. Unset, unreadable or out of
 // range reads as the default: a damaged row must not quietly lift the cap.
-// The instance-wide attachment maximum still applies on top; the handler takes
-// the lower of the two.
+// The instance-wide attachment maximum (AttachmentMaxMB, #673) still applies on
+// top; the handler takes the lower of the two.
 func (s *Service) GuestAttachmentMaxMB(ctx context.Context) int {
 	v, err := s.GetInt(ctx, KeyGuestAttachmentMaxMB)
 	if err != nil || !ValidGuestAttachmentMaxMB(v) {
 		return GuestAttachmentMaxMBDefault
+	}
+	return v
+}
+
+// AttachmentMaxMB is the instance-wide per-file maximum in megabytes (#673),
+// 1 to 100, 25 by default. Unset, unreadable or out of range reads as the
+// default: a damaged row must not quietly lift the limit or drop it to zero.
+func (s *Service) AttachmentMaxMB(ctx context.Context) int {
+	v, err := s.GetInt(ctx, KeyAttachmentMaxMB)
+	if err != nil || !ValidAttachmentMaxMB(v) {
+		return AttachmentMaxMBDefault
 	}
 	return v
 }
@@ -451,6 +462,14 @@ func (s *Service) SLAEnabled(ctx context.Context) (bool, error) {
 	return s.GetBool(ctx, KeySLAEnabled)
 }
 
+// SLAAlertsEnabled returns whether the SLA sweep announces what it stamps
+// (#670), and any error reading the setting. The error is returned for the
+// reason SLAEnabled's is: the sweep skips its tick on a failed read rather than
+// stamp crossings silently, and logging belongs to the caller.
+func (s *Service) SLAAlertsEnabled(ctx context.Context) (bool, error) {
+	return s.GetBool(ctx, KeySLAAlertsEnabled)
+}
+
 // MFAEnabled returns whether MFA is available.
 func (s *Service) MFAEnabled(ctx context.Context) bool {
 	v, _ := s.GetBool(ctx, KeyMFAEnabled)
@@ -472,18 +491,40 @@ func (s *Service) MFAEnforcedRoles(ctx context.Context) []string {
 	return roles
 }
 
+// PasskeyRequiredRoles returns the roles (as lowercase strings) whose members
+// must finish every sign-in with a passkey (#616c). A missing or damaged row
+// reads as no roles.
+func (s *Service) PasskeyRequiredRoles(ctx context.Context) []string {
+	raw, err := s.store.Get(ctx, KeyPasskeyRequiredRoles)
+	if err != nil {
+		return nil
+	}
+	var roles []string
+	if err := json.Unmarshal(raw, &roles); err != nil {
+		return nil
+	}
+	return roles
+}
+
+// PasskeyRequiredFor returns true when MFA is globally enabled AND the role is
+// in the passkey-required list. Like the enforced list it is inert while
+// mfa_enabled is off. It does not know whether passkeys can be used on this
+// server (#494); the caller combines the two.
+func (s *Service) PasskeyRequiredFor(ctx context.Context, role string) bool {
+	return s.MFAEnabled(ctx) && slices.Contains(s.PasskeyRequiredRoles(ctx), role)
+}
+
 // MFARequiredFor returns true when MFA is globally enabled AND the given role
-// is in the enforced-roles list.
+// is in the enforced-roles list or the passkey-required list: a role that must
+// use a passkey is a role whose MFA is enforced, and that is decided here, when
+// the settings are read, rather than by writing one list on behalf of the
+// other.
 func (s *Service) MFARequiredFor(ctx context.Context, role string) bool {
 	if !s.MFAEnabled(ctx) {
 		return false
 	}
-	for _, r := range s.MFAEnforcedRoles(ctx) {
-		if r == role {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(s.MFAEnforcedRoles(ctx), role) ||
+		slices.Contains(s.PasskeyRequiredRoles(ctx), role)
 }
 
 // ReopenTargetStatusName returns the name of the status tickets are moved to
@@ -876,20 +917,29 @@ func (s *Service) ReputationRefreshInterval(ctx context.Context) time.Duration {
 }
 
 // StaffEmailOverrides reads the administrator's override of each staff-email
-// switch (#441). Read on every call, never cached, so a change applies to the
-// next email. Unset, unreadable or unrecognised is "user": the person's own
-// switch, never a forced one.
+// switch (#441, and SLA alerts, #670). Read on every call, never cached, so a
+// change applies to the next email. Unset, unreadable or unrecognised is
+// "user": the person's own switch, never a forced one. Every field is filled,
+// so a caller can hand the struct straight to Allows without topping it up.
 func (s *Service) StaffEmailOverrides(ctx context.Context) notification.StaffOverrides {
-	mode := func(key string) notification.OverrideMode {
-		v, err := s.GetString(ctx, key)
-		if err != nil || !notification.ValidOverrideMode(v) {
-			return notification.OverrideUser
-		}
-		return notification.OverrideMode(v)
-	}
 	return notification.StaffOverrides{
-		Assigned: mode(KeyStaffEmailAssignedOverride),
-		Activity: mode(KeyStaffEmailActivityOverride),
-		Group:    mode(KeyStaffEmailGroupOverride),
+		Assigned: s.overrideMode(ctx, KeyStaffEmailAssignedOverride),
+		Activity: s.overrideMode(ctx, KeyStaffEmailActivityOverride),
+		Group:    s.overrideMode(ctx, KeyStaffEmailGroupOverride),
+		SLA:      s.overrideMode(ctx, KeyStaffEmailSLAOverride),
 	}
+}
+
+// StaffEmailSLAOverride is the SLA-alerts field of StaffEmailOverrides, for the
+// caller that wants only that one.
+func (s *Service) StaffEmailSLAOverride(ctx context.Context) notification.OverrideMode {
+	return s.overrideMode(ctx, KeyStaffEmailSLAOverride)
+}
+
+func (s *Service) overrideMode(ctx context.Context, key string) notification.OverrideMode {
+	v, err := s.GetString(ctx, key)
+	if err != nil || !notification.ValidOverrideMode(v) {
+		return notification.OverrideUser
+	}
+	return notification.OverrideMode(v)
 }

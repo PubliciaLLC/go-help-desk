@@ -22,6 +22,8 @@ var WebhookEvents = []EventType{
 	EventTicketAttachmentAdded,
 	EventTicketFollowed,
 	EventTicketUnfollowed,
+	EventSLABreached,
+	EventSLAAtRisk,
 }
 
 // OptInWebhookEvents are the WebhookEvents a hook receives only if it lists
@@ -47,9 +49,9 @@ func IsWebhookEvent(e string) bool {
 }
 
 // MailsStaff reports whether the event can mean mail to staff: an assignment,
-// a reopen, or a requester's reply. Who is mailed is decided by the worker
-// when it picks the row up (#506), so the row has to be queued for any change
-// that could mean someone.
+// a reopen, a requester's reply, or an SLA breach or at-risk alert (#670). Who
+// is mailed is decided by the worker when it picks the row up (#506), so the
+// row has to be queued for any change that could mean someone.
 func (e Event) MailsStaff() bool {
 	if e.SuppressStaffMail {
 		return false
@@ -57,6 +59,10 @@ func (e Event) MailsStaff() bool {
 	for _, k := range e.AllKinds() {
 		switch {
 		case k == EventTicketAssigned, k == EventTicketReopened:
+			return true
+		case k.IsSLA():
+			// Queued whole, like any change that may mean staff mail; the
+			// worker decides who (#670).
 			return true
 		case k == EventTicketReplied && e.FromRequester:
 			return true

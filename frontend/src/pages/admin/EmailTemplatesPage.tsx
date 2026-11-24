@@ -73,7 +73,7 @@ export function EmailTemplatesPage() {
           <p className="mt-1 text-sm text-gray-500">
             The wording of the mail this help desk sends. Templates cannot include ticket text, by design: mail leaves
             from your domain, and whoever files a ticket chooses its subject and replies, so a template only gets the
-            tracking number and links this server builds (see{' '}
+            tracking number, links this server builds and, for SLA alerts, a status phrase from a fixed list (see{' '}
             <a className="underline" href={ADVISORY} target="_blank" rel="noopener noreferrer">
               GHSA-p2wx-wvfr-7h3p
             </a>

@@ -32,6 +32,10 @@ var KindOrder = []EventType{
 	EventTicketAttachmentAdded,
 	EventTicketFollowed,
 	EventTicketUnfollowed,
+	// Last: the sweep raises them in a transaction of its own, so neither
+	// ever shares an event with a ticket kind (#670).
+	EventSLABreached,
+	EventSLAAtRisk,
 }
 
 // Change is one field moving from one value to another. Ids and enums only,
@@ -140,6 +144,9 @@ func (c *Changes) Raise(ev Event) {
 	}
 	dst.GuestLink = dst.GuestLink || ev.GuestLink
 	dst.FollowUp = dst.FollowUp || ev.FollowUp
+	if ev.SLA != nil {
+		dst.SLA = ev.SLA
+	}
 	dst.FromRequester = dst.FromRequester || ev.FromRequester
 	dst.SuppressStaffMail = dst.SuppressStaffMail || ev.SuppressStaffMail
 	dst.RoutedAssignment = dst.RoutedAssignment || ev.RoutedAssignment

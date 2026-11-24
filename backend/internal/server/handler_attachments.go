@@ -35,25 +35,19 @@ import (
 )
 
 const (
-	attachMaxBytes = 25 << 20 // 25 MB
+	// multipartMemoryBytes is how much of an upload ParseMultipartForm keeps
+	// in memory before spilling the rest to a temporary file (#673). It is
+	// not the per-file limit: that is a setting and can be 100 MB, and the
+	// parse must not hold more because an administrator raised it. Anything
+	// past this goes to a temporary file, bounded by the body cap and removed
+	// by net/http when the request ends. At or below 25 MB this is the
+	// parse's behaviour from before the limit was a setting.
+	multipartMemoryBytes = 25 << 20
 
-	// bodyTransferTimeout is how long one attachment body may take to arrive
-	// or to leave, replacing the server-wide 15s read and 30s write deadlines
-	// for these two routes alone. An upload extends both (the write deadline
-	// runs while the body is still arriving); a download extends the write one.
-	//
-	// Those deadlines cover a whole request, body included, and the app is
-	// exposed directly in docker-compose with no proxy in front. At 15
-	// seconds, a 25 MB upload needs a sustained 13 Mbit/s uplink and a 10 MB
-	// one needs 5.3 — and a user below that got "could not parse upload",
-	// which blames their request for their connection. Downloads were cut off
-	// mid-stream below about 7 Mbit/s.
-	//
-	// Five minutes is 25 MB at roughly 700 kbit/s: a bad hotel connection
-	// still finishes, and a connection that has genuinely stopped is still
-	// closed. The short deadlines stay everywhere else, where a body is a
-	// JSON document and slow means something is wrong.
-	bodyTransferTimeout = 5 * time.Minute
+	// transferAnchorBytes is the size the transfer deadline is measured in:
+	// five minutes for every 25 MiB, never less than five minutes. See
+	// transferTimeout.
+	transferAnchorBytes = 25 << 20
 
 	// maxFilenameBytes is the longest uploaded name that is stored. See the
 	// check in handleUploadAttachment for why the ceiling exists at all.
@@ -61,6 +55,22 @@ const (
 	attachSubdir     = "tickets"
 	jpegQuality      = 85
 )
+
+// transferTimeout is how long a body of n bytes may take to arrive or to
+// leave, on the attachment routes alone (set on the connection in place of the
+// server-wide 15s read and 30s write deadlines). The rule is five minutes per
+// 25 MiB, never less: 25 MiB moves in five minutes, roughly 700 kbit/s, so a
+// slow hotel connection still finishes and a stalled one is still closed.
+//
+// The multiply comes before the divide, and the divide is by the anchor
+// second, so the result is exact at every whole MiB. There is no bytes-per-
+// second constant: (25 << 20) / 300 truncates, and 25 MiB would come out at
+// 5 minutes and 0.0003 seconds. n is not multiplied by five minutes first
+// because 100 MiB times five minutes is about 3e19 nanoseconds, which
+// overflows time.Duration.
+func transferTimeout(n int64) time.Duration {
+	return max(5*time.Minute, time.Duration(n)*time.Second/transferAnchorBytes*300)
+}
 
 // allowedExt maps lowercase extensions to the MIME type we store.
 var allowedExt = map[string]string{
@@ -87,10 +97,11 @@ var imageExt = map[string]bool{
 //
 // The byte-size limit is not a memory limit. Compressed formats expand: a
 // 169 KB PNG of uniform colour decodes to 12000×12000 — 142 MB of heap — and a
-// 949 KB one reaches 30000×30000 and 859 MB. Under the 25 MB upload cap a
+// 949 KB one reaches 30000×30000 and 859 MB. Under a 25 MB upload limit a
 // single request could ask for roughly 20 GB, and requests run concurrently, so
 // one authenticated user could take the process down by uploading to their own
-// ticket.
+// ticket. These caps are independent of the upload limit (a setting, #673): a
+// higher byte limit does not loosen them.
 //
 // 25 megapixels is comfortably above any real photograph or screenshot (a 24 MP
 // camera, a 5K display) and far below what it takes to exhaust a server.
@@ -588,10 +599,19 @@ func (s *Server) handleUploadAttachment(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	s.storeUploadedAttachment(w, r, ticketID, actor, attachMaxBytes, 0)
+	s.storeUploadedAttachment(w, r, ticketID, actor, s.attachmentMaxBytes(r.Context()), 0)
 }
 
-// tooLargeMessage names the limit that applied, which for a guest is not 25 MB.
+// attachmentMaxBytes is the instance-wide per-file limit in bytes: the
+// attachment_max_mb setting (#673), 25 MB when unset. A request reads it once,
+// at its start, so it is judged by one limit even if an administrator saves a
+// new one while the body arrives.
+func (s *Server) attachmentMaxBytes(ctx context.Context) int64 {
+	return int64(s.adminSvc.AttachmentMaxMB(ctx)) << 20
+}
+
+// tooLargeMessage names the limit that applied, which for a guest may be lower
+// than the instance-wide one.
 func tooLargeMessage(maxBytes int64) string {
 	return fmt.Sprintf("file exceeds %d MB limit", maxBytes>>20)
 }
@@ -600,15 +620,15 @@ func tooLargeMessage(maxBytes int64) string {
 // storage shared by an authenticated upload and a guest one — everything
 // past authorisation, which is the only place the two callers differ.
 //
-// This body is up to 25 MB and the server-wide read deadline assumes a
-// body is a JSON document. See bodyTransferTimeout.
+// This body can be as large as maxBytes (up to 100 MB) and the server-wide
+// read deadline assumes a body is a JSON document. See transferTimeout.
 //
 // Best effort: SetReadDeadline fails on a connection that does not
 // support one, which in this codebase means a test using an unusual
 // transport. Failing the upload over it would be worse than keeping the
 // shorter deadline.
 //
-// maxBytes is the per-file limit for this caller: attachMaxBytes for an
+// maxBytes is the per-file limit for this caller: attachmentMaxBytes for an
 // authenticated user, the lower of that and the guest setting for a guest
 // (#445). It is a parameter rather than read here so the instance-wide maximum
 // stays the one place a limit can be raised.
@@ -633,14 +653,14 @@ func (s *Server) storeUploadedAttachment(w http.ResponseWriter, r *http.Request,
 		return
 	}
 
-	if err := http.NewResponseController(w).SetReadDeadline(time.Now().Add(bodyTransferTimeout)); err != nil {
+	if err := http.NewResponseController(w).SetReadDeadline(time.Now().Add(transferTimeout(maxBytes))); err != nil {
 		slog.DebugContext(r.Context(), "could not extend the upload read deadline", "error", err)
 	}
 	// The write deadline too: net/http starts it when the request headers are
 	// read, so it runs while the body is still arriving. A body slower than
 	// WriteTimeout was stored and then answered on a dead connection, and the
 	// client's retry made a duplicate.
-	if err := http.NewResponseController(w).SetWriteDeadline(time.Now().Add(bodyTransferTimeout)); err != nil {
+	if err := http.NewResponseController(w).SetWriteDeadline(time.Now().Add(transferTimeout(maxBytes))); err != nil {
 		slog.DebugContext(r.Context(), "could not extend the upload write deadline", "error", err)
 	}
 
@@ -659,7 +679,7 @@ func (s *Server) storeUploadedAttachment(w http.ResponseWriter, r *http.Request,
 	// not by the reader with a parse error.
 	r.Body = http.MaxBytesReader(w, r.Body, maxBytes+(1<<20))
 
-	if err := r.ParseMultipartForm(maxBytes); err != nil {
+	if err := r.ParseMultipartForm(multipartMemoryBytes); err != nil {
 		var tooLarge *http.MaxBytesError
 		if errors.As(err, &tooLarge) {
 			// The same status, code and message the two size checks further
@@ -1429,10 +1449,12 @@ func (s *Server) handleDownloadAttachment(w http.ResponseWriter, r *http.Request
 	w.Header().Set("Vary", "Sec-Fetch-Dest")
 	w.Header().Set("Cache-Control", "private, max-age=3600")
 
-	// The same reasoning as the upload, pointing the other way: a 25 MB file
+	// The same reasoning as the upload, pointing the other way: a large file
 	// leaving over a slow link outlasts the server-wide 30s write deadline
-	// and the download is cut off part-written. See bodyTransferTimeout.
-	if err := http.NewResponseController(w).SetWriteDeadline(time.Now().Add(bodyTransferTimeout)); err != nil {
+	// and the download is cut off part-written. The deadline is sized to this
+	// file, not to the current limit, so a 100 MB file stored before the limit
+	// was lowered still has time to leave. See transferTimeout.
+	if err := http.NewResponseController(w).SetWriteDeadline(time.Now().Add(transferTimeout(att.SizeBytes))); err != nil {
 		slog.DebugContext(r.Context(), "could not extend the download write deadline", "error", err)
 	}
 

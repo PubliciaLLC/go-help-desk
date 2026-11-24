@@ -247,6 +247,8 @@ type SlaRecord struct {
 	StartedAt                     sql.NullTime  `json:"started_at"`
 	PausedSecondsAtStart          int64         `json:"paused_seconds_at_start"`
 	SupersededAt                  sql.NullTime  `json:"superseded_at"`
+	ResponseAtRiskAt              sql.NullTime  `json:"response_at_risk_at"`
+	ResolutionAtRiskAt            sql.NullTime  `json:"resolution_at_risk_at"`
 }
 
 type SpentSamlHandover struct {
@@ -376,6 +378,7 @@ type User struct {
 	EmailNotifyActivity bool         `json:"email_notify_activity"`
 	EmailNotifyGroup    bool         `json:"email_notify_group"`
 	MustChangePassword  bool         `json:"must_change_password"`
+	EmailNotifySla      bool         `json:"email_notify_sla"`
 }
 
 type WebauthnCredential struct {

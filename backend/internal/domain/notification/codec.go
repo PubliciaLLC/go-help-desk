@@ -31,6 +31,7 @@ type outboxRecord struct {
 	StatusName     string         `json:"status_name,omitempty"`
 	GuestLink      bool           `json:"guest_link,omitempty"`
 	FollowUp       bool           `json:"follow_up,omitempty"`
+	SLA            *SLAAlert      `json:"sla,omitempty"`
 
 	// One change, one event (#506). Rows queued before it have none of the
 	// three; DecodeEvent reads them as a one-kind change.
@@ -68,7 +69,7 @@ func EncodeEvent(ev Event) ([]byte, error) {
 	return json.Marshal(outboxRecord{
 		Type: ev.Type, TicketID: ev.TicketID, ActorID: ev.ActorID, Payload: ev.Payload,
 		OccurredAt: ev.OccurredAt, TrackingNumber: ev.TrackingNumber, Recipient: ev.Recipient,
-		Subject: ev.Subject, StatusName: ev.StatusName, GuestLink: ev.GuestLink, FollowUp: ev.FollowUp,
+		Subject: ev.Subject, StatusName: ev.StatusName, GuestLink: ev.GuestLink, FollowUp: ev.FollowUp, SLA: ev.SLA,
 		Kinds: ev.Kinds, Changes: ev.Changes, Ticket: ev.Ticket,
 		TargetWebhook: ev.TargetWebhook,
 		TargetURLHash: ev.TargetURLHash,
@@ -87,7 +88,7 @@ func DecodeEvent(b []byte) (Event, error) {
 	ev := Event{
 		Type: r.Type, TicketID: r.TicketID, ActorID: r.ActorID, Payload: r.Payload,
 		OccurredAt: r.OccurredAt, TrackingNumber: r.TrackingNumber, Recipient: r.Recipient,
-		Subject: r.Subject, StatusName: r.StatusName, GuestLink: r.GuestLink, FollowUp: r.FollowUp,
+		Subject: r.Subject, StatusName: r.StatusName, GuestLink: r.GuestLink, FollowUp: r.FollowUp, SLA: r.SLA,
 		Kinds: r.Kinds, Changes: r.Changes, Ticket: r.Ticket,
 		TargetWebhook: r.TargetWebhook,
 		TargetURLHash: r.TargetURLHash,

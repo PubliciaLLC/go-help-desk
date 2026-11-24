@@ -19,7 +19,8 @@ func TestNewEventNames_AreWebhookEventsAndOrdered(t *testing.T) {
 		require.Contains(t, WebhookEvents, n)
 		require.Contains(t, KindOrder, n)
 	}
-	require.Equal(t, names, KindOrder[len(KindOrder)-4:])
+	// The two SLA names (#670) come after them: TestSLAEvents_AreOrdinaryWebhookEventsAndLast.
+	require.Equal(t, names, KindOrder[len(KindOrder)-6:len(KindOrder)-2])
 }
 
 // D40: following is personal, so only a hook that names it gets it.

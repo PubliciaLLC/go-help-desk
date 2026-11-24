@@ -32,13 +32,15 @@ const (
 
 // SLAFacts are what a record has recorded about what happened: when each
 // target was met, the elapsed reading frozen at that instant, and the breach
-// stamps. A re-match carries them onto the record that replaces it, so a
+// and at-risk stamps. A re-match carries them onto the record that replaces it, so a
 // target already met stays met.
 type SLAFacts struct {
 	FirstResponseAt               *time.Time
 	ResolvedAt                    *time.Time
 	ResponseBreachedAt            *time.Time
 	ResolutionBreachedAt          *time.Time
+	ResponseAtRiskAt              *time.Time // #670: copied like the breach stamps, so an announced crossing is not announced again
+	ResolutionAtRiskAt            *time.Time
 	ResponseElapsedAtMetSeconds   *int64
 	ResolutionElapsedAtMetSeconds *int64
 }

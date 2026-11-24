@@ -189,7 +189,7 @@ func TestJoined_BigShellsPutEveryTemplateOver(t *testing.T) {
 		NameHeader: {Name: NameHeader, HTML: `<div>` + pad(51*1024) + `</div>`},
 		NameFooter: {Name: NameFooter, HTML: `<div>` + pad(51*1024) + `</div>`},
 	}
-	require.Len(t, OverCapHTML(rows, defaultSiteName), 18)
+	require.Len(t, OverCapHTML(rows, defaultSiteName), 24)
 }
 
 func TestJoined_ABodyAloneIsOnlyChecked_WhenNoShellHasHTML(t *testing.T) {

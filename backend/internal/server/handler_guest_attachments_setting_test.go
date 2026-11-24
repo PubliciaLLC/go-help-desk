@@ -22,7 +22,7 @@ import (
 const (
 	guestUploadsKey  = "guest_attachments_enabled"
 	guestMaxMBKey    = "guest_attachment_max_mb"
-	globalCapMB      = 25 // attachMaxBytes in handler_attachments.go
+	globalCapMB      = 25 // the default of attachment_max_mb
 	guestRefusalBody = `{"error":{"code":"not_found","message":"not found"}}` + "\n"
 )
 
@@ -107,7 +107,7 @@ func TestGuestAttachmentsSetting_TheInstanceMaximumCapsTheGuestLimit(t *testing.
 	defer cleanup()
 	_, token := seedGuestTicket(t, h)
 	setGuestUploads(t, h, true)
-	setGuestMaxMB(t, h, 100)
+	setGuestMaxMB(t, h, 25) // not 100: task 4 refuses a guest figure above the overall one
 
 	res := uploadGuestAttachment(t, h, token, "big.txt", bytes.Repeat([]byte("a"), globalCapMB<<20+1))
 	body := readBody(t, res)
@@ -148,7 +148,21 @@ func TestGuestAttachmentsSetting_ValidatesOneToOneHundredMB(t *testing.T) {
 		return res.StatusCode, string(b)
 	}
 
-	for _, mb := range []int{1, 5, 25, 99, 100} {
+	// The guest figure may not exceed the overall limit (#673): 26 to 100 are
+	// accepted only once attachment_max_mb is 100.
+	for _, mb := range []int{1, 5, 25} {
+		code, b := patch(guestMaxMBKey, mb)
+		require.Equal(t, http.StatusNoContent, code, "%d: %s", mb, b)
+		require.Equal(t, mb, h.adminSvc.GuestAttachmentMaxMB(context.Background()))
+	}
+	for _, mb := range []int{26, 99, 100} {
+		code, b := patch(guestMaxMBKey, mb)
+		require.Equal(t, http.StatusBadRequest, code, "%d at the default overall limit: %s", mb, b)
+		require.Equal(t, 25, h.adminSvc.GuestAttachmentMaxMB(context.Background()), "%d must not be stored", mb)
+	}
+	code, b := patch(attachmentMaxMBKey, 100)
+	require.Equal(t, http.StatusNoContent, code, b)
+	for _, mb := range []int{26, 99, 100} {
 		code, b := patch(guestMaxMBKey, mb)
 		require.Equal(t, http.StatusNoContent, code, "%d: %s", mb, b)
 		require.Equal(t, mb, h.adminSvc.GuestAttachmentMaxMB(context.Background()))
@@ -160,7 +174,7 @@ func TestGuestAttachmentsSetting_ValidatesOneToOneHundredMB(t *testing.T) {
 		require.Equal(t, 100, h.adminSvc.GuestAttachmentMaxMB(context.Background()), "%s must not be stored", name)
 	}
 
-	code, b := patch(guestUploadsKey, true)
+	code, b = patch(guestUploadsKey, true)
 	require.Equal(t, http.StatusNoContent, code, b)
 	code, b = patch(guestUploadsKey, "yes")
 	require.Equal(t, http.StatusBadRequest, code, b)
@@ -172,7 +186,7 @@ func TestGuestAttachmentsSetting_AreSessionOnly(t *testing.T) {
 	for _, c := range []struct {
 		key string
 		v   any
-	}{{guestUploadsKey, true}, {guestMaxMBKey, 50}} {
+	}{{guestUploadsKey, true}, {guestMaxMBKey, 50}, {attachmentMaxMBKey, 50}} {
 		res := h.doAsAdmin(t, http.MethodPatch, "/api/v1/admin/settings", map[string]any{c.key: c.v})
 		b := readAll(t, res)
 		require.Equal(t, http.StatusForbidden, res.StatusCode, c.key)

@@ -10,6 +10,7 @@ import {
   uploadAttachment,
 } from '@/api/tickets'
 import { extractError } from '@/api/client'
+import { getMe } from '@/api/auth'
 import { useAuthStore } from '@/store/auth'
 import { Layout } from '@/components/Layout'
 import { AttachmentUpload, type UploadState } from '@/components/AttachmentUpload'
@@ -98,6 +99,8 @@ export function NewTicketPage() {
   const navigate = useNavigate()
   const { user } = useAuthStore()
   const isStaffOrAdmin = user?.role === 'staff' || user?.role === 'admin'
+  // The per-file limit is the instance's, which only /me carries (#673).
+  const { data: me } = useQuery({ queryKey: ['me'], queryFn: getMe, retry: false })
 
   const [subject, setSubject] = useState('')
   const [description, setDescription] = useState('')
@@ -413,6 +416,7 @@ export function NewTicketPage() {
                   onChange={setFiles}
                   uploadStates={uploadStates}
                   disabled={isUploading}
+                  maxBytes={me?.attachment_max_bytes ?? user?.attachment_max_bytes}
                 />
               </div>
 

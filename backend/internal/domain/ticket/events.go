@@ -46,6 +46,14 @@ func raiseOn(t Ticket, actor Actor, at time.Time) notification.Event {
 	}
 }
 
+// SystemEvent is the common part of an event the system raises for ticket t
+// (#670): no actor, the values consumers read off the persisted row, and the
+// ticket as it stands. For a producer outside this package, the SLA sweep; the
+// caller adds the type, payload and anything typed.
+func SystemEvent(t Ticket, at time.Time) notification.Event {
+	return raiseOn(t, Actor{}, at)
+}
+
 // statusKinds are the kinds of a move from one status to another. Every status
 // move carries ticket.status_changed; a move into Resolved or Closed also
 // carries ticket.resolved or ticket.closed, and a move out of either into an

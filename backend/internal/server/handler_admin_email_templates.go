@@ -19,7 +19,7 @@ import (
 )
 
 // The email template editor (#158): list, read, save, revert, preview and send
-// a test of the 17 mail templates and the shared header and footer.
+// a test of the 24 mail templates and the shared header and footer.
 //
 // The whole route is session-only (DenyMachineCredentials). Editing what the
 // server mails from the operator's domain is a decision for a person at a

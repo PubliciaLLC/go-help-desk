@@ -142,7 +142,7 @@ func summarize(ev notification.Event, baseURL string) summary {
 		TicketID:       ev.TicketID,
 		Ref:            ref(ev),
 		Tracking:       trackingOf(ev),
-		Headline:       headline(ev.Type, ev.StatusName, internal, linkedTicketID, linkType),
+		Headline:       headlineFor(ev, internal, linkedTicketID, linkType),
 		Also:           alsoLine(ev),
 		Subject:        sanitizeSubject(ev.Subject),
 		Body:           body,
@@ -231,6 +231,27 @@ func trackingOf(ev notification.Event) string {
 	return ""
 }
 
+// headlineFor is the headline of ev: headline, except that an sla.breached that
+// also names a target at risk says so (#670). The list is read off Payload, where
+// the raw body carries it too, so a replay from the history says the same; it is
+// a []string as raised and a []any once it has been through the outbox.
+func headlineFor(ev notification.Event, internal bool, linkedTicketID, linkType string) string {
+	if ev.Type == notification.EventSLABreached && listLen(ev.Payload["at_risk_targets"]) > 0 {
+		return "SLA breached; another target at risk"
+	}
+	return headline(ev.Type, ev.StatusName, internal, linkedTicketID, linkType)
+}
+
+func listLen(v any) int {
+	switch l := v.(type) {
+	case []string:
+		return len(l)
+	case []any:
+		return len(l)
+	}
+	return 0
+}
+
 // headline is the one-line summary every format leads with.
 func headline(t notification.EventType, statusName string, internal bool, linkedTicketID, linkType string) string {
 	switch t {
@@ -273,6 +294,11 @@ func headline(t notification.EventType, statusName string, internal bool, linked
 		return "Ticket followed"
 	case notification.EventTicketUnfollowed:
 		return "Ticket unfollowed"
+	// Neither names a target or a policy: the receiver has the ids.
+	case notification.EventSLABreached:
+		return "SLA breached"
+	case notification.EventSLAAtRisk:
+		return "SLA at risk"
 	default:
 		return string(t)
 	}

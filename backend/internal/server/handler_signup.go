@@ -181,16 +181,24 @@ func (s *Server) handleVerifyEmail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	mfaEnabled := s.adminSvc.MFAEnabled(r.Context())
-	mfaEnrollmentNeeded := mfaEnabled && s.adminSvc.MFARequiredFor(r.Context(), string(u.Role))
+	// A new account has no factor yet, so only an enrolment can be owed: a
+	// TOTP authenticator, or a passkey for a role that must use one (#616c).
+	role := string(u.Role)
+	owed := auth.SecondStep(auth.SignInFacts{
+		MFAOn:           s.adminSvc.MFAEnabled(r.Context()),
+		Enforced:        s.adminSvc.MFARequiredFor(r.Context(), role),
+		PasskeyRequired: s.passkeyRequiredFor(r.Context(), role),
+		PasskeysUsable:  s.passkeysAvailable(),
+	})
 
 	sd := auth.SessionData{
-		UserID:    u.ID,
-		Role:      u.Role,
-		MFAPassed: !mfaEnrollmentNeeded,
+		UserID:      u.ID,
+		Role:        u.Role,
+		MFAPassed:   owed.Passed(),
+		PasskeyOwed: owed.PasskeyOwed(),
+		PasskeyHeld: owed.PasskeyHeld(),
 	}
-	// Only enrolment can be owed here: a new account has no factor yet.
-	if mfaEnrollmentNeeded {
+	if !sd.MFAPassed {
 		sd.PendingUntil = auth.PendingDeadline(time.Now(), true)
 	}
 
@@ -200,7 +208,8 @@ func (s *Server) handleVerifyEmail(w http.ResponseWriter, r *http.Request) {
 	}
 
 	JSON(w, http.StatusOK, map[string]any{
-		"user":                  u,
-		"mfa_enrollment_needed": mfaEnrollmentNeeded,
+		"user":                      u,
+		"mfa_enrollment_needed":     owed.Enrol,
+		"passkey_enrollment_needed": owed.PasskeyEnrol,
 	})
 }

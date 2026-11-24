@@ -177,7 +177,7 @@ func TestSLARecordRace_WriteQueuedBehindAStaffReMatchIsNotLost(t *testing.T) {
 			tk := f.tk
 			require.NoError(t, f.ss.CreateRecord(f.ctx, sla.Record{TicketID: tk.ID, PolicyID: lenient.ID}))
 			old := f.currentOf(t, tk.ID)
-			svc := sla.NewService(f.ss)
+			svc := sla.NewService(f.ss, nil)
 
 			tx, newID := f.reMatch(t, tk.ID, strict.ID, nil)
 			at := time.Now().UTC().Truncate(time.Millisecond)
@@ -208,7 +208,7 @@ func TestSLARecordRace_WriteQueuedBehindARestartIsDropped(t *testing.T) {
 			lenient, strict := f.racePolicies(t)
 			tk := f.tk
 			require.NoError(t, f.ss.CreateRecord(f.ctx, sla.Record{TicketID: tk.ID, PolicyID: lenient.ID}))
-			svc := sla.NewService(f.ss)
+			svc := sla.NewService(f.ss, nil)
 
 			at := time.Now().UTC().Truncate(time.Millisecond)
 			restart := at.Add(time.Second)
@@ -241,7 +241,7 @@ func TestSLARecordRace_ReMatchCommittingBetweenReadAndWrite(t *testing.T) {
 			store := &interposeStore{Store: f.ss, hook: func() { newID = f.reMatchNow(t, tk.ID, strict.ID, nil) }}
 
 			at := time.Now().UTC().Truncate(time.Millisecond)
-			require.NoError(t, w.run(sla.NewService(store), tk, at))
+			require.NoError(t, w.run(sla.NewService(store, nil), tk, at))
 
 			cur := f.currentOf(t, tk.ID)
 			require.Equal(t, newID, cur.ID, "the hook ran: the record changed under the service")
@@ -262,7 +262,7 @@ func TestSLARecordRace_ReMatchCommittingBetweenReadAndWrite(t *testing.T) {
 				newID = f.reMatchNow(t, tk.ID, strict.ID, &restart)
 			}}
 
-			require.NoError(t, w.run(sla.NewService(store), tk, at))
+			require.NoError(t, w.run(sla.NewService(store, nil), tk, at))
 
 			cur := f.currentOf(t, tk.ID)
 			require.Equal(t, newID, cur.ID, "the hook ran: the record changed under the service")
@@ -318,7 +318,7 @@ func TestSLARecordRace_EveryDoorLeavesARestartedRecordAlone(t *testing.T) {
 				restart := time.Now().UTC().Add(time.Second) // after every instant the door can have taken
 				newID = f.reMatchNow(t, f.tk.ID, f.pol[ticket.PriorityHigh].ID, &restart)
 			}}
-			svc := ticket.NewService(f.ts, f.ts, notification.Noop{}, f.au, txrunner.New(f.db.SQL, nil, nil), sla.NewService(store))
+			svc := ticket.NewService(f.ts, f.ts, notification.Noop{}, f.au, txrunner.New(f.db.SQL, nil, nil), sla.NewService(store, nil))
 			require.NoError(t, svc.LoadSystemStatuses(f.ctx))
 			svc.SetSLAEnabled(func(context.Context) bool { return true })
 
@@ -348,7 +348,7 @@ func TestSLARecordRace_GivesUpAfterRepeatedReMatches(t *testing.T) {
 		swaps++
 	}}
 
-	err := sla.NewService(store).RecordFirstResponse(f.ctx, tk, time.Now().UTC())
+	err := sla.NewService(store, nil).RecordFirstResponse(f.ctx, tk, time.Now().UTC())
 
 	require.Error(t, err)
 	require.True(t, errors.Is(err, sla.ErrRecordSuperseded), "the error says why: %v", err)
@@ -385,7 +385,7 @@ func TestSLARecordRace_RestartBetweenSweepReadAndStampLeavesNoStamp(t *testing.T
 		newID = f.reMatchNow(t, tk.ID, lenient.ID, &restart)
 	}}
 
-	require.NoError(t, sla.NewService(store).EvaluateBreaches(f.ctx, tk, now))
+	require.NoError(t, sla.NewService(store, nil).EvaluateBreaches(f.ctx, tk, now))
 
 	cur := f.currentOf(t, tk.ID)
 	require.Equal(t, newID, cur.ID, "the hook ran: the record changed under the sweep")

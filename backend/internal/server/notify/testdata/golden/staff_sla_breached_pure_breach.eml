@@ -1,0 +1,17 @@
+From: <helpdesk@example.com>
+To: <to@example.com>
+Subject: SLA alert on a ticket assigned to you: Resolution breached [GHD-2026-000042]
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: quoted-printable
+
+An SLA target on a ticket assigned to you has been breached.
+
+Resolution breached.
+
+Ticket: GHD-2026-000042
+
+Read it here:
+https://help.example.com/tickets/11111111-2222-3333-4444-555555555555
+
+You can choose which of these emails you get under your profile.

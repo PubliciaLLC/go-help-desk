@@ -28,6 +28,14 @@ const (
 	// guest submission is on; see Service.GuestAttachmentsEnabled.
 	KeyGuestAttachmentsEnabled = "guest_attachments_enabled" // bool, default off
 	KeyGuestAttachmentMaxMB    = "guest_attachment_max_mb"   // int, 1 to 100, default 5
+	// The largest file any uploader may attach, in MB (#673): the instance-wide
+	// per-file limit that used to be a constant. 1 to 100, default 25. Unset,
+	// unreadable or out of range reads as the default; see
+	// Service.AttachmentMaxMB. It is session-only (AuthCriticalKeys) for the
+	// reason attachment_allowed_types is: a leaked API key must not be able to
+	// raise the limit and then upload with it. No migration: an install that
+	// never sets it reads 25, which is what it always was.
+	KeyAttachmentMaxMB = "attachment_max_mb" // int, 1 to 100, default 25
 	// How many files guests may attach to one ticket, and how many uploads one
 	// guest link may make per hour (#445). Small by default and for the same
 	// reason as the other two: they bound what anonymous people can put on disk
@@ -93,6 +101,13 @@ const (
 	KeyStaffEmailAssignedOverride = "staff_email_assigned_override"
 	KeyStaffEmailActivityOverride = "staff_email_activity_override"
 	KeyStaffEmailGroupOverride    = "staff_email_group_override"
+	// The fourth switch, SLA alerts (#670), with the same values and reader.
+	KeyStaffEmailSLAOverride = "staff_email_sla_override"
+
+	// Whether the SLA sweep announces what it stamps: sla.breached and
+	// sla.at_risk, mail and webhooks alike (#670). Off, the sweep still stamps
+	// and raises nothing.
+	KeySLAAlertsEnabled = "sla_alerts_enabled"
 
 	// Deprecated: replaced by the per-provider settings below, and read by
 	// nothing.
@@ -334,14 +349,29 @@ func ValidAPIKeyMaxLifetime(v int) bool {
 }
 
 // A guest's per-file maximum in MB (#445): the slider runs from Min to Max.
-// The instance-wide attachment maximum is lower than Max today (25 MB) and
-// wins where it is; the slider's range is the administrator's intent, not a
-// promise the server can keep.
+// The instance-wide attachment maximum (attachment_max_mb, #673) caps it
+// wherever that is lower; the slider's range is the administrator's intent,
+// not a promise the server can keep.
 const (
 	GuestAttachmentMaxMBDefault = 5
 	GuestAttachmentMaxMBMin     = 1
 	GuestAttachmentMaxMBMax     = 100
 )
+
+// The instance-wide per-file maximum in MB (#673): 1 to 100, 25 by default.
+// 100 is the stock clamd StreamMaxLength and MaxFileSize (ClamAV 0.105 and
+// later), and what the limit costs grows with it; 1 is the floor because an
+// empty attachment_allowed_types already means "no attachments".
+const (
+	AttachmentMaxMBDefault = 25
+	AttachmentMaxMBMin     = 1
+	AttachmentMaxMBMax     = 100
+)
+
+// ValidAttachmentMaxMB reports whether v is in the instance-wide limit's range.
+func ValidAttachmentMaxMB(v int) bool {
+	return v >= AttachmentMaxMBMin && v <= AttachmentMaxMBMax
+}
 
 // The per-ticket cap and the hourly rate for guest uploads (#445).
 const (
@@ -449,6 +479,12 @@ func ValidMismatchHandling(v string) bool {
 	return v == MismatchHandlingRefuse || v == MismatchHandlingWrap
 }
 
+// KeyPasskeyRequiredRoles lists the roles whose members must finish every
+// sign-in with a passkey (#616c): a JSON array of role names, seeded []. Its own
+// list; nothing writes mfa_enforced_roles on its behalf. That a listed role is
+// thereby MFA-enforced is computed when read (Service.MFARequiredFor).
+const KeyPasskeyRequiredRoles = "passkey_required_roles"
+
 // Store is the persistence interface for the key/value settings table.
 type Store interface {
 	Get(ctx context.Context, key string) ([]byte, error) // returns raw JSON value
@@ -467,7 +503,8 @@ func KnownKeys() []string {
 		KeyOIDCEnabled, KeyOIDCIssuerURL, KeyOIDCClientID, KeyOIDCClientSecret, KeyOIDCRedirectURL,
 		KeyGuestSubmissionEnabled, KeyGuestAttachmentsEnabled, KeyGuestAttachmentMaxMB,
 		KeyGuestAttachmentMaxPerTicket, KeyGuestAttachmentUploadsPerHour,
-		KeySLAEnabled, KeyMFAEnabled, KeyMFAEnforcedRoles,
+		KeyAttachmentMaxMB,
+		KeySLAEnabled, KeySLAAlertsEnabled, KeyMFAEnabled, KeyMFAEnforcedRoles, KeyPasskeyRequiredRoles,
 		KeyReopenWindowDays, KeyReopenTargetStatusName,
 		KeyAttachmentScanPolicy, KeyAttachmentScanAddress,
 		KeySiteName, KeySiteLogoURL,
@@ -485,6 +522,7 @@ func KnownKeys() []string {
 		KeyStaffCanViewTicketChangeHistory, KeyAuditRetentionDays, KeyStaffCanViewFollowAudit,
 		KeyStaffCanCreateAPIKeys, KeyAPIKeyMaxLifetimeYears,
 		KeyStaffEmailAssignedOverride, KeyStaffEmailActivityOverride, KeyStaffEmailGroupOverride,
+		KeyStaffEmailSLAOverride,
 		KeyPasswordRehashGraceDays, KeyPasswordRehashStartedAt,
 		KeyUpdateCheckEnabled, KeyUpdateCheckResult, KeyPostUpgrade130Seen,
 	}
@@ -507,7 +545,7 @@ func AuthCriticalKeys() []string {
 		KeySAMLEnabled, KeySAMLMetadataURL, KeySAMLMetadataXML, KeySAMLCertPEM, KeySAMLKeyPEM,
 		KeyOIDCEnabled, KeyOIDCIssuerURL, KeyOIDCClientID, KeyOIDCClientSecret,
 		KeyOIDCRedirectURL,
-		KeyMFAEnabled, KeyMFAEnforcedRoles,
+		KeyMFAEnabled, KeyMFAEnforcedRoles, KeyPasskeyRequiredRoles,
 		KeyAllowedEmailDomains, KeySelfSignupEnabled, KeyOpenRegistrationEnabled,
 		// Who may force-reopen a closed ticket (#349). Widening it is a
 		// permission change, not configuration: a leaked API key must not be
@@ -538,6 +576,11 @@ func AuthCriticalKeys() []string {
 		// What the instance accepts at all. A leaked API key must not be able
 		// to widen the type list and then upload what it has just allowed.
 		KeyAttachmentAllowedTypes,
+		// The per-file limit (#673). Raising it lets through files the
+		// instance used to refuse, so it is the same kind of widening as the
+		// type list, and a leaked API key must not be able to do it and then
+		// upload with it.
+		KeyAttachmentMaxMB,
 		// Whether an infected upload is refused or stored. Same reasoning as
 		// the scan policy: it decides what this instance will hold.
 		KeyAttachmentInfectedHandling,
