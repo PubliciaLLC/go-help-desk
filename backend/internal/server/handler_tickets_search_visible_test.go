@@ -12,8 +12,8 @@ import (
 )
 
 // #444: a staff search covers every ticket the viewer can see, whatever queue
-// is selected. scope=visible is that request; scope=mine and scope=unassigned
-// stay the narrowed ("Only <queue>") searches.
+// is selected. scope=visible is that request (the Search view); scope=mine and
+// scope=unassigned are the narrowed queue searches the API still offers.
 
 func searchSubjects(t *testing.T, resp *http.Response) map[string]bool {
 	t.Helper()

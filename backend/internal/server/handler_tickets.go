@@ -82,10 +82,12 @@ func pageParams(r *http.Request) (limit, offset int) {
 //     requester always gets their own tickets.
 //   - limit and offset (pageParams).
 //
-// reporter_id, requester and assignee_group_id ignore scope: naming who or what
-// you are looking for already says which tickets, so the queue is "any". That
-// is what these parameters did when the first one present won; now they combine
-// with each other and with every other filter.
+// reporter_id, requester and assignee_group_id make mine, unassigned, all and
+// visible yield: naming who or what you are looking for already says which
+// tickets, so the queue is "any". That is what these parameters did when the
+// first one present won; now they combine with each other and with every other
+// filter. assigned_to_me and my_groups never yield: ResolveQueue always applies
+// them, narrowed by the named set.
 func (s *Server) handleListTickets(w http.ResponseWriter, r *http.Request) {
 	a := authmw.GetActor(r)
 	ctx := r.Context()

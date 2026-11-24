@@ -3256,12 +3256,15 @@ paths:
         and an id that names nothing gives an empty list. Repeatable parameters
         (status_id, priority, source_channel) are sent as repeated keys, at most 20
         values each; values of one key are ORed.
-        scope picks the queue and is ANDed with the filters: mine (the default),
-        unassigned and all (admin only), visible (every ticket the caller can see).
-        Any other value is mine. When reporter_id, requester or assignee_group_id
-        is present the queue is "any" and scope is not consulted, so those
-        parameters combine with each other and with every other filter (reporter_id
-        and assignee_group_id together used to drop the group).
+        scope picks the queue and is ANDed with the filters; see the scope
+        parameter for the six values and who may use each (mine is the default;
+        all is administrators only; unassigned is administrators, and staff while
+        available_queue_roles lists staff). Any other value is mine. When
+        reporter_id, requester or assignee_group_id is present, mine, unassigned,
+        all and visible are not consulted and the queue is "any", so those
+        parameters combine with each other and with every other filter
+        (reporter_id and assignee_group_id together used to drop the group);
+        assigned_to_me and my_groups are always applied and narrowed by them.
         q searches by tracking number prefix, subject and description (full-text
         search). With q the results are ordered by relevance first and then newest
         first, on every queue; before 1.3.0 the default listing of an administrator,
@@ -3298,10 +3301,12 @@ paths:
             visible (the Search view): every ticket the caller can see. Staff and administrators.
             A reporting user has no queues: for mine, assigned_to_me, my_groups and visible they get only their own tickets, and for unassigned and all they are refused as above.
             Yield rule: when reporter_id, requester or assignee_group_id is present, mine, unassigned, all and visible do not apply and do not refuse; the queue is "any". assigned_to_me and my_groups are always applied and narrowed by those filters like any other.
-            Any other value is mine.
+            Any other value is read as mine; that tolerance is not part of the contract, so send one of these six.
           schema:
             type: string
-            enum: [mine, assigned_to_me, my_groups, unassigned, all, visible]
+            # No enum: the server answers an unknown value as mine, and a client
+            # generated from a closed enum would refuse values the server accepts.
+            # The six values are listed in the description above.
         - name: reporter_id
           in: query
           required: false

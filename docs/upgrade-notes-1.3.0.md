@@ -335,7 +335,7 @@ The ticket list's queues are now views in the sidebar, under **Tickets**: **Assi
 - **Who may open Available: `available_queue_roles`.** A new setting, under **Settings → General → Ticket visibility** as **Available queue**, lists the roles that may open the Available view. Administrators are always ticked, and **Staff** is the other box. Its field is `available_queue_roles` on `PATCH /api/v1/admin/settings`, a list of `admin` and `staff`. It is session-only, so an API key or OAuth client cannot change it. The default is **admins only**: the key is absent on every install, and an absent key means admins only. Nothing is migrated and no setting changes value on upgrade. The control's note about enforcement appears only while **Limit staff to their group scope** is on.
 - **Bookmarks and links.** Old ticket-list addresses are translated once when opened. A link with `?scope=mine`, or with no scope, opens Assigned to Me. `?scope=unassigned` opens Available, and `?scope=all` opens Search. A link with search text or filters, and no view, opens Search with them. A view you may not use, for example Available for staff while Staff is not ticked, falls back to Assigned to Me without an error.
 - **Who can see what is unchanged.** Administrators, and staff while `ticket_scope_enforced` is off, see every ticket. With it on, staff see only what their groups' scope admits, so a group-scoped staff member still cannot find another group's ticket, in Search or anywhere else.
-- No migration and no new index: the queues are the ones the administrator's All queue and the staff scope list already use.
+- No migration and no new index: the new queues test the existing assignee columns.
 
 ### Ticket List Filters and Sort
 

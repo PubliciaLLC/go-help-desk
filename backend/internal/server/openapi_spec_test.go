@@ -1240,19 +1240,25 @@ func TestOpenAPISpec_TicketListViews(t *testing.T) {
 	root := doc.root
 	fail := func(format string, args ...any) { t.Errorf(format, args...) }
 
-	t.Run("scope enum lists the six queues", func(t *testing.T) {
+	t.Run("scope names the six queues and has no closed enum", func(t *testing.T) {
 		op := doc.ops["GET /api/v1/tickets"]
 		p := specParam(root, op, "scope")
 		if p == nil {
 			t.Fatalf("%s has no scope query parameter", op)
 		}
-		want := map[string]bool{"mine": true, "assigned_to_me": true, "my_groups": true,
-			"unassigned": true, "all": true, "visible": true}
-		if got := specEnum(p["schema"]); !reflect.DeepEqual(got, want) {
-			fail("scope enum is %v, want %v", got, want)
+		// The server answers an unknown value as mine, so a closed enum would
+		// make generated clients refuse what it accepts.
+		if got := specEnum(p["schema"]); len(got) != 0 {
+			t.Errorf("scope has an enum %v; the server tolerates other values", got)
 		}
-		if d, _ := p["description"].(string); !strings.Contains(d, "only admins can use this scope") {
-			fail("scope description does not carry the unchanged 403 text: %q", d)
+		d, _ := p["description"].(string)
+		for _, q := range []string{"mine", "assigned_to_me", "my_groups", "unassigned", "all", "visible"} {
+			if !strings.Contains(d, q) {
+				t.Errorf("scope description does not name %q", q)
+			}
+		}
+		if !strings.Contains(d, "only admins can use this scope") {
+			t.Errorf("scope description does not carry the unchanged 403 text: %q", d)
 		}
 	})
 
