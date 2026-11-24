@@ -5,9 +5,9 @@ import { renderWithQuery } from '@/test/render'
 import { api } from '@/api/client'
 import { useAuthStore } from '@/store/auth'
 
-// The administrator's override of the three staff-email switches (#441), on
-// Settings -> Email. Each is user (leave it to each person, the default), on or
-// off for everyone.
+// The administrator's override of the four staff-email switches (#441, and SLA
+// alerts from #670), on Settings -> Email. Each is user (leave it to each
+// person, the default), on or off for everyone.
 
 vi.mock('@tanstack/react-router', () => ({
   useRouterState: () => ({ location: { pathname: '/admin/settings' } }),
@@ -53,14 +53,16 @@ async function openEmailTab() {
   await userEvent.click(screen.getByRole('button', { name: 'Email' }))
 }
 
-const NAMES = ['Tickets assigned to me', "Activity on tickets I'm assigned to or follow", "My groups' tickets"]
+const NAMES = ['Tickets assigned to me', "Activity on tickets I'm assigned to or follow", "My groups' tickets", 'SLA alerts']
 
 function overrideSelect(name: string) {
   return screen.getByRole('combobox', { name: `${name}: administrator override` }) as HTMLSelectElement
 }
 
 describe('Settings -> Email', () => {
-  it('has an Email tab with one override per switch', async () => {
+  it('has an Email tab with one override per switch, four in all', async () => {
+    await openEmailTab()
+    expect(screen.getAllByRole('combobox', { name: /administrator override$/ })).toHaveLength(4)
     await openEmailTab()
     for (const name of NAMES) expect(overrideSelect(name)).toBeTruthy()
   })
@@ -79,11 +81,13 @@ describe('Settings -> Email', () => {
       staff_email_assigned_override: 'off',
       staff_email_activity_override: 'on',
       staff_email_group_override: 'user',
+      staff_email_sla_override: 'off',
     })
     await openEmailTab()
     expect(overrideSelect(NAMES[0]).value).toBe('off')
     expect(overrideSelect(NAMES[1]).value).toBe('on')
     expect(overrideSelect(NAMES[2]).value).toBe('user')
+    expect(overrideSelect(NAMES[3]).value).toBe('off')
   })
 
   it('says who is mailed about what, and that nobody is mailed about their own action', async () => {
@@ -97,7 +101,7 @@ describe('Settings -> Email', () => {
     await openEmailTab()
     const text = (document.body.textContent ?? '').replace(/\s+/g, ' ')
     expect(text).toMatch(/their own switches start on/i)
-    expect(text).toMatch(/upgraded from 1\.2 all three start as "Off for everyone", so no staff email is sent until you change them/i)
+    expect(text).toMatch(/upgraded from 1\.2 all four start as "Off for everyone", so no staff email is sent until you change them/i)
     expect(text).not.toMatch(/all three are on by default/i)
   })
 

@@ -1407,6 +1407,12 @@ function FeaturesPanel({
           >
             <Toggle checked={bool('sla_enabled')} onChange={(v) => setBool('sla_enabled', v)} />
           </SettingRow>
+          <SettingRow
+            label="SLA alerts"
+            description="Tell staff by email, and send to webhooks that subscribe to them, when a ticket's response or resolution target is breached or has reached 80% of its time. Each person's SLA alerts switch and the Email override still decide who is mailed. Off on an install upgraded from 1.2, so nothing is sent until you turn it on; a breach that happened while this was off is not announced later."
+          >
+            <Toggle label="SLA alerts" checked={bool('sla_alerts_enabled')} onChange={(v) => setBool('sla_alerts_enabled', v)} />
+          </SettingRow>
           {bool('sla_enabled') && <SLAPoliciesSection />}
         </div>
       </Section>
@@ -1826,9 +1832,9 @@ function ReputationProviderRow({
 
 // ── Email ────────────────────────────────────────────────────────────────────
 
-// The three per-user staff-email switches live on each person's profile (#441).
-// These override them for everyone: leave it to each person (the default),
-// force it on, or force it off.
+// The four per-user staff-email switches live on each person's profile (#441,
+// and SLA alerts from #670). These override them for everyone: leave it to each
+// person (the default), force it on, or force it off.
 const STAFF_EMAIL_SWITCHES: { key: string; name: string; help: string }[] = [
   {
     key: 'staff_email_assigned_override',
@@ -1844,6 +1850,11 @@ const STAFF_EMAIL_SWITCHES: { key: string; name: string; help: string }[] = [
     key: 'staff_email_group_override',
     name: "My groups' tickets",
     help: 'A ticket is assigned to a group, a requester replies on a group ticket nobody has taken yet, or a group ticket nobody has taken yet is reopened. Goes to every member of the group.',
+  },
+  {
+    key: 'staff_email_sla_override',
+    name: 'SLA alerts',
+    help: 'A target on a ticket assigned to a person, on a group ticket nobody has taken yet, or on a ticket a person follows is breached or at risk. Needs SLA alerts turned on under Features.',
   },
 ]
 
@@ -1874,7 +1885,7 @@ function EmailPanel({
           Staff are emailed when a ticket is assigned to them or their group, and when a requester replies on a ticket
           that is theirs. Each person chooses on their profile; their own switches start on. Nobody is emailed about
           their own action. These settings decide for everyone: "Use each person's choice" leaves it to them,
-          "On for everyone" and "Off for everyone" ignore what they chose. On an install upgraded from 1.2 all three
+          "On for everyone" and "Off for everyone" ignore what they chose. On an install upgraded from 1.2 all four
           start as "Off for everyone", so no staff email is sent until you change them. Only has an effect once email
           is set up.
         </div>

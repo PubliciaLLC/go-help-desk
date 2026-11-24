@@ -6,8 +6,9 @@ import { extractError } from '@/api/client'
 import type { EmailPreferencesPatch } from '@/api/types'
 import { useAuthStore } from '@/store/auth'
 
-// The three staff-email switches (#441). Each saves the moment it is flipped,
-// and only the flipped one is sent, so two tabs cannot undo each other.
+// The four staff-email switches: the three of #441 and SLA alerts (#670). Each
+// saves the moment it is flipped, and only the flipped one is sent, so two tabs
+// cannot undo each other.
 //
 // An administrator can force any switch on or off for everyone from
 // Settings -> Email. The server reports each switch's effective value and
@@ -16,7 +17,7 @@ import { useAuthStore } from '@/store/auth'
 
 type Key = keyof EmailPreferencesPatch
 
-const SWITCHES: { key: Key; state: 'assigned' | 'activity' | 'group'; label: string; help: string }[] = [
+const SWITCHES: { key: Key; state: 'assigned' | 'activity' | 'group' | 'sla'; label: string; help: string }[] = [
   {
     key: 'email_notify_assigned',
     state: 'assigned',
@@ -34,6 +35,12 @@ const SWITCHES: { key: Key; state: 'assigned' | 'activity' | 'group'; label: str
     state: 'group',
     label: "My groups' tickets",
     help: 'Email me when a ticket is assigned to a group I belong to, when a requester replies on one of its tickets that nobody has taken yet, and when one of its tickets that nobody has taken yet is reopened.',
+  },
+  {
+    key: 'email_notify_sla',
+    state: 'sla',
+    label: 'SLA alerts',
+    help: 'Email me when a ticket assigned to me, a ticket in a group I belong to that nobody has taken yet, or a ticket I follow has just breached an SLA target or is at risk of breaching one. The two switches above do not apply to these alerts.',
   },
 ]
 

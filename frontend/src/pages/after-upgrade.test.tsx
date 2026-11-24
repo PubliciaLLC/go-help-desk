@@ -31,11 +31,12 @@ function serve(settings: Record<string, unknown> = {}, opts: { email?: boolean; 
 }
 
 // What an upgrade from 1.2 leaves behind: migration 000052 turned the three
-// staff-email overrides off.
+// staff-email overrides off, and 000067 the fourth, SLA alerts (#670).
 const UPGRADED = {
   staff_email_assigned_override: 'off',
   staff_email_activity_override: 'off',
   staff_email_group_override: 'off',
+  staff_email_sla_override: 'off',
 }
 
 const heading = () => screen.getByRole('heading', { level: 2 }).textContent
@@ -103,7 +104,7 @@ describe('the post-upgrade wizard', () => {
     expect(patches(patch)[0]).not.toHaveProperty('update_check_enabled')
   })
 
-  it('step 2 says what 1.3.0 did, shows today’s value and saves all three overrides', async () => {
+  it('step 2 says what 1.3.0 did, shows today’s value and saves all four overrides', async () => {
     const patch = serve(UPGRADED)
     const user = userEvent.setup()
     await opened()
@@ -118,7 +119,19 @@ describe('the post-upgrade wizard', () => {
       staff_email_assigned_override: 'user',
       staff_email_activity_override: 'user',
       staff_email_group_override: 'user',
+      staff_email_sla_override: 'user',
     })
+  })
+
+  it('step 2 explains the fourth switch, SLA alerts, and that it follows the same choice', async () => {
+    serve(UPGRADED)
+    const user = userEvent.setup()
+    await opened()
+    await user.click(button('Skip'))
+    await screen.findByRole('heading', { level: 2, name: 'Staff email notifications' })
+    const text = (document.body.textContent ?? '').replace(/\s+/g, ' ')
+    expect(text).toMatch(/fourth(, | )SLA alerts/i)
+    expect(text).toMatch(/breached or is at risk/i)
   })
 
   it('step 3 saves the staff-keys switch and the lifetime', async () => {
