@@ -69,3 +69,35 @@ describe('the passkeys warning', () => {
     expect(screen.queryByRole('region', { name: 'Server notices' })).toBeNull()
   })
 })
+
+// #616: a passkey requirement that is not being applied is a security control
+// that is off, and the administrator is told which roles it is off for.
+describe('the passkey requirement suspended warning', () => {
+  it('names the roles and says authenticator codes are accepted until BASE_URL is fixed', async () => {
+    mockWarnings({ available: false, reason: 'must be a domain', suspended_roles: ['staff', 'admin'] })
+    renderWithQuery(<InsecureConfigBanner isAdmin />)
+
+    const text = (await screen.findByRole('region', { name: 'Server notices' })).textContent ?? ''
+    expect(text).toContain('Passkey requirement suspended')
+    expect(text).toContain('staff, admin')
+    expect(text).toContain('authenticator app code')
+    expect(text).toContain('BASE_URL')
+  })
+
+  it('has no such entry when nothing is suspended', async () => {
+    mockWarnings({ available: false, reason: 'must be a domain', suspended_roles: [] })
+    renderWithQuery(<InsecureConfigBanner isAdmin />)
+
+    const text = (await screen.findByRole('region', { name: 'Server notices' })).textContent ?? ''
+    expect(text).toContain('Passkeys are unavailable')
+    expect(text).not.toContain('Passkey requirement suspended')
+  })
+
+  it('has no such entry from a server that predates the field', async () => {
+    mockWarnings({ available: false, reason: 'must be a domain' })
+    renderWithQuery(<InsecureConfigBanner isAdmin />)
+
+    const text = (await screen.findByRole('region', { name: 'Server notices' })).textContent ?? ''
+    expect(text).not.toContain('Passkey requirement suspended')
+  })
+})

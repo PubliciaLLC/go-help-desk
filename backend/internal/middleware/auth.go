@@ -28,6 +28,8 @@ type Actor struct {
 	// FactorVerified: see auth.SessionData. Never set for machine
 	// credentials, which are refused on the factor routes regardless.
 	FactorVerified bool
+	// PasskeyOwed and PasskeyHeld: see auth.SessionData.
+	PasskeyOwed, PasskeyHeld bool
 	// MustChangePassword: the account was unlocked from the server console
 	// and still holds the password it was handed (#497). Set only from a
 	// session; a machine credential is not signed in with a password.
@@ -111,6 +113,8 @@ func SessionAuth(store sessions.Store) func(http.Handler) http.Handler {
 				Role:           sd.Role,
 				MFAPassed:      sd.MFAPassed,
 				FactorVerified: sd.FactorVerified,
+				PasskeyOwed:    sd.PasskeyOwed,
+				PasskeyHeld:    sd.PasskeyHeld,
 
 				MustChangePassword:          sd.MustChangePassword,
 				PasswordChangeNeedsNoFactor: sd.PasswordChangeNeedsNoFactor,
@@ -408,6 +412,14 @@ func RequirePasswordCurrent(next http.Handler) http.Handler {
 	})
 }
 
+// owesFirstKeyWithFactor: a passkey-required session that proved a factor and
+// is owed a first key (not one the account already holds), and that must
+// change its password first. Without MustChangePassword there is no change to
+// admit it for.
+func (a *Actor) owesFirstKeyWithFactor() bool {
+	return a.PasskeyOwed && !a.PasskeyHeld && a.FactorVerified && a.MustChangePassword
+}
+
 // RequireMFAOrPasswordChange is RequireMFA for the password-change route
 // alone: it also admits a session that owes that change, whether or not it has
 // passed MFA.
@@ -422,10 +434,18 @@ func RequirePasswordCurrent(next http.Handler) http.Handler {
 // Login decides, with the factors in front of it, whether this session owes
 // none; a session that owes one verifies it first and then changes the
 // password with MFAPassed. The handler still demands the current password.
+//
+// A passkey-required sign-in (#616c) that has proved a factor but is owed a
+// key it does not yet have is admitted too, for the same reason: the key
+// registration waits behind the password change (RequirePasswordCurrent), and
+// MFAPassed will not come until the key is registered. The proved factor is
+// what MFAPassed would have recorded had the policy not applied. Not when the
+// account already holds the key: that session is owed the key itself, and
+// signs in with it first.
 func RequireMFAOrPasswordChange(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		a := GetActor(r)
-		if a == nil || !(a.MFAPassed || a.PasswordChangeNeedsNoFactor) {
+		if a == nil || !(a.MFAPassed || a.PasswordChangeNeedsNoFactor || a.owesFirstKeyWithFactor()) {
 			http.Error(w, `{"error":{"code":"mfa_required","message":"MFA verification required"}}`, http.StatusForbidden)
 			return
 		}
