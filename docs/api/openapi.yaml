@@ -2401,12 +2401,12 @@ paths:
       x-ghd-mfa: true
       responses:
         '200':
-          description: The caller's account, or the identity of an OAuth client.
+          description: The caller's account (MeUser), or the identity of an OAuth client.
           content:
             application/json:
               schema:
                 oneOf:
-                  - {$ref: '#/components/schemas/User'}
+                  - {$ref: '#/components/schemas/MeUser'}
                   - type: object
                     required: [machine, role, scopes]
                     properties:
@@ -2643,10 +2643,10 @@ paths:
                 email_notify_group: {type: boolean}
       responses:
         '200':
-          description: The caller's account, with the switches as saved.
+          description: The caller's account (MeUser), with the switches as saved.
           content:
             application/json:
-              schema: {$ref: '#/components/schemas/User'}
+              schema: {$ref: '#/components/schemas/MeUser'}
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
@@ -3288,9 +3288,20 @@ paths:
         - name: scope
           in: query
           required: false
-          description: "mine (the default), unassigned, all or visible. unassigned and all are admin only. visible is every ticket the caller can see: every ticket for an admin, or for staff while ticket scope enforcement is off, and the staff scope with it on; a reporting user still gets only their own tickets. Other values are ignored and behave as mine."
+          description: >-
+            The queue. Who may use each:
+            mine (the default): the tickets assigned to the caller or to one of their groups. With ticket scope enforcement on, staff get everything their scope admits instead. Staff and administrators.
+            assigned_to_me: the tickets whose assignee user is the caller, whatever group they are in. Staff and administrators.
+            my_groups: the tickets whose assignee group is one of the caller's groups, whoever holds them. Staff and administrators; held_by splits it three ways.
+            unassigned (the Available queue): the tickets with no assignee group and no assignee user. Administrators always, and staff while available_queue_roles lists staff. Anyone else is refused 403 forbidden, "only admins can use this scope".
+            all: every ticket. Administrators only; anyone else is refused 403 forbidden, "only admins can use this scope".
+            visible (the Search view): every ticket the caller can see. Staff and administrators.
+            A reporting user always gets only their own tickets, whatever the value.
+            Yield rule: when reporter_id, requester or assignee_group_id is present, mine, unassigned, all and visible do not apply and do not refuse; the queue is "any". assigned_to_me and my_groups are always applied and narrowed by those filters like any other.
+            Any other value is mine.
           schema:
             type: string
+            enum: [mine, assigned_to_me, my_groups, unassigned, all, visible]
         - name: reporter_id
           in: query
           required: false
@@ -3378,6 +3389,18 @@ paths:
           description: Only tickets assigned to this group. Staff and administrators (403 for a reporting user). Staff must belong to the group when ticket scope enforcement is on.
           schema:
             $ref: '#/components/schemas/Uuid'
+        - name: held_by
+          in: query
+          required: false
+          description: >-
+            Who personally holds the ticket, relative to the caller: nobody (no assignee user), me (the caller
+            is the assignee user) or others (an assignee user who is not the caller). One value; any other value
+            is 400 bad_request, "invalid held_by". Applies on every queue and is ANDed with it; the My Group's
+            Tickets view sends it. Staff and administrators (403 for a reporting user, "held_by is not available
+            to requesters").
+          schema:
+            type: string
+            enum: [nobody, me, others]
         - name: status_id
           in: query
           required: false
@@ -5685,7 +5708,8 @@ paths:
         - mfa_enabled, ticket_scope_enforced, sla_enabled, self_signup_enabled,
           open_registration_enabled and saml_enabled must be booleans;
           reopen_window_days a number of 0 or more; mfa_enforced_roles an array of
-          strings; reopen_target_status_name a string; site_logo_url a string that is
+          strings; available_queue_roles an array of admin and staff only (an empty
+          array is accepted; user or any other value is 400 bad_request); reopen_target_status_name a string; site_logo_url a string that is
           empty, an http(s) URL, or a path on this site (starting with a single "/").
           null or any other type is refused (bad_request) and nothing is written.
         - saml_metadata_url and saml_metadata_xml cannot both be non-empty after
@@ -5718,7 +5742,7 @@ paths:
         attachment_infected_handling, attachment_mismatch_handling,
         audit_retention_days, staff_can_view_ticket_change_history,
         staff_can_view_follow_audit, staff_can_create_api_keys,
-        api_key_max_lifetime_years, ticket_scope_enforced, auto_assign_group_id,
+        api_key_max_lifetime_years, ticket_scope_enforced, available_queue_roles, auto_assign_group_id,
         auto_assign_user_ids, password_rehash_grace_days, password_rehash_started_at,
         update_check_enabled,
         attachment_vt_lookup, attachment_vt_api_key, attachment_reputation_provider,
@@ -11277,6 +11301,42 @@ components:
     Priority:
       type: string
       enum: [critical, high, medium, low]
+    MeUser:
+      description: >-
+        The account GET /me and PATCH /me/email-preferences return for a person: a session, or an API key,
+        which answers with its owner's account. It is User plus the fields only these two answers carry. An
+        OAuth client is not a person and gets the machine object instead, which has none of them.
+      allOf:
+        - {$ref: '#/components/schemas/User'}
+        - type: object
+          required: [can_use_available_queue]
+          properties:
+            api_key_max_lifetime_years:
+              type: integer
+              enum: [1, 2, 3, 4, 5, -1]
+              description: >-
+                The longest a new API key may live, in years, or -1 for no limit (the
+                api_key_max_lifetime_years setting). Present on GET /me and PATCH
+                /me/email-preferences, beside can_create_api_keys.
+            can_create_api_keys:
+              type: boolean
+              description: >-
+                Whether this account may create its own API keys: always for an
+                administrator, for staff only while staff_can_create_api_keys is on,
+                never for a requester. Present on GET /me and PATCH /me/email-preferences.
+            sla_enabled:
+              type: boolean
+              description: >-
+                Whether SLA tracking is on. Present on GET /me and PATCH /me/email-preferences, only for
+                staff and administrators, and only when the setting could be read: absent means unknown, not off.
+                A requester never gets it, and it is not on the public GET /site. The ticket list offers the sla
+                filter and sort only while it is true; both answer 400 while it is false.
+            can_use_available_queue:
+              type: boolean
+              description: >-
+                Whether this account may open the Available view (scope=unassigned): true for an administrator,
+                true for staff while available_queue_roles lists staff, false for a requester. Always present on
+                GET /me and PATCH /me/email-preferences, so a client never has to read the setting to know.
     User:
       description: An account. The password hash, the TOTP secret, single sign-on subjects and the deletion time are never returned. mfa_enabled is the TOTP flag only.
       type: object
@@ -11294,27 +11354,6 @@ components:
         email_notify_assigned: {type: boolean, description: 'Email me when a ticket is assigned to me. Staff email switch, on by default.'}
         email_notify_activity: {type: boolean, description: 'Email me when a requester replies on a ticket assigned to me, or it is reopened. On by default.'}
         email_notify_group: {type: boolean, description: "Email me about my groups' tickets. On by default."}
-        api_key_max_lifetime_years:
-          type: integer
-          enum: [1, 2, 3, 4, 5, -1]
-          description: >-
-            The longest a new API key may live, in years, or -1 for no limit (the
-            api_key_max_lifetime_years setting). Present only on GET /me and PATCH
-            /me/email-preferences, beside can_create_api_keys.
-        can_create_api_keys:
-          type: boolean
-          description: >-
-            Whether this account may create its own API keys: always for an
-            administrator, for staff only while staff_can_create_api_keys is on,
-            never for a requester. Present only on GET /me and PATCH
-            /me/email-preferences.
-        sla_enabled:
-          type: boolean
-          description: >-
-            Whether SLA tracking is on. Present only on GET /me and PATCH /me/email-preferences, only for
-            staff and administrators, and only when the setting could be read: absent means unknown, not off.
-            A requester never gets it, and it is not on the public GET /site. The ticket list offers the sla
-            filter and sort only while it is true; both answer 400 while it is false.
         email_notifications:
           type: object
           description: |
@@ -12247,6 +12286,15 @@ components:
         ticket_scope_enforced:
           type: boolean
           description: Whether staff visibility is limited to the tickets their groups cover.
+        available_queue_roles:
+          type: array
+          items:
+            type: string
+            enum: [admin, staff]
+          description: >-
+            Roles that may open the Available view (scope=unassigned), from admin and staff. An administrator
+            is always allowed whether or not admin is listed. Absent, unreadable or [] means administrators only.
+            A requester is never allowed. Session only.
         auto_assign_group_id:
           type: string
           description: UUID of the group that new tickets are assigned to. Must name an existing group; empty or null turns it off.
