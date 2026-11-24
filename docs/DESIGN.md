@@ -1523,6 +1523,18 @@ copy (except the cross-references listed under **Copy that names a place**),
 its API calls and its validation. There is no migration, and an existing
 install changes only in where things are on screen.
 
+**Sequencing.** The issue says to land the branches that edit
+`SettingsPage.tsx` first and then split the file. The split is built on an
+`origin/v1.3.0-beta` that already contains #616 (passkey roles), #670 (SLA
+alerts), #672 (the SLA policies editor), #673 (the overall file size limit,
+`AttachmentSizeLimitSection`, the guest clamp in the save and
+`GuestSizeSlider`'s `max`) and #676 (`AvailableQueueSection`). Until all five
+are merged, no part of #674 is implemented. This section names their
+components and rules as those issues specify them. It does not say what to do
+if one of them has not landed, because #674 is not started in that state. If
+one of them is dropped instead, its rows are removed from the tables below,
+and nothing else changes.
+
 #### The pages
 
 Every section that exists once #616, #670, #672, #673 and #676 have landed is
@@ -1542,7 +1554,28 @@ of `Section`) and keep their current order on the page.
 | **Privacy** | `/admin/settings/privacy` | Ticket visibility · Available queue (#676) · Audit log · Privacy | General tab |
 | **Audit Log** | `/admin/audit` (unchanged) | the audit viewer | unchanged |
 
-The issue's table leaves out the following. Each is placed here:
+The issue's table leaves out the following, or conflicts with the code. Each
+is placed here:
+
+- **Identity (site name and logo).** The issue lists Identity first under
+  Authentication and says Branding is "unchanged". On origin/v1.3.0-beta the
+  only section called Identity is the Branding tab's, and it is the only
+  section that tab has (`SettingsPage.tsx`, `BrandingPanel`). The
+  Authentication tab has no Identity section. Following both lines of the
+  table literally would leave Branding empty. Identity stays on **Branding**,
+  which keeps Branding "unchanged", and is not on Authentication. This is
+  listed for the owner below.
+- **"Should mirror the user's own notification preferences screen."** The
+  issue says this about Staff email about tickets. Once #670 has landed, the
+  section already mirrors it. It has one override row per switch on the
+  profile's `EmailNotificationsSection`, with the same names in the same
+  order: Tickets assigned to me, Activity on tickets I'm assigned to or
+  follow, My groups' tickets, SLA alerts. Each row is a three-way choice
+  (Use each person's choice, On for everyone, Off for everyone), because an
+  administrator chooses whether to override, which the person's on/off
+  switch cannot express. #674 moves the section unchanged. A test pins the
+  mirror so the two lists cannot drift: the override names equal the profile
+  labels, in order. This is listed for the owner below.
 
 - **Available queue** (`AvailableQueueSection`, #676). #676 put it under
   General → Ticket visibility until #674 placed it. It goes on **Privacy**,
@@ -1641,12 +1674,14 @@ the 44 px coarse-pointer rule.
 
 #### The page shell and tabs
 
-`frontend/src/pages/admin/settings/SettingsPageShell.tsx` renders
-`<Layout>`, then the page's `h1` (the sidebar label), then one line of
-description, then the tab bar if the page has one, then the save warning,
-then the page's content. Each page's content sits in `max-w-2xl`, as the tab
-panel does today. The Templates tab does not, because the template editor is
-full width today. The descriptions are:
+`frontend/src/pages/admin/settings/SettingsPageShell.tsx` takes `{ title,
+description, tabs?, draft?, wide?, children }`. It renders `<Layout>`, then
+the `h1` (`title`, the sidebar label), then one line of `description`, then
+the tab bar if `tabs` is given, then, when `draft` is given, the draft's save
+warning, then `children`. When `draft` is given and `draft.isLoading` is
+true, it renders the spinner instead of the save warning and `children`.
+`children` sit in `max-w-2xl`, as the tab panel does today, unless `wide` is
+set. The descriptions are:
 
 | Page | Description |
 | --- | --- |
@@ -1668,13 +1703,38 @@ buttons, because each tab has its own address, Back works between them and
 the banner can link straight to Templates. Features has one tab, **SLA**.
 Email has **Notifications** and **Templates**.
 
-**The Templates tab** is the body of today's `EmailTemplatesPage`: the intro
-paragraph with the advisory link, and the list or the editor. It sits inside
-the Email shell instead of its own `<Layout>`. Its "Email templates" heading
-becomes an `h2` under the page's `h1` "Email". Nothing else changes. It still
-keeps the open template in `?t=`, reading `window.location.search` and
-writing with `history.replaceState(window.location.pathname + …)`, so it
-works at the new path as it did at the old one.
+**One route, one component.** Every address in the table is its own flat
+route in `router.tsx`, like every admin route today, with its own page
+component. There are no layout routes and no `<Outlet>`. The two Email
+addresses are two routes and two components, which render the same shell
+title, description and tabs:
+
+| Route | Component | Draft | Leave guard | Save bar | Shell |
+| --- | --- | --- | --- | --- | --- |
+| `/admin/settings/email` | `EmailSettingsPage` | `useSettingsDraft()` | `useLeaveGuard(draft)` | one `SaveBar` at the end | `draft`, `max-w-2xl` |
+| `/admin/settings/email/templates` | `EmailTemplatesSettingsPage` | none | none | none | no `draft`, `wide` |
+
+Moving between the two tabs is a route change, so the component unmounts and
+the next one mounts fresh. Notifications to Templates with unsaved edits
+therefore asks first, like any other link out of a page with a draft (see
+**The leave guard**). Templates to Notifications never asks, because the
+Templates page has no draft. Coming back to Notifications starts a new draft
+from the dump. The other seven pages are each one component with a draft, a
+guard and one `SaveBar`: `GeneralSettingsPage`, `FeaturesSettingsPage`,
+`BrandingSettingsPage`, `AttachmentSettingsPage`, `GuestAccessSettingsPage`,
+`AuthenticationSettingsPage` and `PrivacySettingsPage`. Branding's draft
+holds only the site name; the logo uploader keeps its own state, as today.
+
+**The Templates tab** is the body of today's `EmailTemplatesPage`, moved into
+`frontend/src/pages/admin/settings/EmailTemplatesTab.tsx`: the intro
+paragraph with the advisory link, and the list or the editor.
+`EmailTemplatesSettingsPage` renders it inside the shell instead of its own
+`<Layout>`. Its "Email templates" heading becomes an `h2` under the page's
+`h1` "Email". Nothing else changes. It still keeps the open template in
+`?t=`, reading `window.location.search` and writing with
+`history.replaceState(window.location.pathname + …)`, so it works at the new
+path as it did at the old one. The template editor has no leave prompt today
+and gets none here.
 
 #### State: one draft per page
 
@@ -1696,12 +1756,13 @@ Attachments and Guest Access pages. One shared draft above every page would
 keep the cross-tab behaviour, but a Save on one page would then write edits
 made on another page that is no longer on screen.
 
-The draft logic is moved out of `SettingsPage` unchanged, into
+The draft logic is moved out of `SettingsPage`, unchanged apart from the two
+changes listed below, into
 `frontend/src/pages/admin/settings/useSettingsDraft.ts`:
 
 ```ts
 interface SettingsDraft {
-  isLoading: boolean                       // the settings query's
+  isLoading: boolean                       // no seeded draft yet (see below)
   stored: Record<string, unknown> | undefined  // the dump as last fetched
   bool(k: string): boolean; num(k: string): number; str(k: string): string
   strArr(k: string): string[]; has(k: string): boolean
@@ -1735,15 +1796,42 @@ export function useSettingsDraft(): SettingsDraft
   `saved` for 2.5 s, clears the secrets and invalidates `['admin',
   'settings']`, `['site-config']`, `['security-warnings']` and `['me']`; and a
   refused save, which keeps every edit.
-- **One change: a save stays pending until the settings have been fetched
+- **The first change: a save stays pending until the settings have been fetched
   again.** `onSuccess` awaits the `['admin', 'settings']` invalidation, so
   `isPending`, and with it "Saving…", lasts until the fresh dump has
   arrived. Without that, the draft would differ from the old dump for one
   round trip after a successful save, and the leave guard below would ask
   about changes that were already saved. The other three invalidations are
   not awaited.
+- **A second change: no section renders before the draft is seeded.** Today
+  `local` starts as `{}` and the seeding effect fills it after the render in
+  which the query's data first appears. So for one render every section sees
+  an empty draft. On today's page that is harmless only by accident: the
+  sections that copy a draft value into their own state when they mount do so
+  on a tab that is opened by a click, after seeding. The Uploads section
+  seeds its allowed-types text from `has('attachment_allowed_types')` with
+  `useState` and never re-reads it. Mounted in that empty render, as it would
+  be on its own page, it would show `DEFAULT_ALLOWED_TYPES` instead of the
+  stored list, and the next edit would save the defaults over the stored
+  setting. The hook therefore keeps `local` as `Record<string, unknown> |
+  null`:
+  - `local` starts as `queryClient.getQueryData(['admin', 'settings']) ??
+    null`, a `useState` initialiser. A page opened with the dump already
+    cached (from another settings page) is seeded in its first render and
+    shows its sections at once, with no spinner.
+  - The seeding effect is today's (`if (settings) setLocal(settings)`).
+  - `isLoading` is `query.isLoading || (query.data !== undefined && local
+    === null)`. It is true while the read is in flight, and for the one
+    render between the data arriving and the effect copying it. The shell
+    shows its spinner in both, so no section mounts on an empty draft.
+  - The accessors and `buildSettingsPatch` read `local ?? {}`. A failed read
+    has no data, so `isLoading` is false and the page renders with an empty
+    draft, as today.
+
+  No section changes. A section that seeds its own state at mount sees the
+  stored value, whichever way the page was opened.
 - **`dirty`** is `!isPending && Object.keys(buildSettingsPatch(…)).length > 0`.
-  Before the dump arrives `local` is empty, so a page that is still loading
+  While `local` is `null` the patch is empty, so a page that is still loading
   is never dirty.
 
 Sections receive the draft as one prop, `draft: SettingsDraft`, instead of
@@ -1765,9 +1853,11 @@ pair of size limits, which #673 handles.
 **The leave guard.** Splitting the draft means that leaving a page with
 unsaved edits would discard them without a word. That used to be a tab
 switch, which kept them. So every page that uses the draft calls
-`useBlocker({ shouldBlockFn: () => draft.dirty, enableBeforeUnload: () =>
-draft.dirty, withResolver: true })` (TanStack Router). While the blocker is
-`blocked`, the page shows `ConfirmDialog` with:
+`useLeaveGuard(draft)` (`frontend/src/pages/admin/settings/useLeaveGuard.tsx`),
+which calls `useBlocker({ shouldBlockFn: () => draft.dirty,
+enableBeforeUnload: () => draft.dirty, withResolver: true })` (TanStack
+Router) and returns the dialog element for the page to render. While the
+blocker is `blocked`, the dialog is `ConfirmDialog` with:
 
 - title "Leave without saving?"
 - description "Your changes on this page have not been saved. Leaving
@@ -1780,16 +1870,23 @@ The guard covers every router navigation: sidebar links, tab links, in-page
 links such as Open OAuth clients, and Back and Forward. Reloading or closing
 the tab gets the browser's own prompt. It covers only the draft. The SAML,
 OIDC, SLA and template forms keep their own state, as they do when you leave
-the Settings page today. A page with no edits, or with edits that were
+the Settings page today. The Email tabs follow from **One route, one
+component**: from Notifications with unsaved edits, the Templates tab link
+asks like any other link, and Leave discards the edits; the Templates page
+has no draft and never asks. A page with no edits, or with edits that were
 saved, never prompts. Clicking a link in the phone drawer closes the drawer
 before the dialog opens, and Stay leaves the drawer closed.
 
-**Loading and errors.** Each page shows the shell's spinner while
-`draft.isLoading`, as the tabbed page does today. A query that is already
-cached (from another settings page) shows at once, and the existing seeding
-effect updates the draft when the background refetch lands. A failed read
-renders the page as today, with an empty draft. There is no new empty
-state: every section already renders its own unset values.
+**Loading and errors.** Each page with a draft shows the shell's spinner
+while `draft.isLoading`, which covers the unseeded render described above. A
+query that is already cached (from another settings page) is seeded in the
+first render and shows at once. The existing seeding effect updates the draft
+when the background refetch lands, as it does today; a section that copied a
+value into its own state at mount keeps that copy, as it does today after a
+tab switch. A failed read renders the page as today, with an empty draft.
+There is no new empty state: every section already renders its own unset
+values. The Templates page has no draft and loads its templates as today's
+`EmailTemplatesPage` does.
 
 #### Copy that names a place
 
@@ -1808,6 +1905,8 @@ of these changes to the new name:
 | `handler_admin_settings.go`, reopen-target `warning` text | under Settings, Ticket lifecycle, Reopen target status | under System, General, Ticket lifecycle, Reopen target status |
 | `notify/templates.go`, `SiteName` variable help | from Settings | from System → Branding |
 | Email → Staff email, #670's SLA override help | Needs SLA alerts turned on under Features | Needs SLA alerts turned on below |
+| `AfterUpgradePage.tsx`, staff-email step, SLA alerts paragraph (#670) | the SLA alerts setting under Features decides whether those alerts are sent at all | the SLA alerts setting under System → Email decides whether those alerts are sent at all |
+| `EmailNotificationsSection.tsx`, the comment above `SWITCHES` (#670) | from Settings -> Email | from System -> Email |
 | `GuestSizeSlider` description (#673) | set under Attachments | set under System → File Attachments |
 | `AttachmentSizeLimitSection` (#673) | — | names Guest Access as the place of the guest slider |
 
@@ -1905,6 +2004,10 @@ apply to each page, as they did to each tab:
     true after an edit and after typing a secret.
   - `dirty` is false while the save is pending and after the save and its
     refetch.
+  - With nothing cached, `isLoading` is true until the draft has been seeded:
+    in the render where the query's data first appears, `isLoading` is still
+    true. With the dump already in the cache, `isLoading` is false and the
+    accessors return the stored values in the first render.
   - A refused save keeps the edits and `dirty`.
   - The `email_required` message is shown.
   - `aboutClients` is set only when the patch turns `ticket_scope_enforced`
@@ -1916,9 +2019,27 @@ apply to each page, as they did to each tab:
 - *Each page saves only its own keys*: edit one setting on General and save.
   The `PATCH` body is exactly that key. Repeat on File Attachments with a
   reputation key typed.
+- *A section that seeds at mount sees the stored value*: with
+  `attachment_allowed_types` stored as `["application/pdf"]` (different from
+  `DEFAULT_ALLOWED_TYPES`), File Attachments' allowed-types box shows
+  `application/pdf`, both when the page is opened with nothing cached and
+  when it is opened with the dump already cached. Editing another Uploads
+  setting and saving does not send `attachment_allowed_types`.
+- *Staff email mirrors the profile*: the override names of Staff email about
+  tickets equal the switch labels of `EmailNotificationsSection`, in order.
+  Both lists are exported for this test (`STAFF_EMAIL_SWITCHES` from
+  `StaffEmailSection`, `EMAIL_SWITCHES` from `EmailNotificationsSection`, the
+  latter renamed from `SWITCHES`).
+- *The Email tabs*: `/admin/settings/email` and
+  `/admin/settings/email/templates` both show the `h1` "Email" and the two
+  tab links, with `aria-current="page"` on the one for the current address.
+  Templates shows no Save changes button.
 - *The leave guard*:
   - Edit, then follow a sidebar link: the dialog appears. Stay keeps the edit
     and the address. Leave navigates and discards the edit.
+  - Edit an override on Notifications, then follow the Templates tab: the
+    dialog appears. Leave opens Templates; following Notifications back shows
+    the stored value, not the edit.
   - With no edits, after a successful save, and on the Templates tab,
     following a link shows no dialog.
   - Opening each page and leaving without touching anything never prompts.
@@ -1936,6 +2057,9 @@ apply to each page, as they did to each tab:
 - *Banner*: the template notice links to
   `/admin/settings/email/templates?t=<name>`, and the reopen-target, SAML and
   scanner notices name the new places.
+- *After upgrade* (`after-upgrade.test.tsx`): the guest step says "under
+  System, Guest Access", and the staff-email step's SLA alerts paragraph says
+  "under System → Email" and no longer says "under Features".
 - *Moved tests*: every existing test that renders `SettingsPage` and clicks a
   tab renders the page that now holds the section instead. The ones on
   origin/v1.3.0-beta are `settings-*`, `audit-*`, `api-key*`,
@@ -1995,6 +2119,35 @@ Each can be overturned in one line.
   …", which names a page that no longer exists.
 - **Notices are reworded but not made into links.** Rejected: links on every
   notice, which is new behaviour the issue does not ask for.
+- **Identity (site name and logo) stays on Branding and is not on
+  Authentication.** The issue's table puts Identity first under
+  Authentication and also says Branding is "unchanged". Identity is the
+  Branding tab's only section, so both cannot hold. This reading keeps
+  Branding unchanged. Rejected: moving Identity to Authentication, which
+  leaves Branding an empty page. To overturn: render `IdentitySection` first
+  on `AuthenticationSettingsPage` and remove Branding from the sidebar.
+- **"Mirror the user's own notification preferences screen" is met by the
+  section as it is.** After #670 it has one override per profile switch, with
+  the same names in the same order, and a test now pins that. Rejected:
+  restyling it as the profile's on/off list, which cannot show the third
+  choice ("Use each person's choice") and is a redesign the move does not
+  need. To overturn: say what else should match, and it becomes its own
+  change.
+- **Each address is its own flat route and component; the two Email tabs
+  are two pages that share a title and tab bar.** Notifications has the draft,
+  the guard and the save bar; Templates has none of them. Rejected: one
+  layout route with an `<Outlet>` holding one draft for both tabs, which would
+  keep an unsaved override alive while the template editor is open and put a
+  Save button for overrides under the editor.
+- **The draft hook does not render sections until the draft is seeded, and
+  seeds from the query cache when it can.** Rejected: re-syncing the Uploads
+  section's text box with an effect, which fixes one section and leaves the
+  next control that seeds at mount with the same bug.
+- **#674 is implemented only after #616, #670, #672, #673 and #676 are
+  merged.** This is the issue's own sequencing. Rejected: building on today's
+  base and adding the five later, which means splitting `SettingsPage.tsx`
+  twice and resolving each branch's conflicts against files that no longer
+  exist.
 - **The sidebar keeps its dense rows. If System does not fit at 768, the nav
   scrolls for that case and the current link is scrolled into view.**
   Rejected: denser rows, which make the coarse-pointer target harder to hit.
