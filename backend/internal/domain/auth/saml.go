@@ -8,6 +8,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/xml"
 	"errors"
 	"fmt"
 	"net/http"
@@ -189,6 +190,14 @@ func NewSAMLMiddleware(ctx context.Context, cfg SAMLConfig) (*samlsp.Middleware,
 	if err != nil {
 		return nil, err
 	}
+	// The NameID is the account's permanent key (users.saml_subject), so it has
+	// to be the same value every time the same person signs in. Left empty, the
+	// library requests "transient", which Entra and others answer with a random
+	// value per sign-in: every account then worked for exactly one sign-in.
+	// The format in the request overrides the one set in the IdP's own
+	// application settings.
+	mw.ServiceProvider.AuthnNameIDFormat = saml.PersistentNameIDFormat
+	mw.OnError = onACSError
 	// Both lifetimes: the cookie's Max-Age, and the JWT's exp, which is what
 	// is actually enforced (a browser can keep a cookie past its Max-Age).
 	// Use HandoverCodec to ensure each minted JWT gets a random jti; without
@@ -218,6 +227,36 @@ func NewSAMLMiddleware(ctx context.Context, cfg SAMLConfig) (*samlsp.Middleware,
 	}
 	mw.RequestTracker = tracker
 	return mw, nil
+}
+
+// statusInvalidNameIDPolicy is the second-level status an identity provider
+// answers with when it cannot issue the NameID format the request named.
+const statusInvalidNameIDPolicy = "urn:oasis:names:tc:SAML:2.0:status:InvalidNameIDPolicy"
+
+// onACSError is the ACS's error handler. An identity provider that cannot
+// issue a persistent NameID answers the request with a status error, which the
+// library reports as a bare 403 page that tells the person nothing. That one
+// case is sent to the login page with a code it has a message for; every
+// other failure keeps the library's handler (a 403 and a log line), because
+// what an unsigned error response says is not something to build more on.
+func onACSError(w http.ResponseWriter, r *http.Request, err error) {
+	var invalid *saml.InvalidResponseError
+	if errors.As(err, &invalid) && refusesNameIDPolicy(invalid.Response) {
+		http.Redirect(w, r, "/login?error=saml_nameid_format", http.StatusSeeOther)
+		return
+	}
+	samlsp.DefaultOnError(w, r, err)
+}
+
+// refusesNameIDPolicy reports whether a response's status carries the nested
+// InvalidNameIDPolicy code.
+func refusesNameIDPolicy(response string) bool {
+	var resp saml.Response
+	if xml.Unmarshal([]byte(response), &resp) != nil {
+		return false
+	}
+	nested := resp.Status.StatusCode.StatusCode
+	return nested != nil && nested.Value == statusInvalidNameIDPolicy
 }
 
 // fetchIdPMetadata fetches and parses the IdP metadata at rawURL.

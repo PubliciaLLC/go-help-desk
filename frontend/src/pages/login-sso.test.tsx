@@ -67,7 +67,8 @@ afterEach(() => {
 
 describe('SSO error messages', () => {
   it.each([
-    ['email_taken', 'Another account here already uses the email address your identity provider sent. Ask an administrator to sort it out.'],
+    ['email_taken', 'An account with the email address your identity provider sent already exists here and is not linked to single sign-on. Ask an administrator.'],
+    ['saml_nameid_format', 'Your identity provider cannot issue the persistent identifier this help desk asks for. Ask an administrator to check the single sign-on setup.'],
     ['domain_not_allowed', 'Accounts from your email domain cannot sign in here.'],
     ['account_disabled', 'This account is disabled. Ask an administrator if you need access.'],
     ['account_link_refused', 'Your single sign-on identity could not be linked to the existing account with that email address. Ask an administrator.'],
@@ -174,7 +175,7 @@ describe('message clearing', () => {
     renderAt('?error=email_taken')
 
     const alert = await screen.findByRole('alert')
-    expect(alert.textContent).toContain('Another account here already uses the email address')
+    expect(alert.textContent).toContain('An account with the email address your identity provider sent already exists here')
 
     await user.type(await screen.findByLabelText(/email/i), 'sam@example.com')
     await user.type(screen.getByLabelText(/password/i), 'hunter2')
