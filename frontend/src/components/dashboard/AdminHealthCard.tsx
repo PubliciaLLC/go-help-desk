@@ -4,9 +4,10 @@ import { getSettings, securityWarningsQuery } from '@/api/admin'
 import { Button } from '@/components/ui/button'
 import { adminHealthItems, type HealthItem } from '@/lib/adminHealth'
 
-// Administrators only (the dashboard decides). It reads the two queries an
-// administrator's page already makes, under the same keys and options as the
-// banner and the settings pages, so it adds no request. It has no Hide: it says
+// Administrators only (the dashboard decides). It reads the banner's
+// security-warnings query and the settings dump, under the same keys and
+// options as the banner and the settings pages; on the dashboard the settings
+// dump is one extra GET for an administrator. It has no Hide: it says
 // what is true now, and the banner's Hide governs only the banner.
 
 const TONE: Record<HealthItem['severity'], string> = {
