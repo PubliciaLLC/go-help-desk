@@ -379,7 +379,10 @@ export const SHORT_USER = { ...LONG_USER, id: 'u-short', email: 'a@b.co', displa
  * Layers long-data fixtures for every admin endpoint over mockApi. Registered
  * after it, so these win (Playwright matches the most recent route first).
  */
-export async function mockAdminApi(page: Page, opts: { short?: boolean } = {}) {
+export async function mockAdminApi(
+  page: Page,
+  opts: { short?: boolean; /** Merged over the settings dump, for a page that needs particular stored values. */ settings?: Record<string, unknown> } = {},
+) {
   await mockApi(page, { me: ME_ADMIN })
   const n = opts.short ? 'Short' : LONG_NAME
   const d = opts.short ? 'Short' : LONG_DESC
@@ -439,7 +442,7 @@ export async function mockAdminApi(page: Page, opts: { short?: boolean } = {}) {
       { id: 'sla-1', name: n, priority: 'high', response_target_min: 30, resolution_target_min: 240 },
     ],
     '/api/v1/admin/scopes': [{ scope: 'tickets:read', resource: 'tickets', action: 'read' }],
-    '/api/v1/admin/settings': { sla_enabled: true, saml_enabled: true, setup_complete: true, post_upgrade_130_seen: true },
+    '/api/v1/admin/settings': { sla_enabled: true, saml_enabled: true, setup_complete: true, post_upgrade_130_seen: true, ...opts.settings },
     '/api/v1/admin/saml': { configured: true, metadata_url: u, metadata_xml: '', cert_pem: SAML_CERT, sp_metadata_url: u },
     '/api/v1/admin/oidc': { enabled: true, issuer_url: u, client_id: d, client_secret: '', redirect_url: u, configured: true },
     '/api/v1/admin/audit': {

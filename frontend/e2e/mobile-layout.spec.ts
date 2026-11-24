@@ -991,7 +991,14 @@ async function openCustomField(page: Page) {
   await page.waitForLoadState('networkidle')
 }
 
-const ADMIN_PAGES: { name: string; path: string; ready: string | RegExp; short?: boolean; tab?: string; act?: (page: Page) => Promise<void> }[] = [
+// #673: the Attachments tab's File size section has two pieces of text that only
+// render for particular stored values, so the fixtures below hold those values.
+// Overall 10 with a guest figure of 20 shows the two-sentence guest line; an
+// overall of 100 with scanning on shows the scanner hint.
+const ATTACHMENTS_GUEST_LINE = { attachment_max_mb: 10, guest_attachment_max_mb: 20, attachment_scan_policy: 'required' }
+const ATTACHMENTS_SCANNER_HINT = { attachment_max_mb: 100, guest_attachment_max_mb: 5, attachment_scan_policy: 'required' }
+
+const ADMIN_PAGES: { name: string; path: string; ready: string | RegExp; short?: boolean; tab?: string; settings?: Record<string, unknown>; shows?: RegExp; act?: (page: Page) => Promise<void> }[] = [
   { name: 'users', path: '/admin/users', ready: 'Users' },
   { name: 'users (short data)', path: '/admin/users', ready: 'Users', short: true },
   { name: 'user detail', path: `/admin/users/${LONG_USER.id}`, ready: 'NNNNNNNN' },
@@ -1039,20 +1046,29 @@ const ADMIN_PAGES: { name: string; path: string; ready: string | RegExp; short?:
   { name: 'settings: authentication', path: '/admin/settings', ready: 'Settings', tab: 'Authentication' },
   { name: 'settings: features (SLA)', path: '/admin/settings', ready: 'Settings', tab: 'Features' },
   { name: 'settings: email', path: '/admin/settings', ready: 'Settings', tab: 'Email' },
-  { name: 'settings: attachments', path: '/admin/settings', ready: 'Settings', tab: 'Attachments' },
+  {
+    name: 'settings: attachments', path: '/admin/settings', ready: 'Settings', tab: 'Attachments',
+    settings: ATTACHMENTS_GUEST_LINE, shows: /Their own limit is 20 MB; this one is lower, so it applies\./,
+  },
+  {
+    name: 'settings: attachments (limit above 25, scanner hint)', path: '/admin/settings', ready: 'Settings', tab: 'Attachments',
+    settings: ATTACHMENTS_SCANNER_HINT, shows: /Your virus scanner must accept files this large/,
+  },
 ]
 
 test.describe('#522: admin pages fit a phone', () => {
   for (const width of [320, 375]) {
     for (const p of ADMIN_PAGES) {
       test(`${p.name}: ${width}px`, async ({ page }) => {
-        await mockAdminApi(page, { short: p.short })
+        await mockAdminApi(page, { short: p.short, settings: p.settings })
         await page.setViewportSize({ width, height: 844 })
         await page.goto(p.path)
         await expect(page.getByRole('heading', { level: 1 }).filter({ hasText: p.ready })).toBeVisible()
         if (p.tab) await page.getByRole('button', { name: p.tab, exact: true }).click()
         // Let the queries settle so the long data is on screen before measuring.
         await page.waitForLoadState('networkidle')
+        // The case exists to measure this text, so fail if it is not on screen.
+        if (p.shows) await expect(page.getByText(p.shows)).toBeVisible()
         if (p.act) await p.act(page)
         await noSidewaysScroll(page, width)
       })

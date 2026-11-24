@@ -65,6 +65,10 @@ type meUser struct {
 	// the setting could not be read (a client must treat absent as unknown, not
 	// as off). Not on the public /site, which anyone can read.
 	SLAEnabled *bool `json:"sla_enabled,omitempty"`
+	// AttachmentMaxBytes is the instance-wide per-file limit in bytes, for
+	// every role, so the client can refuse an oversize file before sending it
+	// (#673). Not a guest's limit, which is lower and is on /site.
+	AttachmentMaxBytes int64 `json:"attachment_max_bytes"`
 }
 
 // switchState is one email switch as it applies to this person: whether they
@@ -85,7 +89,11 @@ type emailNotifications struct {
 // meView adds the effective email state (#441). A requester is never sent
 // staff mail, so has none to report.
 func (s *Server) meView(ctx context.Context, u user.User) meUser {
-	v := meUser{User: u, APIKeyMaxLifetimeYears: s.adminSvc.APIKeyMaxLifetimeYears(ctx)}
+	v := meUser{
+		User:                   u,
+		APIKeyMaxLifetimeYears: s.adminSvc.APIKeyMaxLifetimeYears(ctx),
+		AttachmentMaxBytes:     s.attachmentMaxBytes(ctx),
+	}
 	v.CanCreateAPIKeys = u.Role == user.RoleAdmin || (u.Role == user.RoleStaff && s.adminSvc.StaffCanCreateAPIKeys(ctx))
 	if u.Role == user.RoleUser {
 		return v

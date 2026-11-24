@@ -738,9 +738,9 @@ func (s *Server) PrepareGuestLink(ctx context.Context, ev notification.Event) (n
 }
 
 // guestAttachmentMaxBytes is what a guest may upload per file: the
-// administrator's figure, never above the instance-wide maximum (#445).
+// administrator's figure, never above the instance-wide maximum (#445, #673).
 func (s *Server) guestAttachmentMaxBytes(ctx context.Context) int64 {
-	return min(int64(s.adminSvc.GuestAttachmentMaxMB(ctx))<<20, attachMaxBytes)
+	return min(int64(s.adminSvc.GuestAttachmentMaxMB(ctx))<<20, s.attachmentMaxBytes(ctx))
 }
 
 func guestLimitMessage(maxFiles int) string {

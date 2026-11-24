@@ -16,7 +16,10 @@ interface AttachmentUploadProps {
   uploadStates?: Record<string, UploadState>
   disabled?: boolean
   maxFiles?: number
-  /** Per-file limit; the instance-wide 25 MB unless the caller has a lower one (a guest, #445). */
+  /**
+   * Per-file limit in bytes. The caller passes the instance's attachment_max_bytes from /me (#673),
+   * or a lower one for a guest (#445). Undefined means the 25 MB default (MAX_SIZE_BYTES).
+   */
   maxBytes?: number
   /** Key of a file in uploadStates. The file name unless the caller can have two of the same name. */
   /** Replaces the "up to N files" wording, for a caller whose limit has two parts. */

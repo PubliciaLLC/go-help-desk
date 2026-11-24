@@ -21,6 +21,9 @@ export interface User {
   /** The SLA alerts switch (#670): a target breached or at risk on a ticket
    *  assigned to me, a group ticket nobody holds, or a ticket I follow. */
   email_notify_sla?: boolean
+  /** The instance-wide per-file attachment limit in bytes (#673). Only on /me,
+   *  not on the login response, so a client reads it after signing in. */
+  attachment_max_bytes?: number
   /** What the switches amount to for this person, with whether an administrator
    *  forced each one (#441, and sla for #670). Only on /me and the preferences
    *  answer, and only for staff and administrators. */

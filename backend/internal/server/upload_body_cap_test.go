@@ -88,9 +88,8 @@ func TestUpload_AnOversizedBodyIsRefusedWithoutBeingSwallowed(t *testing.T) {
 		"the server read %d bytes of a body it was always going to refuse", counted.n())
 }
 
-// attachMaxBytesForTest mirrors the handler's own limit. Duplicated rather
-// than exported: the constant is an implementation detail, and a test that
-// forced it into the package's API would be a worse trade than one number.
+// attachMaxBytesForTest is the handler's limit while attachment_max_mb is
+// unset: its default, 25 MB (#673).
 const attachMaxBytesForTest = 25 << 20
 
 // countingReader counts what the client actually managed to send.
