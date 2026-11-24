@@ -22,8 +22,9 @@
 //                             database only). Everything before this step
 //                             was captured on an instance with no history
 //   6. capture extras         02 (the dashboard needs the history), 29 to 41,
-//                             and 48 to 52 (Reports, the group view, the file
-//                             size, the mobile dashboard, Email settings)
+//                             and 42 to 52 (the ticket list, Reports, the
+//                             mobile dashboard and the settings pages that
+//                             need it)
 // Shot 02 is in phase extras for that reason: its counts, health card and
 // trend exist only after steps 4 and 5. No shot of 01 to 28 changes because of
 // them, except that 02 is no longer a main shot. Output is
@@ -51,6 +52,8 @@ import path from 'node:path'
 
 const DESK = { width: 1440, height: 900 }
 const MOBILE = { width: 390, height: 844 }
+// A phone whose screen is long enough for two ticket cards and the end of the second.
+const TALL_PHONE = { width: 390, height: 900 }
 const TALL_DASHBOARD_PHONE = { width: 390, height: 1243 }
 const PAD = 16
 const PASSWORD_FALLBACK = 'Screenshots-2026!'
@@ -120,6 +123,22 @@ async function apiGet(ctx, url) {
   return r.json()
 }
 
+// YYYY-MM-DD, n days before now (UTC, which is the zone every shot runs in).
+const daysAgo = (n) => new Date(Date.now() - n * 86400000).toISOString().slice(0, 10)
+
+// Answers every reply search of the page with one more header, then reloads so
+// the page asks again. The header is the one the server sends when it could not
+// search the replies (shots 44 and 45); the body is the server's own.
+async function withReplyHeader(page, name, value) {
+  await page.route(/\/api\/v1\/tickets\?/, async (route) => {
+    const req = route.request()
+    if (req.method() !== 'GET' || !req.url().includes('search_replies')) return route.continue()
+    const res = await route.fetch()
+    await route.fulfill({ response: res, headers: { ...res.headers(), [name]: value } })
+  })
+  await page.reload({ waitUntil: 'domcontentloaded' })
+  await settle(page)
+}
 
 // Desktop shows a row's archive, restore and delete buttons only under the
 // pointer. A still image has no pointer, and the touch layout shows them all, so
@@ -537,6 +556,102 @@ const SHOTS = [
       await waitVisible(page.getByRole('link', { name: 'Notifications', exact: true }))
       await waitVisible(page.getByRole('link', { name: 'Templates', exact: true }))
       await waitVisible(sectionOf(page, 'SLA alerts').getByText(/Tell staff by email/))
+    },
+  },
+
+  // ── The ticket list of #667, retaken against #676: the Search view, with the
+  // filters, the reply match and the two notices. The same search state as the
+  // pre-#676 shots, on this seed's tickets. ──
+  {
+    // Four filters on (status, priority, category and type, created), the panel
+    // open, the chips under it and the list sorted by Updated.
+    file: '42-ticket-list-filters-and-sort.png', phase: 'extras', role: 'jordan', path: '/tickets?view=search', vp: DESK,
+    target: { tall: 2200 },
+    async prepare(page) {
+      await waitVisible(page.locator('tbody tr'))
+      await page.getByRole('button', { name: /^Filters/ }).click()
+      for (const l of ['In Progress', 'Pending', 'High']) await page.getByLabel(l, { exact: true }).check()
+      await page.getByLabel('Category', { exact: true }).selectOption({ label: 'Hardware' })
+      await page.getByLabel('Type', { exact: true }).selectOption({ label: 'Printer' })
+      await page.getByLabel('Created from').fill(daysAgo(45))
+      await page.getByLabel('Created to').fill(daysAgo(0))
+      await waitVisible(page.getByText('Printer on the 3rd floor jams on tray 2'), DATA_WAIT)
+      // The Search view lists newest created first; the shot is sorted by Updated.
+      const updated = page.locator('th').getByRole('button', { name: /^Updated/ })
+      await updated.click()
+      if (await page.getByText('Sorted by Updated, oldest first.').count()) await updated.click()
+      await waitVisible(page.getByText('Sorted by Updated, newest first.'))
+      const rows = await page.locator('tbody tr').count()
+      if (rows < 4) throw new Error(`filters: ${rows} rows match the four filters, expected 4 or more`)
+      // Every row is what the filters say; the chips name the four filters.
+      for (const chip of [/^Status: In Progress, Pending/, /^Priority: High/, /^Category: Hardware/, /^Created: /]) {
+        await waitVisible(page.getByText(chip))
+      }
+    },
+  },
+  {
+    // The word "fuser" is in a public reply on one ticket and in an internal
+    // note on another, and in nothing else.
+    file: '43-ticket-list-reply-match.png', phase: 'extras', role: 'jordan', path: '/tickets?view=search&q=fuser', vp: DESK,
+    async prepare(page) {
+      await waitVisible(page.getByText(/Public reply/), DATA_WAIT)
+      await waitVisible(page.getByText(/Internal note/), DATA_WAIT)
+      const rows = await page.locator('tbody tr').count()
+      if (rows !== 2) throw new Error(`reply match: ${rows} tickets match "fuser", expected 2`)
+      if ((await page.locator('tbody mark').count()) < 2) throw new Error('reply match: the matched words are not highlighted')
+    },
+  },
+  {
+    // The notice when the five-second limit ran out. The server cannot be made to
+    // run out of time for a seed this small, so the answer to the one list request
+    // is the real one with the header the server sends in that case
+    // (X-Replies-Searched: false). The notice is drawn from that header and nothing else.
+    file: '44-ticket-list-replies-not-searched.png', phase: 'extras', role: 'jordan', path: '/tickets?view=search&q=printer', vp: DESK,
+    async prepare(page) {
+      await withReplyHeader(page, 'X-Replies-Searched', 'false')
+      await waitVisible(page.getByText("Replies weren't fully searched", { exact: false }), DATA_WAIT)
+      await waitVisible(page.locator('tbody tr'))
+    },
+  },
+  {
+    // The notice while the reply index is still being built after an upgrade.
+    // The index of this instance was built at its first start, so, as for 44, the
+    // answer carries the header the server sends while it is not ready
+    // (X-Reply-Index: building).
+    file: '45-ticket-list-reply-index-preparing.png', phase: 'extras', role: 'jordan', path: '/tickets?view=search&q=printer', vp: DESK,
+    async prepare(page) {
+      await withReplyHeader(page, 'X-Reply-Index', 'building')
+      await waitVisible(page.getByText('Reply search is still being prepared', { exact: false }), DATA_WAIT)
+      await waitVisible(page.locator('tbody tr'))
+    },
+  },
+  {
+    // The Filters dialog on a phone with the same four filters ticked. Nothing is
+    // applied: the dialog edits a draft until Show results.
+    file: '46-mobile-ticket-filters.png', phase: 'extras', role: 'jordan', path: '/tickets?view=search', vp: MOBILE, mobile: true,
+    async prepare(page) {
+      await waitVisible(page.locator('ul.md\\:hidden').getByText('GHD-2026-000001', { exact: true }))
+      await page.getByRole('button', { name: /^Filters/ }).click()
+      const dialog = page.getByRole('dialog')
+      await waitVisible(dialog.getByRole('button', { name: 'Show results' }))
+      for (const l of ['In Progress', 'Pending', 'High']) await dialog.getByLabel(l, { exact: true }).check()
+      await dialog.getByLabel('Category', { exact: true }).selectOption({ label: 'Hardware' })
+      await dialog.getByLabel('Type', { exact: true }).selectOption({ label: 'Printer' })
+      await dialog.getByLabel('Created from').fill(daysAgo(45))
+      await dialog.getByLabel('Created to').fill(daysAgo(0))
+      await waitVisible(dialog.getByRole('button', { name: 'Clear all' }))
+    },
+  },
+  {
+    // A search for "fuser" on a phone: two cards, each with the line that shows
+    // where the words were.
+    file: '47-mobile-ticket-reply-match.png', phase: 'extras', role: 'jordan', path: '/tickets?view=search&q=fuser', vp: TALL_PHONE, mobile: true,
+    async prepare(page) {
+      const cards = page.locator('ul.md\\:hidden')
+      await waitVisible(cards.getByText(/Public reply/), DATA_WAIT)
+      await waitVisible(cards.getByText(/Internal note/), DATA_WAIT)
+      const n = await cards.locator('li').count()
+      if (n !== 2) throw new Error(`mobile reply match: ${n} cards, expected 2`)
     },
   },
 
