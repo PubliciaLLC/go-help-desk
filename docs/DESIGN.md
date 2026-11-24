@@ -592,6 +592,7 @@ Multi-value filters (`status_id`, `priority`, `source_channel`) are repeated key
 | `source_channel` | `web`, `api`, `mcp`, `guest` or `phone` (repeatable) | staff and admin |
 | `sla` | `breached` or `at_risk`, the same buckets the list's indicator shows. `400` while SLA tracking is off, so an empty list is never mistaken for "nothing is breached" | staff and admin |
 | `held_by` | who personally holds the ticket, relative to the caller: `nobody` (no assignee user), `me` (the caller is the assignee user) or `others` (an assignee user who is not the caller). One value. Applies on every queue; it is how the three filters of **My Group's Tickets** are sent (see **Ticket list views**) | staff and admin |
+| `awaiting_reply` | `true` or `false` (absent and `false` are the same): the ticket is not Resolved or Closed and the other side spoke last, relative to the caller. For staff and admin, the newest public message is the requester's side; for a requester, it is the help desk's. The exact rule is under **Dashboard** (#675) | everyone |
 
 **A requester may filter or sort only on what they are sent.** A requester's tickets go through the allowed list (see **What a requester sees of a ticket**). Filtering or sorting on a field they are never sent would read it: narrowing `updated_after` step by step would show the minute staff last touched a ticket. So a filter outside the list above's "everyone" rows is `403 forbidden` ("<param> is not available to requesters"), and a test holds each rule to the allowed list.
 
@@ -794,6 +795,222 @@ The `scope` key is dropped in the rewrite; the API `scope` is derived from the v
 - *MCP*: `scope` absent is the same listing as before (`visible`); each value gives the same tickets as REST for the same caller and setting (parity test over the store fixture); `unassigned` refused for unticked staff in REST's words; an unknown value, `""` and a number are refused; `held_by` passes through and is refused to a requester; `deniedAuthorizer` refuses `unassigned`.
 - *Frontend*: the address translation table row by row, including `view=available` for unticked staff and a requester's address; `toApiParams` per view (the scope sent, `held_by` only on `groups`, the filters each view leaves out); the sidebar per role and setting, the current link, and the Available link hidden until `/me` answers; the My Group's Tickets choice writes `held_by`; each empty state; `AvailableQueueSection` loads, shows Administrators ticked and disabled, saves `["admin","staff"]` and `["admin"]`, shows a refusal, and shows the enforcement sentence only while enforcement is on.
 - *e2e at 320 px*: the drawer lists the views per role and nothing scrolls sideways; the My Group's Tickets toolbar wraps without horizontal scroll.
+
+### Dashboard
+
+([#675](https://github.com/PubliciaLLC/go-help-desk/issues/675), 1.3.x; owner decisions 2026-11-23.) The dashboard (`frontend/src/pages/DashboardPage.tsx`) was one card per status and, for administrators, a By Client list. It gains **four blocks, and only four**: a queue strip, a needs-attention list, a 30-day volume trend and, for administrators, a health card. The status cards, the **View all tickets** button and By Client stay exactly as they are, with the same data and the same links.
+
+**One request, one rule.** The strip, the list and the trend come from **one new endpoint**, `GET /api/v1/dashboard`. Reusing `GET /tickets?limit=1` was rejected: the list answers a bare array with no total, so it cannot count, and adding a total would change every list response. Every number and every row the endpoint returns is computed by the **same path as `GET /tickets`**: the handler resolves the caller's visibility with `Server.TicketVisibility` and the queue with `ticket.ResolveQueue` (#676), builds a `ticket.Filter`, and the store answers it with the list query's own `WHERE` (below). There is no second definition of who may see what. With `ticket_scope_enforced` on, a staff member's numbers count only what their scope admits, because they are counts of the list they would open.
+
+**Who sees which block.**
+
+| Block | Requester | Staff | Administrator |
+| --- | --- | --- | --- |
+| Queue strip | their own tickets (two cells) | their queues (five cells) | their queues (five cells) |
+| Needs attention | not shown | yes | yes |
+| Volume trend | not shown | yes, over every ticket they can see | yes, every ticket |
+| Health card | not shown | not shown | yes |
+
+A requester's dashboard otherwise is what it was: the status cards already count only their own tickets (`statusCounter`).
+
+**The endpoint.** `GET /api/v1/dashboard?tz=<IANA zone>`, mounted with the ticket router's middleware (`RequireRole(admin, staff, user)`, `RequireMFA`, `RequireResource(tickets)`), so an API key or OAuth client needs `tickets:read`, as for `GET /tickets`. It reads nothing from the request but `tz`.
+
+- `tz`: the time zone the trend's days are counted in, the browser's (`Intl.DateTimeFormat().resolvedOptions().timeZone`). Absent or empty is `UTC`. At most 64 bytes of `A-Z a-z 0-9 _ + - /`, otherwise `400 bad_request` "invalid tz". A name Postgres does not know is `400 bad_request` "unknown time zone" (the trend query is run first and its SQLSTATE `22023` is mapped through the store sentinel `ticket.ErrUnknownTimeZone`). The zone is passed to Postgres as a parameter and only ever used in `AT TIME ZONE`.
+- The response, for staff and administrators:
+
+```json
+{
+  "queues": [
+    {"key": "assigned_to_me", "count": 4},
+    {"key": "my_groups", "count": 11},
+    {"key": "sla_breached", "count": 1},
+    {"key": "sla_at_risk", "count": 2},
+    {"key": "awaiting_reply", "count": 3}
+  ],
+  "attention": [
+    {"reason": "breached", "ticket": {"id": "…", "tracking_number": "GHD-2026-000123", "subject": "…", "…": "…"}}
+  ],
+  "volume": {
+    "tz": "Europe/London",
+    "days": [{"date": "2026-10-26", "created": 3, "resolved": 2}, "… 30 entries, oldest first, the last is today"]
+  }
+}
+```
+
+  For a requester `queues` has their two cells, and `attention` and `volume` are `null`: `null` is "not part of your dashboard", `[]` is "nothing to show". `ticket` in an attention row is exactly the object `GET /tickets` returns for that ticket to that caller (the same `ticketViews` and `viewerJSON` shaping), so the SLA indicator and the badges render with the list's components. While SLA tracking is off the two `sla_*` cells are left out of `queues` and no SLA reason appears in `attention`, because `sla` is `400` on the list while it is off and a zero would read as "nothing is breached". If `sla_enabled` cannot be read it is treated as off for this response.
+- Errors: `401`/`403` as for `GET /tickets`; `400` for `tz` as above; a store failure is `500 internal_error` for the whole response. Nothing is cached on the server; the page keeps the answer for 60 seconds.
+
+**The queue strip.** A row of small numbers, each a link to the list that shows exactly those tickets. Each cell is data: a key, the `scope` and the filter criteria, from which the count's `ticket.Filter` is built exactly as `GET /tickets` builds one, and the address the page links to, which sends exactly those parameters (`include_closed=false` is what the ticket list sends while **Include closed** is off, its default).
+
+| Key | Label | Count = `GET /tickets` with | Links to | Roles |
+| --- | --- | --- | --- | --- |
+| `assigned_to_me` | Assigned to me | `scope=assigned_to_me&include_closed=false` | `/tickets?view=me` | staff, admin |
+| `my_groups` | My groups | `scope=my_groups&include_closed=false` | `/tickets?view=groups` | staff, admin |
+| `sla_breached` | Breached | `scope=assigned_to_me&sla=breached&include_closed=false` | `/tickets?view=me&sla=breached` | staff, admin, while SLA tracking is on |
+| `sla_at_risk` | At risk | `scope=assigned_to_me&sla=at_risk&include_closed=false` | `/tickets?view=me&sla=at_risk` | staff, admin, while SLA tracking is on |
+| `awaiting_reply` | Awaiting my reply | `scope=assigned_to_me&awaiting_reply=true&include_closed=false` | `/tickets?view=me&awaiting_reply=true` | staff, admin |
+| `my_tickets` | Your tickets | `scope=mine&include_closed=false` | `/tickets` | requester |
+| `awaiting_reply` | Awaiting your reply | `scope=mine&awaiting_reply=true&include_closed=false` | `/tickets?awaiting_reply=true` | requester |
+
+The order of the table is the order of `queues` and of the strip. The SLA cells count what is assigned to me, not the whole desk: the strip is "your queue", and the desk's breaches are what the needs-attention list is for. A count is a plain number (`0` is shown as `0`; the strip has no empty state). A staff member in no group has `my_groups: 0`; nothing special-cases it. The page ignores a key it does not know, so a later release may add one.
+
+**Awaiting reply: the new list filter.** "Awaiting my reply" needs a fact the list could not express. `awaiting_reply=true` is an ordinary filter of `GET /tickets` (see **List filters**), parsed by `ticket.ParseListFilter` into `Filter.AwaitingReply bool` (`true` or `false`; any other value is `400` "invalid awaiting_reply"), allowed to everyone by `AllowedFor`, and ANDed like every other. A ticket matches when:
+
+1. its status is not the Resolved or Closed system status (by kind and name, `IS DISTINCT FROM` as `exclude_closed` does), and
+2. the newest public message on it is the **other side's**. The newest public reply (`internal = false`, ordered by `created_at DESC, id DESC`) is the help desk's when its author's role is now `staff` or `admin` (a service user is staff), and the requester's side otherwise: the reporter, a follower who is a requester, a guest reply (`guest_token`, no author), or a reply whose author account was deleted. A ticket with no public reply is the requester's side: the description is the requester's message, whoever typed it. For a caller whose visibility is `VisibilityReporter` (a requester) the other side is the help desk; for everyone else it is the requester's side. The store already passes that fact as `reporter_only`, so the SQL needs no new parameter but `awaiting_reply`:
+
+```sql
+AND (NOT sqlc.arg(awaiting_reply)::bool OR (
+  t.status_id IS DISTINCT FROM (SELECT s.id FROM statuses s WHERE s.name = 'Closed'   AND s.kind = 'system')
+  AND t.status_id IS DISTINCT FROM (SELECT s.id FROM statuses s WHERE s.name = 'Resolved' AND s.kind = 'system')
+  AND COALESCE((SELECT u.role IN ('admin', 'staff')
+                FROM ticket_replies r LEFT JOIN users u ON u.id = r.author_id
+                WHERE r.ticket_id = t.id AND NOT r.internal
+                ORDER BY r.created_at DESC, r.id DESC LIMIT 1), false)
+      = sqlc.arg(reporter_only)::bool))
+```
+
+Internal notes are never read, so a note neither makes a ticket wait nor stops it waiting, and a requester's filter cannot be moved by one. Pending is not special: a ticket a staff member put in Pending with a question has the help desk's message last, so it is not awaiting staff, and when the requester answers it is. The requester rule (**A requester may filter or sort only on what they are sent**) holds: the filter reads the ticket's status and its public replies with their authors, all of which a requester is sent on their own ticket. The test that holds each requester filter to the allowed list gains this row, naming the public replies as its source. **MCP** `list_tickets` gains `awaiting_reply` (a boolean, read with the other filters through `listFilterParams` and the same parser; a non-boolean is refused), for parity with REST.
+
+The ticket list page reads `awaiting_reply=true` from the address into its search (`awaitingReply`), shows it as a chip ("Awaiting my reply" for staff, "Awaiting your reply" for a requester) and a checkbox in the filter panel, and sends it. It is offered (the per-view list in `lib/ticketSearch.ts`) on **Assigned to Me**, **My Group's Tickets** and the requester's list, and not on Available or Search: the test runs one ordered index lookup per candidate ticket, which is cheap on a person's or a group's queue and is not what an administrator's whole-desk search should pay for. The API accepts it everywhere and means the same everywhere.
+
+**Needs attention.** Up to **five** tickets that want someone, for staff and administrators, each a link to the ticket. Four reasons, in this order; each is one `ListFiltered` call with `Limit: 5` on the `visible` queue (every ticket the caller can see, as Search lists), restricted to **open** tickets: `StatusIDs` set to every status, active or not, except the Resolved and Closed system statuses.
+
+| Reason | Filter, beyond visibility and open | Order | When |
+| --- | --- | --- | --- |
+| `breached` | `SLA: breached` | `created` ascending (oldest first) | SLA tracking on |
+| `at_risk` | `SLA: at_risk` | `created` ascending | SLA tracking on |
+| `unassigned` | queue `unassigned` (no group and no person) | `created` ascending | `AvailableQueueAllowed(role)` (#676): administrators, and staff while Staff is ticked under Available |
+| `reopened` | `ReopenedAfter: now − 7 days` | `updated` descending | always |
+
+The four lists are merged by a pure function, `dashboard.PickAttention(lists []AttentionList, limit int) []AttentionItem` (`AttentionList{Reason AttentionReason; Tickets []ticket.Ticket}`, `AttentionItem{Reason AttentionReason; Ticket ticket.Ticket}`): walk the reasons in order, take each ticket not already taken (a ticket that is breached and reopened is listed once, as breached), stop at five. So a desk with three breaches shows those three first, then whatever else fills the five. The `unassigned` reason uses `ResolveQueue(unassigned, …)` like the Available view, so under scope enforcement it is the unassigned tickets in the caller's scope, and a staff member who may not open Available is not shown its tickets here either. `Filter.ReopenedAfter *time.Time` is a new **server** field (never parsed from a request): `t.last_reopened_at >= reopened_after`, NULL meaning not filtered. The window and the limit are constants, `dashboard.ReopenedWindow` (7 days) and `dashboard.AttentionLimit` (5), not settings.
+
+A row shows the tracking number, the subject (it **wraps**; it is ticket content, and is not added to the list of places that end in an ellipsis), the reason as a badge in the existing colours (Breached red, At risk amber, Unassigned grey, Reopened the existing `ReopenedBadge`), and the age ("opened 3 days ago", or for `reopened` "reopened 2 hours ago", from `lib/format.ts`). Empty: "Nothing needs attention right now."
+
+**Volume trend.** One small area chart: tickets **created** and tickets **resolved** per day for the last 30 days, today included, over every ticket the caller can see (staff and administrators). One query, `TicketVolumeByDay`, given the visibility parameters, the caller and `tz`:
+
+- The days are the 30 local dates ending today in `tz`, so a day is a calendar day where the viewer is and a change to or from summer time is still one day.
+- **Created** on a day: tickets whose `created_at`, in `tz`, falls on it.
+- **Resolved** on a day: tickets whose `COALESCE(resolved_at, closed_at)`, in `tz`, falls on it. That is the current resolution: a ticket resolved, then reopened and not resolved again, no longer counts on its old day; one resolved and later closed counts on the day it was resolved; one closed without being resolved counts on the day it was closed. The audit trail is not read for history: it is a second source, and its entries are filtered by retention.
+- Every day is present, with zeros. The sums of `created` over the 30 days equal the count of `GET /tickets?scope=visible&created_after=<first local midnight>&created_before=<next local midnight after today>` for the same caller, and a test holds them equal.
+
+```sql
+-- name: TicketVolumeByDay :many
+WITH bounds AS (
+  SELECT date_trunc('day', sqlc.arg(now)::timestamptz AT TIME ZONE sqlc.arg(tz)::text) - interval '29 days' AS first_day
+), w AS (
+  -- first_day is a local date-time; since_at is the instant it begins in tz
+  SELECT first_day, first_day AT TIME ZONE sqlc.arg(tz)::text AS since_at FROM bounds
+), events AS (
+  SELECT (t.created_at AT TIME ZONE sqlc.arg(tz)::text)::date AS day, 1 AS created, 0 AS resolved
+  FROM tickets t, w
+  WHERE <the visibility block> AND t.created_at >= w.since_at
+  UNION ALL
+  SELECT (COALESCE(t.resolved_at, t.closed_at) AT TIME ZONE sqlc.arg(tz)::text)::date, 0, 1
+  FROM tickets t, w
+  WHERE <the visibility block> AND COALESCE(t.resolved_at, t.closed_at) >= w.since_at
+)
+SELECT d::date AS day, COALESCE(sum(e.created), 0)::bigint AS created, COALESCE(sum(e.resolved), 0)::bigint AS resolved
+FROM w, generate_series(w.first_day, w.first_day + interval '29 days', interval '1 day') AS d
+LEFT JOIN events e ON e.day = d::date
+GROUP BY d ORDER BY d;
+```
+
+The created arm is served by `tickets_created_at_idx`. The resolved arm needs an index of its own, added by a migration (the next free number when it lands: `000068` if #616's `000066` and #670's `000067` are in first): `CREATE INDEX IF NOT EXISTS tickets_done_at_idx ON tickets ((COALESCE(resolved_at, closed_at)))`, and `DROP INDEX IF EXISTS tickets_done_at_idx` down. It is built inside the migration, not concurrently, as `000021` built its ticket indexes: one btree on the tickets table takes seconds at a million rows, and the migration runs before the server answers. It changes no data.
+
+Empty: when every day is zero, the chart's box keeps its height and says "No tickets were created or resolved in the last 30 days." Under it, a legend with each series' 30-day total ("Created 84", "Resolved 79").
+
+**The list query's `WHERE` is the one rule, and a test keeps it so.** Counting needs SQL that sqlc cannot share, so it is copied and the copies are pinned:
+
+- `CountTicketsFiltered :one` is `ListTicketsFiltered` with its select list replaced by `count(*)` and everything from `ORDER BY` to the end removed: the same `reply_hits` CTE, the same SLA lateral, the same `WHERE`, the same parameter names, so the store fills both from one function (the existing parameter building in `listFilteredAt`, factored into `filterParams(f, now)`, which returns the list's params; `countParams` copies every field the count query shares, which is all of them but sort direction, limit and offset). `Store.CountFiltered(ctx, f) (int64, error)` and `CountFilteredAt(ctx, f, now)`; `ticket.Service.CountFiltered`. It ignores `Sort`, `Limit` and `Offset`, and never runs the reply arm (it forces `SearchReplies` false: no cell searches text).
+- The visibility clause of `ListTicketsFiltered` (the first `AND` group of the `WHERE`, from `sqlc.arg(unrestricted)` to the end of the staff-scope arm) is wrapped in two comment lines, `-- visibility: begin` and `-- visibility: end`. That is a comment-only change to the list query. `TicketVolumeByDay` carries the same block, between the same markers, in both arms.
+- `TestSQL_DashboardQueriesShareTheListRule` (in `internal/database/ticketstore`, no database needed) reads `queries/tickets.sql`, drops comments and collapses whitespace, and fails unless `CountTicketsFiltered` equals `ListTicketsFiltered` with that select list and tail removed, and every `visibility` block in the file is identical to the list query's. A change to who may see what is then made in one place and copied, or the build fails.
+- The two new filter clauses (`awaiting_reply`, `reopened_after`) are added to `ListTicketsFiltered` and so, by the same test, to `CountTicketsFiltered`.
+
+**Admin health card.** Administrators only. It surfaces four things the app already knows and says nothing more when all is well. It is **frontend only**: it reads the two queries an administrator's page already makes, `GET /admin/security-warnings` (query key `['security-warnings']`, shared with `InsecureConfigBanner`, so no extra request and no extra scanner ping) and `GET /admin/settings` (query key `['admin', 'settings']`, shared with the settings pages). No endpoint, probe or setting is added. A pure function, `adminHealthItems(warnings?, settings?) => HealthItem[]` (`frontend/src/lib/adminHealth.ts`), decides it, in this order:
+
+| Item | Shown when | Severity | Says | Link |
+| --- | --- | --- | --- | --- |
+| Update available | `warnings.update` is present (the check is on and found a newer release) | info (blue) | "Version X is available (you run Y)." | the release notes, the URL the banner uses, new tab |
+| SLA alerts off | `settings.sla_enabled === true` and `settings.sla_alerts_enabled === false` (#670) | amber | "SLA tracking is on, but breach and at-risk alerts are off." | `/admin/settings`, naming **Features** |
+| Passkey requirement suspended | `warnings.passkeys.suspended_roles` is a non-empty array (#616) | amber | "The passkey requirement is suspended for <roles>: passkeys are unavailable (<reason>)." | `/admin/settings`, naming **Authentication** |
+| Attachment scanner down | `attachment_scanning.policy !== 'off'` and not `reachable`, the banner's own `scannerDegraded` test | red | "The attachment scanner is unreachable." plus its `effect` sentence | `/admin/settings`, naming **Attachments** |
+
+A key that is absent (an older server, or before #670 or #616 is merged) shows nothing for its item; the function never infers a problem from a missing field. The Settings tabs have no address yet (#674 may give them one), so the links open Settings and the text names the tab. The card has no Hide: it states what is true now, and the banner's Hide, including "Hide until the next release" for the update, governs only the banner. When there is no item, the card is **one muted line**, "No problems to report.", so an administrator can tell "checked and fine" from "not loaded". If either query has failed, the card says "Health checks could not be loaded." with a Retry button that refetches both; it never says "No problems" on a failure.
+
+**States.** The status cards keep their own query and spinner. The dashboard query (`['dashboard', tz]`, `staleTime` 60 s, refetched on window focus) feeds the strip, the list and the trend: while it loads, each block shows the existing `Spinner` in a box of its final height (no jump); if it fails, one inline message replaces the three blocks, "The dashboard summary could not be loaded.", with **Retry**, and the status cards and By Client still show.
+
+**Layout.** Top to bottom: the header (unchanged); the health card (administrators); the strip, headed "Your queue" ("Your tickets" for a requester); the status cards (unchanged); needs attention and the trend, side by side from `lg` and stacked below it; **View all tickets**; By Client (unchanged). The strip is a `<nav aria-label="Your queue">` holding a list of links, each reading as one phrase ("4 Assigned to me"); a two-column grid below `sm`, three from `sm`, one row of five from `lg`; each cell at least 44 px tall on a coarse pointer. The SLA numbers are red (`text-red-600`) and amber (`text-amber-700`) only when above zero, grey otherwise; no new colours. Needs attention is a list of rows, never a table, so it is the same at every width. The chart takes the full width of its card at a fixed height. Nothing scrolls sideways at 320 px, and the e2e check covers the dashboard at 375 px and at desktop width for each role.
+
+**Chart primitives: `frontend/src/components/charts/`.** Inline SVG, no chart library. The module is shared: the KPI viewer (#131) builds on it, so its exports are a contract and change only additively.
+
+- `tones.ts`: `type ChartTone = 'blue' | 'green' | 'amber' | 'red' | 'gray'` and `TONE_CLASS: Record<ChartTone, string>` mapping each to a Tailwind text class already in use (`text-blue-600`, `text-green-600`, `text-amber-600`, `text-red-600`, `text-gray-500`). Marks are drawn in `currentColor`, so a tone is a class and nothing else.
+- `geometry.ts`, pure and unit-tested: `niceCeiling(n: number): number` (the smallest of 1, 2 or 5 × 10^k at or above `n`; `1` for `n <= 0`); `pointsFor(values: number[], width: number, height: number, max: number): [number, number][]` (evenly spaced from `x = 0` to `x = width`, a single value at the centre, `y` measured down from the top, `max <= 0` treated as 1); `linePath(points): string` and `areaPath(points, height): string` (the line closed down to the baseline), both `''` for no points.
+- `AreaChart.tsx`:
+
+```ts
+export interface ChartSeries {
+  key: string          // stable id, React key and the data table's column
+  label: string        // legend and table header
+  values: number[]     // one per label; must be labels.length
+  tone: ChartTone
+}
+export interface AreaChartProps {
+  labels: string[]                          // x categories, oldest first (ISO dates for a day series)
+  series: ChartSeries[]                     // drawn in order, the first underneath
+  ariaLabel: string                         // what the chart shows, e.g. "Tickets created and resolved per day, last 30 days"
+  height?: number                           // CSS px, default 160; the width is the container's
+  formatLabel?: (label: string) => string   // x labels and the table's first column; default identity
+  formatValue?: (value: number) => string   // axis maximum, legend totals and table cells; default String
+  emptyText?: string                        // shown instead of the marks when there are no labels or every value is 0
+}
+```
+
+  It renders a `<figure>`: an `<svg role="img" aria-label={ariaLabel}>` with `viewBox="0 0 100 {height}"`, `preserveAspectRatio="none"` and `width="100%"`, holding for each series an area at `fill-opacity` 0.15 and a line with `vector-effect="non-scaling-stroke"` (2 px), plus one baseline. Text is never inside the SVG, so stretching cannot distort it: the axis maximum (`niceCeiling` of the largest value) sits in HTML at the top left, the first and last x labels in HTML below, and a `ChartLegend` in the `<figcaption>`. A visually hidden `<table>` (`sr-only`) carries every value, so the data is readable without the picture. A series whose `values.length` is not `labels.length` is a programming error and throws. No hover, tooltip or animation in this version; #131 may add them as optional props.
+- `ChartLegend.tsx`: `{ items: { label: string; tone: ChartTone; value?: string }[] }`, a wrapping row of swatch, label and value.
+- `index.ts` re-exports the above.
+
+The dashboard draws `AreaChart` with `labels` the 30 dates, series Created (blue) and Resolved (green), `formatLabel` a short local date ("26 Oct", from the date at local noon so the zone cannot move it), and the legend values the 30-day totals.
+
+**Code.** `internal/domain/dashboard` (no HTTP, no SQL): `Cell{Key string; Scope ticket.Scope; Filter ticket.Filter}` and `Cells(role user.Role, slaOn bool) []Cell`, the table above as data; `AttentionReason` (`breached`, `at_risk`, `unassigned`, `reopened`), `PickAttention`, `AttentionLimit`, `ReopenedWindow`. `internal/server/handler_dashboard.go`: `handleGetDashboard`, which for each cell sets `ActorID`, `Visibility` and the queue (`ResolveQueue`) and calls `CountFiltered`, runs the four attention lists for staff and administrators, and the trend. The frontend: `api/dashboard.ts` (`getDashboard(tz?: string)`), the `Dashboard` types in `api/types.ts`, `lib/dashboard.ts` (each cell key's label and link, data), and one component per block under `components/dashboard/` (`QueueStrip`, `NeedsAttention`, `VolumeTrend`, `AdminHealthCard`).
+
+**Upgrade.** Nothing an existing caller sends changes its answer: the endpoint is new, `awaiting_reply` is a new optional filter (a 1.2 server ignores it), MCP's `list_tickets` gains an optional argument, and the list query's `WHERE` gains two clauses that are inert when not asked for. The migration adds one index and changes no data; no setting is added or changes value. The dashboard shows more for every role but loses nothing. A requester sees two numbers above their status cards.
+
+**API documents.** `docs/api/openapi.yaml`: `GET /dashboard` with `tz`, the response schema above (`queues` with the key enum, `attention` with the reason enum and the ticket schema `GET /tickets` uses, `volume`), and the two `400`s; `awaiting_reply` on `GET /tickets`. The MCP tools table (**MCP Interface**) lists `awaiting_reply` for `list_tickets`. `docs/upgrade-notes-1.3.0.md`, under New features: "Dashboard: Your Queue, Needs Attention, a 30-Day Trend and a Health Card (#675)", saying what each block shows and for whom, that every number respects ticket scope, the new `awaiting_reply` filter (REST and MCP), and that the migration builds one index on the tickets table, which on a very large install holds writes to that table for the seconds it takes. Nothing goes under Breaking changes. The README's dashboard screenshot is retaken.
+
+**Out of scope.** Configurable or rearranged blocks, per-person dashboards, more blocks than the four, a requester's trend or attention list, drill-down from a chart day to a ticket list, an MCP dashboard tool (a machine caller counts with `list_tickets`), and KPIs (#131).
+
+**Decisions taken without the owner.** Each can be overturned in one line.
+
+- One new `GET /api/v1/dashboard` for the strip, the list and the trend. Rejected: `GET /tickets?limit=1` per number, which cannot count (the list has no total) and would need four to eight requests.
+- The counts run the list query's own `WHERE` (`CountTicketsFiltered`), pinned to it by a text test, and each count is the `Filter` its link sends. Rejected: a dashboard query with its own visibility predicate and `FILTER` counts (one query, but a second rule that would drift); a SQL function for visibility (changes the tuned list plan).
+- The SLA cells count what is assigned to me. Rejected: every visible ticket (that is the whole desk for an administrator; the needs-attention list covers it) and a single "overdue or at risk" number (two links are needed, since `sla` takes one value).
+- "Awaiting my reply" is a new filter, `awaiting_reply`, relative to the caller like `held_by`: the other side spoke last on a ticket that is not Resolved or Closed. Rejected: an SLA first-response test (only the first reply counts), "assigned to me and not Pending" (Pending is a renamable custom status, and a Pending ticket the requester has answered does want staff), and leaving it out (the owner listed it).
+- The side of a reply is its author's current role; an author-less reply is the requester's side. Rejected: storing the side on each reply (a migration and a backfill for one count); the consequence, a deleted staff member's last reply reading as the requester's, is accepted.
+- `awaiting_reply` is offered in the page on Assigned to Me, My Group's Tickets and the requester's list only; the API accepts it everywhere. Rejected: offering it on Search and Available, where it would cost a reply lookup per ticket across the whole desk.
+- A requester gets a strip of two cells (Your tickets, Awaiting your reply) and nothing else new. Rejected: no new block for requesters (the owner said they see their own tickets' summary), and a trend or attention list of their own few tickets.
+- Needs attention lists every visible ticket (the Search set), open only, breached then at risk then unassigned then reopened, five at most, each ticket once. Rejected: only my queues (an unassigned ticket is by definition nobody's queue) and a ranking score (harder to explain than an order).
+- Oldest unassigned follows the Available rule (`AvailableQueueAllowed`). Rejected: listing unassigned tickets to staff the owner's default keeps out of Available.
+- "Recently reopened" is the last 7 days, a constant, via a server-only `ReopenedAfter`. Rejected: a setting, and a public `reopened_after` parameter (no link needs it).
+- Open, for the attention list, is "not the Resolved or Closed system status", sent as `StatusIDs`. Rejected: a new public filter for it.
+- The trend counts days in the browser's time zone, sent as `tz`, validated by Postgres. Rejected: UTC days (today's bar would be wrong for most of the world) and embedding Go's time zone database to validate in Go (a binary change for one parameter).
+- Resolved is `COALESCE(resolved_at, closed_at)`, the current state, with an index added for it. Rejected: the audit trail as history (a second source, and pruned by retention), and no index (a sequential scan of tickets on every dashboard load).
+- The health card is frontend only, reading the security warnings and the settings the page already loads. Rejected: a health endpoint (a second source of truth for the same facts) and adding `sla_alerts` to the security warnings (it is a setting, which the page can already read).
+- The card shows the update even if the banner's notice was hidden, and has no Hide of its own. Rejected: honouring the banner's Hide (the card is a status, not a notice).
+- An all-clear card is one muted line. Rejected: hiding the card, which cannot be told apart from a card that failed to load.
+- The chart has no text inside the SVG and stretches to its container. Rejected: measuring the container (a resize observer) to draw text in the SVG.
+- No MCP dashboard tool. Rejected: a `dashboard_summary` tool, which no one has asked for.
+
+**Tests.**
+
+- *SQL text* (`internal/database/ticketstore`, no database): `TestSQL_DashboardQueriesShareTheListRule` as above; it fails on a one-character change to either copy.
+- *Postgres, store*: one fixture with tickets in every visibility case (reported by the viewer, assigned to them, to one of their groups, in a covered category, in a covered type, outside the scope) and every assignment case; `CountFiltered(f) == len(ListFiltered(f with a large limit))` for every dashboard cell's filter, for an administrator, unscoped staff, scoped staff and a requester; `awaiting_reply` for staff and for a requester over: no reply, the requester last, staff last, an internal note last after the requester (still waiting) and after staff (not), a guest reply last, a deleted author's reply last, an admin's reply, and a Resolved and a Closed ticket (never); `ReopenedAfter` at its boundary; `TicketVolumeByDay`: 30 rows oldest first ending today, zeros present, a ticket created at 23:30 local counted on that local day in `Europe/London` and in `America/New_York` across the end of summer time (1 November 2026), resolved via `closed_at` when `resolved_at` is null, a reopened ticket no longer counted as resolved, scoped visibility, the created sum equal to the created-range count; an unknown zone returns `ErrUnknownTimeZone`; the scale test's plan check covers `CountTicketsFiltered` for `assigned_to_me` with and without `awaiting_reply` and the trend's resolved arm using `tickets_done_at_idx` for an administrator.
+- *Migration*: up creates `tickets_done_at_idx`, down drops it, and up runs on a database that has it.
+- *Domain*: `ParseListFilter` reads `awaiting_reply` `true`, `false`, empty and refuses `yes`; `AllowedFor` allows it to every role and the requester-rule test has its row; `dashboard.Cells` per role and `slaOn` (keys, order, scope, criteria); each cell's filter equals what `ParseListFilter` and `ResolveQueue` make of the table's parameter string for that role; `PickAttention`: order, one ticket once under its first reason, the limit, fewer than five, all empty.
+- *REST, Postgres*: per role the response's keys and nulls; **with `ticket_scope_enforced` on, a scoped staff member's counts, attention rows and trend include nothing outside their scope**, and the same caller with enforcement off sees the wider numbers; each cell's count equals the length of `GET /tickets` with that cell's parameters for the same caller; SLA off: no `sla_*` cell and no SLA reason; staff not ticked for Available: no `unassigned` reason, ticked: present and scoped; `tz` absent (UTC), valid, too long, bad characters and unknown (`400` with each message); an API key without `tickets:read` is `403`; `GET /tickets?awaiting_reply=true` as staff and requester, and `awaiting_reply=maybe` is `400`.
+- *MCP*: `list_tickets` with `awaiting_reply: true` lists what REST lists for the same caller; a string or number is refused.
+- *Frontend*: `geometry.ts` (`niceCeiling` at 0, 1, 7, 10, 11, 999; points for one, two and thirty values; paths for none); `AreaChart` renders one area and line per series, the hidden table with every value, the empty text, and throws on a length mismatch; `lib/dashboard.ts`: for every cell, `toApiParams(parseTicketSearch(link))` gives exactly the table's parameters (the table above, copied into the Go test and this one); `QueueStrip` per role, the SLA cells' colours at zero and above, links; `NeedsAttention` rows, badges, wrapping subject and the empty text; `VolumeTrend` totals and empty; the page per role shows the right blocks and keeps the status cards and By Client; the failure message and Retry; `adminHealthItems` table over each item present, absent and with keys missing; the card's quiet line and its failure state; the ticket list parses, shows, clears and sends `awaiting_reply`, offers it only on the views listed, and labels it per role.
+- *e2e*: the dashboard at 375 px and 1280 px for an administrator, a staff member and a requester, with a 300-character subject in the attention list: no horizontal scroll, the strip's cells at least 44 px tall on a touch profile.
 
 ### Linked Tickets
 
