@@ -1,4 +1,4 @@
-import { AreaChart } from '@/components/charts'
+import { AreaChart } from './AreaChart'
 import type { DashboardVolume } from '@/api/types'
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
@@ -11,9 +11,20 @@ function shortDate(ymd: string): string {
   return `${d} ${MONTHS[m - 1]}`
 }
 
-// Tickets created and resolved per day over the last 30 days. The chart is the
-// shared module's; this only says what is drawn.
-export function VolumeTrend({ volume }: { volume: DashboardVolume }) {
+export interface VolumeTrendProps {
+  volume: DashboardVolume
+  // The dashboard's wording is the default; the Reports page says its own period.
+  ariaLabel?: string
+  emptyText?: string
+}
+
+// Tickets created and resolved per day. The chart is the shared module's; this
+// only says what is drawn. Used by the dashboard (last 30 days) and by Reports.
+export function VolumeTrend({
+  volume,
+  ariaLabel = 'Tickets created and resolved per day, last 30 days',
+  emptyText = 'No tickets were created or resolved in the last 30 days.',
+}: VolumeTrendProps) {
   return (
     <AreaChart
       labels={volume.days.map((d) => d.date)}
@@ -21,9 +32,9 @@ export function VolumeTrend({ volume }: { volume: DashboardVolume }) {
         { key: 'created', label: 'Created', values: volume.days.map((d) => d.created), tone: 'blue' },
         { key: 'resolved', label: 'Resolved', values: volume.days.map((d) => d.resolved), tone: 'green' },
       ]}
-      ariaLabel="Tickets created and resolved per day, last 30 days"
+      ariaLabel={ariaLabel}
       formatLabel={shortDate}
-      emptyText="No tickets were created or resolved in the last 30 days."
+      emptyText={emptyText}
     />
   )
 }
