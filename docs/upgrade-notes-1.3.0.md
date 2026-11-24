@@ -324,7 +324,7 @@ Under **Admin → Email Templates** an administrator edits the subject and body 
 
 ### Dashboard: Your Queue, Needs Attention and a 30-Day Trend (#675)
 
-The dashboard gains three blocks above the status cards, in this order: **Your queue**, **Needs attention** and the **30-day trend** beside it. The status cards, **View all tickets** and By Client are unchanged.
+The dashboard gains three blocks. **Your queue** goes above the status cards. **Needs attention** and the **30-day trend** go below them, side by side on a wide screen and stacked on a narrow one, above **View all tickets**. The status cards, **View all tickets** and By Client are unchanged.
 
 - **Your queue** is a row of numbers, each a link to the ticket list showing exactly those tickets. Staff and administrators see **Assigned to me**, **My groups** and **Awaiting my reply**, and, while SLA tracking is on, **Breached** and **At risk**. The SLA numbers count what is assigned to you, not the whole desk; the desk's breaches are in Needs attention. A requester sees one number, **Your tickets**, the tickets that are not Closed.
 - **Needs attention** (staff and administrators) lists up to five open tickets, each once, under its first reason: **breached** and **at risk** (SLA tracking on), **unassigned** (the Available queue rule: administrators, and staff while Staff is ticked under Available) and **reopened** in the last seven days. Each row shows its reason and how long ago it was opened, or reopened. Breached and at-risk tickets are shown oldest first, and reopened ones most recently updated first.
