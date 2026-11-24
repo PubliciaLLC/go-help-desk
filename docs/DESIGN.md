@@ -7785,7 +7785,7 @@ them as it ignores the breach stamps. A ticket whose at-risk stamp a re-match to
 a longer target carried over shows green.
 
 **The off switch: `sla_alerts_enabled`.** One setting gates both events, for
-email and for webhooks (**Admin → System → Features**, under SLA tracking).
+email and for webhooks (**Admin → System → Email → Notifications**, in the SLA alerts section).
 Off, the sweep still runs and still stamps, breach and at-risk alike; it raises
 nothing. A crossing stamped while it is off is never announced later. It is read
 on every tick; a failed read skips the tick, as a failed read of `sla_enabled`

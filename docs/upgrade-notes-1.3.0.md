@@ -645,7 +645,7 @@ The settings page is now eight pages in the sidebar under **System**, and Email 
 | Email Templates (under Integrations) | **Email**, Templates tab |
 
 - **Old addresses redirect.** `/admin/settings` opens **General**. `/admin/email-templates`, with or without `?t=<name>`, opens the Templates tab with the same template. Bookmarks keep working.
-- **Each page saves only its own changes.** Save changes sends the settings you changed on that page and nothing else. If you leave a page with unsaved edits, the browser asks first: choose Stay to keep editing, or Leave to discard them.
+- **Each page saves only its own changes.** Save changes sends the settings you changed on that page and nothing else. If you leave a page with unsaved edits, a "Leave without saving?" dialog asks first: choose Stay to keep editing, or Leave without saving to discard them. (Reloading or closing the tab gets the browser's own prompt instead.)
 - **The Audit Log item in the sidebar** still opens the audit viewer at `/admin/audit`. The audit settings are on **Privacy**.
 
 ### The Server Refuses Command-Line Arguments It Does Not Know
@@ -865,7 +865,7 @@ Administrators see a banner on the admin panel with the exact fix when any attac
 
 The banner reads:
 
-> Attachments are not being scanned. To turn scanning back on, add `COMPOSE_PROFILES=antivirus` and `CLAMAV_ADDR=tcp://clamav:3310` to `docker/.env`, run `docker compose up -d`, then confirm the scanner address under Admin → System → File Attachments. To keep scanning off, choose "Do not scan" there.
+> Attachments are not being scanned. To turn scanning back on, add `COMPOSE_PROFILES=antivirus` and `CLAMAV_ADDR=tcp://clamav:3310` to `docker/.env`, run `docker compose up -d`, then confirm the scanner address under System → File Attachments. To keep scanning off, choose "Do not scan" there.
 
 The scanner address counts as set if it is set on the File Attachments page or in the environment. Admin → System → File Attachments also shows the scanner's policy, whether an address is configured, whether it answers, and what that means for uploads.
 
