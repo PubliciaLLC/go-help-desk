@@ -1,7 +1,19 @@
 # Guards the website's copy of the OpenAPI description (docs/openapi/).
 #
 # check (blocking, every push and pull request): docs/openapi/openapi.yaml must
-# equal docs/api/openapi.yaml at the commit named in docs/openapi/SOURCE.
+# equal docs/api/openapi.yaml at the commit named in docs/openapi/SOURCE, and
+# that commit must be on a release line (origin/main, an origin/v*-beta branch or
+# a v* tag), so the pin survives the deletion of a feature branch.
+#
+# Nothing here refreshes the copy. The app repository's workflow
+# .github/workflows/site-openapi.yml does, on every change to the spec on the
+# release branch and at every release tag: it runs scripts/openapi-sync.sh pull
+# and check, then commits straight to the site branch named by that repository's
+# variable SITE_OPENAPI_BRANCH. Those commits are made with GITHUB_TOKEN, and a
+# push made with GITHUB_TOKEN starts no workflow, so this one does not run on
+# them; site-openapi.yml runs the same check before it pushes instead. This
+# workflow stays the gate for human pushes and pull requests, including one that
+# hand-edits the copy or the pin.
 #
 # There is no scheduled or manual trigger, on purpose. GitHub fires `schedule`
 # and `workflow_dispatch` only for workflows on the repository's default branch,
@@ -10,7 +22,14 @@
 # runs wherever it is, whatever the site branch is called.
 #
 # Whether the copy is older than the newest release (`scripts/openapi-sync.sh
-# stale`) is a manual release-checklist step, not a CI job. At each app release:
+# stale`) is not a CI job. Run it by hand as a spot check.
+#
+# Release checklist: the pin follows the release tag by itself, and the same
+# commit lands as a one-line change to the note in docs/openapi/SOURCE. Once per
+# minor version, in the app repository's variables, point SITE_OPENAPI_SOURCE at
+# the new release branch and SITE_OPENAPI_BRANCH at its site branch. If the
+# workflow cannot run, the manual fallback is:
+#   git fetch origin --tags
 #   scripts/openapi-sync.sh pull v1.3.0
 #   scripts/openapi-sync.sh check && scripts/openapi-sync.sh stale
 #   git commit -am "Re-pin the API reference to v1.3.0"
