@@ -34,9 +34,10 @@ type Record struct {
 
 	// ResponseAtRiskAt / ResolutionAtRiskAt are the write-once stamps the sweep
 	// sets when a target first reaches 80% (#670). Only the sweep's decision
-	// reads them; the indicator (StatusFor) never does.
-	ResponseAtRiskAt   *time.Time `json:"response_at_risk_at,omitempty"`
-	ResolutionAtRiskAt *time.Time `json:"resolution_at_risk_at,omitempty"`
+	// reads them; the indicator (StatusFor) never does. Not serialised, like
+	// PausedSecondsAtStart, so no endpoint gains keys the spec does not list.
+	ResponseAtRiskAt   *time.Time `json:"-"`
+	ResolutionAtRiskAt *time.Time `json:"-"`
 
 	// ResponseElapsedAtMetSeconds / ResolutionElapsedAtMetSeconds are the
 	// elapsed-toward-target NUMBER frozen at the instant FirstResponseAt /

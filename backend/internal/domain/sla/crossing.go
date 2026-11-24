@@ -62,22 +62,29 @@ type Announcement struct {
 }
 
 // Crossings reads which thresholds the record has reached as of now, on the
-// SLA clock. A met target never crosses: its clock is frozen. At risk is
-// never reported at or past 100%, so a breach and an at-risk crossing of one
-// target are never both due.
+// record's own SLA clock (Record.Elapsed, not the ticket's). A target that is
+// met never crosses: its clock is frozen. Neither does one whose breach stamp
+// is already set: it has breached, and a policy loosened in place since must
+// not turn it into an at-risk crossing or a second breach. At risk is never
+// reported at or past 100%, so a breach and an at-risk crossing of one target
+// are never both due.
 func Crossings(rec Record, p Policy, t ticket.Ticket, now time.Time) Crossed {
 	var c Crossed
 	elapsed := rec.Elapsed(t, now)
-	c.Breach[0], c.AtRisk[0] = crossingsOf(elapsed, targetDur(p.ResponseTargetMin), rec.FirstResponseAt != nil)
-	c.Breach[1], c.AtRisk[1] = crossingsOf(elapsed, targetDur(p.ResolutionTargetMin), rec.ResolvedAt != nil)
+	c.Breach[0], c.AtRisk[0] = crossingsOf(elapsed, targetDur(p.ResponseTargetMin),
+		rec.FirstResponseAt != nil || rec.ResponseBreachedAt != nil)
+	c.Breach[1], c.AtRisk[1] = crossingsOf(elapsed, targetDur(p.ResolutionTargetMin),
+		rec.ResolvedAt != nil || rec.ResolutionBreachedAt != nil)
 	return c
 }
 
 func targetDur(min int) time.Duration { return time.Duration(min) * time.Minute }
 
-func crossingsOf(elapsed, target time.Duration, met bool) (breach, risk Crossing) {
+// crossingsOf reads one target. done is true when the target can no longer
+// cross: it was met, or its breach is already stamped.
+func crossingsOf(elapsed, target time.Duration, done bool) (breach, risk Crossing) {
 	switch {
-	case met:
+	case done:
 		return Crossing{}, Crossing{}
 	case elapsed >= target:
 		return Crossing{Due: true, Fresh: elapsed-target <= AlertFreshness}, Crossing{}
@@ -93,8 +100,10 @@ func crossingsOf(elapsed, target time.Duration, met bool) (breach, risk Crossing
 // Announce decides the one event a pass raises for a ticket. newly is what the
 // pass's stamp statement set, and c is the reading it was decided from. Only a
 // crossing that was newly stamped and is fresh is announced. The rest are
-// counted as Stale. A breach outranks an at-risk crossing, and an at-risk
-// crossing of the other target rides along on the breach.
+// counted as Stale, including a crossing that is newly stamped but not Due in
+// this reading (the SQL prefilter and Go disagree). A breach outranks an
+// at-risk crossing, and an at-risk crossing of the other target rides along on
+// the breach.
 func Announce(newly Stamped, c Crossed) Announcement {
 	var a Announcement
 	var breached, risk []Target

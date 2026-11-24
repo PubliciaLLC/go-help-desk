@@ -187,44 +187,158 @@ func TestCrossings_ResolutionTarget(t *testing.T) {
 	}
 }
 
-// Freshness is on the SLA clock, so pause never makes a crossing stale.
+// Freshness is on the SLA clock, so pause never makes a crossing stale. The
+// whole reading is compared, so a row also pins that no breach is reported.
 func TestCrossings_FreshnessAcrossAPause(t *testing.T) {
+	fresh := sla.Crossing{Due: true, Fresh: true}
 	cases := []struct {
-		name      string
-		tk        ticket.Ticket
-		now       time.Time
-		wantDue   bool
-		wantFresh bool
+		name string
+		tk   ticket.Ticket
+		now  time.Time
+		want sla.Crossed
 	}{
 		{
 			name: "pause closed, 80% reached a minute later is fresh",
 			// Paused for an hour: wall clock 140m, SLA clock 80m.
-			tk:        ticket.Ticket{CreatedAt: statusCreated, SLAPausedSeconds: 3600},
-			now:       statusCreated.Add(140 * time.Minute),
-			wantDue:   true,
-			wantFresh: true,
+			tk:   ticket.Ticket{CreatedAt: statusCreated, SLAPausedSeconds: 3600},
+			now:  statusCreated.Add(140 * time.Minute),
+			want: sla.Crossed{AtRisk: [2]sla.Crossing{fresh, {}}},
 		},
 		{
 			name: "wall clock far past the threshold but SLA clock inside the window",
 			// Paused for 200 minutes: wall clock 280m, SLA clock 80m.
-			tk:        ticket.Ticket{CreatedAt: statusCreated, SLAPausedSeconds: 200 * 60},
-			now:       statusCreated.Add(280 * time.Minute),
-			wantDue:   true,
-			wantFresh: true,
+			tk:   ticket.Ticket{CreatedAt: statusCreated, SLAPausedSeconds: 200 * 60},
+			now:  statusCreated.Add(280 * time.Minute),
+			want: sla.Crossed{AtRisk: [2]sla.Crossing{fresh, {}}},
 		},
 		{
 			name: "open pause freezes the clock below 80%",
 			// Pending since 70m, now 200m: SLA clock stays at 70m.
-			tk:      ticket.Ticket{CreatedAt: statusCreated, PendingSince: ptrTime(statusCreated.Add(70 * time.Minute))},
-			now:     statusCreated.Add(200 * time.Minute),
-			wantDue: false,
+			tk:   ticket.Ticket{CreatedAt: statusCreated, PendingSince: ptrTime(statusCreated.Add(70 * time.Minute))},
+			now:  statusCreated.Add(200 * time.Minute),
+			want: sla.Crossed{},
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := sla.Crossings(sla.Record{}, crossPolicy, tc.tk, tc.now)
-			require.Equal(t, tc.wantDue, got.AtRisk[0].Due)
-			require.Equal(t, tc.wantFresh, got.AtRisk[0].Fresh)
+			require.Equal(t, tc.want, sla.Crossings(sla.Record{}, crossPolicy, tc.tk, tc.now))
+		})
+	}
+}
+
+// Crossings reads the record's own clock, not the ticket's. A reopened ticket's
+// restarted record starts counting at StartedAt, with the pause total as it
+// stood then taken off. Reading the ticket-creation clock instead would see
+// that record as long past target and stamp it silently as stale, with no
+// alert. Response target is 100 min, so its 80% line is 80.
+func TestCrossings_ReadsTheRecordsOwnClock(t *testing.T) {
+	fresh := sla.Crossing{Due: true, Fresh: true}
+	cases := []struct {
+		name string
+		tk   ticket.Ticket
+		rec  sla.Record
+		now  time.Time
+		want sla.Crossed
+	}{
+		{
+			// Ticket clock reads 500m, a stale response breach. Record clock
+			// reads 80m, a fresh at-risk crossing.
+			name: "restarted record counts from StartedAt, not from ticket creation",
+			tk:   ticket.Ticket{CreatedAt: statusCreated},
+			rec:  sla.Record{StartedAt: ptrTime(statusCreated.Add(420 * time.Minute))},
+			now:  statusCreated.Add(500 * time.Minute),
+			want: sla.Crossed{AtRisk: [2]sla.Crossing{fresh, {}}},
+		},
+		{
+			// An hour was paused before the restart. Ticket clock reads 220m,
+			// a stale breach. Counting from StartedAt but ignoring the pause
+			// base would read 20m, nothing. The record clock reads 80m.
+			name: "pause before the restart is excluded from the record's elapsed",
+			tk:   ticket.Ticket{CreatedAt: statusCreated, SLAPausedSeconds: 3600},
+			rec: sla.Record{
+				StartedAt:            ptrTime(statusCreated.Add(200 * time.Minute)),
+				PausedSecondsAtStart: 3600,
+			},
+			now:  statusCreated.Add(280 * time.Minute),
+			want: sla.Crossed{AtRisk: [2]sla.Crossing{fresh, {}}},
+		},
+		{
+			// The restarted record breaches on its own 100%, fresh, though the
+			// ticket is far older.
+			name: "restarted record breaches on its own clock",
+			tk:   ticket.Ticket{CreatedAt: statusCreated},
+			rec:  sla.Record{StartedAt: ptrTime(statusCreated.Add(400 * time.Minute))},
+			now:  statusCreated.Add(500 * time.Minute),
+			want: sla.Crossed{Breach: [2]sla.Crossing{fresh, {}}},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.want, sla.Crossings(tc.rec, crossPolicy, tc.tk, tc.now))
+		})
+	}
+}
+
+// A target whose breach stamp is already set never crosses again. The stamp
+// records that the breach happened, and an at-risk stamp is never written once
+// the target is breached. This matters when a policy's target is loosened in
+// place after the stamp: the clock can fall back under 100% (even under 80%)
+// of the new target, and the reading must not report at risk, or a second
+// breach, for a target that already breached. Response is 100 min, resolution
+// 1000 min.
+func TestCrossings_BreachStampedTargetNeverCrossesAgain(t *testing.T) {
+	stamp := statusCreated.Add(100 * time.Minute)
+	fresh := sla.Crossing{Due: true, Fresh: true}
+	answered := statusCreated.Add(10 * time.Minute)
+
+	cases := []struct {
+		name    string
+		rec     sla.Record
+		elapsed time.Duration
+		want    sla.Crossed
+	}{
+		{
+			name:    "response stamped, clock in the at-risk band: no at risk",
+			rec:     sla.Record{ResponseBreachedAt: &stamp},
+			elapsed: 90 * time.Minute,
+			want:    sla.Crossed{},
+		},
+		{
+			name:    "response stamped, clock past the target: no new breach",
+			rec:     sla.Record{ResponseBreachedAt: &stamp},
+			elapsed: 100 * time.Minute,
+			want:    sla.Crossed{},
+		},
+		{
+			name:    "resolution stamped, clock in the at-risk band: no at risk",
+			rec:     sla.Record{FirstResponseAt: &answered, ResolutionBreachedAt: &stamp},
+			elapsed: 900 * time.Minute,
+			want:    sla.Crossed{},
+		},
+		{
+			name:    "resolution stamped, clock past the target: no new breach",
+			rec:     sla.Record{FirstResponseAt: &answered, ResolutionBreachedAt: &stamp},
+			elapsed: 1000 * time.Minute,
+			want:    sla.Crossed{},
+		},
+		{
+			name:    "response stamped does not silence resolution",
+			rec:     sla.Record{ResponseBreachedAt: &stamp},
+			elapsed: 800 * time.Minute,
+			want:    sla.Crossed{AtRisk: [2]sla.Crossing{{}, fresh}},
+		},
+		{
+			name:    "resolution stamped does not silence response",
+			rec:     sla.Record{ResolutionBreachedAt: &stamp},
+			elapsed: 80 * time.Minute,
+			want:    sla.Crossed{AtRisk: [2]sla.Crossing{fresh, {}}},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tk := ticket.Ticket{CreatedAt: statusCreated}
+			now := statusCreated.Add(tc.elapsed)
+			require.Equal(t, tc.want, sla.Crossings(tc.rec, crossPolicy, tk, now))
 		})
 	}
 }
@@ -246,7 +360,7 @@ func TestAnnounce(t *testing.T) {
 		want  sla.Announcement
 	}{
 		{
-			name:  "nothing newly stamped",
+			name:  "nothing newly stamped: a fresh crossing that was already stamped is not announced",
 			newly: sla.Stamped{},
 			c:     sla.Crossed{Breach: [2]sla.Crossing{fresh, none}},
 			want:  sla.Announcement{},
@@ -314,12 +428,6 @@ func TestAnnounce(t *testing.T) {
 			newly: sla.Stamped{Breach: both},
 			c:     sla.Crossed{Breach: [2]sla.Crossing{fresh, stale}},
 			want:  sla.Announcement{Event: sla.EventBreached, Targets: []sla.Target{sla.TargetResponse}, Stale: 1},
-		},
-		{
-			name:  "a fresh crossing that was already stamped is not announced",
-			newly: sla.Stamped{},
-			c:     sla.Crossed{Breach: [2]sla.Crossing{fresh, none}},
-			want:  sla.Announcement{},
 		},
 	}
 	for _, tc := range cases {
