@@ -1271,8 +1271,9 @@ type Querier interface {
 	// Deprecated (#670): it reports rows affected, which is 1 whenever the record is
 	// current, even when every column was already set, so a caller cannot tell what
 	// it newly stamped and cannot announce only that. StampSLACrossings below
-	// reports per column what it set, and replaces this statement on the sweep's
-	// path. Kept, not removed, until that replacement lands.
+	// reports per column what it set, and replaced this statement on the sweep's
+	// path. Kept, deprecated, with no production caller (only tests reach it);
+	// removal is a separate change.
 	//
 	// Addressed by the id of the record the caller evaluated, like SetSLAFirstResponse
 	// (#623): the breach was decided from that record's clock and policy, and means

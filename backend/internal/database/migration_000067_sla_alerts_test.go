@@ -165,8 +165,9 @@ func TestMigration067_StoredValuesWin(t *testing.T) {
 }
 
 // Down drops the three new columns (and only them); up brings them back with
-// their defaults, and runs a second time without error. The settings rows are
-// left alone by down, so an administrator's choice survives a round trip.
+// their defaults (up runs once after down; it is not run twice in a row). The
+// settings rows are left alone by down, so an administrator's choice survives a
+// round trip.
 func TestMigration067_DownThenUpAgain(t *testing.T) {
 	db, closeDB := testutil.NewDB(t)
 	defer closeDB()

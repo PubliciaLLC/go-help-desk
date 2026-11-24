@@ -3,9 +3,10 @@ package notification
 import "github.com/google/uuid"
 
 // Staff email (#441). Staff are mailed when a ticket is assigned and when a
-// requester replies. Who is mailed is decided by three per-user switches and
-// an administrator's override of each; this file is that rule and nothing
-// else, so it can be read and tested without a database or a mail server.
+// requester replies. Who is mailed is decided by four per-user switches (three
+// for assignments and replies, one for SLA alerts) and an administrator's
+// override of each; this file is that rule and nothing else, so it can be read
+// and tested without a database or a mail server.
 
 // StaffSwitch names one of the four per-user email switches. A switch is
 // also the REASON a person is being considered for an email: the same person

@@ -18,7 +18,7 @@ import (
 //   - StaffFanout runs when the worker first picks up a change's email row
 //     (#506), not on the request. It turns "this ticket was assigned", "was
 //     reopened" or "the requester replied" into one staff.* event per person
-//     to be mailed, applying the three switches, the administrator's override,
+//     to be mailed, applying the four switches, the administrator's override,
 //     and the rule that nobody is mailed about their own action.
 //   - StaffMailDispatcher runs when the worker sends one of those rows. It
 //     looks the person up again and fills in their address.

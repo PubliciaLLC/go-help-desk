@@ -1882,8 +1882,8 @@ function EmailPanel({
 
       <Section title="Staff email about tickets">
         <div className="px-5 py-4 text-sm text-gray-500">
-          Staff are emailed when a ticket is assigned to them or their group, and when a requester replies on a ticket
-          that is theirs. Each person chooses on their profile; their own switches start on. Nobody is emailed about
+          Staff are emailed when a ticket is assigned to them or their group, when a requester replies on a ticket
+          that is theirs, and when an SLA target on one of their tickets is breached or at risk. Each person chooses on their profile; their own switches start on. Nobody is emailed about
           their own action. These settings decide for everyone: "Use each person's choice" leaves it to them,
           "On for everyone" and "Off for everyone" ignore what they chose. On an install upgraded from 1.2 all four
           start as "Off for everyone", so no staff email is sent until you change them. Only has an effect once email

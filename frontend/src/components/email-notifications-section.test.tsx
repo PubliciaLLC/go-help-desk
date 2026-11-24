@@ -46,6 +46,12 @@ describe('the email switches', () => {
     }
   })
 
+  it('says the other three switches do not decide SLA alerts', () => {
+    renderWithQuery(<EmailNotificationsSection />)
+    const sla = screen.getByRole('checkbox', SLA).closest('li')?.textContent ?? ''
+    expect(sla).toMatch(/The three switches above do not apply to these alerts/)
+  })
+
   it('shows what is saved', () => {
     useAuthStore.setState({ user: staff({ email_notify_activity: false }) })
     renderWithQuery(<EmailNotificationsSection />)

@@ -14,7 +14,7 @@ ALTER TABLE sla_records
 
 -- Per-person switch for SLA mail (the fourth switch, next to the three of
 -- 000042). On by default for every existing row, as those are, and an
--- administrator can force it with staff_email_sla_override (000067 below).
+-- administrator can force it with staff_email_sla_override (set below).
 ALTER TABLE users
     ADD COLUMN email_notify_sla BOOLEAN NOT NULL DEFAULT TRUE;
 

@@ -136,7 +136,7 @@ var choiceSettings = map[string]choiceSetting{
 		false, "reputation refresh must be a string"},
 }
 
-// staffEmailOverrideSetting is shared by the three staff-email overrides: same
+// staffEmailOverrideSetting is shared by the four staff-email overrides: same
 // values, same refusal, same reader fallback.
 var staffEmailOverrideSetting = choiceSetting{notification.ValidOverrideMode, string(notification.OverrideUser),
 	"invalid_staff_email_override", "a staff email override must be one of: user, on, off",

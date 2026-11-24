@@ -95,6 +95,7 @@ describe('Settings -> Email', () => {
     const text = document.body.textContent ?? ''
     expect(text).toMatch(/nobody is emailed about their own action/i)
     expect(text).toMatch(/requester replies/i)
+    expect(text).toMatch(/SLA target on one of their tickets is breached or at risk/i)
   })
 
   it('tells an upgraded install that staff email starts off, and no longer claims all three are on', async () => {

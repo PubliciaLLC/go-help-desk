@@ -40,7 +40,7 @@ const SWITCHES: { key: Key; state: 'assigned' | 'activity' | 'group' | 'sla'; la
     key: 'email_notify_sla',
     state: 'sla',
     label: 'SLA alerts',
-    help: 'Email me when a ticket assigned to me, a ticket in a group I belong to that nobody has taken yet, or a ticket I follow has just breached an SLA target or is at risk of breaching one. The two switches above do not apply to these alerts.',
+    help: 'Email me when a ticket assigned to me, a ticket in a group I belong to that nobody has taken yet, or a ticket I follow has just breached an SLA target or is at risk of breaching one. The three switches above do not apply to these alerts: only this one decides.',
   },
 ]
 
