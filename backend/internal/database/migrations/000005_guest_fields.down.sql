@@ -1,2 +1,0 @@
-ALTER TABLE tickets DROP COLUMN IF EXISTS guest_name;
-ALTER TABLE tickets DROP COLUMN IF EXISTS guest_phone;
