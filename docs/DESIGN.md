@@ -61,6 +61,92 @@ order leaves two failure modes, both retryable (nothing happened, or a category
 exists and no user does), and the existence check makes a retry reuse the
 category instead of stacking duplicates. See #323.
 
+**Descriptions (1.3.0).** Each category, type and item has an optional
+`description`: a short line of guidance that tells a person what belongs under
+it ("Laptops, desktops, docks and monitors. For phones see Mobile."). Nothing
+changes for an instance until an administrator writes one.
+
+- **The value.** Plain text, at most **500 characters**, counted as characters
+  (Unicode code points), not bytes. Trimmed on the way in; an empty or
+  whitespace-only value is stored as the empty string and means *none*. Newlines
+  are kept and shown as line breaks. It is **never** rendered as HTML or Markdown:
+  `<b>x</b>` is stored verbatim and shown as those literal characters (the UI
+  puts it in a React text node and breaks lines with CSS `white-space:
+  pre-line`). The column is `TEXT NOT NULL DEFAULT ''` on `categories`, `types`
+  and `items`, with `CHECK (char_length(description) <= 500)`, so a row cannot
+  hold more even if a handler is bypassed. `NOT NULL DEFAULT ''` rather than
+  nullable so "none" has one spelling and no reader needs two branches. Migration
+  `000069`; its down drops the three columns (and their checks with them).
+- **The limit is enforced twice.** `category.Service` rejects a longer value with
+  `category.ErrValidation`, which the handlers already answer as `400
+  bad_request` ("description is too long: 501 characters, the limit is 500"); the
+  CHECK is the backstop and is not expected to fire. The service trims.
+- **Most specific wins, with fallback.** What the chooser shows is one text: the
+  chosen **item's** description if it has one, otherwise the chosen **type's**,
+  otherwise the chosen **category's**; nothing if none of the chosen levels has
+  one. It follows every selector change, shows nothing before a category is
+  chosen, and a change of category clears the chosen type and item and so the
+  text with them. The rule is one pure function over the three chosen rows
+  (`mostSpecificDescription`, `frontend/src/lib/ctiDescription.ts`), so no
+  component repeats it.
+- **Where it shows: every place a person *chooses* a classification.**
+  1. **New ticket** (`/tickets/new`), for staff and administrators (including
+     when filing for another person) and for requesters. Requesters have a
+     category and a type selector, staff and administrators add an item, so a
+     requester sees at most the type's text (an item is never chosen there).
+  2. **Guest form** (`/submit`): the category selector only (a guest is given no
+     type or item, see Guest submission). **A description on a category open to
+     guests is therefore public**: anyone who can open `/submit`, which needs no
+     account, can read it, and so can anyone who calls the public catalogue
+     endpoints while guest submission is on. The admin form says so.
+  3. **Reclassify** on the ticket page (the **Classification** card's Edit mode,
+     staff and administrators): the same three selectors, so the same text
+     beneath them. It is shown only while editing, not in the read-only display
+     of the ticket's current classification, where nobody is choosing.
+
+  Not included, because nobody chooses a classification there and the text
+  would only be noise: the ticket list filters, Reports, the webhook and SLA
+  policy editors, canned responses and custom-field placement (each picks a
+  *scope* to match, not a classification for a ticket), and the guest
+  follow-up form (it has no chooser: the follow-up inherits the original's).
+- **Accessibility and phones.** The text sits in one element beneath the
+  selectors, `id`-linked to them with `aria-describedby` on each selector and
+  announced by an `aria-live="polite"` container that is always in the page (so
+  a change is announced); the text itself is a child that exists only while
+  there is text, so an empty state has no box and no height, and the form does not
+  jump beyond the text itself. It wraps (`wrap-anywhere`) and is readable at 320
+  CSS pixels with no sideways scroll. **There is no hover tooltip and no `title`
+  attribute**: a native `<select>` cannot give an `<option>` a tooltip, and a
+  hover-only affordance does not exist on a phone, so the text beneath the
+  chooser is the mechanism.
+- **Admin.** **Admin → Categories** gets an optional **Description** on create
+  and edit for all three levels: a multi-line field with a live
+  "N / 500" counter that turns to an error at 501 and disables Save. It sits in
+  the node's expanded panel (edit, beside **Groups** and **Fields**) and under
+  the name in the Add category / type / item forms (create). It says what the
+  text is for and who can read it: "Shown beneath the chooser on the new-ticket
+  form. Plain text. Anyone who can pick this category can read it, including
+  visitors on the guest form when guest submission is on." Archiving, restoring
+  and deleting are unchanged, and an archived row keeps its description.
+- **API (additive).** `description` (string, `""` for none) is in the response of
+  every endpoint that returns a category, type or item: the admin CRUD under
+  `/admin/categories`, the catalogue the forms read (`GET /categories`,
+  `/categories/{id}/types`, `.../items`), and the MCP `list_categories` tree.
+  `POST` and `PATCH` on the admin routes accept an optional `description`; on
+  `PATCH` an absent key leaves the value alone and `""` clears it, like every
+  other field of that body. **Checked and left alone:** a ticket's payload
+  carries only `category_id`, `type_id` and `item_id`, no names and so no
+  descriptions, and the webhook and event payloads carry ids too, so nothing
+  there changes; the audit view resolves names only.
+- **Audit.** Creating, editing, archiving and deleting a category, type or item
+  is not audited today (the only entries the CTI routes write are the
+  `custom_field_detached` entries a delete takes with it, and a ticket's
+  `classified`). A description edit is the same kind of edit, so it is covered by
+  exactly what covers the others: nothing new is written. Adding a mechanism to
+  audit CTI edits is a separate decision, not part of this change.
+- **No import, export or copy.** There is no CTI import, export or clone
+  feature, so there is nothing to carry the field through.
+
 ### Tickets (v1)
 
 Core fields (all editions):
@@ -3175,7 +3261,7 @@ in 1.2.0.
   - **One migration.** 000054 adds `attachments.uploaded_by_guest BOOLEAN NOT NULL DEFAULT false`, so the cap can count only guest uploads (nothing recorded who uploaded a file). The settings themselves are rows read with defaults and need none; files guests attached before the upgrade are not counted.
   - **Where the control is.** The guest ticket page (`/g`) shows **Add files** on an open ticket when `GET /site` says `guest_attachments_enabled`, with the effective per-file limit in `guest_attachment_max_bytes` (the lower of the two figures, so the page never promises more than the server takes). Files go up one after another as they are chosen, to `POST /guest/attachments` with the `Authorization: Guest` header; there is no draft, because a guest's attachment belongs to the ticket and not to a reply. The server's own reason is shown for a refusal. There is no control on the submission page (`/submit`): the link that identifies the ticket is emailed after the ticket exists, so a guest attaches from that link. The page does not list the guest's uploads (the guest read has no attachment list) and renders none of their content; attachments stay download-only.
 - Unauthenticated users submit a ticket at `/submit` and receive a **tracking number**
-- Guest ticket form collects: **name** (required), **email** (required), **phone** (optional), subject, description, and category (active only — no type or item)
+- Guest ticket form collects: **name** (required), **email** (required), **phone** (optional), subject, description, and category (active only — no type or item). The chosen category's description, when it has one, is shown beneath the selector (see Ticket Classification → Descriptions); it is public to anyone who can open the form
 - The tracking number can be referenced when following up with the help desk by phone or email
 - No account creation required
 
@@ -7271,6 +7357,7 @@ Admins can manage which groups handle each CTI node directly from the CTI editor
 
 The same editor archives and restores a category, type or item (#446): an archive button on each row sends `active: false`, after a confirmation that says requesters will no longer see it or be able to file new tickets under it; a restore button sends `active: true` with no confirmation. Archived rows are greyed and labelled **Archived**. Deleting an entry that tickets use is refused with `409` (`category_in_use`, `type_in_use`, `item_in_use`), and the dialog then suggests archiving instead.
 
+- Each expanded row, at all three levels, also has an optional **Description** (1.3.0; see Data Model → Ticket Classification → Descriptions).
 - Each expanded **Category** row shows a **Groups** subsection listing groups assigned at the category level (type_id = NULL in `group_scopes`).
 - Each expanded **Type** row shows a **Groups** subsection listing groups assigned to that specific category + type pair.
 - **Items do not have a group management section** — items do not factor into scope per the scope model.
