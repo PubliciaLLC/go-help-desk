@@ -100,7 +100,9 @@ test.describe('shell + pages fit at 390 CSS pixels', () => {
 test.describe('the sidebar is reachable, not just absent', () => {
   // The shell's own navigation, which has no accessible name. The dashboard has
   // navigation landmarks of its own (the queue strip, #675), each named.
-  const sidebar = (page: Page) => page.locator('nav:not([aria-label])')
+  // By role, so a drawer that is in the DOM but hidden is not counted, and
+  // intersected with "no aria-label" to leave out the named landmarks.
+  const sidebar = (page: Page) => page.getByRole('navigation').and(page.locator('nav:not([aria-label])'))
 
   test('a drawer trigger opens the navigation, and it closes again', async ({ page }) => {
     await mockApi(page)
