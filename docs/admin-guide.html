@@ -302,7 +302,7 @@ Facilities
 <h3 id="admin-password-age">Old password hashes</h3>
 <p>Releases before 1.3.0 stored passwords in a weaker form. 1.3.0 upgrades an account's stored password automatically the next time its owner signs in. People who do not sign in for a long time keep the old form, so after a deadline they are refused: a correct password on an old hash is rejected with <code>403 password_reset_required</code> and the message <em>Your password was saved in an older, weaker form and must be reset before you can sign in.</em></p>
 <ul>
-  <li><strong>The setting.</strong> <em>Admin → System → Settings → Authentication → Passwords</em>, <em>Reset window for old passwords</em> (<code>password_rehash_grace_days</code>). It is a number of days, 1 to 365, and the default is 30. A value below 1 is raised to 1 when you leave the field. The count starts the first time 1.3.0 runs against your database. Changing the number moves the deadline for everyone.</li>
+  <li><strong>The setting.</strong> <em>Admin → System → Authentication → Passwords</em>, <em>Reset window for old passwords</em> (<code>password_rehash_grace_days</code>). It is a number of days, 1 to 365, and the default is 30. A value below 1 is raised to 1 when you leave the field. The count starts the first time 1.3.0 runs against your database. Changing the number moves the deadline for everyone.</li>
   <li><strong>Administrators are exempt.</strong> An administrator is never refused for this, so the instance cannot lock itself out. Their password is upgraded at their next sign-in like everyone else's. Staff and requesters are not exempt.</li>
   <li><strong>New installs are not affected</strong>, and neither is anyone who signs in within the window.</li>
   <li><strong>How someone gets back in.</strong> When the server can send email, the refused sign-in itself mails the person a reset link (limited per address like <em>Forgot password?</em>) and the message tells them to check their email. If no link could be sent, the message says "We could not send a reset link just now. Try again in a minute, or ask an administrator." With email off, the message says to ask an administrator, and you set a new password for them from their user page (<em>Reset password</em>). Tell people who sign in rarely, such as seasonal staff, before the deadline, or reset them in advance.</li>
@@ -321,7 +321,7 @@ Facilities
 <p>Passkeys are tied to a domain name. If <code>BASE_URL</code> is an IP address, a single-word host such as <code>http://helpdesk:8080</code>, or contains non-ASCII characters, passkeys are switched off. The server still starts and everything else works, but every administrator sees a banner, <em>Passkeys are unavailable</em>, which gives the reason. Someone whose only second factor is a passkey cannot sign in while this lasts. They are told to ask an administrator to reset their sign-in factors; <em>Reset MFA</em> clears the passkey, and they then enrol an authenticator app. If the locked-out person is the last administrator, use <code>reset-factors</code> above. To get passkeys, give the instance a DNS name and set <code>BASE_URL</code> to it. Changing the domain makes passkeys registered under the old one stop working.</p>
 
 <h3>SAML metadata as a URL or pasted XML</h3>
-<p>Under <em>Admin → System → Settings → Authentication → SAML</em> the identity provider's metadata can be given as a URL the server fetches, or as XML you paste or upload. The two are alternatives, and a pasted copy is never refreshed. The steps and the refusals are in <a href="authentication.html#auth-saml">SAML 2.0 SSO</a>.</p>
+<p>Under <em>Admin → System → Authentication → SAML</em> the identity provider's metadata can be given as a URL the server fetches, or as XML you paste or upload. The two are alternatives, and a pasted copy is never refreshed. The steps and the refusals are in <a href="authentication.html#auth-saml">SAML 2.0 SSO</a>.</p>
 
 <h3>Identity-provider lockout guard</h3>
 <p>Saving SAML or OIDC settings is refused with <code>400 bad_request</code> when the change would leave no active administrator able to sign in, for example by turning off the only identity provider that an administrator without a password uses. Local password sign-in is not affected by these settings. A change that leaves only some administrators unable to sign in is saved, and the response carries a warning.</p>
@@ -329,7 +329,7 @@ Facilities
 
 <h2 id="admin-groups">Groups &amp; scope</h2>
 
-<p>Group membership decides which tickets a staff member can see only when <em>Limit staff to their group scope</em> is on, under <em>Admin → System → Settings → General → Ticket visibility</em>. It is off by default, and then every staff member can see every ticket. With it on, a staff member sees the tickets they reported, tickets assigned to them or to one of their groups, and tickets whose category and type one of their groups covers. A staff member in no group then sees almost nothing, and a ticket outside their visibility answers as not found, even by its tracking number. An admin always sees all tickets.</p>
+<p>Group membership decides which tickets a staff member can see only when <em>Limit staff to their group scope</em> is on, under <em>Admin → System → Privacy → Ticket visibility</em>. It is off by default, and then every staff member can see every ticket. With it on, a staff member sees the tickets they reported, tickets assigned to them or to one of their groups, and tickets whose category and type one of their groups covers. A staff member in no group then sees almost nothing, and a ticket outside their visibility answers as not found, even by its tracking number. An admin always sees all tickets.</p>
 
 <h3>How scope is calculated</h3>
 <p>When a staff member loads their ticket queue, the system collects all CTI scope entries from all their groups, unions them, and returns tickets that match any of those entries.</p>
@@ -599,14 +599,14 @@ Facilities
 <p>Every status transition is automatically recorded on the ticket. The ticket detail page shows a chronological timeline that interleaves replies and status events. Status events show the old and new status (with their colors), who made the change, and the timestamp. The initial status on ticket creation is also recorded.</p>
 
 <h3>Reopen window</h3>
-<p>Configure how many days after Resolved a requester can reopen a ticket by replying. Set this from <em>Admin → System → Settings → General → Ticket lifecycle → Reopen window and auto-close</em>. The default is 7. Set it to 0 for no reopening at all: a Resolved ticket is closed, and read-only, on the next automatic sweep, about five minutes later.</p>
+<p>Configure how many days after Resolved a requester can reopen a ticket by replying. Set this from <em>Admin → System → General → Ticket lifecycle → Reopen window and auto-close</em>. The default is 7. Set it to 0 for no reopening at all: a Resolved ticket is closed, and read-only, on the next automatic sweep, about five minutes later.</p>
 
 <h3>Reopen target status</h3>
-<p>When a ticket is reopened, it is moved to the <strong>Reopen target status</strong>. Configure this from <em>Admin → System → Settings → General → Ticket lifecycle → Reopen target status</em>. The picker lists all active, non-system statuses — system statuses (Resolved, Closed) are excluded because transitioning a reopened ticket back into a terminal state would immediately re-trigger the close flow. If no target status is configured, the ticket is moved to the status named <strong>New</strong>. The same happens if the configured target has since been deactivated: every reopen goes to New, administrators see a banner, <em>The reopen target status is inactive</em>, asking for an active status, and the request that deactivates the target comes back with a warning.</p>
+<p>When a ticket is reopened, it is moved to the <strong>Reopen target status</strong>. Configure this from <em>Admin → System → General → Ticket lifecycle → Reopen target status</em>. The picker lists all active, non-system statuses — system statuses (Resolved, Closed) are excluded because transitioning a reopened ticket back into a terminal state would immediately re-trigger the close flow. If no target status is configured, the ticket is moved to the status named <strong>New</strong>. The same happens if the configured target has since been deactivated: every reopen goes to New, administrators see a banner, <em>The reopen target status is inactive</em>, asking for an active status, and the request that deactivates the target comes back with a warning.</p>
 <p>A reopen does more than change the status. It flags the ticket, raises its priority one level on the first reopen only, starts the SLA over, and emails staff. See <a href="tickets.html#tickets-reopen">Reopened tickets</a>.</p>
 
 <h3 id="admin-closed-reopen">Reopening closed tickets</h3>
-<p>Closed is terminal by default. <em>Reopening closed tickets</em>, under <em>Admin → System → Settings → General → Ticket lifecycle</em>, decides whether a Closed ticket can be force-reopened, and by whom:</p>
+<p>Closed is terminal by default. <em>Reopening closed tickets</em>, under <em>Admin → System → General → Ticket lifecycle</em>, decides whether a Closed ticket can be force-reopened, and by whom:</p>
 <table>
   <thead><tr><th>Setting</th><th>Stored value</th><th>Who can reopen a Closed ticket</th></tr></thead>
   <tbody>
@@ -621,9 +621,9 @@ Facilities
 
 <h2 id="admin-sla">SLA policies</h2>
 
-<p>SLA (Service Level Agreement) tracking is an optional feature. Enable it from <em>Admin → System → Settings → Features → SLA tracking</em>. It can also be pre-enabled at server startup by setting the <code>SLA_ENABLED=true</code> environment variable.</p>
+<p>SLA (Service Level Agreement) tracking is an optional feature. Enable it from <em>Admin → System → Features → SLA → SLA tracking</em>. It can also be pre-enabled at server startup by setting the <code>SLA_ENABLED=true</code> environment variable.</p>
 
-<p>Once the SLA tracking toggle is on, a <strong>SLA Policies</strong> management blade appears directly in the Features tab. Policies define the maximum time from ticket creation until a first response and until the ticket is resolved.</p>
+<p>Once the SLA tracking toggle is on, a <strong>SLA Policies</strong> section appears directly below it, on the same SLA tab. Policies define the maximum time from ticket creation until a first response and until the ticket is resolved.</p>
 
 <h3>Policy fields</h3>
 <table>
@@ -676,7 +676,7 @@ Facilities
 
 <h3>What you will see</h3>
 <ul>
-  <li><strong>Email is not set up</strong> banner for administrators, listing which of <code>SMTP_HOST</code> and <code>SMTP_FROM</code> is missing. It appears only when self-service signup or guest submission is on, because those cannot work without email. An install that runs without email on purpose, and uses neither, sees no banner. Settings shows the same note beside the signup and guest submission switches.</li>
+  <li><strong>Email is not set up</strong> banner for administrators, listing which of <code>SMTP_HOST</code> and <code>SMTP_FROM</code> is missing. It appears only when self-service signup or guest submission is on, because those cannot work without email. An install that runs without email on purpose, and uses neither, sees no banner. The Guest Access and Authentication pages show the same note beside the guest submission and signup switches.</li>
   <li><strong>Turning on signup or guest submission is refused while email is off</strong>: saving the setting answers <code>400 email_required</code>, and the screen explains what to set. An install that already has either on is not switched off and can still save other settings; it gets the banner instead.</li>
   <li><strong>Email is not being delivered</strong> banner (red) while any message is being retried or has failed in the last day. It shows how many messages are affected and the latest error, with addresses replaced by <code>[address]</code>. Failed sends are retried for about an hour and then marked failed. A broken email template fails the message at once, with no retries.</li>
   <li>The server log says once at startup whether email is enabled, and warns when only one of <code>SMTP_HOST</code> and <code>SMTP_FROM</code> is set.</li>
@@ -767,7 +767,7 @@ Facilities
     Remote images are allowed; that is your choice, and the audit log records it.</li>
   <li><strong>The sent email is checked too</strong>, not only what you typed, so a combination of header, body and footer cannot end up with something that is refused.</li>
   <li><strong>Size.</strong> Each HTML field may be up to 64 KiB as typed. The header, body and footer <strong>as sent</strong> may come to at most 100 KiB <strong>together</strong>, because mail clients such as Gmail cut longer messages off. This is checked on save for what the save would join with: saving a body is checked with the saved header and footer, and saving a header or footer is checked against every template; the refusal names the template that would go over. The check assumes long links and a long tracking number, and it uses <strong>your real site name</strong>, which Settings does not otherwise limit.</li>
-  <li><strong>A long site name.</strong> Changing the site name in Settings is refused with <code>400 site_name_too_long_for_email</code> if it would push an email over the limit. The emails that a long name pushes over the limit show up as broken templates (red notice), measured with long links. An email fails only when its real size goes over.</li>
+  <li><strong>A long site name.</strong> Changing the site name on <em>Admin → System → Branding</em> is refused with <code>400 site_name_too_long_for_email</code> if it would push an email over the limit. The emails that a long name pushes over the limit show up as broken templates (red notice), measured with long links. An email fails only when its real size goes over.</li>
   <li><strong>Start from a basic layout</strong> fills an empty HTML field with a starter: the header opens a layout, the footer closes it, and a template gets its own text as paragraphs. Nothing is saved until you press Save.</li>
   <li><strong>Preview.</strong> The HTML is shown in a sandboxed frame that runs no scripts and cannot reach the rest of the page. <strong>Images from other sites do not load in the preview</strong>; use <strong>Send test</strong> to see the real email. A test of a template with HTML is sent as both parts.</li>
   <li><strong>An old browser tab cannot wipe your HTML.</strong> If a page opened before an upgrade saves a template, it leaves the stored HTML alone. The editor always says explicitly when you remove HTML, by emptying the field.</li>
@@ -787,7 +787,7 @@ Facilities
     <tr><td>The ticket emails, requester and staff</td><td><code>.TrackingNumber</code> (for example GHD-2026-000001) and <code>.TicketURL</code> (the ticket's address, a private link for a guest)</td></tr>
     <tr><td><code>email_verification</code></td><td><code>.VerifyURL</code></td></tr>
     <tr><td><code>password_reset</code></td><td><code>.ResetURL</code></td></tr>
-    <tr><td>Header and footer</td><td><code>.SiteName</code>, the name set under Settings</td></tr>
+    <tr><td>Header and footer</td><td><code>.SiteName</code>, the name set under System → Branding</td></tr>
   </tbody>
 </table>
 
@@ -988,7 +988,7 @@ function verifySignature(secret, body, header) {
 <img src="../screenshots/36-account-api-keys.png" alt="The API keys section of the Your account page: a green notice, API key created, copy it now, with the one-time token and a Copy button; below it the new-key form with Tickets read and write and Groups read permissions, a required expiry date and a Create key button; and a list holding Nightly ticket export with tickets:read and a Revoke button" width="2016" height="1372" loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
 <p style="margin:0.4rem 0 1.25rem;font-size:0.85rem;color:var(--muted);">A staff member's own API keys on Your account: the token is shown once, and a key needs at least one permission and an expiry date.</p>
 <h3>Settings</h3>
-<p>Both are under <em>Admin → System → Settings → Authentication → API keys</em>, and both are session-only: an API key or OAuth client cannot change them.</p>
+<p>Both are under <em>Admin → System → Authentication → API keys</em>, and both are session-only: an API key or OAuth client cannot change them.</p>
 <table class="param-table">
   <thead><tr><th>Setting</th><th>Default</th><th>What it does</th></tr></thead>
   <tbody>
@@ -1008,7 +1008,7 @@ function verifySignature(secret, body, header) {
 <h2 id="admin-updates">Updates and the After upgrading wizard</h2>
 
 <h3>Weekly check for new releases (off unless you choose it)</h3>
-<p>The server can check whether a newer release exists. <strong>It is off</strong> on a new install and stays off after an upgrade, and while it is off the server makes no request at all. Turn it on under <em>Admin → System → Settings → General → Updates</em> (<code>update_check_enabled</code>, session only: an API key or OAuth client cannot change it), or at first-run setup.</p>
+<p>The server can check whether a newer release exists. <strong>It is off</strong> on a new install and stays off after an upgrade, and while it is off the server makes no request at all. Turn it on under <em>Admin → System → General → Updates</em> (<code>update_check_enabled</code>, session only: an API key or OAuth client cannot change it), or at first-run setup.</p>
 <ul>
   <li><strong>What is sent.</strong> One <code>GET</code> to GitHub's public releases API (<code>https://api.github.com/repos/PubliciaLLC/go-help-desk/releases/latest</code>) with two headers of its own: <code>User-Agent: go-help-desk</code> (a fixed name, no version number) and <code>Accept: application/vnd.github+json</code>. No query string, body, cookie, instance identifier or usage data, and nothing about your server or version. GitHub sees your server's IP address, as any website would.</li>
   <li><strong>How often.</strong> At most once every 7 days, and not again after a restart until the week is up. A failed check is logged once and tried again the following week.</li>
@@ -1025,7 +1025,7 @@ function verifySignature(secret, body, header) {
   <li><strong>Reset window for old passwords</strong>, with the number of accounts still on an old password hash and whether email is set up.</li>
   <li><strong>Guest file uploads</strong>, shown only while guest submission is on: 1.3.0 switched guest uploads off, and this step offers the setting, the size slider and the limits.</li>
 </ol>
-<p>The wizard counts as seen only when you choose <em>Finish</em> on the last step, or <em>Skip</em> on the last step; there is no way to skip the whole wizard at once. Closing the tab part-way shows it again next time, with the steps already saved showing their new values. A new install never sees it, because first-run setup asks the update question itself. Staff and requesters are never sent to it. Every change goes through the same settings checks as the Settings page.</p>
+<p>The wizard counts as seen only when you choose <em>Finish</em> on the last step, or <em>Skip</em> on the last step; there is no way to skip the whole wizard at once. Closing the tab part-way shows it again next time, with the steps already saved showing their new values. A new install never sees it, because first-run setup asks the update question itself. Staff and requesters are never sent to it. Every change goes through the same settings checks as the System settings pages.</p>
 
 <h2 id="admin-server-warnings">Server warnings</h2>
 
@@ -1052,7 +1052,7 @@ function verifySignature(secret, body, header) {
 
 <h3>Where you can read it</h3>
 <ul>
-  <li><strong>On a ticket.</strong> Staff and administrators see an <em>Activity</em> feed on the ticket. The field-by-field diff is for administrators. Staff see it only when <em>Staff can view ticket change history</em> is on. That setting is off by default, and it is under <em>Admin → System → Settings → General → Audit log</em>. A change of status or assignee shows the status or person by name, with the id as a tooltip; if the status or account has since been deleted, the id is shown. The same names appear in the admin-wide Audit Log, not only on a ticket. Names appear only to someone who is allowed to see the diff.</li>
+  <li><strong>On a ticket.</strong> Staff and administrators see an <em>Activity</em> feed on the ticket. The field-by-field diff is for administrators. Staff see it only when <em>Staff can view ticket change history</em> is on. That setting is off by default, and it is under <em>Admin → System → Privacy → Audit log</em>. A change of status or assignee shows the status or person by name, with the id as a tooltip; if the status or account has since been deleted, the id is shown. The same names appear in the admin-wide Audit Log, not only on a ticket. Names appear only to someone who is allowed to see the diff.</li>
   <li><strong>Audit Log.</strong> A searchable view across entities, under <em>Admin → System → Audit Log</em>, for administrators only. Administrators see every entry, including account actions. Staff do not have this page; they use each ticket's Activity feed.</li>
 </ul>
 
@@ -1060,10 +1060,10 @@ function verifySignature(secret, body, header) {
 <p style="margin:0.4rem 0 1.25rem;font-size:0.85rem;color:var(--muted);">The admin-wide Audit Log: filters, the option to hide replies and notes, and one row per recorded change.</p>
 
 <h3 id="admin-settings-audit">Follow history</h3>
-<p>When a staff member follows or stops following a ticket, the Activity feed and the Audit Log record it (<em>Started following</em> and <em>Stopped following</em>). Administrators always see these entries. Staff see them, in a ticket's Activity feed only (they do not have the Audit Log), only when <em>Staff can view follow history</em> is on, under <em>Admin → System → Settings → General → Audit log</em> (<code>staff_can_view_follow_audit</code>, off by default). It is session-only: an API key or OAuth client cannot change it. Reporters never see these entries, and staff always see the current list of followers on a ticket whatever the setting says.</p>
+<p>When a staff member follows or stops following a ticket, the Activity feed and the Audit Log record it (<em>Started following</em> and <em>Stopped following</em>). Administrators always see these entries. Staff see them, in a ticket's Activity feed only (they do not have the Audit Log), only when <em>Staff can view follow history</em> is on, under <em>Admin → System → Privacy → Audit log</em> (<code>staff_can_view_follow_audit</code>, off by default). It is session-only: an API key or OAuth client cannot change it. Reporters never see these entries, and staff always see the current list of followers on a ticket whatever the setting says.</p>
 
 <h3>Requester names</h3>
-<p>By default, a requester is shown as <em>Requester (name hidden)</em> rather than by name in every audit view. Change this under <em>Admin → System → Settings → General → Privacy</em>, in <em>Mask requester names in Audit Trail</em>:</p>
+<p>By default, a requester is shown as <em>Requester (name hidden)</em> rather than by name in every audit view. Change this under <em>Admin → System → Privacy → Privacy</em>, in <em>Mask requester names in Audit Trail</em>:</p>
 <table>
   <thead><tr><th>Choice</th><th>Requesters are masked in</th></tr></thead>
   <tbody>
@@ -1076,7 +1076,7 @@ function verifySignature(secret, body, header) {
 <img src="../screenshots/19-admin-settings-privacy.png" alt="The General settings tab: Limit staff to their group scope and Staff can view ticket change history switched on, Staff can view follow history off, audit Retention at 0 days, the update check off, and Mask requester names in Audit Trail set to Everywhere under Privacy" width="1408" height="2700" loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
 
 <h3>Retention</h3>
-<p>Set <em>Retention</em>, in days, under <em>Admin → System → Settings → General → Audit log</em>. The default is 0, which keeps every entry forever. The maximum is 36,525 days. When a value is set, a sweep deletes entries older than that. The first sweep runs two minutes after the server starts, and then once a day.</p>
+<p>Set <em>Retention</em>, in days, under <em>Admin → System → Privacy → Audit log</em>. The default is 0, which keeps every entry forever. The maximum is 36,525 days. When a value is set, a sweep deletes entries older than that. The first sweep runs two minutes after the server starts, and then once a day.</p>
 <p>Retention is session-only. An API key or OAuth client cannot change it (<code>403 session_required</code>): shortening the retention would let a leaked key erase the record of what it had done.</p>
 
 <h3>API</h3>
@@ -1088,7 +1088,7 @@ function verifySignature(secret, body, header) {
 
 <h2 id="admin-attachments">Attachments <span class="badge-new">New in 1.3.0</span></h2>
 
-<p>Everything below lives under <em>Admin → System → Settings → Attachments</em>. The whole background — what is detected, the three storage tiers, and what the reputation lookup sends where — is on the <a href="attachment-security.html">Attachment Security</a> page. This section is the settings reference.</p>
+<p>Everything below lives under <em>Admin → System → File Attachments</em>. The whole background — what is detected, the three storage tiers, and what the reputation lookup sends where — is on the <a href="attachment-security.html">Attachment Security</a> page. This section is the settings reference.</p>
 
 <img src="../screenshots/14-admin-settings-attachments.png" alt="Admin Settings, Attachments tab: the allowed file types, what happens when a file's content contradicts its name, the malware scanner address and policy, and the start of Reputation lookup with the VirusTotal and MetaDefender settings and their terms notices" width="2880" height="5200" loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
 
@@ -1186,11 +1186,11 @@ function verifySignature(secret, body, header) {
 
 <p><code>GET /api/v1/admin/security-warnings</code> reports what scanning is <em>doing</em>, including a live reachability check rather than a restatement of the configuration — because an instance whose scanner container has died has an address configured and no protection, and those two facts must not look alike. It returns the effective policy, whether an address is configured, whether the scanner answers, and a sentence saying what that combination means.</p>
 
-<p>The same check is on the page. At the top of <em>Admin → System → Settings → Attachments → Malware scanning</em>, a status block shows the policy, whether a scanner address is configured, whether the scanner answers, and that sentence.</p>
+<p>The same check is on the page. At the top of <em>Admin → System → File Attachments → Malware scanning</em>, a status block shows the policy, whether a scanner address is configured, whether the scanner answers, and that sentence.</p>
 
 <p>Administrators also see it as a banner. When the scan policy is not <code>off</code> and the live check fails, an <em>Attachment scanner unreachable</em> banner appears at the top of every page, with that sentence.</p>
 
-<p>A second banner, <em>Attachments are not being scanned</em>, is for an install that never chose. It appears when all three of these hold: no scan policy has ever been saved, no scanner address is set (in Settings or in <code>CLAMAV_ADDR</code>), and the instance already holds at least one attachment. That is what a Docker Compose install looks like after it upgrades from 1.2, which started the bundled ClamAV by itself. The banner says what to do: add <code>COMPOSE_PROFILES=antivirus</code> and <code>CLAMAV_ADDR=tcp://clamav:3310</code> to <code>docker/.env</code>, run <code>docker compose up -d</code>, then confirm the scanner address under <em>Admin → System → Settings → Attachments</em>. It goes away when a scanner address is set, or when you choose a scan policy under <em>Malware scanning</em>, including <em>Do not scan</em>. Scanning that is switched off on purpose that way is not bannered; the setting shows it.</p>
+<p>A second banner, <em>Attachments are not being scanned</em>, is for an install that never chose. It appears when all three of these hold: no scan policy has ever been saved, no scanner address is set (on File Attachments or in <code>CLAMAV_ADDR</code>), and the instance already holds at least one attachment. That is what a Docker Compose install looks like after it upgrades from 1.2, which started the bundled ClamAV by itself. The banner says what to do: add <code>COMPOSE_PROFILES=antivirus</code> and <code>CLAMAV_ADDR=tcp://clamav:3310</code> to <code>docker/.env</code>, run <code>docker compose up -d</code>, then confirm the scanner address under <em>Admin → System → File Attachments</em>. It goes away when a scanner address is set, or when you choose a scan policy under <em>Malware scanning</em>, including <em>Do not scan</em>. Scanning that is switched off on purpose that way is not bannered; the setting shows it.</p>
 
 <h3>When uploads are disabled</h3>
 
@@ -1266,7 +1266,7 @@ function verifySignature(secret, body, header) {
 
 <h2 id="admin-branding">Branding</h2>
 
-<p>Customize the application's visual identity from <em>Admin → System → Settings → Branding</em>. Changes apply immediately with no restart required.</p>
+<p>Customize the application's visual identity from <em>Admin → System → Branding</em>. Changes apply immediately with no restart required.</p>
 
 <table>
   <thead><tr><th>Setting</th><th>Description</th></tr></thead>
@@ -1275,7 +1275,7 @@ function verifySignature(secret, body, header) {
     <tr>
       <td><strong>Logo</strong></td>
       <td>
-        Upload a logo file from <em>Admin → System → Settings → Branding → Upload logo</em>. Accepted formats: PNG, JPG, GIF. Maximum 2 MB.
+        Upload a logo file from <em>Admin → System → Branding → Identity</em>. Accepted formats: PNG, JPG, GIF. Maximum 2 MB.
         <ul style="margin:0.5rem 0 0; padding-left:1.25rem;">
           <li><strong>Target size: 320 × 64 px.</strong> Every accepted format is raster: images are proportionally scaled to fit within this bounding box and re-encoded as PNG, which also strips whatever metadata came with them. Images that already fit are kept at their original dimensions.</li>
           <li><strong>SVG is no longer accepted</strong> <span class="badge-new">Changed in 1.3.0</span>. It used to be, guarded by a sanitiser that parsed the XML and pattern-matched for scripts, event handlers and <code>javascript:</code> URIs. The <a href="https://github.com/PubliciaLLC/go-help-desk/security/advisories/GHSA-p2wx-wvfr-7h3p">1.2.0 advisory</a> already contains one escape from that sanitiser. The logo is the one uploaded file this application renders inline on its own origin, so there is no safe subset worth maintaining. <strong>An SVG logo left on disk by an earlier release is no longer served</strong>: <code>GET /api/v1/logo</code> answers 404 as though no logo were set. Upload a PNG, JPG or GIF to get your logo back.</li>
