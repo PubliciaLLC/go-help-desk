@@ -877,3 +877,15 @@ func (s *Service) StaffEmailOverrides(ctx context.Context) notification.StaffOve
 		Group:    mode(KeyStaffEmailGroupOverride),
 	}
 }
+
+// StaffEmailSLAOverride is the administrator's override of the SLA-alerts
+// switch (#670), read the way StaffEmailOverrides reads the other three. It is
+// its own accessor, not a field of StaffEmailOverrides, because that struct is
+// the three-switch shape the existing callers and tests compare whole.
+func (s *Service) StaffEmailSLAOverride(ctx context.Context) notification.OverrideMode {
+	v, err := s.GetString(ctx, KeyStaffEmailSLAOverride)
+	if err != nil || !notification.ValidOverrideMode(v) {
+		return notification.OverrideUser
+	}
+	return notification.OverrideMode(v)
+}

@@ -129,6 +129,7 @@ var choiceSettings = map[string]choiceSetting{
 	admin.KeyStaffEmailAssignedOverride: staffEmailOverrideSetting,
 	admin.KeyStaffEmailActivityOverride: staffEmailOverrideSetting,
 	admin.KeyStaffEmailGroupOverride:    staffEmailOverrideSetting,
+	admin.KeyStaffEmailSLAOverride:      staffEmailOverrideSetting,
 	// Anything else reads as biweekly, never "never". Decoded bare for compatibility, as above.
 	admin.KeyAttachmentReputationRefresh: {admin.ValidReputationRefresh, admin.ReputationRefreshBiweekly,
 		"invalid_reputation_refresh", "reputation refresh must be one of: weekly, biweekly, monthly, quarterly, never",
@@ -483,10 +484,11 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// The update check (#170) and the post-upgrade wizard's seen flag: booleans
-	// and nothing else. A string "true", a number or an object would be stored
-	// and read back as off, so the operator would believe they had chosen.
-	for _, key := range []string{admin.KeyUpdateCheckEnabled, admin.KeyPostUpgrade130Seen} {
+	// The update check (#170), the post-upgrade wizard's seen flag and the SLA
+	// alerts switch (#670): booleans and nothing else. A string "true", a number
+	// or an object would be stored and read back as off, so the operator would
+	// believe they had chosen.
+	for _, key := range []string{admin.KeyUpdateCheckEnabled, admin.KeyPostUpgrade130Seen, admin.KeySLAAlertsEnabled} {
 		if raw, ok := body[key]; ok {
 			var on bool
 			if err := unmarshalSetting(raw, key, &on); err != nil {
@@ -692,8 +694,8 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 
 	// The staff-email overrides (#441). A typo would be read as "leave it to
 	// the user", so an administrator who meant to force a switch off would
-	// believe they had; refused by name instead.
-	for _, key := range []string{admin.KeyStaffEmailAssignedOverride, admin.KeyStaffEmailActivityOverride, admin.KeyStaffEmailGroupOverride} {
+	// believe they had; refused by name instead. The fourth is the SLA switch (#670).
+	for _, key := range []string{admin.KeyStaffEmailAssignedOverride, admin.KeyStaffEmailActivityOverride, admin.KeyStaffEmailGroupOverride, admin.KeyStaffEmailSLAOverride} {
 		if refuseChoice(w, body, key) {
 			return
 		}

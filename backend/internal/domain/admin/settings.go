@@ -93,6 +93,8 @@ const (
 	KeyStaffEmailAssignedOverride = "staff_email_assigned_override"
 	KeyStaffEmailActivityOverride = "staff_email_activity_override"
 	KeyStaffEmailGroupOverride    = "staff_email_group_override"
+	// The fourth switch, SLA alerts (#670), with the same values and reader.
+	KeyStaffEmailSLAOverride = "staff_email_sla_override"
 
 	// Whether the SLA sweep announces what it stamps: sla.breached and
 	// sla.at_risk, mail and webhooks alike (#670). Off, the sweep still stamps
@@ -484,6 +486,7 @@ func KnownKeys() []string {
 		KeyStaffCanViewTicketChangeHistory, KeyAuditRetentionDays, KeyStaffCanViewFollowAudit,
 		KeyStaffCanCreateAPIKeys, KeyAPIKeyMaxLifetimeYears,
 		KeyStaffEmailAssignedOverride, KeyStaffEmailActivityOverride, KeyStaffEmailGroupOverride,
+		KeyStaffEmailSLAOverride,
 		KeyPasswordRehashGraceDays, KeyPasswordRehashStartedAt,
 		KeyUpdateCheckEnabled, KeyUpdateCheckResult, KeyPostUpgrade130Seen,
 	}
