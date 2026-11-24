@@ -18,6 +18,9 @@ export interface User {
   email_notify_assigned?: boolean
   email_notify_activity?: boolean
   email_notify_group?: boolean
+  /** The instance-wide per-file attachment limit in bytes (#673). Only on /me,
+   *  not on the login response, so a client reads it after signing in. */
+  attachment_max_bytes?: number
   /** What the switches amount to for this person, with whether an administrator
    *  forced each one (#441). Only on /me and the preferences answer, and only
    *  for staff and administrators. */
