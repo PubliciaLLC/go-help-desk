@@ -20,7 +20,7 @@ var staffOverrideKeys = []string{
 
 // What the reader reports when nothing is overridden.
 var leftToUsers = notification.StaffOverrides{
-	Assigned: notification.OverrideUser, Activity: notification.OverrideUser, Group: notification.OverrideUser,
+	Assigned: notification.OverrideUser, Activity: notification.OverrideUser, Group: notification.OverrideUser, SLA: notification.OverrideUser,
 }
 
 // The admin override for each staff-email switch (#441): user | on | off.
@@ -47,6 +47,7 @@ func TestStaffEmailOverride_AcceptsTheThreeModes(t *testing.T) {
 		Assigned: notification.OverrideOff,
 		Activity: notification.OverrideOn,
 		Group:    notification.OverrideUser,
+		SLA:      notification.OverrideUser,
 	}, h.adminSvc.StaffEmailOverrides(context.Background()))
 }
 
@@ -118,5 +119,6 @@ func TestStaffEmailOverride_AfterUpgradeMigrationShowsOffAndCanBeSwitchedOn(t *t
 		Assigned: notification.OverrideOn,
 		Activity: notification.OverrideUser,
 		Group:    notification.OverrideOff,
+		SLA:      notification.OverrideUser,
 	}, h.adminSvc.StaffEmailOverrides(context.Background()))
 }

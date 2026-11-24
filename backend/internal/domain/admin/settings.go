@@ -93,6 +93,13 @@ const (
 	KeyStaffEmailAssignedOverride = "staff_email_assigned_override"
 	KeyStaffEmailActivityOverride = "staff_email_activity_override"
 	KeyStaffEmailGroupOverride    = "staff_email_group_override"
+	// The fourth switch, SLA alerts (#670), with the same values and reader.
+	KeyStaffEmailSLAOverride = "staff_email_sla_override"
+
+	// Whether the SLA sweep announces what it stamps: sla.breached and
+	// sla.at_risk, mail and webhooks alike (#670). Off, the sweep still stamps
+	// and raises nothing.
+	KeySLAAlertsEnabled = "sla_alerts_enabled"
 
 	// Deprecated: replaced by the per-provider settings below, and read by
 	// nothing.
@@ -467,7 +474,7 @@ func KnownKeys() []string {
 		KeyOIDCEnabled, KeyOIDCIssuerURL, KeyOIDCClientID, KeyOIDCClientSecret, KeyOIDCRedirectURL,
 		KeyGuestSubmissionEnabled, KeyGuestAttachmentsEnabled, KeyGuestAttachmentMaxMB,
 		KeyGuestAttachmentMaxPerTicket, KeyGuestAttachmentUploadsPerHour,
-		KeySLAEnabled, KeyMFAEnabled, KeyMFAEnforcedRoles, KeyPasskeyRequiredRoles,
+		KeySLAEnabled, KeySLAAlertsEnabled, KeyMFAEnabled, KeyMFAEnforcedRoles, KeyPasskeyRequiredRoles,
 		KeyReopenWindowDays, KeyReopenTargetStatusName,
 		KeyAttachmentScanPolicy, KeyAttachmentScanAddress,
 		KeySiteName, KeySiteLogoURL,
@@ -485,6 +492,7 @@ func KnownKeys() []string {
 		KeyStaffCanViewTicketChangeHistory, KeyAuditRetentionDays, KeyStaffCanViewFollowAudit,
 		KeyStaffCanCreateAPIKeys, KeyAPIKeyMaxLifetimeYears,
 		KeyStaffEmailAssignedOverride, KeyStaffEmailActivityOverride, KeyStaffEmailGroupOverride,
+		KeyStaffEmailSLAOverride,
 		KeyPasswordRehashGraceDays, KeyPasswordRehashStartedAt,
 		KeyUpdateCheckEnabled, KeyUpdateCheckResult, KeyPostUpgrade130Seen,
 	}

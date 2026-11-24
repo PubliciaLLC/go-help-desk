@@ -194,6 +194,36 @@ func (f *fakeStore) StartSLARecord(_ context.Context, r ticket.SLARecordStart) e
 	return nil
 }
 
+// StampSLACrossings applies the real statement's rules to the fake's records:
+// a column is set only while it is nil and its target is outstanding, and an
+// at-risk stamp only for a target that is not breached, this call included.
+func (f *fakeStore) StampSLACrossings(_ context.Context, id uuid.UUID, s ticket.SLAStampRequest) (ticket.SLAStamped, error) {
+	for i := range f.slaRecords {
+		r := &f.slaRecords[i]
+		if r.id != id || r.supersededAt != nil {
+			continue
+		}
+		var got ticket.SLAStamped
+		fact := &r.facts
+		at := s.At
+		set := func(col **time.Time, want, ok bool) bool {
+			if !want || !ok || *col != nil {
+				return false
+			}
+			*col = &at
+			return true
+		}
+		respOpen := fact.FirstResponseAt == nil && fact.ResponseBreachedAt == nil
+		resOpen := fact.ResolvedAt == nil && fact.ResolutionBreachedAt == nil
+		got.ResponseAtRisk = set(&fact.ResponseAtRiskAt, s.ResponseAtRisk, respOpen && !s.ResponseBreach)
+		got.ResolutionAtRisk = set(&fact.ResolutionAtRiskAt, s.ResolutionAtRisk, resOpen && !s.ResolutionBreach)
+		got.ResponseBreach = set(&fact.ResponseBreachedAt, s.ResponseBreach, respOpen)
+		got.ResolutionBreach = set(&fact.ResolutionBreachedAt, s.ResolutionBreach, resOpen)
+		return got, nil
+	}
+	return ticket.SLAStamped{}, ticket.ErrSLARecordSuperseded
+}
+
 func (f *fakeStore) Create(_ context.Context, t ticket.Ticket) error {
 	if f.errCreate != nil {
 		return f.errCreate

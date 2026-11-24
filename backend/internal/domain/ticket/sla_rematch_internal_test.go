@@ -72,6 +72,10 @@ func TestPlanSLARematch(t *testing.T) {
 		ResponseBreachedAt: &met,
 	}
 	withFacts := &SLARecordState{ID: uuid.New(), PolicyID: policyA, StartedAt: &started, PausedSecondsAtStart: 120, Facts: facts}
+	// #670: the at-risk stamps travel with the breach stamps, whichever are set.
+	atRisk := now.Add(-90 * time.Minute)
+	atRiskFacts := SLAFacts{ResponseAtRiskAt: &atRisk, ResolutionAtRiskAt: &atRisk, ResolutionBreachedAt: &met}
+	withAtRisk := &SLARecordState{ID: uuid.New(), PolicyID: policyA, StartedAt: &started, PausedSecondsAtStart: 120, Facts: atRiskFacts}
 
 	cases := []struct {
 		name    string
@@ -118,6 +122,13 @@ func TestPlanSLARematch(t *testing.T) {
 				TicketID: tk.ID, PolicyID: policyB, StartedAt: &started, PausedSecondsAtStart: 120, Facts: facts,
 			},
 		},
+		{
+			name: "at-risk and breach stamps are carried onto the new record", enabled: true,
+			cur: withAtRisk, matched: &policyB, tk: tk, want: SLARematched,
+			wantStart: &SLARecordStart{
+				TicketID: tk.ID, PolicyID: policyB, StartedAt: &started, PausedSecondsAtStart: 120, Facts: atRiskFacts,
+			},
+		},
 		{name: "running record, no policy matches", enabled: true, cur: running, tk: tk, want: SLARemoved},
 		{name: "record with targets met, no policy matches", enabled: true, cur: withFacts, tk: tk, want: SLARemoved},
 	}
@@ -158,6 +169,10 @@ func TestPlanSLARestart(t *testing.T) {
 
 	running := &SLARecordState{ID: uuid.New(), PolicyID: policyA, StartedAt: &started}
 	settled := &SLARecordState{ID: uuid.New(), PolicyID: policyA, StartedAt: &started, Facts: SLAFacts{ResolvedAt: &met}}
+	// #670: a restart starts clean, so no stamp is carried, at-risk included.
+	stamped := &SLARecordState{ID: uuid.New(), PolicyID: policyA, StartedAt: &started, Facts: SLAFacts{
+		ResponseAtRiskAt: &met, ResolutionAtRiskAt: &met, ResponseBreachedAt: &met, ResolutionBreachedAt: &met,
+	}}
 	fresh := func(policy uuid.UUID, base int64) *SLARecordStart {
 		return &SLARecordStart{TicketID: tk.ID, PolicyID: policy, StartedAt: &now, PausedSecondsAtStart: base}
 	}
@@ -177,6 +192,7 @@ func TestPlanSLARestart(t *testing.T) {
 		{name: "settled record, other policy", enabled: true, cur: settled, matched: &policyB, tk: tk, want: SLARestarted, wantStart: fresh(policyB, 600)},
 		{name: "settled record, SAME policy: restarts anyway", enabled: true, cur: settled, matched: &policyA, tk: tk, want: SLARestarted, wantStart: fresh(policyA, 600)},
 		{name: "running record, other policy: restarts too", enabled: true, cur: running, matched: &policyB, tk: tk, want: SLARestarted, wantStart: fresh(policyB, 600)},
+		{name: "stamped record (at-risk and breached): the new record has no stamps", enabled: true, cur: stamped, matched: &policyB, tk: tk, want: SLARestarted, wantStart: fresh(policyB, 600)},
 		{name: "ticket pending: the base includes the open interval", enabled: true, cur: settled, matched: &policyB, tk: pendingTk, want: SLARestarted, wantStart: fresh(policyB, 1200)},
 		{name: "no policy matches: the old record is superseded", enabled: true, cur: settled, tk: tk, want: SLARemoved},
 	}

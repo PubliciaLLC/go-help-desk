@@ -78,6 +78,38 @@ func goldenCases() []goldenCase {
 			goldenCase{ev.prefix + "_follow", goldenEvent(ev.typ, reason(notification.SwitchFollow))},
 		)
 	}
+	// The six SLA mails (#670). The breached three are the mixed case, the one
+	// the design words out in full; one more breached mail is a pure breach; the
+	// at-risk three are pure at-risk.
+	alert := func(a notification.SLAAlert) func(*notification.Event) {
+		return func(e *notification.Event) { e.SLA = &a }
+	}
+	both := func(fs ...func(*notification.Event)) func(*notification.Event) {
+		return func(e *notification.Event) {
+			for _, f := range fs {
+				f(e)
+			}
+		}
+	}
+	mixed := alert(notification.SLAAlert{
+		Breached: []notification.SLATarget{notification.SLATargetResponse},
+		AtRisk:   []notification.SLATarget{notification.SLATargetResolution},
+	})
+	pureBreach := alert(notification.SLAAlert{Breached: []notification.SLATarget{notification.SLATargetResolution}})
+	pureAtRisk := alert(notification.SLAAlert{AtRisk: []notification.SLATarget{notification.SLATargetResponse, notification.SLATargetResolution}})
+	for _, v := range []struct {
+		suffix string
+		reason notification.StaffSwitch
+	}{
+		{"", notification.SwitchActivity}, {"_group", notification.SwitchGroup}, {"_follow", notification.SwitchFollow},
+	} {
+		cases = append(cases,
+			goldenCase{"staff_sla_breached" + v.suffix, goldenEvent(notification.EventStaffSLABreached, both(reason(v.reason), mixed))},
+			goldenCase{"staff_sla_at_risk" + v.suffix, goldenEvent(notification.EventStaffSLAAtRisk, both(reason(v.reason), pureAtRisk))},
+		)
+	}
+	cases = append(cases, goldenCase{"staff_sla_breached_pure_breach",
+		goldenEvent(notification.EventStaffSLABreached, both(reason(notification.SwitchActivity), pureBreach))})
 	return cases
 }
 
@@ -122,7 +154,7 @@ func TestGolden_EveryMailIsByteIdenticalWithNoOverride(t *testing.T) {
 	}
 }
 
-// The 18 templates are all reached by the cases above.
+// The 24 templates are all reached by the cases above.
 func TestGolden_CoversEveryTemplate(t *testing.T) {
 	seen := map[string]bool{}
 	for _, c := range goldenCases() {
@@ -130,7 +162,7 @@ func TestGolden_CoversEveryTemplate(t *testing.T) {
 	}
 	files, err := templateFS.ReadDir("templates")
 	require.NoError(t, err)
-	require.Len(t, files, 18)
+	require.Len(t, files, 24)
 	for _, f := range files {
 		name := strings.TrimSuffix(f.Name(), ".tmpl")
 		require.True(t, seen[name], "no golden case for %s", name)

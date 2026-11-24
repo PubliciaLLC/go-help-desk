@@ -94,3 +94,35 @@ func TestEmailPreferences_AWholeRowUpdateLeavesThemAlone(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, got.EmailNotifyAssigned, "an unrelated save undid the person's choice")
 }
+
+// The SLA-alerts switch (#670), the fourth, is on for a new account like the
+// other three, and a patch changes it alone.
+func TestEmailPreferences_SLADefaultsToOnAndPatchesAlone(t *testing.T) {
+	db, closeDB := testutil.NewDB(t)
+	defer closeDB()
+	q, rollback := testutil.TxQueries(t, db)
+	defer rollback()
+	store := userstore.New(q)
+	ctx := context.Background()
+
+	id := seedStaff(t, store)
+	got, err := store.GetByID(ctx, id)
+	require.NoError(t, err)
+	require.True(t, got.EmailNotifySLA, "a new account starts with SLA alerts on")
+
+	off := false
+	require.NoError(t, store.SetEmailPreferences(ctx, id, user.EmailPreferencesPatch{SLA: &off}))
+	got, err = store.GetByID(ctx, id)
+	require.NoError(t, err)
+	require.False(t, got.EmailNotifySLA)
+	require.True(t, got.EmailNotifyAssigned, "a patch of SLA touched another switch")
+	require.True(t, got.EmailNotifyActivity, "a patch of SLA touched another switch")
+	require.True(t, got.EmailNotifyGroup, "a patch of SLA touched another switch")
+
+	on := true
+	require.NoError(t, store.SetEmailPreferences(ctx, id, user.EmailPreferencesPatch{Activity: &off, SLA: &on}))
+	got, err = store.GetByID(ctx, id)
+	require.NoError(t, err)
+	require.True(t, got.EmailNotifySLA)
+	require.False(t, got.EmailNotifyActivity)
+}

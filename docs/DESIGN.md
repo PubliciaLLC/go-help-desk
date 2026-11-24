@@ -8,7 +8,7 @@ Open-source, self-hosted help desk system inspired by HESK, with local, SAML and
 
 | Version | Scope |
 |---------|-------|
-| **v1** | Core ticketing (linked tickets, follow-ups from Closed tickets, auto-assignment, optional SLA tracking), local + SAML + OIDC auth, self-service signup, guest submission, MFA (TOTP or passkey), custom fields, CTI-linked group management, canned responses, full-text search (Postgres FTS), attachments with malware scanning and hash-reputation lookup, admin audit view with retention, REST API, MCP interface, email + webhook notifications delivered through a database outbox (with Slack/Teams/Discord/JIRA payload formats and per-hook ticket filters), Docker deployment |
+| **v1** | Core ticketing (linked tickets, follow-ups from Closed tickets, auto-assignment, optional SLA tracking with breach and at-risk alerts), local + SAML + OIDC auth, self-service signup, guest submission, MFA (TOTP or passkey), custom fields, CTI-linked group management, canned responses, full-text search (Postgres FTS), attachments with malware scanning and hash-reputation lookup, admin audit view with retention, REST API, MCP interface, email + webhook notifications delivered through a database outbox (with Slack/Teams/Discord/JIRA payload formats and per-hook ticket filters), Docker deployment |
 | **v1.4** | ITSM ticket types (Incident/SR/Problem/Change), Impact × Urgency priority matrix, default ticket type per CTI (#135); incident management (#408); monitoring events (#411); operational reporting (#131); asset reference (#415); continual improvement (#405); suppliers (#406); relationship management (#407) |
 | **v2** | Plugin system (1st/3rd-party, sandboxed, admin UI install); plugin runtime (#416); Snipe-IT reference plugin (#403) |
 | **v3** | Knowledge base, custom admin-defined roles |
@@ -790,7 +790,7 @@ An administrator can have the server check for newer releases. It is **off unles
 
 An install upgraded from an earlier release has never been asked about the choices 1.3.0 added. The first administrator who signs in lands on the dashboard and is sent to `/after-upgrade`, a short wizard with one step per question and **Back**, **Next** and **Skip** on each. A step shows today's setting, says what changed in 1.3.0 and lets the administrator change it.
 
-- **Steps, in order:** the weekly update check (unchecked); staff email notifications (migration 000052 turned the three overrides off); staff API keys (`staff_can_create_api_keys` and the default lifetime slider); the old-password reset window (`password_rehash_grace_days`, with how many accounts are still on an old hash and whether email is set up). Guest file uploads (#536) is a fifth step, shown only while guest submission is on: it says that 1.2 let guests upload through the API and 1.3.0 switches that off, and offers `guest_attachments_enabled`, the size slider (`guest_attachment_max_mb`, held to the 25 MB instance maximum) and the per-ticket and per-hour limits, reusing the Settings controls. With guest submission off the step is not part of the wizard and the final step says guest uploads stay off because they need guest submission. Skipping it leaves uploads off.
+- **Steps, in order:** the weekly update check (unchecked); staff email notifications (migration 000052 turned the three overrides off, and 000067 the fourth, SLA alerts); staff API keys (`staff_can_create_api_keys` and the default lifetime slider); the old-password reset window (`password_rehash_grace_days`, with how many accounts are still on an old hash and whether email is set up). Guest file uploads (#536) is a fifth step, shown only while guest submission is on: it says that 1.2 let guests upload through the API and 1.3.0 switches that off, and offers `guest_attachments_enabled`, the size slider (`guest_attachment_max_mb`, held to the 25 MB instance maximum) and the per-ticket and per-hour limits, reusing the Settings controls. With guest submission off the step is not part of the wizard and the final step says guest uploads stay off because they need guest submission. Skipping it leaves uploads off.
 - **Saving.** Next sends what the step changed through `PATCH /admin/settings`, so every server-side validation and every session-only rule applies unchanged. Skip sends nothing and drops that step's edits, so the setting keeps its safe default. A refusal is shown on the step and the administrator stays on it.
 - **Upgraded, not guessed.** The wizard is shown while `post_upgrade_130_seen` is not true. Setup writes it `true` on a fresh install (setup asks the update question itself), so a fresh install never sees the wizard; an install that upgraded to 1.3.0 never ran that setup and has no value. The wizard writes it, in the same request as the last step, when it is finished or skipped, and it never shows again. This needs no migration and no version comparison. An administrator who closes the tab part-way sees it again next time, with the steps already saved showing their new values.
 - **Who.** Administrators only. A staff member or requester is never redirected and the route turns them away; `/after-upgrade` redirects to the dashboard once the flag is set. Only the dashboard redirects, so a deep link after sign-in is not interrupted, and a failure to read the settings lets the administrator straight through.
@@ -3655,9 +3655,11 @@ on the existing webhook feature instead of as plugins.
   account holder, a guest, or a staff member replying on a ticket they filed
   themselves; any other staff reply, or an internal note, is not one). A third,
   a **reopen** ([#464](https://github.com/PubliciaLLC/go-help-desk/issues/464)),
-  is described below.
+  is described below. A fourth, **SLA alerts** (a target breached or at risk,
+  [#670](https://github.com/PubliciaLLC/go-help-desk/issues/670)), is
+  described under SLA Tracking → Breach and at-risk notifications.
 
-  Three per-user switches, all **on by default** (columns on `users`, set
+  Four per-user switches, all **on by default** (columns on `users`, set
   from **Your account → Email about tickets**, `PATCH /me/email-preferences`):
 
   | Switch | Mailed when |
@@ -3665,6 +3667,7 @@ on the existing webhook feature instead of as plugins.
   | Tickets assigned to me | a ticket is assigned to me |
   | Activity on tickets I'm assigned to or follow | a requester replies on a ticket assigned to me, a ticket assigned to me is **reopened**, and a ticket I **follow** is assigned, gets a requester's reply or is reopened |
   | My groups' tickets | a ticket is assigned to a group I belong to, a requester replies on a group ticket that **nobody personally holds**, and a ticket in my group that nobody personally holds is **reopened** |
+  | SLA alerts (`email_notify_sla`) | a ticket assigned to me, a ticket in my group that **nobody personally holds**, or a ticket I **follow** has just **breached** an SLA target or is **at risk** of it (80%). For these two events this switch alone decides: the Activity and Group switches do not apply to them |
 
   A requester's reply on a ticket that has both an assignee and a group goes
   to the assignee only: the group's members would otherwise get mail for every
@@ -3706,7 +3709,8 @@ on the existing webhook feature instead of as plugins.
 
   An administrator can **override each switch for everyone**
   (**Admin → Settings → Email**; the settings `staff_email_assigned_override`,
-  `staff_email_activity_override`, `staff_email_group_override`): `user`
+  `staff_email_activity_override`, `staff_email_group_override`,
+  `staff_email_sla_override`): `user`
   leaves it to each person (the default), `on` and `off` ignore what people
   chose. An unrecognised stored value reads as `user`, never as a forced one.
   `GET /me` reports, for each switch, whether it applies to the person and
@@ -3721,7 +3725,24 @@ on the existing webhook feature instead of as plugins.
   override already stored is kept (`ON CONFLICT DO NOTHING`). The down step is a
   no-op: it cannot tell its rows from an administrator's own `off`, and deleting
   them would turn mail back on. The administrator turns staff email on under
-  **Admin → Settings → Email**.
+  **Admin → Settings → Email**. Migration `000067` does the same for the fourth
+  override, `staff_email_sla_override`, on the same condition, with the same
+  no-op down step for that row, so an upgraded install, including a 1.3 beta
+  whose administrator already turned the first three back on, gets no SLA mail
+  until the administrator chooses it. That is apart from `sla_alerts_enabled`
+  (stored off on upgrade by the same migration), which gates the events
+  themselves: an administrator can send SLA alerts to a webhook without mailing
+  staff. Per person, `email_notify_sla` is `NOT NULL DEFAULT TRUE` like the
+  other three.
+
+  Staff mail for the two SLA events uses the reply rule's recipients under the
+  fourth switch, and never shares a change with an assignment, a reply or a
+  reopen (the sweep raises it in a transaction of its own), so the "first reason
+  whose switch is on" order is unaffected. In code the switch that decides is
+  carried on the candidate apart from the reason (`StaffCandidate.Switch`, the
+  reason when empty): the reason (assignee, group, follower) still picks the
+  template variant and the send-time check, and the switch picks the person's
+  preference.
 
   The rules that hold whatever the switches say:
   - **Nobody is mailed about their own action.** The person who made the
@@ -3765,7 +3786,7 @@ on the existing webhook feature instead of as plugins.
   **Guest tickets** carry a per-ticket link instead of a ticket id, so a
   recipient with no account reaches their own thread and nothing else.
 - **Editable email templates** ([#158](https://github.com/PubliciaLLC/go-help-desk/issues/158)).
-  An administrator edits the wording of all 18 emails under **Admin → Email
+  An administrator edits the wording of all 24 emails under **Admin → Email
   Templates** (`/admin/email-templates`), and a shared **header** and **footer**
   that wrap every mail. Each can also have an optional HTML part (see *The HTML
   part* below); without one, mail is plain text.
@@ -3781,7 +3802,8 @@ on the existing webhook feature instead of as plugins.
   | Template | Variables | Must print (outside any `if`) |
   | --- | --- | --- |
   | the seven requester mails (created, follow-up created, replied, status changed, resolved, reopened, guest link) | `TrackingNumber`, `TicketURL` | `TicketURL` |
-  | the nine staff mails | `TrackingNumber`, `TicketURL` | `TicketURL` |
+  | the nine staff mails (assigned, requester replied, reopened, each to the assignee, the group and a follower) | `TrackingNumber`, `TicketURL` | `TicketURL` |
+  | the six SLA staff mails (SLA breached and SLA at risk, each to the assignee, the group and a follower) | `TrackingNumber`, `TicketURL`, `SLAStatus` | `TicketURL` |
   | email verification | `VerifyURL` | `VerifyURL` |
   | password reset | `ResetURL` | `ResetURL` |
   | header, footer | `SiteName` (the name in Settings) | nothing |
@@ -3966,7 +3988,11 @@ on the existing webhook feature instead of as plugins.
   staff-only note), `ticket.resolved`, `ticket.closed`, `ticket.reopened` (every reopen: a requester's reply, a status change out of Resolved or Closed, and `POST /reopen`) and
   `ticket.linked`, `ticket.priority_changed` (a priority change),
   `ticket.classified` (a category, type or item change), `ticket.unlinked` (a
-  link removed), `ticket.attachment_added` (a file uploaded), and the two
+  link removed), `ticket.attachment_added` (a file uploaded), `sla.breached`
+  and `sla.at_risk` (the SLA sweep has just stamped a breach, or a target at
+  80%, and `sla_alerts_enabled` is on; a pass that does both on one ticket is
+  one `sla.breached` that also names the at-risk target; SLA Tracking → Breach
+  and at-risk notifications), and the two
   **opt-in** events `ticket.followed` and `ticket.unfollowed`. A hook matches a
   change when any of the change's kinds is in its list, and fires once. The raw
   body keeps its shape. See Ticket Events: One Change, One Event.
@@ -3990,7 +4016,11 @@ on the existing webhook feature instead of as plugins.
   `target_id` and `link_type` (the same two tickets can be linked in more than
   one way, so the id alone does not say which link went); `ticket.replied` and
   `ticket.note_added` have `reply_id`; `ticket.attachment_added` has
-  `attachment_id`; `ticket.followed` and `ticket.unfollowed` have `user_id`.
+  `attachment_id`; `ticket.followed` and `ticket.unfollowed` have `user_id`;
+  `sla.breached` and `sla.at_risk` have `targets` (a list of `response` and/or
+  `resolution`, enums), `policy_id` and `record_id`, with `ActorID` null, and
+  `sla.breached` also has `at_risk_targets` (the same enums: targets that
+  reached 80% in the same pass and have not breached; omitted when none).
   Every other event has no payload, except that a hook which lists
   `ticket.unfollowed` also gets `user_id` on a delivery under whatever name it
   is told (for example `ticket.assigned`) when the change dropped a follow; a
@@ -4413,6 +4443,7 @@ raises into the transaction's collector; none dispatches after the commit.
 | `Follow`, `Unfollow` (REST `PUT` and `DELETE /follow`) | `ticket.followed` or `ticket.unfollowed`, only when it changed something, in the transaction that writes the follower row and its audit entry. **Opt-in by name.** | `user_id` (the person's id, not their name). No mail. |
 | `UnassignForUser` (an administrator deletes a user) | `ticket.assigned` per open ticket the user held, the assignee cleared, with the deleting administrator as the actor; plus `ticket.unfollowed` when the user followed it (the follow goes with the assignment). **Staff mail is suppressed.** | `user_id` only when an unfollow rides along. `Changes` has `assignee_user_id`. |
 | `DeleteGroup` (an administrator deletes a group) | `ticket.assigned` per ticket the group held, open or not, the group cleared, with the deleting administrator as the actor. **Staff mail is suppressed.** | `Changes` has `assignee_group_id`. |
+| `sla.Service.SweepBreaches` (the SLA sweep, every minute; `domain/sla`) | At most one per ticket per pass, in one transaction through `ticket.Atomic` that stamps every crossing the pass found on that ticket, so the stamps and the event commit together: `sla.breached` when a fresh breach was newly stamped (naming any fresh at-risk of the other target too), else `sla.at_risk` when a fresh at-risk was, else nothing. Only while `sla_alerts_enabled` is on. Never merged with a ticket kind. | `targets`, `policy_id`, `record_id`, and on `sla.breached` `at_risk_targets` when any; no actor; `Ticket` read in the transaction; the typed `SLA` field for mail. Staff mail under the SLA alerts switch (SLA Tracking → Breach and at-risk notifications) |
 | `RequestGuestLink` (guest "resend my link") | `guest.link_resent` through `OutboxDispatcher` | what the guest typed; no ticket id |
 | `registration.Service.Signup` | `registration.verify` through `OutboxDispatcher` | `pending_id` only |
 
@@ -4433,7 +4464,7 @@ production caller, so there is no removal to announce.
 | Consumer | Reads | Decides by |
 | --- | --- | --- |
 | Requester email (`EmailDispatcher`, `notify/email.go`) | the requester's `email` row, made by `ChangeSplitter` | `Type` → template: created, reopened, resolved, replied, status_changed, guest_link. Needs a `Recipient` or a guest link. Status, resolve and reopen mail go to guests only. |
-| Staff email (`ChangeSplitter`, then `StaffMailDispatcher` + `StillEntitled` at send) | the change's `email` row, then the `staff.*` rows | `Kinds` → candidates (assigned, requester replied, reopened); none at all for a change flagged `SuppressStaffMail`. Then switches, overrides, actor skip, one mail per person. At send: account still mailable, still holds, still in group, or still follows and can see the ticket. |
+| Staff email (`ChangeSplitter`, then `StaffMailDispatcher` + `StillEntitled` at send) | the change's `email` row, then the `staff.*` rows | `Kinds` → candidates (assigned, requester replied, reopened, and the reply rule under the SLA alerts switch for `sla.breached` and `sla.at_risk`); none at all for a change flagged `SuppressStaffMail`. Then switches, overrides, actor skip, one mail per person. At send: account still mailable, still holds, still in group, or still follows and can see the ticket. |
 | Guest link (`GuestLinkDispatcher`) | `email` row with the guest-link flag | issues and rotates the token at send time |
 | Verification (`VerificationDispatcher`) | `verification` row | `Type`: `registration.verify` is sent by `pending_id` (the address and token are read from the pending row); `password.reset_requested` carries the typed address as its recipient and no `pending_id`, and is handed to the password-reset send step, which looks the account up and makes the token at send time (#451) |
 | Webhooks (`WebhookDispatcher`) | `webhook` row | `subscribedKinds(hook, event)`: any kind of the change in the hook's list, or `*`, or an empty list, except that `ticket.followed` and `ticket.unfollowed` match only a hook that lists them by name. Then the ticket filter on `Ticket`. Again at every retry and at Redeliver. |
@@ -4448,7 +4479,9 @@ under: `new_status_id` for `ticket.status_changed`, `target_id` for
 `ticket.linked`, `target_id` and `link_type` for `ticket.unlinked`, `reply_id`
 for `ticket.replied` and `ticket.note_added`, `attachment_id` for
 `ticket.attachment_added`, `user_id` for `ticket.followed` and
-`ticket.unfollowed`, nothing for any other name (`rawKeysFor`,
+`ticket.unfollowed`, `targets`, `at_risk_targets`, `policy_id` and `record_id`
+for `sla.breached`, `targets`, `policy_id` and `record_id` for `sla.at_risk`
+(ids and enums only), nothing for any other name (`rawKeysFor`,
 `notify/webhook_body.go`) with one exception: a hook that opted into
 `ticket.unfollowed` also gets `user_id` on a delivery under whatever name it is
 told (for example `ticket.assigned`) when the change dropped a follow, and a
@@ -4460,7 +4493,8 @@ Slack, Teams, Discord or JIRA hook's queued row holds the whole payload until it
 is sent or finally fails and is scrubbed. Headers: `X-GHD-Delivery` and `X-GHD-Event` (the same
 name as `Type`), plus the signature. `*` does not include `ticket.followed` and
 `ticket.unfollowed`: a hook gets those only by listing them. The OpenAPI
-`WebhookEvent` enum lists `*` and the fifteen names. The raw body already changed during the 1.3 betas
+`WebhookEvent` enum lists `*` and the seventeen names (`sla.breached` and
+`sla.at_risk` are the two added by #670, and `*` includes them). The raw body already changed during the 1.3 betas
 (#448), and `docs/upgrade-notes-1.3.0.md` describes both changes to
 1.2.x users.
 
@@ -4488,6 +4522,8 @@ name as `Type`), plus the signature. `*` does not include `ticket.followed` and
 | Follow or unfollow | `followed` or `unfollowed` | 0: only a hook that lists it by name |
 | Reassign a ticket away from a follower | `assigned` + `unfollowed` | 1 (a `*` hook is told `assigned`; the unfollow is for hooks that list it) |
 | Delete a user, or a group (per ticket held) | `assigned` (cleared) | 1 per ticket, **no staff mail** |
+| (no user action) The SLA sweep newly stamps a fresh breach of one or both targets, with or without a fresh at-risk of the other | `sla.breached` (with `at_risk_targets` when the other target went at risk) | 1 per ticket per pass; 0 while `sla_alerts_enabled` is off or every crossing is stale |
+| (no user action) The SLA sweep newly stamps a fresh at-risk of one or both targets and no fresh breach | `sla.at_risk` | 1 per ticket per pass; 0 while `sla_alerts_enabled` is off or the crossing is stale |
 
 The same status change has the same names whichever button made it. A hook
 subscribed to `ticket.resolved` sees a resolve done with `PATCH`, and a hook
@@ -4524,10 +4560,16 @@ order (`notification.KindOrder`) is the order of importance:
 `ticket.status_changed`, `ticket.assigned`, `ticket.priority_changed`,
 `ticket.classified`, `ticket.replied`, `ticket.note_added`, `ticket.linked`,
 `ticket.unlinked`, `ticket.attachment_added`, `ticket.followed`,
-`ticket.unfollowed`. Two kinds are new: `ticket.priority_changed` and
+`ticket.unfollowed`, `sla.breached`, `sla.at_risk`. Two kinds are new: `ticket.priority_changed` and
 `ticket.classified` (category, type or item). Both can be subscribed to. Four
 more came with #630: `ticket.unlinked`, `ticket.attachment_added`,
-`ticket.followed` and `ticket.unfollowed`, the last two opt-in by name.
+`ticket.followed` and `ticket.unfollowed`, the last two opt-in by name. Two
+more came with #670: `sla.breached` and `sla.at_risk`, last because the sweep
+raises them in a transaction of its own, so neither ever shares an event with
+a ticket kind. The two never share an event with each other either: the sweep
+raises exactly one of them per ticket per transaction, and an at-risk crossing
+in the same pass as a breach rides on the `sla.breached` event as
+`at_risk_targets`, not as a second kind.
 
 **Status kinds are the same for every door** (`statusKinds`,
 `internal/domain/ticket/events.go`). Every status move carries
@@ -4735,7 +4777,10 @@ headline comes from the hook's `Type`, as before. The headline for
 name. `ticket.unlinked` is "Unlinked from <ticket id> (<link type>)",
 `ticket.attachment_added` is "Attachment added" (no file name), and
 `ticket.followed` and `ticket.unfollowed` are "Ticket followed" and "Ticket
-unfollowed": the person is an id, and a chat message does not look one up. Jira has no headline and keeps the event name in its `event` key. Under
+unfollowed": the person is an id, and a chat message does not look one up.
+`sla.breached` and `sla.at_risk` are "SLA breached" and "SLA at risk", naming no
+target and no policy; an `sla.breached` with `at_risk_targets` is "SLA
+breached; another target at risk". Jira has no headline and keeps the event name in its `event` key. Under
 the headline:
 
 - **The "Also" line (ruling 10).** One line names the change's other kinds, such
@@ -4790,7 +4835,8 @@ Notifications still holds:
   made inside a create (`RoutedAssignment`): the creator did not choose it, and
   1.2.x mailed them, so they still get that one mail (ruling 11);
 - only active staff with an address; never a service account or a requester;
-- the three switches and the administrator's overrides;
+- the switches and the administrator's overrides (the fourth, SLA alerts, for
+  the two SLA events only);
 - the follower exclusions (the assignee never gets follower mail; group members
   are excluded from follower mail when the group is mailed for that kind);
 - the send-time re-check (account, holding, group, follow and scope).
@@ -5719,6 +5765,294 @@ Timer mechanics were tracked as
 as [#182](https://github.com/PubliciaLLC/go-help-desk/issues/182), and the
 queue indicator below as
 [#183](https://github.com/PubliciaLLC/go-help-desk/issues/183).
+
+The sweep also stamps when a target first reaches 80%, and announces what it
+newly stamps: see *Breach and at-risk notifications*, next.
+
+### Breach and at-risk notifications
+
+([#670](https://github.com/PubliciaLLC/go-help-desk/issues/670), 1.3.x.) A
+breach used to tell nobody: the sweep stamped it and stopped. Now the sweep
+announces each crossing it stamps, by email to staff and to webhooks, once,
+in at most one notification per ticket per pass.
+Escalation tiers and a group lead are not part of this; they stay with incident
+management (#408, v1.4).
+
+**Two events.** `sla.breached`: the sweep has just stamped a breach of one or
+both targets, and, when the other target reached 80% in the same pass, says
+that too (see *One notification per ticket per pass*). `sla.at_risk`: the
+sweep has just stamped that one or both targets reached 80% while still
+outstanding and not breached, and stamped no breach. Both are raised
+**only by the sweep**. A late first response or resolution that stamps its own
+breach (`SetSLAFirstResponse`, `SetSLAResolved`, `SetSLAResolvedAndFirstResponse`)
+sends nothing: somebody has just acted on the ticket, and the target it stamps
+is met, so the sweep never evaluates it again. Each event carries in `Payload`
+`targets` (a list of `response` and/or `resolution`, in that order: the
+targets that breached, for `sla.breached`, or reached 80%, for `sla.at_risk`),
+`policy_id` and `record_id` (the record the stamp was written on);
+`sla.breached` also carries `at_risk_targets` (same enums, same order) when a
+target that has not breached was announced at risk in the same pass, and
+omits the key when none was; `ActorID` is
+null, because the system acts; `Ticket` is the ticket as read inside the
+stamp's transaction, so per-hook filters and staff mail work as for any change.
+
+**At-risk stamps are stored.** `sla_records.response_at_risk_at` and
+`resolution_at_risk_at` (migration `000067`) record when the sweep first saw a
+target at or past 80%. "Tell once" needs a fact to compare against, and the
+live colour cannot say whether anyone was told. Like the breach stamps they
+are write-once, set only while the column is NULL, and never cleared. Only the
+sweep writes them. The threshold is the indicator's own rule, `elapsed*5 >=
+target*4` (one Go function shared by `colorFor` and the sweep's decision; in
+SQL, `target_min * 48` seconds, which is exact).
+
+**An at-risk stamp is written only below 100%.** A target the sweep first sees
+at or past its full length gets the breach stamp and **never** an at-risk one,
+and an at-risk stamp is never written once that target is breached. So at-risk
+never alerts once the same target has breached, by construction rather than by
+a check, and a target that jumps past both thresholds between ticks (a target
+of a minute or two, a downtime) gets one alert, the breach. A pass that finds
+one target breached and the other at risk stamps both, in one transaction,
+and announces both in one `sla.breached`.
+
+**Only fresh crossings are announced.** A crossing is announced only when the
+sweep stamps it within **15 minutes** of the threshold, measured on the SLA
+clock as of the sweep's reading: for a breach, `elapsed − target ≤ 15 min`;
+for at-risk, `elapsed − 80% of target ≤ 15 min`. Anything older is stamped
+silently (it still shows breached, and still counts for the restart badge),
+and the pass logs one count of how many it stamped that way (`stale`), not one
+line per ticket. The window is the domain constant `sla.AlertFreshness`, not a
+setting: it guards against a flood, it is not a preference, and it is the same
+kind of number as the one-minute sweep interval, which is not a setting either.
+What it stops: a policy tightened in place, or a staff change that re-matches
+to a shorter target, putting a whole queue past its target at once; a server
+that was down; SLA tracking switched back on after a while off (the sweep does
+not run while it is off); a staff change that attaches a record whose resumed
+clock is already over (`attached`); and the first sweep after upgrading, which
+finds open tickets already past 80%. Because it is measured on the SLA clock,
+pause time never makes a crossing stale: a ticket that leaves Pending and
+crosses 80% a minute later is announced.
+
+Freshness is decided **per target and per crossing**, including inside one
+notification: each crossing the pass newly stamps is announced only if its own
+crossing is fresh. An at-risk target alongside a breach is named in
+`at_risk_targets` only if its own 80% crossing is fresh; otherwise its stamp
+is still set, silently, in the same transaction, it is left out of the event
+and counted as stale. The same holds the other way: a stale breach with a
+fresh at-risk of the other target is stamped silently and the pass raises
+`sla.at_risk` for the fresh one. There is no special case: the pass announces
+the fresh crossings it newly stamped, and which event that is follows from
+them (next).
+
+**One notification per ticket per pass.** Whatever the pass found on a
+ticket, it is written in **one transaction** and announced by **at most one
+event**, chosen from the fresh crossings that transaction newly stamped:
+
+| Fresh, newly stamped in this pass | Event | `targets` | `at_risk_targets` |
+| --- | --- | --- | --- |
+| one or both breaches, no at-risk | `sla.breached` | the breached targets | omitted |
+| one breach and an at-risk of the other target | `sla.breached` | the breached target | the at-risk target |
+| one or both at-risk, no breach | `sla.at_risk` | the at-risk targets | not a key of this event |
+| nothing fresh (or `sla_alerts_enabled` off) | none | | |
+
+Both targets breached in the same pass are one `sla.breached` with
+`targets: ["response", "resolution"]`; the same for at-risk. A target cannot be
+in both lists: an at-risk stamp is never written for a target that breaches in
+the same pass (written only below 100%, above). Because the at-risk stamp of a
+target named in `at_risk_targets` is set in that same transaction, it is
+never announced at risk again; when that target later breaches, a later pass
+stamps the breach and raises `sla.breached` with `targets` naming it, as for
+any breach. This is the shape #506 asks for: one transaction is one event per
+ticket, and the collector merges everything raised for a ticket in one
+transaction into one event, so two SLA raises in one transaction would have
+merged into one event with one `targets` key overwriting the other. Raising
+exactly one event per transaction means nothing is merged. An SLA event never
+shares an event with a ticket kind either (the sweep's transaction changes
+nothing else), so the chat "Also" line never names one. The event's `Kinds`
+is its own name only: a mixed pass is `sla.breached`, so a hook that lists
+`sla.at_risk` and not `sla.breached` is not told of it, and since the at-risk
+stamp is set, it is not told later either. A hook that wants to hear of
+breaches lists `sla.breached` (or `*`).
+
+**The stamps and their event commit together.** Each ticket's crossings in a
+pass are written through `ticket.Atomic`, the same runner the ticket service
+uses: one stamp statement for all of them, then at most one raise, and the
+outbox rows (one per channel, as for any change) are written inside that
+transaction before it commits (Ticket Events: One Change, One Event). An
+announcement committed apart from the stamps it describes is not reliable,
+for the same reason an audit entry committed apart from its change is not an
+audit trail. A rollback leaves neither the stamps nor a row, and the next pass
+finds the record unstamped and announces what is still fresh; once committed,
+the stamps are there and the record never announces those crossings again.
+The sweep's stamp is not audited, as it was not before.
+
+**The stamp statement says what it newly set.** `StampSLACrossings` replaces
+`StampSLABreaches` on the sweep's path. It locks the current record
+(`FOR UPDATE`, addressed by record id with `superseded_at IS NULL`, as since
+#623), sets each of the four stamp columns it is given only where that column
+is still NULL **and** its target is still outstanding (`first_response_at` /
+`resolved_at` NULL; an at-risk column also needs that target's breach column
+NULL), and returns, per column, whether **this** statement set it (NULL before,
+set after). Only a column this statement set, and whose crossing the Go
+decision found fresh, is announced; the event is chosen from those after the
+statement, inside the same transaction. `StampSLABreaches`
+reported rows affected, which is 1 even when every column was already set, so
+its caller could not tell what it had stamped. It is kept, deprecated, with no
+production caller. No record row means the record was superseded: nothing is
+written and nothing is raised, and the next pass evaluates its replacement.
+
+- **Two sweeps at once** (every replica runs one): both may decide the same
+  crossing. The row lock puts one after the other; the second finds the column
+  set, sets nothing and announces nothing. If the second, reading later, also
+  finds a crossing the first did not (the at-risk target has since breached),
+  it sets only that column and announces only that.
+- **A late reply racing the sweep.** The reply's statement and the stamp lock
+  the same row. Reply first: the target is met, the stamp sets nothing and
+  nothing is sent. Sweep first: the breach was true at the sweep's reading, so
+  it is announced; the reply then records its response and keeps the stamp.
+- **The record-time writers send nothing** and never touch the at-risk columns.
+
+**Through the record's life.**
+
+- **Superseded** records are history: never evaluated, never announced; their
+  stamps stay.
+- **A staff re-match** (priority or category) copies the at-risk stamps onto
+  the new record exactly as it copies the breach stamps, so a crossing already
+  announced is not announced again. A consequence, accepted with the breach
+  stamp's own: a re-match to a longer target keeps the at-risk stamp, and that
+  record gets no second at-risk alert at the new 80%.
+- **A reopen** restarts clean: the new record has no stamps, so it can be at
+  risk and breach, and be announced, again.
+- **`attached`** resumes the old clock with no facts: its crossings are
+  announced if fresh and stamped silently if not.
+- **Pause** freezes elapsed, so nothing crosses while Pending.
+- **Closed** tickets are not candidates; neither is a met target.
+
+**The candidate query is the only mirror.** The decision is made in Go from
+`Record.Elapsed` and the shared 80% rule, so the elapsed-time formula is not
+copied again. `ListSLABreachCandidates` gains an at-risk branch per target
+(outstanding, not breached, not at-risk-stamped, elapsed at or past 80%) and
+stays a superset of what the Go decision stamps; its superset test covers the
+new branches. It is still the second of the three copies (Go, this query,
+`ListTicketsFiltered`), which change together as before.
+
+**The indicator does not change.** The at-risk stamps are never read by the
+indicator, the list's `sla=at_risk` filter or its sort (all still a live read
+of the clock), the restart badge, or the API; a test pins `StatusFor` ignoring
+them as it ignores the breach stamps. A ticket whose at-risk stamp a re-match to
+a longer target carried over shows green.
+
+**The off switch: `sla_alerts_enabled`.** One setting gates both events, for
+email and for webhooks (**Admin → Settings → Features**, under SLA tracking).
+Off, the sweep still runs and still stamps, breach and at-risk alike; it raises
+nothing. A crossing stamped while it is off is never announced later. It is read
+on every tick; a failed read skips the tick, as a failed read of `sla_enabled`
+does, so a crossing is not stamped silently because a read failed.
+
+- **Upgraded installs start with it off.** Migration `000067` stores `false`
+  when the users table already holds a person (a service account does not
+  count), as `000052` does for staff email. On upgrade, `*` hooks would
+  otherwise start receiving two names they have never seen, and an instance
+  already running SLA would start announcing on first boot.
+- **A fresh install starts with it on.** The same migration stores `true` on a
+  database with no people. A fresh install has SLA tracking off, no policies
+  and no hooks, so nothing is announced until an administrator sets those up,
+  and one who does expects a breach to be announced.
+- An existing value wins (`ON CONFLICT DO NOTHING`). The setting is not
+  session-only: it widens nothing anyone can see.
+
+**Email.** Staff mail for both events is decided by the worker like all staff
+mail (`notify.StaffFanout`), under the **fourth switch, SLA alerts**
+(`users.email_notify_sla`, override `staff_email_sla_override`; Notifications,
+Staff email). The recipients follow the reply rule: the **assignee**; the
+**assigned group's members only while nobody personally holds the ticket**;
+and **followers**, except the assignee and, when the group is mailed, its
+members. All of them answer to the SLA switch, not to Activity or Group: those
+three switches do not apply to these two events. Nobody is skipped as the
+actor, since there is none. Each event has three templates, own, group and
+follow: `staff_sla_breached`, `staff_sla_breached_group`,
+`staff_sla_breached_follow`, `staff_sla_at_risk`, `staff_sla_at_risk_group`,
+`staff_sla_at_risk_follow`, admin-editable like the rest. A person gets one
+mail per notification, so a mixed pass is one mail, from the breached
+templates, that says both. The send-time checks are those of every staff mail.
+
+*Which targets.* The mail names the targets through a third variable,
+`SLAStatus`, besides `TrackingNumber` and `TicketURL` (`TicketURL` is still
+the one that must be printed). Email still never reads `Payload`: the sweep
+also sets a typed field on the event, `SLA` (`notification.SLAAlert`, the
+breached and the at-risk targets as the same enums as `targets` and
+`at_risk_targets`, excluded from JSON, stored by the outbox codec like
+`FollowUp`, carried onto the `staff.*` rows by the fan-out). `SLAStatus` is
+made from it by one function, and is one of exactly these eight, never text
+anyone typed:
+
+| Breached | At risk | `SLAStatus` |
+| --- | --- | --- |
+| response | | Response breached |
+| resolution | | Resolution breached |
+| response, resolution | | Response and resolution breached |
+| response | resolution | Response breached; resolution at risk |
+| resolution | response | Resolution breached; response at risk |
+| | response | Response at risk |
+| | resolution | Resolution at risk |
+| | response, resolution | Response and resolution at risk |
+
+*Default wording.* The subjects end on the tracking number in brackets, left
+out when there is none (as the follow-up mail's does). For the mixed case on
+`GHD-2026-000007`:
+
+| Template | Subject |
+| --- | --- |
+| `staff_sla_breached` | SLA alert on a ticket assigned to you: Response breached; resolution at risk [GHD-2026-000007] |
+| `staff_sla_breached_group` | SLA alert on a ticket assigned to your group: Response breached; resolution at risk [GHD-2026-000007] |
+| `staff_sla_breached_follow` | SLA alert on a ticket you follow: Response breached; resolution at risk [GHD-2026-000007] |
+
+that is, `SLA alert on a ticket assigned to you: {{.SLAStatus}}{{if
+.TrackingNumber}} [{{.TrackingNumber}}]{{end}}`, with "assigned to your
+group" and "you follow" in the other two. The three at-risk templates use the
+same three subjects (their `SLAStatus` says "at risk"). The bodies, with the
+same closing lines as the other staff mails:
+
+```
+An SLA target on a ticket assigned to you has been breached.
+
+Response breached; resolution at risk.
+
+Ticket: GHD-2026-000007
+
+Read it here:
+<TicketURL>
+
+You can choose which of these emails you get under your profile.
+```
+
+The first line is, for `staff_sla_breached_group`, "An SLA target on a ticket
+assigned to a group you belong to, which nobody has picked up, has been
+breached."; for `staff_sla_breached_follow`, "An SLA target on a ticket you
+follow has been breached."; for the at-risk three, the same with "is at risk:
+80% of its time has been used." in place of "has been breached." The second
+line is `{{.SLAStatus}}.`
+
+**Webhooks.** Both names are in `WebhookEvents` and are not opt-in, so a `*`
+hook receives them. The raw body carries `targets`, `policy_id` and
+`record_id`, and for `sla.breached` also `at_risk_targets` when the pass
+announced an at-risk target with the breach (the key is absent otherwise, not
+an empty list). The chat headlines are "SLA breached", "SLA breached; another
+target at risk" and "SLA at risk", with no target named; Jira keeps the name in
+its `event` key. Redeliver keeps the same keys.
+
+**Known limits.**
+
+- Detection is at most a minute late, like the stamp.
+- If the outbox write keeps failing for longer than the 15 minutes, the
+  crossing is then stamped silently: a lost alert, not a flood.
+- A reply recorded after the sweep stamped, whose own time was before the
+  target (the gap between a reply's commit and the recording of its first
+  response, under Re-matching when priority changes), leaves the breach stamp
+  as before and has now also announced it. The window is the time between the
+  two writes.
+- A hook that lists `sla.at_risk` but not `sla.breached` never hears of an
+  at-risk crossing that came in the same pass as a breach of the other target
+  (it rides on `sla.breached`, and its stamp is set).
 
 ### SLA Indicators
 

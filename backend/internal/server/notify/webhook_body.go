@@ -24,6 +24,11 @@ import (
 //	reply_id       ticket.replied, ticket.note_added
 //	attachment_id  ticket.attachment_added
 //	user_id        ticket.followed, ticket.unfollowed (an id, never a name)
+//	targets, policy_id, record_id
+//	               sla.breached, sla.at_risk (enums and ids; #670)
+//	at_risk_targets
+//	               sla.breached only, and only when the pass named one: the key
+//	               is absent, never an empty list
 //
 // Whether an event is a reply or a note is the event name, so no flag is sent.
 //
@@ -47,6 +52,10 @@ func rawKeysFor(t notification.EventType) []string {
 		return []string{"attachment_id"}
 	case notification.EventTicketFollowed, notification.EventTicketUnfollowed:
 		return []string{"user_id"}
+	case notification.EventSLABreached:
+		return []string{"targets", "at_risk_targets", "policy_id", "record_id"}
+	case notification.EventSLAAtRisk:
+		return []string{"targets", "policy_id", "record_id"}
 	}
 	return nil
 }

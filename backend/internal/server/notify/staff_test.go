@@ -86,7 +86,7 @@ func (f *fakeStaffAccess) StillEntitled(_ context.Context, _ user.User, _ uuid.U
 func staffUser(name string) user.User {
 	return user.User{
 		ID: uuid.New(), Email: name + "@example.com", DisplayName: name, Role: user.RoleStaff,
-		EmailNotifyAssigned: true, EmailNotifyActivity: true, EmailNotifyGroup: true,
+		EmailNotifyAssigned: true, EmailNotifyActivity: true, EmailNotifyGroup: true, EmailNotifySLA: true,
 	}
 }
 

@@ -106,7 +106,21 @@ var (
 	varVerify   = Variable{"VerifyURL", "The link that verifies the address and activates the account."}
 	varReset    = Variable{"ResetURL", "The link that lets the person choose a new password."}
 	varSite     = Variable{"SiteName", "The help desk's name from Settings."}
+	// varSLAStatus is one of eight fixed phrases the server builds from which
+	// targets breached and which are at risk (slaStatus), never ticket text.
+	varSLAStatus = Variable{"SLAStatus", "Which SLA targets breached or are at risk, in words, such as: Response breached; resolution at risk."}
 )
+
+// slaVars is what the six SLA staff mails (#670) can see: the usual two and the
+// status. TicketURL is still the one that must be printed.
+var slaVars = []Variable{varTracking, varTicket, varSLAStatus}
+
+// slaSubject is the subject of an SLA alert, for whoever it is addressed to. It
+// ends on the tracking number in brackets and leaves the brackets out when there
+// is none, like the follow-up mail's.
+func slaSubject(who string) string {
+	return "SLA alert on a ticket " + who + ": {{.SLAStatus}}{{if .TrackingNumber}} [{{.TrackingNumber}}]{{end}}"
+}
 
 // subjectRef is the reference every ticket subject ends on: the tracking
 // number, or "your ticket" when there is none. A missing number costs the
@@ -143,6 +157,14 @@ var contentDefs = []struct {
 	{"staff_reopened", "Reopened, assigned to you", GroupStaff, "A ticket assigned to you was reopened: " + subjectRef, nil, ""},
 	{"staff_reopened_group", "Reopened, your group", GroupStaff, "A ticket assigned to your group was reopened: " + subjectRef, nil, ""},
 	{"staff_reopened_follow", "Reopened, a ticket you follow", GroupStaff, "A ticket you follow was reopened: " + subjectRef, nil, ""},
+
+	// SLA alerts (#670).
+	{"staff_sla_breached", "SLA breached, assigned to you", GroupStaff, slaSubject("assigned to you"), slaVars, "TicketURL"},
+	{"staff_sla_breached_group", "SLA breached, your group", GroupStaff, slaSubject("assigned to your group"), slaVars, "TicketURL"},
+	{"staff_sla_breached_follow", "SLA breached, a ticket you follow", GroupStaff, slaSubject("you follow"), slaVars, "TicketURL"},
+	{"staff_sla_at_risk", "SLA at risk, assigned to you", GroupStaff, slaSubject("assigned to you"), slaVars, "TicketURL"},
+	{"staff_sla_at_risk_group", "SLA at risk, your group", GroupStaff, slaSubject("assigned to your group"), slaVars, "TicketURL"},
+	{"staff_sla_at_risk_follow", "SLA at risk, a ticket you follow", GroupStaff, slaSubject("you follow"), slaVars, "TicketURL"},
 
 	{"email_verification", "Verify your email address", GroupAccount, "Verify your email address", []Variable{varVerify}, "VerifyURL"},
 	{"password_reset", "Reset your password", GroupAccount, "Reset your password", []Variable{varReset}, "ResetURL"},
@@ -205,6 +227,8 @@ func SampleVars(def TemplateDef, baseURL, trackingPrefix string) map[string]stri
 			out[v.Name] = base + "/reset-password?token=sample-not-a-real-link"
 		case "SiteName":
 			out[v.Name] = "Go Help Desk"
+		case "SLAStatus":
+			out[v.Name] = "Response breached; resolution at risk"
 		}
 	}
 	return out

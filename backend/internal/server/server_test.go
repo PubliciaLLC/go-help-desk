@@ -221,7 +221,7 @@ func newHarnessOn(t *testing.T, openDB func(*testing.T) (*testutil.DB, func()), 
 	// changes nothing for the tests that never create one, and it is what
 	// lets an SLA test create a policy and then see the record a real ticket
 	// creation attaches to it.
-	slaPolicySvc := sla.NewService(slStore)
+	slaPolicySvc := sla.NewService(slStore, nil)
 	// No channel actually sends in tests, but the send-time guest-link step
 	// runs as soon as an event is dispatched, standing in for the outbox
 	// worker (#164): tests that check a guest link rotates, or that the
@@ -1941,7 +1941,7 @@ func newBareHarness(t *testing.T) (*harness, func()) {
 		tagSvc,
 		adminSvc,
 		customFieldSvc,
-		sla.NewService(slastore.New(q)),
+		sla.NewService(slastore.New(q), nil),
 		plugin.NewRegistry(),
 		apiKeyLookup,
 		authSt,

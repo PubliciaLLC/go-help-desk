@@ -172,6 +172,139 @@ func TestMe_AnOverrideOfUserIsNotForced(t *testing.T) {
 	require.False(t, got.EmailNotifications.Assigned.Forced)
 }
 
+// The fourth switch, SLA alerts (#670), is reported and saved next to the
+// other three, with the same override rules. It is a separate struct so the
+// three-switch expectations above stay as they were.
+
+type emailPrefsSLA struct {
+	Assigned bool `json:"email_notify_assigned"`
+	Activity bool `json:"email_notify_activity"`
+	Group    bool `json:"email_notify_group"`
+	SLA      bool `json:"email_notify_sla"`
+}
+
+type emailStateSLA struct {
+	EmailNotifications *struct {
+		Assigned switchState `json:"assigned"`
+		Activity switchState `json:"activity"`
+		Group    switchState `json:"group"`
+		SLA      switchState `json:"sla"`
+	} `json:"email_notifications"`
+}
+
+func TestMe_ReportsTheSLASwitchOnByDefault(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	s := loggedIn(t, h)
+
+	res, body := s.send(t, http.MethodGet, "/api/v1/me", nil)
+	require.Equal(t, http.StatusOK, res.StatusCode)
+	var raw emailPrefsSLA
+	require.NoError(t, json.Unmarshal(body, &raw))
+	require.Equal(t, emailPrefsSLA{true, true, true, true}, raw)
+
+	var state emailStateSLA
+	require.NoError(t, json.Unmarshal(body, &state))
+	require.NotNil(t, state.EmailNotifications, "body: %s", body)
+	require.Equal(t, switchState{Enabled: true}, state.EmailNotifications.SLA)
+}
+
+// A patch names the SLA switch and nothing else changes; the response and a
+// later read agree.
+func TestMe_PatchRoundTripsTheSLASwitch(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	s := loggedIn(t, h)
+
+	res, body := s.send(t, http.MethodPatch, "/api/v1/me/email-preferences", map[string]any{"email_notify_sla": false})
+	require.Equal(t, http.StatusOK, res.StatusCode, "body: %s", body)
+	var raw emailPrefsSLA
+	require.NoError(t, json.Unmarshal(body, &raw))
+	require.Equal(t, emailPrefsSLA{true, true, true, false}, raw, "the response is the profile as saved")
+
+	res, body = s.send(t, http.MethodGet, "/api/v1/me", nil)
+	require.Equal(t, http.StatusOK, res.StatusCode)
+	require.NoError(t, json.Unmarshal(body, &raw))
+	require.Equal(t, emailPrefsSLA{true, true, true, false}, raw, "it persisted")
+
+	res, body = s.send(t, http.MethodPatch, "/api/v1/me/email-preferences", map[string]any{"email_notify_sla": true})
+	require.Equal(t, http.StatusOK, res.StatusCode, "body: %s", body)
+	require.NoError(t, json.Unmarshal(body, &raw))
+	require.Equal(t, emailPrefsSLA{true, true, true, true}, raw, "it can be turned back on")
+}
+
+func TestMe_PatchRefusesAnSLAValueThatIsNotABoolean(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	s := loggedIn(t, h)
+
+	res, b := s.send(t, http.MethodPatch, "/api/v1/me/email-preferences", map[string]any{"email_notify_sla": "no"})
+	require.Equal(t, http.StatusBadRequest, res.StatusCode, "body: %s", b)
+	u, err := h.userSvc.GetByID(context.Background(), h.staffID)
+	require.NoError(t, err)
+	require.True(t, u.EmailNotifySLA, "a refusal changed something")
+}
+
+// An unknown key is ignored, as it was before the SLA switch existed: the
+// request succeeds and nothing changes.
+func TestMe_PatchIgnoresAnUnknownSwitchName(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	s := loggedIn(t, h)
+
+	res, body := s.send(t, http.MethodPatch, "/api/v1/me/email-preferences", map[string]any{"email_notify_bogus": false})
+	require.Equal(t, http.StatusOK, res.StatusCode, "body: %s", body)
+	var raw emailPrefsSLA
+	require.NoError(t, json.Unmarshal(body, &raw))
+	require.Equal(t, emailPrefsSLA{true, true, true, true}, raw)
+}
+
+// The administrator's SLA override forces the switch for everyone, as the
+// other three can be forced; user leaves it to the person.
+func TestMe_SLASwitchForcedByTheAdministrator(t *testing.T) {
+	cases := []struct {
+		name     string
+		override string
+		chosen   bool
+		want     switchState
+	}{
+		{"on beats a person who turned it off", "on", false, switchState{Enabled: true, Forced: true}},
+		{"off beats a person who left it on", "off", true, switchState{Enabled: false, Forced: true}},
+		{"user leaves it to the person: off", "user", false, switchState{Enabled: false}},
+		{"user leaves it to the person: on", "user", true, switchState{Enabled: true}},
+		{"an unrecognised value is not forced", "bogus", false, switchState{Enabled: false}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h, cleanup := newHarness(t)
+			defer cleanup()
+			ctx := context.Background()
+			s := loggedIn(t, h)
+			require.NoError(t, h.userSvc.SetEmailPreferences(ctx, h.staffID, user.EmailPreferencesPatch{SLA: &tc.chosen}))
+			require.NoError(t, h.adminSvc.SetString(ctx, admin.KeyStaffEmailSLAOverride, tc.override))
+
+			res, body := s.send(t, http.MethodGet, "/api/v1/me", nil)
+			require.Equal(t, http.StatusOK, res.StatusCode, "body: %s", body)
+			var got emailStateSLA
+			require.NoError(t, json.Unmarshal(body, &got))
+			require.NotNil(t, got.EmailNotifications, "body: %s", body)
+			require.Equal(t, tc.want, got.EmailNotifications.SLA)
+		})
+	}
+}
+
+// The SLA override does not reach the other three switches, nor theirs reach it.
+func TestMe_SLAOverrideLeavesTheOtherSwitchesAlone(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+	require.NoError(t, h.adminSvc.SetString(ctx, admin.KeyStaffEmailSLAOverride, "off"))
+	got := meState(t, loggedIn(t, h), http.MethodGet, "/api/v1/me", nil)
+	require.Equal(t, switchState{Enabled: true}, got.EmailNotifications.Assigned)
+	require.Equal(t, switchState{Enabled: true}, got.EmailNotifications.Activity)
+	require.Equal(t, switchState{Enabled: true}, got.EmailNotifications.Group)
+}
+
 // A requester is never sent staff mail, so has no switches to report.
 func TestMe_ARequesterHasNoEmailNotifications(t *testing.T) {
 	h, cleanup := newHarness(t)

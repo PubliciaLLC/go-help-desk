@@ -79,12 +79,42 @@ func TestStaffOverrides_FollowUsesTheActivitySwitch(t *testing.T) {
 }
 
 func TestStaffOverrides_Forced(t *testing.T) {
-	ov := notification.StaffOverrides{Assigned: notification.OverrideOn, Activity: notification.OverrideOff, Group: notification.OverrideUser}
+	ov := notification.StaffOverrides{Assigned: notification.OverrideOn, Activity: notification.OverrideOff, Group: notification.OverrideUser, SLA: notification.OverrideOn}
 	require.True(t, ov.Forced(notification.SwitchAssigned))
 	require.True(t, ov.Forced(notification.SwitchActivity))
 	require.False(t, ov.Forced(notification.SwitchGroup))
+	require.True(t, ov.Forced(notification.SwitchSLA))
 	require.False(t, notification.StaffOverrides{}.Forced(notification.SwitchAssigned))
 	require.False(t, notification.StaffOverrides{Assigned: "bogus"}.Forced(notification.SwitchAssigned))
+	require.False(t, notification.StaffOverrides{}.Forced(notification.SwitchSLA))
+	require.False(t, notification.StaffOverrides{SLA: "bogus"}.Forced(notification.SwitchSLA))
+}
+
+// The SLA switch is its own switch: the activity and group switches, and their
+// overrides, neither decide it nor are decided by it.
+func TestStaffOverrides_SLAIsItsOwnSwitch(t *testing.T) {
+	onlySLA := notification.StaffPrefs{SLA: true}
+	everythingElse := notification.StaffPrefs{Assigned: true, Activity: true, Group: true}
+	cases := []struct {
+		name string
+		ov   notification.StaffOverrides
+		pref notification.StaffPrefs
+		want bool
+	}{
+		{"zero value defers to the user: on", notification.StaffOverrides{}, onlySLA, true},
+		{"zero value defers to the user: off", notification.StaffOverrides{}, everythingElse, false},
+		{"force on beats a user who turned it off", notification.StaffOverrides{SLA: notification.OverrideOn}, everythingElse, true},
+		{"force off beats a user who left it on", notification.StaffOverrides{SLA: notification.OverrideOff}, onlySLA, false},
+		{"an activity override does not decide it", notification.StaffOverrides{Activity: notification.OverrideOn, Group: notification.OverrideOn}, everythingElse, false},
+		{"a force off on activity does not switch it off", notification.StaffOverrides{Activity: notification.OverrideOff}, onlySLA, true},
+		{"an assigned override does not decide it", notification.StaffOverrides{Assigned: notification.OverrideOn}, everythingElse, false},
+		{"an unrecognised mode defers to the user", notification.StaffOverrides{SLA: "bogus"}, onlySLA, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			require.Equal(t, tc.want, tc.ov.Allows(notification.SwitchSLA, tc.pref))
+		})
+	}
 }
 
 func TestStaffRecipients(t *testing.T) {

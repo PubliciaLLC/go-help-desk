@@ -7,9 +7,9 @@ import { useAuthStore } from '@/store/auth'
 import type { User } from '@/api/types'
 import { EmailNotificationsSection } from './EmailNotificationsSection'
 
-// The three staff-email switches on a person's own profile (#441). Each is on
-// by default; a switch is saved the moment it is flipped, and only the one
-// flipped is sent.
+// The four staff-email switches on a person's own profile: the three of #441
+// and SLA alerts (#670). Each is on by default; a switch is saved the moment it
+// is flipped, and only the one flipped is sent.
 
 function staff(over: Partial<User> = {}): User {
   return {
@@ -23,6 +23,7 @@ function staff(over: Partial<User> = {}): User {
     email_notify_assigned: true,
     email_notify_activity: true,
     email_notify_group: true,
+    email_notify_sla: true,
     ...over,
   }
 }
@@ -30,6 +31,7 @@ function staff(over: Partial<User> = {}): User {
 const ASSIGNED = { name: /tickets assigned to me/i }
 const ACTIVITY = { name: /activity on tickets I'm assigned to or follow/i }
 const GROUP = { name: /my groups' tickets/i }
+const SLA = { name: /sla alerts/i }
 
 beforeEach(() => {
   useAuthStore.setState({ user: staff() })
@@ -37,11 +39,17 @@ beforeEach(() => {
 afterEach(() => vi.restoreAllMocks())
 
 describe('the email switches', () => {
-  it('shows all three, on by default', () => {
+  it('shows all four, on by default', () => {
     renderWithQuery(<EmailNotificationsSection />)
-    for (const q of [ASSIGNED, ACTIVITY, GROUP]) {
+    for (const q of [ASSIGNED, ACTIVITY, GROUP, SLA]) {
       expect((screen.getByRole('checkbox', q) as HTMLInputElement).checked).toBe(true)
     }
+  })
+
+  it('says the other three switches do not decide SLA alerts', () => {
+    renderWithQuery(<EmailNotificationsSection />)
+    const sla = screen.getByRole('checkbox', SLA).closest('li')?.textContent ?? ''
+    expect(sla).toMatch(/The three switches above do not apply to these alerts/)
   })
 
   it('shows what is saved', () => {
@@ -53,9 +61,9 @@ describe('the email switches', () => {
   })
 
   it('reads a profile from before the switches existed as on', () => {
-    useAuthStore.setState({ user: staff({ email_notify_assigned: undefined, email_notify_activity: undefined, email_notify_group: undefined }) })
+    useAuthStore.setState({ user: staff({ email_notify_assigned: undefined, email_notify_activity: undefined, email_notify_group: undefined, email_notify_sla: undefined }) })
     renderWithQuery(<EmailNotificationsSection />)
-    for (const q of [ASSIGNED, ACTIVITY, GROUP]) {
+    for (const q of [ASSIGNED, ACTIVITY, GROUP, SLA]) {
       expect((screen.getByRole('checkbox', q) as HTMLInputElement).checked).toBe(true)
     }
   })
@@ -71,6 +79,18 @@ describe('the email switches', () => {
     await waitFor(() => expect(useAuthStore.getState().user?.email_notify_group).toBe(false))
     expect((screen.getByRole('checkbox', GROUP) as HTMLInputElement).checked).toBe(false)
     expect((screen.getByRole('checkbox', ASSIGNED) as HTMLInputElement).checked).toBe(true)
+  })
+
+  it('saves only the SLA alerts switch when it is flipped', async () => {
+    const patch = vi.spyOn(api, 'patch').mockResolvedValue({ data: staff({ email_notify_sla: false }) })
+    renderWithQuery(<EmailNotificationsSection />)
+
+    await userEvent.click(screen.getByRole('checkbox', SLA))
+
+    await waitFor(() => expect(patch).toHaveBeenCalledTimes(1))
+    expect(patch).toHaveBeenCalledWith('/me/email-preferences', { email_notify_sla: false })
+    await waitFor(() => expect((screen.getByRole('checkbox', SLA) as HTMLInputElement).checked).toBe(false))
+    expect((screen.getByRole('checkbox', GROUP) as HTMLInputElement).checked).toBe(true)
   })
 
   it('turns a switch back on', async () => {
@@ -112,8 +132,29 @@ describe('a switch the administrator has forced', () => {
         assigned: state(true, true), // forced on over their off
         activity: state(true, false),
         group: state(false, true), // forced off over their on
+        sla: state(true, false),
       },
     })
+
+  it('locks the SLA alerts switch when the administrator forces it', () => {
+    useAuthStore.setState({
+      user: staff({
+        email_notify_sla: true,
+        email_notifications: {
+          assigned: state(true, false),
+          activity: state(true, false),
+          group: state(true, false),
+          sla: state(false, true), // forced off over their on
+        },
+      }),
+    })
+    renderWithQuery(<EmailNotificationsSection />)
+
+    const sla = screen.getByRole('checkbox', SLA) as HTMLInputElement
+    expect(sla.checked).toBe(false)
+    expect(sla.disabled).toBe(true)
+    expect(sla.closest('li')?.textContent).toMatch(/Set by your administrator/)
+  })
 
   it('shows what applies, not what they chose, and cannot be changed', () => {
     useAuthStore.setState({ user: forcedProfile() })
@@ -162,7 +203,7 @@ describe('a switch the administrator has forced', () => {
     vi.spyOn(api, 'patch').mockResolvedValue({
       data: staff({
         email_notify_group: false,
-        email_notifications: { assigned: state(true, false), activity: state(true, false), group: state(true, true) },
+        email_notifications: { assigned: state(true, false), activity: state(true, false), group: state(true, true), sla: state(true, false) },
       }),
     })
     renderWithQuery(<EmailNotificationsSection />)
