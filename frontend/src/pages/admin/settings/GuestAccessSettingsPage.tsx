@@ -4,7 +4,7 @@ import { useLeaveGuard } from '@/pages/admin/settings/useLeaveGuard'
 import { useSettingsDraft } from '@/pages/admin/settings/useSettingsDraft'
 import { SubmissionsSection } from '@/pages/admin/settings/sections/SubmissionsSection'
 
-// System -> Guest Access (#674). Not routed until plan task 7. The guest size
+// System -> Guest Access (#674). The guest size
 // slider's top is the per-file limit, which nothing on this page edits, so the
 // draft's value is the stored one and the section needs no page-specific code
 // (attachmentLimits, with the reader's fallback of 25).

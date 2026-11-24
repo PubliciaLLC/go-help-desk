@@ -4,7 +4,7 @@ import { useLeaveGuard } from '@/pages/admin/settings/useLeaveGuard'
 import { useSettingsDraft } from '@/pages/admin/settings/useSettingsDraft'
 import { IdentitySection } from '@/pages/admin/settings/sections/IdentitySection'
 
-// System -> Branding (#674). Not routed until plan task 7. The draft holds only
+// System -> Branding (#674). The draft holds only
 // the site name; the logo uploader keeps its own state.
 export function BrandingSettingsPage() {
   const draft = useSettingsDraft()

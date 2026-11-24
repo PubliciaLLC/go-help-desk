@@ -173,7 +173,11 @@ describe('attachments are never rendered inline', () => {
     // concatenation, a plain string, with or without the trailing slash —
     // because how the URL is written is not the point. The trailing slash
     // used to be required, which let ['…/attachments', id].join('/') past.
-    const spelled = files.filter(({ source }) => /['"`][^'"`]*\/attachments\b/.test(source))
+    // /admin/settings/attachments (#674) is the File Attachments settings page,
+    // an address in the router and the sidebar, not an attachment URL.
+    const spelled = files.filter(({ source }) =>
+      /['"`][^'"`]*(?<!\/admin\/settings)\/attachments\b/.test(source),
+    )
     const builders = spelled.map(({ path }) => path).filter((p) => p !== 'src/api/guest.ts')
     expect(builders).toEqual(['src/api/tickets.ts'])
 

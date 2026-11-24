@@ -7,7 +7,7 @@ import { AttachmentSizeSection } from '@/pages/admin/settings/sections/Attachmen
 import { MalwareScanningSection } from '@/pages/admin/settings/sections/MalwareScanningSection'
 import { ReputationSection } from '@/pages/admin/settings/sections/ReputationSection'
 
-// System -> File Attachments (#674). Not routed until plan task 7.
+// System -> File Attachments (#674).
 export function AttachmentSettingsPage() {
   const draft = useSettingsDraft()
   const guard = useLeaveGuard(draft)

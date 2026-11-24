@@ -9,7 +9,7 @@ import { PasswordsSection } from '@/pages/admin/settings/sections/PasswordsSecti
 import { APIKeysSettingsSection } from '@/pages/admin/settings/sections/APIKeysSettingsSection'
 import { RegistrationSection } from '@/pages/admin/settings/sections/RegistrationSection'
 
-// System -> Authentication (#674). Not routed until plan task 7.
+// System -> Authentication (#674).
 export function AuthenticationSettingsPage() {
   const draft = useSettingsDraft()
   const guard = useLeaveGuard(draft)

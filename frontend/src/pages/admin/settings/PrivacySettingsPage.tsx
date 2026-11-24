@@ -7,7 +7,7 @@ import { AvailableQueueSection } from '@/components/admin/AvailableQueueSection'
 import { AuditLogSettingsSection } from '@/pages/admin/settings/sections/AuditLogSettingsSection'
 import { PrivacyMaskSection } from '@/pages/admin/settings/sections/PrivacyMaskSection'
 
-// System -> Privacy (#674). Not routed until plan task 7. Available queue has
+// System -> Privacy (#674). Available queue has
 // its own save and is not part of the draft.
 export function PrivacySettingsPage() {
   const draft = useSettingsDraft()

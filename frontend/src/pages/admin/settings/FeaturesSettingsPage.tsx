@@ -6,7 +6,7 @@ import { SLASection } from '@/pages/admin/settings/sections/SLASection'
 
 const TABS = [{ label: 'SLA', to: '/admin/settings/features' }]
 
-// System -> Features (#674). Not routed until plan task 7.
+// System -> Features (#674).
 export function FeaturesSettingsPage() {
   const draft = useSettingsDraft()
   const guard = useLeaveGuard(draft)

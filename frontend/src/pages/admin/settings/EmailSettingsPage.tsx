@@ -6,7 +6,7 @@ import { useSettingsDraft } from '@/pages/admin/settings/useSettingsDraft'
 import { StaffEmailSection } from '@/pages/admin/settings/sections/StaffEmailSection'
 import { SLAAlertsSection } from '@/pages/admin/settings/sections/SLAAlertsSection'
 
-// System -> Email -> Notifications (#674). Not routed until plan task 7. The
+// System -> Email -> Notifications (#674). The
 // Templates tab is its own page with no draft, so leaving for it with unsaved
 // edits asks first, like any other link out of this page.
 export function EmailSettingsPage() {

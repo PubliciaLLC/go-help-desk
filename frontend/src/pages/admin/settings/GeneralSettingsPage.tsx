@@ -6,7 +6,7 @@ import { TicketsSection } from '@/pages/admin/settings/sections/TicketsSection'
 import { TicketLifecycleSection } from '@/pages/admin/settings/sections/TicketLifecycleSection'
 import { UpdatesSection } from '@/pages/admin/settings/sections/UpdatesSection'
 
-// System -> General (#674). Not routed until plan task 7.
+// System -> General (#674).
 export function GeneralSettingsPage() {
   const draft = useSettingsDraft()
   const guard = useLeaveGuard(draft)
