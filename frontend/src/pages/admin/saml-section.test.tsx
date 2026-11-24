@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
-import { act, screen, waitFor, within } from '@testing-library/react'
+import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { renderWithQuery } from '@/test/render'
 import { api } from '@/api/client'
@@ -32,7 +32,7 @@ let settings: Record<string, unknown>
 let samlConfig: Record<string, unknown>
 
 beforeEach(() => {
-  settings = { saml_enabled: false, saml_metadata_url: '' }
+  settings = { saml_enabled: false, saml_metadata_url: '', password_rehash_grace_days: 30 }
   samlConfig = {
     configured: false,
     live: false,
@@ -111,23 +111,60 @@ describe('SAML section', () => {
     await waitFor(async () => expect(await navigator.clipboard.readText()).toBe(ACS))
   })
 
+  it('says Copied in a status line, and says so when the clipboard is refused', async () => {
+    const { user } = await openPage()
+    const entity = screen.getByText(ENTITY_ID).parentElement!
+
+    await user.click(screen.getByRole('button', { name: 'Copy Entity ID' }))
+    expect((await within(entity).findByRole('status')).textContent).toBe('Copied')
+
+    vi.spyOn(navigator.clipboard, 'writeText').mockRejectedValue(new Error('denied'))
+    await user.click(screen.getByRole('button', { name: 'Copy Entity ID' }))
+    await waitFor(() => expect(within(entity).getByRole('status').textContent).toBe('Copy failed, select the text'))
+  })
+
   it('keeps a switch that was set and not saved when Save SAML config is followed by a settings refetch', async () => {
-    vi.spyOn(api, 'put').mockResolvedValue({ data: undefined })
-    const { user, queryClient } = await openPage()
+    // The save changes what the server holds: the new URL, and (so the test can
+    // tell the refetch has reached the page) a second, visible setting.
+    vi.spyOn(api, 'put').mockImplementation((() => {
+      settings = { ...settings, saml_metadata_url: 'https://idp.example.com/metadata', password_rehash_grace_days: 45 }
+      return Promise.resolve({ data: undefined })
+    }) as never)
+    const { user } = await openPage()
+    const days = () => screen.getByLabelText('Days before an old password must be reset') as HTMLInputElement
+    expect(days().value).toBe('30')
 
     await user.click(toggle())
     expect(toggle().getAttribute('aria-checked')).toBe('true')
     await user.type(screen.getByLabelText('IdP metadata URL'), 'https://idp.example.com/metadata')
     await user.click(screen.getByRole('button', { name: 'Save SAML config' }))
-    await waitFor(() => expect(api.put).toHaveBeenCalled())
 
-    // The refetch the SAML save causes: the dump now carries the new URL.
-    settings = { ...settings, saml_metadata_url: 'https://idp.example.com/metadata' }
-    await act(async () => { await queryClient.invalidateQueries({ queryKey: ['admin', 'settings'] }) })
-
+    // The SAML save refetches the settings by itself, and the page has them.
+    await waitFor(() => expect(days().value).toBe('45'))
     expect(toggle().getAttribute('aria-checked')).toBe('true')
     expect(screen.getByRole('button', { name: 'Save SAML config' })).toBeTruthy()
     expect(screen.getByLabelText('IdP metadata URL')).toBeTruthy()
+  })
+
+  it('does not send the private key again after it has been saved', async () => {
+    const put = vi.spyOn(api, 'put').mockResolvedValue({ data: undefined })
+    const { user, container } = await openPage()
+    const KEY = '-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----'
+
+    await user.upload(
+      container.querySelector('input[type="file"][accept=".pem,.key"]') as HTMLInputElement,
+      new File([KEY], 'sp.key', { type: 'application/x-pem-file' }),
+    )
+    await waitFor(() => expect(container.querySelector('textarea')).not.toBeNull())
+    await user.click(screen.getByRole('button', { name: 'Save SAML config' }))
+    await waitFor(() => expect(put).toHaveBeenCalledTimes(1))
+    expect(put.mock.calls[0][1]).toMatchObject({ key_pem: KEY })
+
+    // The key is not kept in the page: no box shows it, and the next save leaves it out.
+    await waitFor(() => expect(container.querySelector('textarea')).toBeNull())
+    await user.click(screen.getByRole('button', { name: 'Save SAML config' }))
+    await waitFor(() => expect(put).toHaveBeenCalledTimes(2))
+    expect(Object.keys(put.mock.calls[1][1] as object)).not.toContain('key_pem')
   })
 
   it('sends saml_enabled with the page Save, and not with Save SAML config', async () => {

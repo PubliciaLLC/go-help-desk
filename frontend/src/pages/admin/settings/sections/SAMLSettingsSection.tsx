@@ -10,26 +10,38 @@ import { cn } from '@/lib/utils'
 import type { SettingsDraft } from '@/pages/admin/settings/useSettingsDraft'
 
 // A value to read out to someone else, with a button that puts it on the
-// clipboard. Says "Copied" only once the write has gone through.
+// clipboard. The result is said in a status line, which screen readers announce:
+// "Copied" only once the write has gone through, and a short instruction when it
+// has not (navigator.clipboard does not exist on a plain-http site that is not
+// localhost, and a refused permission rejects).
 function CopyValue({ label, value }: { label: string; value: string }) {
-  const [copied, setCopied] = useState(false)
+  const [result, setResult] = useState<'copied' | 'failed' | null>(null)
+  const timer = useRef<ReturnType<typeof setTimeout>>(undefined)
+  useEffect(() => () => clearTimeout(timer.current), [])
   if (!value) return null
   async function copy() {
+    clearTimeout(timer.current)
     try {
       await navigator.clipboard.writeText(value)
+      setResult('copied')
     } catch {
-      return
+      setResult('failed')
     }
-    setCopied(true)
-    setTimeout(() => setCopied(false), 2000)
+    timer.current = setTimeout(() => setResult(null), 4000)
   }
   return (
     <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:gap-3">
       <span className="text-xs font-medium text-gray-500 sm:w-20 sm:shrink-0">{label}</span>
       <code className="min-w-0 flex-1 font-mono text-xs text-gray-700 wrap-anywhere">{value}</code>
-      <Button type="button" variant="outline" size="sm" aria-label={`Copy ${label}`} onClick={copy}>
-        {copied ? 'Copied' : 'Copy'}
-      </Button>
+      <div className="flex items-center gap-2">
+        <Button type="button" variant="outline" size="sm" aria-label={`Copy ${label}`} onClick={copy}>
+          Copy
+        </Button>
+        <span role="status" className={cn('text-xs', result === 'failed' ? 'text-red-600' : 'text-green-600')}>
+          {result === 'copied' && 'Copied'}
+          {result === 'failed' && 'Copy failed, select the text'}
+        </span>
+      </div>
     </div>
   )
 }
@@ -98,9 +110,14 @@ function SAMLSection() {
     onSuccess: (res) => {
       setSaved(true)
       setSaveError('')
+      // The key is write-only: once saved it does not stay in the page, and the
+      // next save leaves it out (the server keeps the stored one).
+      setKeyPEM('')
       setWarning(res.warning ?? '')
       setTimeout(() => setSaved(false), 3000)
       qc.invalidateQueries({ queryKey: ['admin', 'saml'] })
+      // The same save changed the saml_* settings the page's dump carries.
+      qc.invalidateQueries({ queryKey: ['admin', 'settings'] })
     },
     onError: (err) => setSaveError(extractError(err)),
   })

@@ -1849,20 +1849,27 @@ export function useSettingsDraft(): SettingsDraft
   stored value, whichever way the page was opened.
 - **A third change: a refetch does not overwrite what the operator has edited
   (`fix/saml-settings-save`).** The seeding effect used to copy every fresh dump
-  over the whole draft, so any refetch (after a section's own save such as
-  "Save SAML config", or the window regaining focus once the data is stale)
-  silently reset an unsaved edit, and with it anything that was only shown
-  while that edit stood. The draft therefore keeps a set of **edited keys**:
-  `setBool`, `setNum`, `setStr`, `setStrArr` and `toggleStrArr` add their key.
-  When fresh data arrives, an edited key keeps the draft's value and every
+  over the whole draft, so any refetch silently reset an unsaved edit, and with
+  it anything that was only shown while that edit stood. Two things refetch the
+  dump: the window regaining focus (the query's `staleTime` is 0, so for
+  instance closing the certificate file picker refetches), and, since this
+  change, "Save SAML config", which also invalidates `['admin', 'settings']`
+  because the save changes the `saml_*` keys the dump carries. The draft
+  therefore keeps the **edited keys**, each with the value last set:
+  `setBool`, `setNum`, `setStr`, `setStrArr` and `toggleStrArr` record theirs.
+  When fresh data arrives, an edited key keeps the operator's value and every
   other key follows the fresh data; the first seeding, with nothing edited,
-  copies everything as before. A successful save clears the set, so after it
-  the draft is the fresh dump again (the save stays pending until that dump
-  has arrived, see the first change). A refused save keeps the set and every
-  edit. An edit put back to the stored value stays marked and is not dirty,
-  since `dirty` compares values. This applies to every System page, not only
-  Authentication. The write-only keys in `secrets` and `cleared` were never in
-  the draft and are unaffected.
+  copies everything as before. A key put back to the stored value is not an
+  edit and is not held, so another administrator's later change to it comes
+  through. A successful save clears the marks of the keys that were edited as
+  of the send and have not been edited again since; a key edited while the
+  save was pending keeps its mark and its value, and the page stays dirty for
+  it. After the save the draft is the fresh dump again for everything else (the
+  save stays pending until that dump has arrived, see the first change). A
+  refused save keeps every mark and edit. This applies to every System page,
+  not only Authentication. The write-only keys in `secrets` and `cleared` were
+  never in the draft and are unaffected. Separately, "Save SAML config" empties
+  the private key box once saved (the key is write-only and is not sent again).
 - **`dirty`** is `!isPending && Object.keys(buildSettingsPatch(…)).length > 0`.
   While `local` is `null` the patch is empty, so a page that is still loading
   is never dirty.
@@ -2060,7 +2067,8 @@ apply to each page, as they did to each tab:
     accessors return the stored values in the first render.
   - An edit survives a refetch of the dump; a key the operator did not
     edit follows it; a successful save clears the edited keys, so the next
-    refetch is followed in full.
+    refetch is followed in full; an edit made while a save is pending is kept
+    and still dirty; an edit put back to the stored value is not held.
   - A refused save keeps the edits and `dirty`.
   - The `email_required` message is shown.
   - `aboutClients` is set only when the patch turns `ticket_scope_enforced`
@@ -2076,8 +2084,11 @@ apply to each page, as they did to each tab:
   certificate and private key controls; the toggle is labelled "Require SAML
   for staff and users"; the Entity ID and the ACS URL are shown with copy
   buttons. After switching the toggle on without saving, "Save SAML config"
-  followed by a refetch of the settings leaves the toggle on, and the page
-  Save sends `saml_enabled`. A save that answers a warning shows it.
+  makes the page refetch its settings (a second visible setting changed in
+  the mocked dump reaches the page) and leaves the toggle on, and the page
+  Save sends `saml_enabled`. A save that answers a warning shows it. The copy
+  buttons say "Copied" in a status line, and say "Copy failed, select the
+  text" when the clipboard is missing or refuses.
 - *A section that seeds at mount sees the stored value*: with
   `attachment_allowed_types` stored as `["application/pdf"]` (different from
   `DEFAULT_ALLOWED_TYPES`), File Attachments' allowed-types box shows
