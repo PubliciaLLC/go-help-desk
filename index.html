@@ -180,7 +180,7 @@ docker compose up -d      <span style="color:#22c55e"># pulls the published imag
           <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>
         </div>
         <h3>A dashboard, ticket views and Reports</h3>
-        <p>The dashboard shows your queue, the tickets that need attention, a 30-day trend and, for administrators, a health card. The ticket list opens on views for your own tickets, your groups' tickets, the unassigned ones and a search of everything. Reports shows resolution and response times, SLA attainment, reopens, backlog and workload, compared with the previous period. <a href="docs/tickets.html#tickets-dashboard">Dashboard →</a> <a href="docs/tickets.html#tickets-views">Ticket views →</a> <a href="docs/tickets.html#tickets-reports">Reports →</a></p>
+        <p>The dashboard shows your queue, the tickets that need attention, a 30-day trend and, for administrators, a health card. The ticket list opens on views for your own tickets, your groups' tickets, the unassigned ones (administrators, and staff if allowed) and a search of every ticket you can see. Reports shows resolution and response times, SLA attainment and reopens for a period, compared with the previous period, and the current backlog and workload. <a href="docs/tickets.html#tickets-dashboard">Dashboard →</a> <a href="docs/tickets.html#tickets-views">Ticket views →</a> <a href="docs/tickets.html#tickets-reports">Reports →</a></p>
       </div>
 
       <div class="feature-card">
@@ -412,7 +412,7 @@ docker compose up -d      <span style="color:#22c55e"># pulls the published imag
           <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
         </div>
         <h3>Search and Filters</h3>
-        <p>Relevance-ranked Postgres full-text search across subject, description and, if you want it, replies, matched by word prefix as you type. Filter by status, priority, category, requester, assignee, group, dates, channel and SLA, and sort on any column. Staff open the list as views: Assigned to Me, My Group's Tickets, Available and Search. <a href="docs/tickets.html#tickets-search">Read about search →</a></p>
+        <p>Relevance-ranked Postgres full-text search across subject, description and, if you want it, replies, matched by word prefix as you type. Filter by status, priority, category, requester, assignee, group, dates, channel and SLA, and sort on any column. Staff and administrators open the list as views: Assigned to Me, My Group's Tickets and Search, plus Available for administrators and for staff when an administrator allows it. <a href="docs/tickets.html#tickets-search">Read about search →</a></p>
       </div>
 
       <div class="feature-card">
@@ -533,7 +533,7 @@ docker compose up -d      <span style="color:#22c55e"># pulls the published imag
           <li>Default ticket type per CTI</li>
           <li>Incident management</li>
           <li>Monitoring events</li>
-          <li>Operational reporting beyond the 1.3 KPI reports: scheduled reports, channel and agent cuts, first-contact resolution</li>
+          <li>Operational reporting beyond the 1.3 KPI reports: scheduled reports, channel and agent cuts and further measures</li>
           <li>Asset reference</li>
           <li>Continual improvement</li>
           <li>Suppliers</li>
