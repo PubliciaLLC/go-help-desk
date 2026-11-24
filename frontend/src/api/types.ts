@@ -97,6 +97,9 @@ export interface AdminUser {
 export interface Category {
   id: string
   name: string
+  // Plain text, at most 500 characters; '' is none (1.3.0). Always sent by the
+  // server; optional here so a fixture or an older server reads as none.
+  description?: string
   sort_order: number
   active: boolean
 }
@@ -105,6 +108,7 @@ export interface TicketType {
   id: string
   category_id: string
   name: string
+  description?: string
   sort_order: number
   active: boolean
 }
@@ -113,6 +117,7 @@ export interface TicketItem {
   id: string
   type_id: string
   name: string
+  description?: string
   sort_order: number
   active: boolean
 }

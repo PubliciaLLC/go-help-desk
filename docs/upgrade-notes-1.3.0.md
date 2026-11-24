@@ -322,6 +322,17 @@ Until now the largest file anyone could attach was 25 MB, fixed in the code. It 
 
 Archiving was possible only through the API (`PATCH` with `active`). Each category, type and item row now has an Archive button, and an archived row has Restore. Archive asks first: the entry can no longer be chosen for new tickets, and tickets already filed under it keep it. Archived rows stay in the tree, greyed and labelled "Archived". Archiving does not cascade to the rows beneath. When deleting an entry is refused because tickets use it, the message now points to Archive.
 
+### Descriptions on Categories, Types and Items
+
+Each category, type and item can have an optional **Description**: a line or two of guidance that says what belongs under it. The most specific one of the choices made shows beneath the Category / Type / Item selectors on the **New ticket** page (including when staff file for someone else), on the public **guest form** (`/submit`, where only the category is chosen) and in the **Classification** card's Edit mode on a ticket. It updates as the person changes any selector: the item's text if the item has one, otherwise the type's, otherwise the category's, and nothing at all when none of them has one.
+
+**Nothing changes until you write one.** Every existing entry starts with no description, and the form looks exactly as before. Migration `000069` adds the column; its down migration drops it.
+
+- **Where to set it:** **Admin → Categories**. Create forms have a Description box, and an expanded category, type or item has one with its own Save. Plain text, at most **500 characters** (characters, not bytes), line breaks kept. It is never shown as HTML or Markdown: `<b>x</b>` appears as those characters. A longer text is refused with `400`; saving an empty box clears it.
+- **Guests can read it.** The text of a category that is open to guests is public: anyone who can open `/submit` sees it, and so can anyone who reads the public catalogue (`GET /api/v1/categories`) while guest submission is on. Do not put anything in a description you would not put on a public web page.
+- **API (additive):** a `description` string (empty when none) on every category, type and item the API returns: `/admin/categories` and its `types` and `items`, the catalogue the forms read (`/categories`, `/categories/{id}/types`, `.../items`) and the MCP `list_categories` tree. `POST` and `PATCH` on the admin routes accept an optional `description`; on `PATCH` an absent key leaves it unchanged. A client that ignores unknown keys needs no change. Tickets and webhook or event payloads are unchanged: they carry ids, not descriptions.
+- **Archiving and deleting** work as before; an archived entry keeps its description. Creating or editing a category, type or item is not written to the audit log, and a description edit is not either.
+
 ### Administrators Can Edit the Wording of the Emails (#158)
 
 Under **Admin → System → Email → Templates** an administrator edits the subject and body of all 24 emails, and a shared header and footer that go around every one. Each email, and the header and footer, can also have an optional HTML part; with none, the email is plain text exactly as before. With nothing edited, every email is byte for byte what it was before the editor existed.
