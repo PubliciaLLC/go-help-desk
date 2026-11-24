@@ -41,27 +41,32 @@ export interface SettingsDraft {
 
 type Values = Record<string, unknown>
 
-/* The draft is three layers, and a key's value is the first that has it:
-     edits      what the operator last set, for the keys they changed;
-     committed  what a save in flight carries, from the send until the settings
-                have been fetched again (null when no save is in flight);
+/* The draft is layers, and a key's value is the first that has it:
+     edits  what the operator last set, for the keys they changed;
+     sent   the keys the save in flight carries (null when none is);
+     saved  what earlier saves wrote whose fresh settings could not be fetched
+            (null when there is no such save);
      the dump   the query's data.
    Nothing else is tracked: the draft, "dirty" and what a refetch keeps all
-   follow from these. While a save is in flight (`inFlight`), a key it carries
-   is held as an edit whatever its value, since the save may yet be refused and
-   then the edit is all that is left of it.
+   follow from these. What is under the edits (sent, saved, the dump) is the
+   base an edit is judged against.
 
-   `committed` outlives the save in one case: the PATCH went through and the
-   fresh settings could not be fetched. The dump is then older than what was
-   saved, so `committed` stays under the edits as the base, and the next dump
-   that arrives takes over. That keeps the form on what was saved, and "dirty"
-   honest (it is judged against the base, not the stale dump). */
+   While a save is in flight a key it carries is held as an edit whatever its
+   value, since the save may yet be refused and then the edit is all that is
+   left of it. When the save is refused only those keys go back to being edits,
+   with the values the operator sent; `saved` stays as it was.
+
+   `saved` exists for one case: the PATCH went through and the fresh settings
+   could not be fetched. The dump is then older than what was saved, so what
+   was saved stays under the edits as the base, and the next dump that arrives
+   takes over. That keeps the form on what was saved, and "dirty" honest (it is
+   judged against the base, not the stale dump). */
 interface Layers {
   edits: Values
-  committed: Values | null
-  inFlight: boolean
+  sent: Values | null
+  saved: Values | null
 }
-const NO_LAYERS: Layers = { edits: {}, committed: null, inFlight: false }
+const NO_LAYERS: Layers = { edits: {}, sent: null, saved: null }
 
 // Equal by content, by JSON.stringify: an array set again with the same entries
 // is the same value. The known looseness is harmless here: NaN equals null, and
@@ -72,14 +77,16 @@ function sameValue(a: unknown, b: unknown): boolean {
 }
 
 // What is under the operator's edits: the save in flight if it carries the key,
-// else the dump.
+// else an earlier save whose fetch failed, else the dump.
 function baseValue(L: Layers, dump: Values | undefined, key: string): unknown {
-  return L.committed && key in L.committed ? L.committed[key] : dump?.[key]
+  if (L.sent && key in L.sent) return L.sent[key]
+  if (L.saved && key in L.saved) return L.saved[key]
+  return dump?.[key]
 }
 
 // Whether a save in flight carries the key: its edit is held, not judged.
 function inFlightKey(L: Layers, key: string): boolean {
-  return L.inFlight && L.committed !== null && key in L.committed
+  return L.sent !== null && key in L.sent
 }
 
 // The edits that are not just the value underneath them. An edit that equals
@@ -152,17 +159,19 @@ export function useSettingsDraft(): SettingsDraft {
     setSeeded(true)
     const L = live.current
     // A dump that arrives while no save is in flight is newer than a save that
-    // went through without its fetch; it takes over from `committed`.
-    putLayers(withoutNoopEdits(L.inFlight ? L : { ...L, committed: null }, settings))
+    // went through without its fetch; it takes over from `saved`.
+    putLayers(withoutNoopEdits(L.sent ? L : { ...L, saved: null }, settings))
   }, [settings, query.dataUpdatedAt]) // a fetch that changed nothing is a dump too
   /* eslint-enable react-hooks/set-state-in-effect */
 
   // The composed draft, as an object for the accessors and the patch.
-  const draft: Values = { ...settings, ...layers.committed, ...layers.edits }
+  const draft: Values = { ...settings, ...layers.saved, ...layers.sent, ...layers.edits }
 
-  // When the PATCH answered: a fetch of the settings that landed after it has
-  // the saved values in it.
-  const answeredAt = useRef(0)
+  // The dump's age when the PATCH answered: a fetch that has landed since has
+  // the saved values in it. Compared with the dump's own stamp, not a clock.
+  const dumpStamp = useRef(0)
+  // A save is on its way, from the click: a second click is ignored.
+  const saving = useRef(false)
 
   const saveMutation = useMutation({
     mutationFn: async () => {
@@ -174,18 +183,17 @@ export function useSettingsDraft(): SettingsDraft {
       const L = live.current
       // Against what is under the edits: after a save whose fetch failed, that
       // is not the dump.
-      const base = { ...dumpNow(), ...L.committed }
+      const base = { ...dumpNow(), ...L.saved }
       const patch = buildSettingsPatch(base, { ...base, ...L.edits }, secrets, cleared)
-      // What the save carries, as the operator set it (the patch can hold a
-      // clamped figure instead). It is what the draft shows until the settings
-      // have been fetched again.
-      const committed: Values = { ...L.committed }
-      for (const k of Object.keys(patch)) if (k in L.edits) committed[k] = L.edits[k]
-      putLayers({ ...L, committed, inFlight: true })
+      // The keys the save carries, as the operator set them: if it is refused
+      // they are what is given back.
+      const sent: Values = {}
+      for (const k of Object.keys(patch)) if (k in L.edits) sent[k] = L.edits[k]
+      putLayers({ ...L, sent })
       const res = await updateSettings(patch)
       // The save that turned ticket scope on is the one whose warning is about
       // OAuth clients; an SSO warning shares the field and gets no such link.
-      return { ...res, aboutClients: patch.ticket_scope_enforced === true }
+      return { ...res, aboutClients: patch.ticket_scope_enforced === true, patch }
     },
     onSuccess: async (res) => {
       setSaved(true)
@@ -198,11 +206,15 @@ export function useSettingsDraft(): SettingsDraft {
       // What was sent is saved. A key the operator has set again since keeps its edit.
       const L = live.current
       const edits = { ...L.edits }
-      for (const [k, v] of Object.entries(L.committed ?? {})) {
+      // What the server now holds for those keys is what it was sent, which for
+      // the guest figure can be a clamp of what was typed.
+      const sent: Values = {}
+      for (const [k, v] of Object.entries(L.sent ?? {})) {
         if (k in edits && sameValue(edits[k], v)) delete edits[k]
+        sent[k] = res.patch[k]
       }
-      putLayers({ ...L, edits })
-      answeredAt.current = Date.now()
+      putLayers({ ...L, edits, sent })
+      dumpStamp.current = qc.getQueryState(SETTINGS_KEY)?.dataUpdatedAt ?? 0
       setTimeout(() => setSaved(false), 2500)
       qc.invalidateQueries({ queryKey: ['site-config'] })
       // The scan policy and address feed the banner and the scanner status;
@@ -217,17 +229,19 @@ export function useSettingsDraft(): SettingsDraft {
     // After the fresh settings have been asked for, or the save was refused:
     // nothing is in flight, and the edits that remain are the ones still unsaved.
     onSettled: (_data, error) => {
+      saving.current = false
       const L = live.current
       let next: Layers
       if (error) {
-        // Refused: what was sent is still the operator's, and unsaved.
-        next = { edits: { ...L.committed, ...L.edits }, committed: null, inFlight: false }
-      } else if ((qc.getQueryState(SETTINGS_KEY)?.dataUpdatedAt ?? 0) >= answeredAt.current) {
+        // Refused: what it sent is still the operator's, and unsaved. What an
+        // earlier save wrote is not part of this.
+        next = { edits: { ...L.sent, ...L.edits }, sent: null, saved: L.saved }
+      } else if ((qc.getQueryState(SETTINGS_KEY)?.dataUpdatedAt ?? 0) > dumpStamp.current) {
         // The fresh settings have the saved values in them.
-        next = { ...L, committed: null, inFlight: false }
+        next = { edits: L.edits, sent: null, saved: null }
       } else {
         // The fetch failed: keep showing what was saved until a dump arrives.
-        next = { ...L, inFlight: false }
+        next = { edits: L.edits, sent: null, saved: { ...L.saved, ...L.sent } }
       }
       putLayers(withoutNoopEdits(next, dumpNow()))
     },
@@ -253,7 +267,7 @@ export function useSettingsDraft(): SettingsDraft {
   }
 
   const dirty = !saveMutation.isPending
-    && Object.keys(buildSettingsPatch({ ...settings, ...layers.committed }, draft, secrets, cleared)).length > 0
+    && Object.keys(buildSettingsPatch({ ...settings, ...layers.saved }, draft, secrets, cleared)).length > 0
 
   return {
     isLoading: query.isLoading || (settings !== undefined && !seeded),
@@ -283,7 +297,11 @@ export function useSettingsDraft(): SettingsDraft {
     secretCleared: (key) => Boolean(cleared[key]),
     setSecretCleared: (key, v) => setCleared((s) => ({ ...s, [key]: v })),
     dirty,
-    save: () => saveMutation.mutate(),
+    save: () => {
+      if (saving.current) return
+      saving.current = true
+      saveMutation.mutate()
+    },
     isPending: saveMutation.isPending,
     error: saveError,
     saved,

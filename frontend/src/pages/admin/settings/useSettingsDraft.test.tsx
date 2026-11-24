@@ -1,10 +1,13 @@
 import type { ReactNode } from 'react'
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
-import { act, renderHook, waitFor } from '@testing-library/react'
+import { act, configure, renderHook, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { AxiosError } from 'axios'
 import { api } from '@/api/client'
 import { useSettingsDraft, type SettingsDraft } from './useSettingsDraft'
+
+// RTL_STRICT=1 runs these under React's StrictMode (double render, double effects).
+if (process.env.RTL_STRICT) configure({ reactStrictMode: true })
 
 // #674: one draft per page. The hook owns the draft, the write-only keys, the
 // patch and the save; these tests pin what the pages rely on.
@@ -538,6 +541,99 @@ describe('useSettingsDraft: around a save', () => {
       await waitFor(() => expect(patchSpy).toHaveBeenCalledTimes(2))
       expect(patchSpy.mock.calls[1][1]).toEqual({ sla_enabled: true })
     })
+  })
+
+  // An earlier save went through but its fetch failed, so the page shows what
+  // that save wrote on top of an older dump. A later save, refused, must give
+  // back only what it sent.
+  describe('a refused save after one whose fetch failed', () => {
+    async function afterFailedFetch() {
+      dump = { ...DUMP, n: 0 }
+      const hook = setup()
+      await loaded(hook.result)
+      const p1 = holdPatch()
+      act(() => hook.result.current.setNum('n', 1))
+      act(() => hook.result.current.save())
+      await waitFor(() => expect(hook.result.current.isPending).toBe(true))
+      vi.spyOn(api, 'get').mockRejectedValueOnce(new Error('down'))
+      await act(async () => p1.ok())
+      await waitFor(() => expect(hook.result.current.isPending).toBe(false))
+      expect(hook.result.current.num('n')).toBe(1) // shown, from the earlier save
+      const p2 = holdPatch()
+      act(() => hook.result.current.setBool('sla_enabled', true))
+      act(() => hook.result.current.save())
+      await waitFor(() => expect(hook.result.current.isPending).toBe(true))
+      await act(async () => p2.no())
+      await waitFor(() => expect(hook.result.current.isPending).toBe(false))
+      await waitFor(() => expect(hook.result.current.error).not.toBe(''))
+      return hook
+    }
+
+    it('keeps only what it sent as unsaved; what the earlier save wrote is not an edit', async () => {
+      const { result, queryClient } = await afterFailedFetch()
+      expect(patchSpy.mock.calls[1][1]).toEqual({ sla_enabled: true })
+      expect(result.current.bool('sla_enabled')).toBe(true)
+      expect(result.current.num('n')).toBe(1)
+      expect(result.current.dirty).toBe(true)
+      // Another administrator changes n; the fetch recovers. n follows it.
+      dump = { ...dump, n: 2 }
+      await refetch(queryClient)
+      await waitFor(() => expect(result.current.num('n')).toBe(2))
+      expect(result.current.bool('sla_enabled')).toBe(true)
+      act(() => result.current.save())
+      await waitFor(() => expect(patchSpy).toHaveBeenCalledTimes(3))
+      expect(patchSpy.mock.calls[2][1]).toEqual({ sla_enabled: true })
+    })
+
+    it('is clean again once the refused key is put back', async () => {
+      const { result } = await afterFailedFetch()
+      act(() => result.current.setBool('sla_enabled', false))
+      expect(result.current.dirty).toBe(false)
+    })
+  })
+
+  it('ignores a second Save while one is in flight, and loses nothing', async () => {
+    const { result } = setup()
+    await loaded(result)
+    const p = holdPatch()
+    act(() => result.current.setBool('sla_enabled', true))
+    act(() => result.current.save())
+    await waitFor(() => expect(result.current.isPending).toBe(true))
+    act(() => result.current.save())
+    await act(async () => { await new Promise((r) => setTimeout(r, 20)) })
+    expect(patchSpy).toHaveBeenCalledTimes(1)
+    await act(async () => p.no())
+    await waitFor(() => expect(result.current.isPending).toBe(false))
+    expect(result.current.bool('sla_enabled')).toBe(true)
+    expect(result.current.dirty).toBe(true)
+  })
+
+  it('shows the clamped figure that was saved, when the fresh settings could not be fetched', async () => {
+    dump = { ...DUMP, attachment_max_mb: 25, guest_attachment_max_mb: 20 }
+    const { result } = setup()
+    await loaded(result)
+    vi.spyOn(api, 'get').mockRejectedValue(new Error('down'))
+    act(() => result.current.setNum('guest_attachment_max_mb', 60))
+    act(() => result.current.save())
+    await waitFor(() => expect(patchSpy).toHaveBeenCalled())
+    expect(patchSpy.mock.calls[0][1]).toEqual({ guest_attachment_max_mb: 25 })
+    await waitFor(() => expect(result.current.isPending).toBe(false))
+    expect(result.current.num('guest_attachment_max_mb')).toBe(25)
+    expect(result.current.dirty).toBe(false)
+  })
+
+  it('takes the dump as it is when the fetch after a save works, even if its data did not change', async () => {
+    const { result } = setup()
+    await loaded(result)
+    // The server answers 204 and keeps the old value (or the setting is read-only here).
+    patchSpy.mockResolvedValueOnce({ data: undefined } as never)
+    act(() => result.current.setBool('sla_enabled', true))
+    act(() => result.current.save())
+    await waitFor(() => expect(result.current.saved).toBe(true))
+    await waitFor(() => expect(result.current.isPending).toBe(false))
+    expect(result.current.stored?.sla_enabled).toBe(false)
+    expect(result.current.bool('sla_enabled')).toBe(false)
+    expect(result.current.dirty).toBe(false)
   })
 
   describe('a save that went through but whose fresh settings could not be fetched', () => {
