@@ -82,11 +82,16 @@ type recordingAuthorizer struct {
 	visibility ticket.Visibility
 	allow      bool
 	asked      int
+	available  bool // the answer to AvailableQueueAllowed
 }
 
 func (r *recordingAuthorizer) CanViewTicket(context.Context, *authmw.Actor, ticket.Ticket) (bool, error) {
 	r.asked++
 	return r.allow, nil
+}
+
+func (r *recordingAuthorizer) AvailableQueueAllowed(context.Context, *authmw.Actor) bool {
+	return r.available
 }
 
 func (r *recordingAuthorizer) TicketVisibility(context.Context, *authmw.Actor) (ticket.Visibility, error) {
