@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { SecurityWarnings } from '@/api/admin'
 import { adminHealthItems } from './adminHealth'
 
-// The admin health card as data (docs/DESIGN.md, "Admin health card"): the four
+// The admin health card as data (docs/DESIGN.md, "Admin health card"): the five
 // rows, in order, each with the address and the place name of where to fix it.
 
 const quiet = {
@@ -55,6 +55,16 @@ describe('adminHealthItems', () => {
       },
     },
     {
+      name: 'SAML required but not loaded',
+      warnings: warn({ saml_required_not_loaded: { reason: 'incomplete' } }),
+      settings: {},
+      want: {
+        id: 'saml-required-not-loaded', severity: 'red',
+        text: 'SAML sign-in is required for staff and users, but SAML is not set up, so they cannot sign in.',
+        href: '/admin/settings/authentication', place: 'Authentication → SAML', external: false,
+      },
+    },
+    {
       name: 'an unreachable scanner',
       warnings: warn({ attachment_scanning: scanner }),
       settings: {},
@@ -69,12 +79,12 @@ describe('adminHealthItems', () => {
     expect(adminHealthItems(warnings, settings)).toEqual([want])
   })
 
-  it('gives all four in the table order', () => {
+  it('gives all five in the table order', () => {
     const items = adminHealthItems(
-      warn({ update, passkeys, attachment_scanning: scanner }),
+      warn({ update, passkeys, attachment_scanning: scanner, saml_required_not_loaded: { reason: 'not_loaded' } }),
       { sla_enabled: true, sla_alerts_enabled: false },
     )
-    expect(items.map((i) => i.id)).toEqual(['update', 'sla-alerts-off', 'passkey-suspended', 'scanner-down'])
+    expect(items.map((i) => i.id)).toEqual(['update', 'sla-alerts-off', 'passkey-suspended', 'saml-required-not-loaded', 'scanner-down'])
   })
 
   const absent = [
@@ -92,6 +102,10 @@ describe('adminHealthItems', () => {
     expect(adminHealthItems(warn({ passkeys: { available: false, reason: 'x', suspended_roles: [] } }), {})).toEqual([])
     expect(adminHealthItems(warn({ passkeys: { available: false, reason: 'x' } }), {})).toEqual([])
     expect(adminHealthItems(warn({ passkeys: undefined }), {})).toEqual([])
+  })
+
+  it('shows no SAML item when the server sends no such field, whatever the settings say', () => {
+    expect(adminHealthItems(quiet, { saml_enabled: true })).toEqual([])
   })
 
   it('shows no scanner item when scanning is off, or the scanner answers', () => {

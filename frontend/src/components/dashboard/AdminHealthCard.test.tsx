@@ -77,6 +77,7 @@ describe('AdminHealthCard', () => {
           ...QUIET_WARNINGS,
           update: { current: '1.3.0', latest: '1.3.1', url: 'https://example.com/releases/1.3.1' },
           passkeys: { available: false, reason: 'BASE_URL is an IP address', suspended_roles: ['admin'] },
+          saml_required_not_loaded: { reason: 'not_loaded' },
           attachment_scanning: { ...QUIET_WARNINGS.attachment_scanning, policy: 'required', configured: true, effect: 'Uploads are refused.' },
         },
       },
@@ -87,6 +88,7 @@ describe('AdminHealthCard', () => {
     expect(await screen.findByText('Version 1.3.1 is available (you run 1.3.0).')).toBeTruthy()
     expect(screen.getByText('SLA tracking is on, but breach and at-risk alerts are off.')).toBeTruthy()
     expect(screen.getByText(/The passkey requirement is suspended for admin/)).toBeTruthy()
+    expect(screen.getByText('SAML sign-in is required for staff and users, but SAML is not set up, so they cannot sign in.')).toBeTruthy()
     expect(screen.getByText(/The attachment scanner is unreachable\. Uploads are refused\./)).toBeTruthy()
     expect(screen.queryByText('No problems to report.')).toBeNull()
 
@@ -98,6 +100,7 @@ describe('AdminHealthCard', () => {
     const targets = [
       ['Email → Notifications → SLA alerts', '/admin/settings/email'],
       ['Authentication → Multi-factor authentication', '/admin/settings/authentication'],
+      ['Authentication → SAML', '/admin/settings/authentication'],
       ['File Attachments → Malware scanning', '/admin/settings/attachments'],
     ]
     for (const [place, href] of targets) {

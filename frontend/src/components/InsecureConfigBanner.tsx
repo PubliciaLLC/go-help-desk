@@ -110,6 +110,10 @@ export function InsecureConfigBanner({ isAdmin }: InsecureConfigBannerProps) {
   // somebody served different metadata for the same URL.
   const samlRefresh = data?.saml_metadata_refresh
 
+  // "Require SAML for staff and users" is on and SAML is not loaded: staff and
+  // users cannot sign in. Present only while that is true.
+  const samlRequired = data?.saml_required_not_loaded
+
   const notices: Notice[] = []
   if (update) {
     const title = `Version ${update.latest} is available (you run ${update.current})`
@@ -363,6 +367,33 @@ export function InsecureConfigBanner({ isAdmin }: InsecureConfigBannerProps) {
               SHA-256 <code className={CODE}>{c.sha256}</code>, expires {new Date(c.expires_at).toLocaleDateString()}
             </p>
           ))}
+        </>
+      ),
+    })
+  }
+  if (samlRequired) {
+    const title = 'Staff and users cannot sign in: SAML is required but not set up'
+    notices.push({
+      id: 'saml-required-not-loaded',
+      severity: 'failure',
+      signature: samlRequired.reason,
+      title,
+      body: (
+        <>
+          <p className="font-semibold">{title}</p>
+          <p className="mt-1">
+            &quot;Require SAML for staff and users&quot; is on, so staff and users can sign in only with SAML, but{' '}
+            {samlRequired.reason === 'incomplete'
+              ? "the identity provider's metadata, the certificate or the private key is missing"
+              : "the identity provider's metadata could not be loaded"}
+            . Until that is fixed their password sign-in is refused and the login page has no SAML button.
+            Administrators can still sign in with a password.{' '}
+            <a className="font-medium underline" href="/admin/settings/authentication">
+              Open System → Authentication → SAML
+            </a>{' '}
+            to finish setting SAML up, or turn off &quot;Require SAML for staff and users&quot; there. This goes away by
+            itself once SAML is loaded or the switch is off.
+          </p>
         </>
       ),
     })

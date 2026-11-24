@@ -64,6 +64,18 @@ export function adminHealthItems(
     })
   }
 
+  // The server says so only while the switch is on and SAML is not loaded.
+  if (warnings?.saml_required_not_loaded) {
+    items.push({
+      id: 'saml-required-not-loaded',
+      severity: 'red',
+      text: 'SAML sign-in is required for staff and users, but SAML is not set up, so they cannot sign in.',
+      href: '/admin/settings/authentication',
+      place: 'Authentication → SAML',
+      external: false,
+    })
+  }
+
   // The banner's own test: an operator who chose "off" does not get an alarm.
   const scanning = warnings?.attachment_scanning
   if (scanning && scanning.policy !== 'off' && !scanning.reachable) {
