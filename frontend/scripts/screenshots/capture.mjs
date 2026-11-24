@@ -487,7 +487,10 @@ const SHOTS = [
   },
   {
     // My Group's Tickets: held by nobody, by Jordan and by a teammate.
+    // Crop ends in the gap between the 13th and 14th rows, so no row is cut
+    // through. The size depends on the row heights, so there is no expect check.
     file: '49-ticket-views-groups.png', phase: 'extras', role: 'jordan', path: '/tickets?view=groups', vp: DESK,
+    target: { cutBetween: (page) => [page.locator('tbody tr').nth(12), page.locator('tbody tr').nth(13)] },
     async prepare(page, ctx) {
       const me = await apiGet(ctx, '/api/v1/me')
       const list = await apiGet(ctx, '/api/v1/tickets?scope=my_groups&limit=100')
@@ -503,7 +506,7 @@ const SHOTS = [
         await waitVisible(page.getByRole('button', { name, exact: true }))
       }
       await waitVisible(page.locator('tbody tr'))
-      if ((await page.locator('tbody tr').count()) < 4) throw new Error('views: fewer than four rows on the page')
+      if ((await page.locator('tbody tr').count()) < 14) throw new Error('views: fewer than fourteen rows on the page')
     },
   },
   {
