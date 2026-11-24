@@ -15,7 +15,8 @@
 #
 # Linux only. Chromium takes its fonts from fontconfig here, and that is how
 # Inter is mapped to system-ui. On macOS the mapping does not apply, so the
-# images would not match the set.
+# images would not match the set. On macOS, scripts/screenshots/docker.sh runs
+# this script in a Linux container (Docker Desktop) and takes the same arguments.
 #
 # What a run writes:
 #   $SHOTS_OUT: default is a new directory under TMPDIR, printed at the start and
