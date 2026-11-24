@@ -1864,7 +1864,11 @@ export function useSettingsDraft(): SettingsDraft
   through. A successful save clears the marks of the keys that were edited as
   of the send and have not been edited again since; a key edited while the
   save was pending keeps its mark and its value, and the page stays dirty for
-  it. After the save the draft is the fresh dump again for everything else (the
+  it, even when the key was set back to the value it had before the save (while
+  a save is on its way every touched key is held, since the stored value is
+  about to change; the hook knows this from a flag set when Save is clicked and
+  cleared when the save settles). Values are compared by content, so an array
+  toggled off and on again equals the one that was sent. After the save the draft is the fresh dump again for everything else (the
   save stays pending until that dump has arrived, see the first change). A
   refused save keeps every mark and edit. This applies to every System page,
   not only Authentication. The write-only keys in `secrets` and `cleared` were
@@ -2068,7 +2072,8 @@ apply to each page, as they did to each tab:
   - An edit survives a refetch of the dump; a key the operator did not
     edit follows it; a successful save clears the edited keys, so the next
     refetch is followed in full; an edit made while a save is pending is kept
-    and still dirty; an edit put back to the stored value is not held.
+    and still dirty, also when it was set back to its pre-save value; an edit
+    put back to the stored value, with no save pending, is not held.
   - A refused save keeps the edits and `dirty`.
   - The `email_required` message is shown.
   - `aboutClients` is set only when the patch turns `ticket_scope_enforced`
