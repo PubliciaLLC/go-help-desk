@@ -224,7 +224,14 @@ function AdminSections({ nav, onNavigate }: { nav: AdminNav; onNavigate?: () => 
       </button>
       {/* Closed panels stay in the document (hidden) so aria-controls always
           resolves; hidden also takes their links out of the tab order. */}
-      <div id={adminPanelId} hidden={!adminOpen} className="ml-4 border-l border-gray-200 pl-2">
+      {/* Indented 4px less at each of the three steps than it once was (ml-4,
+          pl-2, ml-2): a link in a section is 12px wider for it, so that
+          "Canned Responses", the widest label, fits on one line in DejaVu Sans
+          (132.6px of text; 142px of room, was 130). On Linux, DejaVu is what
+          system-ui often is, and a label on a second line makes its row 20px
+          taller and costs the 768px budget its headroom
+          (admin-nav-sections.spec.ts). */}
+      <div id={adminPanelId} hidden={!adminOpen} className="ml-3 border-l border-gray-200 pl-1">
         {ADMIN_SECTIONS.map((s) => {
           const open = nav.isOpen(s.id)
           const headingId = `${uid}-${s.id}-heading`
@@ -242,7 +249,7 @@ function AdminSections({ nav, onNavigate }: { nav: AdminNav; onNavigate?: () => 
                 {s.label}
                 <ChevronDownIcon className={cn('h-4 w-4 transition-transform', !open && '-rotate-90')} />
               </button>
-              <div id={panelId} role="group" aria-labelledby={headingId} hidden={!open} className="ml-2">
+              <div id={panelId} role="group" aria-labelledby={headingId} hidden={!open} className="ml-1">
                 {s.items.map((i) => (
                   <NavItem key={i.to} to={i.to} icon={i.icon} label={i.label} onNavigate={onNavigate} dense />
                 ))}
