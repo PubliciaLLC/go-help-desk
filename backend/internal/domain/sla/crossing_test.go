@@ -86,6 +86,107 @@ func TestCrossings_MetTargetNeverCrosses(t *testing.T) {
 	require.Equal(t, sla.Crossing{}, got.AtRisk[0])
 }
 
+// Each target reads its own met flag: an answered ticket still has a live
+// resolution clock, and a resolved ticket still owes (or has missed) its
+// response. Resolution is 1000 min, so its 80% line is 800 and its 100% line
+// is 1000.
+func TestCrossings_ResolutionTarget(t *testing.T) {
+	answered := statusCreated.Add(10 * time.Minute)
+	resolved := statusCreated.Add(20 * time.Minute)
+	fresh := sla.Crossing{Due: true, Fresh: true}
+	stale := sla.Crossing{Due: true}
+
+	cases := []struct {
+		name    string
+		rec     sla.Record
+		elapsed time.Duration
+		want    sla.Crossed
+	}{
+		{
+			name:    "answered, resolution one second under 80%",
+			rec:     sla.Record{FirstResponseAt: &answered},
+			elapsed: 800*time.Minute - time.Second,
+			want:    sla.Crossed{},
+		},
+		{
+			name:    "answered, resolution exactly 80% is at risk and fresh",
+			rec:     sla.Record{FirstResponseAt: &answered},
+			elapsed: 800 * time.Minute,
+			want:    sla.Crossed{AtRisk: [2]sla.Crossing{{}, fresh}},
+		},
+		{
+			name:    "answered, resolution 15 minutes past 80% is still fresh",
+			rec:     sla.Record{FirstResponseAt: &answered},
+			elapsed: 815 * time.Minute,
+			want:    sla.Crossed{AtRisk: [2]sla.Crossing{{}, fresh}},
+		},
+		{
+			name:    "answered, resolution one second past the at-risk window is stale",
+			rec:     sla.Record{FirstResponseAt: &answered},
+			elapsed: 815*time.Minute + time.Second,
+			want:    sla.Crossed{AtRisk: [2]sla.Crossing{{}, stale}},
+		},
+		{
+			name:    "answered, resolution one second under 100% is at risk, never breach",
+			rec:     sla.Record{FirstResponseAt: &answered},
+			elapsed: 1000*time.Minute - time.Second,
+			want:    sla.Crossed{AtRisk: [2]sla.Crossing{{}, stale}},
+		},
+		{
+			name:    "answered, resolution exactly 100% is a fresh breach and no at risk",
+			rec:     sla.Record{FirstResponseAt: &answered},
+			elapsed: 1000 * time.Minute,
+			want:    sla.Crossed{Breach: [2]sla.Crossing{{}, fresh}},
+		},
+		{
+			name:    "answered, resolution breach 15 minutes past target is fresh",
+			rec:     sla.Record{FirstResponseAt: &answered},
+			elapsed: 1015 * time.Minute,
+			want:    sla.Crossed{Breach: [2]sla.Crossing{{}, fresh}},
+		},
+		{
+			name:    "answered, resolution breach one second past the window is stale",
+			rec:     sla.Record{FirstResponseAt: &answered},
+			elapsed: 1015*time.Minute + time.Second,
+			want:    sla.Crossed{Breach: [2]sla.Crossing{{}, stale}},
+		},
+		{
+			name:    "not answered: stale response breach alongside fresh resolution at risk",
+			rec:     sla.Record{},
+			elapsed: 800 * time.Minute,
+			want: sla.Crossed{
+				Breach: [2]sla.Crossing{stale, {}},
+				AtRisk: [2]sla.Crossing{{}, fresh},
+			},
+		},
+		{
+			name:    "resolved: resolution never crosses, unanswered response still breaches",
+			rec:     sla.Record{ResolvedAt: &resolved},
+			elapsed: 1000 * time.Minute,
+			want:    sla.Crossed{Breach: [2]sla.Crossing{stale, {}}},
+		},
+		{
+			name:    "resolved: unanswered response still goes at risk",
+			rec:     sla.Record{ResolvedAt: &resolved},
+			elapsed: 80 * time.Minute,
+			want:    sla.Crossed{AtRisk: [2]sla.Crossing{fresh, {}}},
+		},
+		{
+			name:    "answered and resolved: nothing crosses",
+			rec:     sla.Record{FirstResponseAt: &answered, ResolvedAt: &resolved},
+			elapsed: 1000 * time.Minute,
+			want:    sla.Crossed{},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			tk := ticket.Ticket{CreatedAt: statusCreated}
+			now := statusCreated.Add(tc.elapsed)
+			require.Equal(t, tc.want, sla.Crossings(tc.rec, crossPolicy, tk, now))
+		})
+	}
+}
+
 // Freshness is on the SLA clock, so pause never makes a crossing stale.
 func TestCrossings_FreshnessAcrossAPause(t *testing.T) {
 	cases := []struct {
