@@ -921,6 +921,43 @@ func (s *Store) CountFilteredAt(ctx context.Context, f ticket.Filter, now time.T
 	return n, nil
 }
 
+// VolumeByDay is the dashboard's trend (#675): for each of the 30 local days in
+// tz ending with the one that contains now, oldest first, the tickets created
+// and the tickets resolved over what f's actor may see. Only f's visibility and
+// actor are used; the visibility parameters come from filterParams, as the
+// list's and the count's do, and the SQL carries the list's own visibility
+// block. tz is only a parameter of AT TIME ZONE, and a name Postgres does not
+// know (SQLSTATE 22023, invalid_parameter_value) is ticket.ErrUnknownTimeZone.
+func (s *Store) VolumeByDay(ctx context.Context, f ticket.Filter, tz string, now time.Time) ([]ticket.DayVolume, error) {
+	p, err := s.filterParams(ctx, f, now)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.q.TicketVolumeByDay(ctx, dbgen.TicketVolumeByDayParams{
+		Tz:                   tz,
+		Now:                  now,
+		Unrestricted:         p.Unrestricted,
+		ReporterOnly:         p.ReporterOnly,
+		ActorID:              p.ActorID,
+		ScopeGroupIds:        p.ScopeGroupIds,
+		ScopeCategoryIds:     p.ScopeCategoryIds,
+		ScopeTypeIds:         p.ScopeTypeIds,
+		ScopeTypeCategoryIds: p.ScopeTypeCategoryIds,
+	})
+	if err != nil {
+		var pg *pgconn.PgError
+		if errors.As(err, &pg) && pg.Code == "22023" {
+			return nil, fmt.Errorf("volume by day in %q: %w", tz, ticket.ErrUnknownTimeZone)
+		}
+		return nil, fmt.Errorf("counting ticket volume by day: %w", err)
+	}
+	out := make([]ticket.DayVolume, len(rows))
+	for i, r := range rows {
+		out[i] = ticket.DayVolume{Day: r.Day.Format("2006-01-02"), Created: r.Created, Resolved: r.Resolved}
+	}
+	return out, nil
+}
+
 // countParams is p for CountTicketsFiltered: every field the two queries share,
 // which is all of them but the sort direction, limit and offset.
 func countParams(p dbgen.ListTicketsFilteredParams) dbgen.CountTicketsFilteredParams {

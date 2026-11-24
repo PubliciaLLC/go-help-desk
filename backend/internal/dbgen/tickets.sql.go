@@ -1705,6 +1705,133 @@ func (q *Queries) NextTicketSeq(ctx context.Context) (int64, error) {
 	return column_1, err
 }
 
+const ticketVolumeByDay = `-- name: TicketVolumeByDay :many
+WITH bounds AS (
+  SELECT date_trunc('day', $2::timestamptz AT TIME ZONE $1::text) - interval '29 days' AS first_day
+), w AS (
+  -- first_day is a local date-time; since_at is the instant it begins in tz
+  SELECT first_day, first_day AT TIME ZONE $1::text AS since_at FROM bounds
+), events AS (
+  SELECT (t.created_at AT TIME ZONE $1::text)::date AS day, 1 AS created, 0 AS resolved
+  FROM tickets t, w
+  WHERE
+  -- visibility: begin
+  (
+    $3::bool
+    OR (
+      $4::bool
+      AND t.reporter_user_id = $5::uuid
+    )
+    OR (
+      NOT $3::bool
+      AND NOT $4::bool
+      AND (
+        t.reporter_user_id = $5::uuid
+        OR t.assignee_user_id = $5::uuid
+        OR t.assignee_group_id = ANY($6::uuid[])
+        OR t.category_id = ANY($7::uuid[])
+        OR (t.type_id = ANY($8::uuid[])
+            AND (t.category_id, t.type_id) IN (SELECT c.id, ty.id
+                FROM unnest($9::uuid[]) WITH ORDINALITY AS c(id, n)
+                JOIN unnest($8::uuid[]) WITH ORDINALITY AS ty(id, n) ON ty.n = c.n))
+      )
+    )
+  )
+  -- visibility: end
+  AND t.created_at >= w.since_at
+  UNION ALL
+  SELECT (COALESCE(t.resolved_at, t.closed_at) AT TIME ZONE $1::text)::date, 0, 1
+  FROM tickets t, w
+  WHERE
+  -- visibility: begin
+  (
+    $3::bool
+    OR (
+      $4::bool
+      AND t.reporter_user_id = $5::uuid
+    )
+    OR (
+      NOT $3::bool
+      AND NOT $4::bool
+      AND (
+        t.reporter_user_id = $5::uuid
+        OR t.assignee_user_id = $5::uuid
+        OR t.assignee_group_id = ANY($6::uuid[])
+        OR t.category_id = ANY($7::uuid[])
+        OR (t.type_id = ANY($8::uuid[])
+            AND (t.category_id, t.type_id) IN (SELECT c.id, ty.id
+                FROM unnest($9::uuid[]) WITH ORDINALITY AS c(id, n)
+                JOIN unnest($8::uuid[]) WITH ORDINALITY AS ty(id, n) ON ty.n = c.n))
+      )
+    )
+  )
+  -- visibility: end
+  AND COALESCE(t.resolved_at, t.closed_at) >= w.since_at
+)
+SELECT d::date AS day, COALESCE(sum(e.created), 0)::bigint AS created, COALESCE(sum(e.resolved), 0)::bigint AS resolved
+FROM w, generate_series(w.first_day, w.first_day + interval '29 days', interval '1 day') AS d
+LEFT JOIN events e ON e.day = d::date
+GROUP BY d ORDER BY d
+`
+
+type TicketVolumeByDayParams struct {
+	Tz                   string      `json:"tz"`
+	Now                  time.Time   `json:"now"`
+	Unrestricted         bool        `json:"unrestricted"`
+	ReporterOnly         bool        `json:"reporter_only"`
+	ActorID              uuid.UUID   `json:"actor_id"`
+	ScopeGroupIds        []uuid.UUID `json:"scope_group_ids"`
+	ScopeCategoryIds     []uuid.UUID `json:"scope_category_ids"`
+	ScopeTypeIds         []uuid.UUID `json:"scope_type_ids"`
+	ScopeTypeCategoryIds []uuid.UUID `json:"scope_type_category_ids"`
+}
+
+type TicketVolumeByDayRow struct {
+	Day      time.Time `json:"day"`
+	Created  int64     `json:"created"`
+	Resolved int64     `json:"resolved"`
+}
+
+// The dashboard's 30-day trend (#675, DESIGN.md "Volume trend"): per local day in
+// tz, ending with the day that contains now, the tickets created and the tickets
+// resolved. The visibility block is the list's, copied into both arms and pinned
+// to it by TestSQL_DashboardQueriesShareTheListRule. The resolved arm is served
+// by tickets_done_at_idx (000066), the created arm by tickets_created_at_idx.
+// tz is only ever a parameter of AT TIME ZONE; a name Postgres does not know
+// fails with SQLSTATE 22023, which the store maps to ErrUnknownTimeZone.
+func (q *Queries) TicketVolumeByDay(ctx context.Context, arg TicketVolumeByDayParams) ([]TicketVolumeByDayRow, error) {
+	rows, err := q.db.QueryContext(ctx, ticketVolumeByDay,
+		arg.Tz,
+		arg.Now,
+		arg.Unrestricted,
+		arg.ReporterOnly,
+		arg.ActorID,
+		pq.Array(arg.ScopeGroupIds),
+		pq.Array(arg.ScopeCategoryIds),
+		pq.Array(arg.ScopeTypeIds),
+		pq.Array(arg.ScopeTypeCategoryIds),
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []TicketVolumeByDayRow
+	for rows.Next() {
+		var i TicketVolumeByDayRow
+		if err := rows.Scan(&i.Day, &i.Created, &i.Resolved); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const unassignTicketsForGroup = `-- name: UnassignTicketsForGroup :many
 UPDATE tickets
 SET assignee_group_id = NULL, updated_at = now()

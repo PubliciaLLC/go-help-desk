@@ -39,6 +39,10 @@ type fakeStore struct {
 	countFiltered    int64
 	errCountFiltered error
 
+	volumeCalls []volumeCall // calls to VolumeByDay
+	volumeDays  []ticket.DayVolume
+	errVolume   error
+
 	guestTokens       map[string]guestTokenRow
 	errGuestToken     error
 	guestTokenCreates int // total CreateGuestToken calls, across rotations
@@ -436,6 +440,17 @@ func (f *fakeStore) ListFilteredWithMeta(context.Context, ticket.Filter) (ticket
 func (f *fakeStore) CountFiltered(_ context.Context, fl ticket.Filter) (int64, error) {
 	f.countedFilters = append(f.countedFilters, fl)
 	return f.countFiltered, f.errCountFiltered
+}
+
+type volumeCall struct {
+	f   ticket.Filter
+	tz  string
+	now time.Time
+}
+
+func (f *fakeStore) VolumeByDay(_ context.Context, fl ticket.Filter, tz string, now time.Time) ([]ticket.DayVolume, error) {
+	f.volumeCalls = append(f.volumeCalls, volumeCall{fl, tz, now})
+	return f.volumeDays, f.errVolume
 }
 
 func (f *fakeStore) ReplyMatches(context.Context, ticket.Filter, []uuid.UUID) (map[uuid.UUID]ticket.ReplyMatch, error) {

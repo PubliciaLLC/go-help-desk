@@ -707,7 +707,21 @@ var (
 	// wrong. A ticket needs a reporter or a guest address and this one has
 	// neither any more. 409.
 	ErrReporterDeleted = errors.New("the account that reported this ticket has been deleted")
+	// ErrUnknownTimeZone is a time zone name Postgres does not know (#675). The
+	// store maps SQLSTATE 22023 to it, so the zone is checked by the database
+	// that will use it and not by a copy of the zone data in the binary. 400.
+	ErrUnknownTimeZone = errors.New("unknown time zone")
 )
+
+// DayVolume is one local day of the dashboard's volume trend (#675): the tickets
+// created on it and the tickets whose current resolution (resolved_at, or
+// closed_at when never resolved) falls on it. Day is the local date,
+// "YYYY-MM-DD".
+type DayVolume struct {
+	Day      string `json:"day"`
+	Created  int64  `json:"created"`
+	Resolved int64  `json:"resolved"`
+}
 
 // The three values of the closed_reopen_policy setting (#349): whether a Closed
 // ticket can be force-reopened at all and, if so, by whom.

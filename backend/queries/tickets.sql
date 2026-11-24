@@ -777,3 +777,78 @@ WHERE
     )
     OR t.id IN (SELECT ticket_id FROM reply_hits)
   );
+
+-- name: TicketVolumeByDay :many
+-- The dashboard's 30-day trend (#675, DESIGN.md "Volume trend"): per local day in
+-- tz, ending with the day that contains now, the tickets created and the tickets
+-- resolved. The visibility block is the list's, copied into both arms and pinned
+-- to it by TestSQL_DashboardQueriesShareTheListRule. The resolved arm is served
+-- by tickets_done_at_idx (000066), the created arm by tickets_created_at_idx.
+-- tz is only ever a parameter of AT TIME ZONE; a name Postgres does not know
+-- fails with SQLSTATE 22023, which the store maps to ErrUnknownTimeZone.
+WITH bounds AS (
+  SELECT date_trunc('day', sqlc.arg(now)::timestamptz AT TIME ZONE sqlc.arg(tz)::text) - interval '29 days' AS first_day
+), w AS (
+  -- first_day is a local date-time; since_at is the instant it begins in tz
+  SELECT first_day, first_day AT TIME ZONE sqlc.arg(tz)::text AS since_at FROM bounds
+), events AS (
+  SELECT (t.created_at AT TIME ZONE sqlc.arg(tz)::text)::date AS day, 1 AS created, 0 AS resolved
+  FROM tickets t, w
+  WHERE
+  -- visibility: begin
+  (
+    sqlc.arg(unrestricted)::bool
+    OR (
+      sqlc.arg(reporter_only)::bool
+      AND t.reporter_user_id = sqlc.arg(actor_id)::uuid
+    )
+    OR (
+      NOT sqlc.arg(unrestricted)::bool
+      AND NOT sqlc.arg(reporter_only)::bool
+      AND (
+        t.reporter_user_id = sqlc.arg(actor_id)::uuid
+        OR t.assignee_user_id = sqlc.arg(actor_id)::uuid
+        OR t.assignee_group_id = ANY(sqlc.arg(scope_group_ids)::uuid[])
+        OR t.category_id = ANY(sqlc.arg(scope_category_ids)::uuid[])
+        OR (t.type_id = ANY(sqlc.arg(scope_type_ids)::uuid[])
+            AND (t.category_id, t.type_id) IN (SELECT c.id, ty.id
+                FROM unnest(sqlc.arg(scope_type_category_ids)::uuid[]) WITH ORDINALITY AS c(id, n)
+                JOIN unnest(sqlc.arg(scope_type_ids)::uuid[]) WITH ORDINALITY AS ty(id, n) ON ty.n = c.n))
+      )
+    )
+  )
+  -- visibility: end
+  AND t.created_at >= w.since_at
+  UNION ALL
+  SELECT (COALESCE(t.resolved_at, t.closed_at) AT TIME ZONE sqlc.arg(tz)::text)::date, 0, 1
+  FROM tickets t, w
+  WHERE
+  -- visibility: begin
+  (
+    sqlc.arg(unrestricted)::bool
+    OR (
+      sqlc.arg(reporter_only)::bool
+      AND t.reporter_user_id = sqlc.arg(actor_id)::uuid
+    )
+    OR (
+      NOT sqlc.arg(unrestricted)::bool
+      AND NOT sqlc.arg(reporter_only)::bool
+      AND (
+        t.reporter_user_id = sqlc.arg(actor_id)::uuid
+        OR t.assignee_user_id = sqlc.arg(actor_id)::uuid
+        OR t.assignee_group_id = ANY(sqlc.arg(scope_group_ids)::uuid[])
+        OR t.category_id = ANY(sqlc.arg(scope_category_ids)::uuid[])
+        OR (t.type_id = ANY(sqlc.arg(scope_type_ids)::uuid[])
+            AND (t.category_id, t.type_id) IN (SELECT c.id, ty.id
+                FROM unnest(sqlc.arg(scope_type_category_ids)::uuid[]) WITH ORDINALITY AS c(id, n)
+                JOIN unnest(sqlc.arg(scope_type_ids)::uuid[]) WITH ORDINALITY AS ty(id, n) ON ty.n = c.n))
+      )
+    )
+  )
+  -- visibility: end
+  AND COALESCE(t.resolved_at, t.closed_at) >= w.since_at
+)
+SELECT d::date AS day, COALESCE(sum(e.created), 0)::bigint AS created, COALESCE(sum(e.resolved), 0)::bigint AS resolved
+FROM w, generate_series(w.first_day, w.first_day + interval '29 days', interval '1 day') AS d
+LEFT JOIN events e ON e.day = d::date
+GROUP BY d ORDER BY d;

@@ -1323,6 +1323,14 @@ type Querier interface {
 	// clock; replicas whose clocks differ by a second differ by a second in when a
 	// window ends, which no limit here is sensitive to.
 	TakeRateLimit(ctx context.Context, arg TakeRateLimitParams) (TakeRateLimitRow, error)
+	// The dashboard's 30-day trend (#675, DESIGN.md "Volume trend"): per local day in
+	// tz, ending with the day that contains now, the tickets created and the tickets
+	// resolved. The visibility block is the list's, copied into both arms and pinned
+	// to it by TestSQL_DashboardQueriesShareTheListRule. The resolved arm is served
+	// by tickets_done_at_idx (000066), the created arm by tickets_created_at_idx.
+	// tz is only ever a parameter of AT TIME ZONE; a name Postgres does not know
+	// fails with SQLSTATE 22023, which the store maps to ErrUnknownTimeZone.
+	TicketVolumeByDay(ctx context.Context, arg TicketVolumeByDayParams) ([]TicketVolumeByDayRow, error)
 	// First use stamps the row. Separate from the lookup so a read of the ticket
 	// is not also a write on the hot path when the column is already set.
 	TouchGuestAccessToken(ctx context.Context, tokenHash string) error
