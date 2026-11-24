@@ -16,7 +16,7 @@ export interface AreaChartProps {
   ariaLabel: string // what the chart shows
   height?: number // CSS px, default 160; the width is the container's
   formatLabel?: (label: string) => string // x labels and the table's first column; default identity
-  formatValue?: (value: number) => string // axis maximum and table cells; default String
+  formatValue?: (value: number) => string // axis maximum, legend totals and table cells; default String
   emptyText?: string // shown instead of the marks when there are no labels or every value is 0
 }
 
@@ -42,6 +42,7 @@ export function AreaChart({
   const legend = series.map((s) => ({
     label: s.label,
     tone: s.tone,
+    value: formatValue(s.values.reduce((sum, v) => sum + v, 0)),
   }))
 
   const empty = labels.length === 0 || series.every((s) => s.values.every((v) => v === 0))

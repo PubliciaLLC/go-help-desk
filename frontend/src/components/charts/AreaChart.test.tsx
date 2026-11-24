@@ -82,6 +82,66 @@ describe('AreaChart: text outside the picture', () => {
   })
 })
 
+function legendItems(container: HTMLElement): string[][] {
+  return Array.from(container.querySelectorAll('figcaption li')).map((li) =>
+    Array.from(li.querySelectorAll('span:not([aria-hidden])')).map((s) => s.textContent ?? ''),
+  )
+}
+
+describe('AreaChart: legend totals', () => {
+  it('shows each series total next to its label', () => {
+    const { container } = render(<AreaChart {...props()} />)
+    expect(legendItems(container)).toEqual([
+      ['Created', '12'],
+      ['Resolved', '5'],
+    ])
+  })
+
+  it('formats the totals with formatValue', () => {
+    const { container } = render(<AreaChart {...props({ formatValue: (v) => `${v} tickets` })} />)
+    expect(legendItems(container)).toEqual([
+      ['Created', '12 tickets'],
+      ['Resolved', '5 tickets'],
+    ])
+  })
+
+  it('shows the totals in the empty state too, including a zero total', () => {
+    const { container } = render(
+      <AreaChart
+        {...props({
+          series: [
+            { key: 'created', label: 'Created', values: [0, 0, 0], tone: 'blue' },
+            { key: 'resolved', label: 'Resolved', values: [0, 0, 0], tone: 'green' },
+          ],
+          emptyText: 'None.',
+        })}
+      />,
+    )
+    expect(container.querySelector('svg')).toBeNull()
+    expect(legendItems(container)).toEqual([
+      ['Created', '0'],
+      ['Resolved', '0'],
+    ])
+  })
+
+  it('shows a zero total for a series that is zero while another is not', () => {
+    const { container } = render(
+      <AreaChart
+        {...props({
+          series: [
+            { key: 'created', label: 'Created', values: [1, 2, 3], tone: 'blue' },
+            { key: 'resolved', label: 'Resolved', values: [0, 0, 0], tone: 'green' },
+          ],
+        })}
+      />,
+    )
+    expect(legendItems(container)).toEqual([
+      ['Created', '6'],
+      ['Resolved', '0'],
+    ])
+  })
+})
+
 describe('AreaChart: empty', () => {
   it('shows emptyText instead of the marks when every value is 0', () => {
     const { container } = render(
