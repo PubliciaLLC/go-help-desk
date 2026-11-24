@@ -183,6 +183,19 @@ It starts its own server on port 5183 and fails if something already holds that 
 
 ---
 
+## The website's copy of the API description
+
+`docs/api/openapi.yaml` is the source. The website keeps a byte-identical copy, pinned to an app commit, on its own branch. Nobody copies it by hand: `.github/workflows/site-openapi.yml` pushes it to the site branch when the spec changes on the release branch, and again at each release tag. It runs the spec tests first and publishes nothing if they fail.
+
+Two repository variables (Settings → Secrets and variables → Actions → Variables) say where it writes, and with neither set the workflow does nothing and says so in its run summary:
+
+- `SITE_OPENAPI_SOURCE`: the branch that feeds the site, for example `v1.3.0-beta`.
+- `SITE_OPENAPI_BRANCH`: the site branch it commits to, for example `v1.3.0-beta-web`.
+
+At the start of each minor version, point both at the new release branch and its site branch. Pushes to any other branch, and tags that are not on `SITE_OPENAPI_SOURCE`, are ignored, so the previous line cannot overwrite the new site. The site branch's own `scripts/openapi-sync.sh` documents the manual fallback (`pull`, `check`, `stale`).
+
+---
+
 ## Code conventions
 
 For code conventions, see [docs/code-conventions.md](docs/code-conventions.md).
