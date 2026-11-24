@@ -2205,7 +2205,8 @@ the start, so a request is judged by one limit even if an administrator saves a
 new one while it is arriving.
 
 **Bounds: 1 to 100 MB** (the owner's proposal in the issue). 100 is the top
-because what the limit costs grows with it (below), and a help desk is not a
+because it is the stock clamd's `StreamMaxLength` and `MaxFileSize` (below),
+because what the limit costs grows with it (below), and because a help desk is not a
 file transfer service: 100 MB covers a large log bundle or a scanned document
 set, and anything bigger belongs in a link. 1 is the bottom because 0 is
 already expressed another way: an empty `attachment_allowed_types` takes no
@@ -2218,25 +2219,42 @@ upload path that named 25 MB is one of these four:
   the connection for the upload and download routes only, replacing the
   server-wide 15 s read and 30 s write deadlines in `cmd/server/main.go`) was
   sized as "25 MB at roughly 700 kbit/s". That rate is the rule, and the
-  minutes follow from it: `transferTimeout(n int64) time.Duration =
-  max(5 * time.Minute, time.Duration(n) * time.Second / minTransferRate)`, with
-  `minTransferRate = (25 << 20) / 300` bytes a second (≈ 700 kbit/s). Five
-  minutes at 25 MB or below (so the default, and every lower limit, is exactly
-  today's deadline), 10 at 50 MB, 20 at 100 MB. The upload passes the
+  minutes follow from it: five minutes for every 25 MiB, never less than five
+  minutes. Written exactly as
+
+  ```go
+  const transferAnchorBytes = 25 << 20 // 25 MiB moves in five minutes (≈ 700 kbit/s)
+
+  func transferTimeout(n int64) time.Duration {
+      return max(5*time.Minute, time.Duration(n)*time.Second/transferAnchorBytes*300)
+  }
+  ```
+
+  in that order of operations, and in no other: there is **no rate constant**,
+  because `(25 << 20) / 300` truncates to 87381 bytes a second and would make
+  25 MiB come out at 5 min 0.0003 s rather than five minutes. Multiplying `n`
+  by a second first and dividing by the anchor second is exact at every whole
+  MiB (`k << 20` bytes is `k × 40 ms` before the `× 300`), and `n × 10⁹` stays
+  inside `int64` up to about 9 GB, ninety times the top of the range. So the
+  values are exact, and the tests assert them with `==`: **5 min** at 0, 1 MiB
+  and 25 MiB (the default, and every lower limit, is exactly today's
+  deadline), **10 min** at 50 MiB, **20 min** at 100 MiB. Multiplying `n` by
+  five minutes first is not an option: `100 MiB × 5 min` in nanoseconds is
+  about 3 × 10¹⁹ and overflows `time.Duration`. The upload passes the
   `maxBytes` that applies to it (a guest's lower limit gets a shorter
   deadline); the download passes the stored file's `size_bytes`, so a 100 MB
-  file stored before the limit was lowered still has time to leave. Written as
-  bytes over a rate rather than minutes per 25 MB because the product
-  `n * 5 min` overflows `time.Duration` at 100 MB. The server-wide deadlines
+  file stored before the limit was lowered still has time to leave. The server-wide deadlines
   do not change: every other body is a JSON document. The longer window is
   only open to a caller who has passed authorisation (signed in, or holding a
   guest link that passed the guest checks), and a slow body costs a connection
   and a goroutine, not memory, until its bytes arrive.
 - **The scan timeout scales the same way.** `antivirus.Scanner`'s 60-second
   scan deadline was justified as "a 25 MB file over INSTREAM on a busy daemon".
-  It becomes `max(60 s, len(data) at (25 << 20) / 60 bytes a second)`: one
-  minute up to 25 MB, four at 100 MB, computed per scan from the bytes being
-  sent. The dial timeout stays five seconds.
+  It becomes one minute for every 25 MiB, never less than one minute, written
+  the same way and for the same reason: `scanTimeoutFor(n int) time.Duration =
+  max(time.Minute, time.Duration(n)*time.Second/(25<<20)*60)`, computed per
+  scan from `len(data)`. Exactly **60 s** up to 25 MiB, **2 min** at 50 MiB,
+  **4 min** at 100 MiB. The dial timeout stays five seconds.
 - **Upload memory is bounded where it can be, and stated where it cannot.**
   `ParseMultipartForm(maxBytes)` keeps up to `maxBytes` of the file in memory
   before spilling the rest to a temporary file, and the handler then reads the
@@ -2258,20 +2276,37 @@ upload path that named 25 MB is one of these four:
   beside them that reasons from "the 25 MB upload cap" is reworded to say the
   caps are independent of it.
 
-**The scanner has a limit of its own.** clamd closes an `INSTREAM` session
-larger than its `StreamMaxLength`, which defaults to **25 MB**, and the
-`clamav/clamav` image in the compose file ships that default. The scanner
-already reads that `ERROR size limit exceeded` reply as `Unavailable` (#167),
-so raising the limit above 25 MB without raising clamd's makes every larger
-upload `503` under `required` scanning and stored unscanned under `permissive`;
-nothing is ever called clean that was not scanned. The server cannot read
-clamd's configuration, so it does not refuse the setting. It says so instead:
+**The scanner has a limit of its own, and the stock one is the top of the
+range.** clamd closes an `INSTREAM` session that sends more than its
+`StreamMaxLength`, and skips (answering `OK`) a file larger than its
+`MaxFileSize`. Since ClamAV 0.105 (2022) both default to **100M**, and
+`MaxScanSize` to 400M (`clamd.conf.sample`: "Default: 100M"; the 0.105 release
+notes list "StreamMaxLength: 25M -> 100M, MaxFileSize: 25M -> 100M,
+MaxScanSize: 100M -> 400M"). The compose file pins `clamav/clamav:stable`, a
+1.x release, so **the shipped scanner accepts every value in this setting's
+range with no change**. clamd's `M` is 1,048,576 bytes, the same MiB this
+setting counts in, and it refuses a stream only when the bytes sent *exceed*
+the length, so a file of exactly 100 MiB, the largest this setting can let
+through, sits exactly on the stock `StreamMaxLength` and `MaxFileSize` and
+still fits, with no headroom. That is the better argument for 100 as the top
+(below): it is the stock scanner's ceiling, and the range never asks an
+operator to retune clamd. The implementer confirms the two defaults with
+`docker run --rm --platform linux/amd64 clamav/clamav:stable clamconf -n`
+against the pinned image and says so in the PR; if they differ, this paragraph
+is wrong and the bound is revisited before merge.
+
+What can still go wrong is a clamd that is **older than 0.105** (25M stream
+and file limits) or **hand-tuned below the new limit**. The scanner already
+reads clamd's `size limit exceeded` reply as `Unavailable` (#167), so such a
+file is `503` under `required` scanning and stored unscanned under
+`permissive`; a file over a lowered `MaxFileSize` that fits the stream limit
+is skipped and answered `OK` unless `AlertExceedsMax yes` is set, which makes
+clamd answer `FOUND`, which this application refuses. The server cannot read
+clamd's configuration, so it does not refuse the setting. It says so, quietly:
 while `attachment_scan_policy` is not `off` and the value is above 25, the
-setting shows a note (below), and the upgrade note and `docker/.env.example`
-say to raise `StreamMaxLength`, `MaxFileSize` and `MaxScanSize` together to at
-least the new limit. All three, because a file over `MaxFileSize` that fits the
-stream limit is skipped and answered `OK`; setting `AlertExceedsMax yes` makes
-clamd answer `FOUND` for it instead, which this application refuses.
+field carries a grey hint (below, not an amber warning, since the stock
+scanner is fine), and the upgrade note and `docker/.env.example` say which
+clamd settings matter for an older or tuned daemon.
 
 **A reverse proxy has a limit too.** The compose file exposes the app directly,
 so nothing else is in the path. An operator who puts nginx or similar in front
@@ -2313,12 +2348,30 @@ the save and the page:
 
 - **`GET /me`** gains `attachment_max_bytes` (integer, always present for a
   person; not on a machine credential's `/me`, which has no uploader UI). The
-  reply composer and the new-ticket page pass it to `AttachmentUpload` as
-  `maxBytes`, which until now defaulted to a 25 MB literal; with the field
-  absent (an older server) the component keeps 25 MB. Without this a raised
-  limit would be refused in the browser before the server saw the file. On
-  `/me` rather than `/site` because only signed-in people use it; `/site`
-  already carries the guest figure.
+  reply composer (`components/ticket/ReplyComposer.tsx`) and the new-ticket
+  page pass it to `AttachmentUpload` as `maxBytes`, which until now defaulted
+  to a 25 MB literal. Without this a raised limit would be refused in the
+  browser before the server saw the file. On `/me` rather than `/site` because
+  only signed-in people use it; `/site` already carries the guest figure.
+
+  **Where the browser reads it: the `['me']` query, not the auth store.** The
+  store is filled from two different shapes. `requireAuth` in `router.tsx`
+  fills it from `GET /me` (the `meView`), but a password sign-in fills it from
+  the login response's `user` (`LoginPage.tsx`, `setUser(user)`), which is a
+  plain `user.User` serialised by `handleLogin` and has no
+  `attachment_max_bytes`; the store is also never refreshed when an
+  administrator saves. So both components read
+  `useQuery({ queryKey: ['me'], queryFn: getMe, retry: false })`, the query the
+  ticket list already uses for `sla_enabled` and that the Settings save already
+  invalidates, and take `me?.attachment_max_bytes ?? user?.attachment_max_bytes`
+  (the store's copy stands in until the query answers, which covers a reload,
+  where the store came from `/me`). With both absent (an older server, or the
+  first render right after a password sign-in) `AttachmentUpload` keeps its
+  25 MB default; the query answers before anyone has picked a file in practice,
+  and the server's `413` names the real limit if it has not. The login
+  response is not changed to carry `meView`: that is a second shape on a
+  security route to fix one figure, and every other field it would add is
+  already read from `/me` where it matters.
 - **`GET /site`**: unchanged in shape; `guest_attachment_max_bytes` is the
   effective guest limit as above.
 - **MCP**: no tool takes a file (`MaxRequestBody` is 1 MiB and
@@ -2328,23 +2381,31 @@ the save and the page:
 `frontend/src/components/admin/AttachmentSizeLimitSection.tsx`, a `Section`
 titled **File size** rendered by `AttachmentsPanel` directly under **Uploads**
 in `SettingsPage.tsx`, and taking only what it shows: `value?: number` (the
-stored `attachment_max_mb`, absent when unset), `onChange(mb)`, and
-`scanning: boolean` (`attachment_scan_policy` is not `off`). It reads no
-query and no page state of its own, so #674's move to a **File Attachments**
-page is moving one JSX line.
+stored `attachment_max_mb`, absent when unset), `onChange(mb)`,
+`scanning: boolean` (`attachment_scan_policy` is not `off`), and
+`guestMB: number` (the guest's own limit as the page shows it, by the rules
+below). It reads no query and no page state of its own, so #674's move to a
+**File Attachments** page is moving one JSX line.
 
 - A `BoundedNumberInput` labelled **Largest file anyone may attach**, `min 1`,
   `max 100`, hint "1 to 100 MB. Default 25.", followed by "MB". Unset shows 25.
   A displayed value is the reader's: absent or outside 1 to 100 shows 25.
 - Under it, one sentence: "Applies to every upload: staff, requesters and
   guests. Guests are held to the lower of this and their own limit."
-- While `scanning` and the value is above 25, an amber note (the
-  `role="note"` style the guest slider uses): "Your virus scanner must accept
-  files this large. clamd refuses anything over its StreamMaxLength, 25 MB
-  unless you changed it, and a file it refuses cannot be scanned: with
-  scanning required it is refused, with scanning permissive it is stored
-  unscanned. Raise StreamMaxLength, MaxFileSize and MaxScanSize to at least
-  N MB." Not shown at 25 or below, or with scanning off.
+- **Both limits, read-only for the guest one** (the issue's "shows both
+  limits"). A line under the sentence: "Guests: up to G MB." with G =
+  `min(guestMB, shown value)`. When `guestMB` is the higher, it continues:
+  " Their own limit is {guestMB} MB; this one is lower, so it applies." The
+  guest figure is edited only on the guest slider (General → Submissions
+  today, **Guest Access** after #674); this line shows it, it does not offer
+  a second control for the same setting.
+- While `scanning` and the value is above 25, a grey hint (`text-xs
+  text-gray-500`, not a warning): "Your virus scanner must accept files this
+  large. clamd 0.105 and later accept up to 100 MB unless StreamMaxLength or
+  MaxFileSize was lowered; an older clamd stops at 25 MB. A file the scanner
+  cannot take is refused while scanning is required, and stored unscanned
+  while it is permissive." Not shown at 25 or below, which the old 25M
+  default accepts too, or with scanning off.
 
 The guest controls stay where they are (General → Submissions; #674 moves them
 to **Guest Access**). `GuestSizeSlider` loses its literal range:
@@ -2368,7 +2429,47 @@ to **Guest Access**). `GuestSizeSlider` loses its literal range:
   {max} MB, set under Attachments."
 - On the Settings page, editing `attachment_max_mb` moves the guest slider's
   top in the same render, before saving, so the page never shows a guest value
-  the save would refuse.
+  the save would refuse. This holds while both controls share
+  `SettingsPage`'s one `local` draft, which they do until #674 (below).
+
+**An unsaved guest value above an unsaved overall limit.** The two controls
+are on different tabs sharing one draft, so an administrator can move the
+guest slider to 20, then type 10 into the overall field. Saving both as typed
+sends `{attachment_max_mb: 10, guest_attachment_max_mb: 20}`, which the PATCH
+rule above refuses whole, and the slider's "Saved as 20 MB" would be untrue
+for a value never saved. The rule, in `SettingsPage`:
+
+- The overall limit **as the page shows it** is `overallMB` =
+  `local.attachment_max_mb` when it is an integer 1 to 100, else 25.
+- The guest value is **dirty** when `local.guest_attachment_max_mb` differs
+  from `settings.guest_attachment_max_mb` (the same comparison the save uses
+  to decide what to send, #394).
+- A dirty guest value is **shown and saved as `min(local guest, overallMB)`**.
+  The page passes that to `GuestSizeSlider` as its `value` (so a dirty value
+  never exceeds `max`, and the "Saved as" note, which is only ever about a
+  stored value, cannot appear for it) and to `AttachmentSizeLimitSection` as
+  `guestMB`; the save's patch builder applies the same `min` to the guest key
+  when it sends it. The draft itself is not rewritten: `BoundedNumberInput`
+  reports every keystroke, so typing "10" passes through "1", and clamping
+  the draft on each change would leave the guest at 1. Raising the overall
+  field again shows the guest value that was dragged.
+- An untouched (stored) guest value is passed as stored, and the stored-value
+  rules above apply: it sits at `max` with the "Saved as" note, and it is not
+  sent.
+
+**After #674 splits the page.** The overall limit moves to **File
+Attachments** and the guest slider to **Guest Access**, each with its own
+draft and save. Then the slider's `max` is the **stored**
+`attachment_max_mb` (from the `['admin', 'settings']` query, reader fallback
+25), never a draft on another page, and the same-render test above no longer
+applies and is replaced by: saving a new overall limit on File Attachments
+invalidates `['admin', 'settings']`, and Guest Access shows the new `max`. A
+dirty guest value is then at most the stored overall limit because the
+slider cannot go higher, so the clamp above has nothing to do; it stays, as
+the rule for whatever draft the slider is given. If another administrator
+lowers the overall limit between load and save, the server refuses the guest
+value with the `400` above and the page shows it as any refused save. #674
+owns that wiring; this section states what it must keep.
 
 The after-upgrade wizard's guest step uses the same component with the same
 rule (`settings.attachment_max_mb`, fallback 25) and the same sentence; it
@@ -2376,9 +2477,10 @@ offers no control for the overall limit, because nothing about it changed on
 upgrade.
 
 **Phone layout.** Nothing new: the input is the `BoundedNumberInput` the guest
-cap already uses, full width under its label below `sm`, and the note wraps.
-The admin-page width checks (Small screens) cover the Attachments tab at 320
-and 375 pixels with the note shown.
+cap already uses, full width under its label below `sm`, and the guest line
+and the scanner hint are text that wraps. The admin-page width checks (Small
+screens) cover the Attachments tab at 320 and 375 pixels with the hint and the
+two-sentence guest line shown.
 
 **Docs.** `openapi.yaml`: `attachment_max_mb` in the settings schema (integer,
 1 to 100, default 25, session-only) and in `PATCH /admin/settings`'
@@ -2389,8 +2491,15 @@ per-file limit, `attachment_max_mb`, 25 MB by default". `upgrade-notes-1.3.0.md`
 under the guest-upload heading (#445) the size line now says the slider runs to
 the per-file limit and a guest value above it is refused; a new entry under New
 features, *Administrators Can Set the Largest Upload (#673)*, with the default
-(nothing changes), the bounds, the clamd and proxy limits, and the memory cost.
-`docker/.env.example` gains the three clamd settings next to `CLAMAV_ADDR`.
+(nothing changes), the bounds, the scanner (the shipped `clamav/clamav:stable`
+accepts up to 100 MB as it stands; a clamd older than 0.105, or one with
+`StreamMaxLength` or `MaxFileSize` lowered, needs both at least the new limit,
+and `AlertExceedsMax yes` if `MaxFileSize` stays lower), the proxy limits, and
+the memory cost. `docker/.env.example` gains, next to `CLAMAV_ADDR`, one
+comment saying the same in two lines: no clamd change is needed with the
+shipped image; an older or tuned clamd must allow the per-file limit. The
+`.env.example` and `docker-compose.yml` comments that say "a 25 MB upload"
+say "an upload".
 
 **Tests.**
 
@@ -2421,17 +2530,26 @@ features, *Administrators Can Set the Largest Upload (#673)*, with the default
   upload of 10 MiB + 1 is `413` "10 MB"; raising to 25 again lets a 15 MiB
   guest file in.
 - `/me` carries `attachment_max_bytes` for each role, `26214400` by default.
-- Pure: `transferTimeout` is 5 min at 0, 1 MiB and 25 MiB, 10 min at 50 MiB, 20
-  min at 100 MiB, and does not overflow at 101 MiB; the scan timeout is 60 s to
-  25 MiB and 4 min at 100 MiB.
+- Pure, asserted with `==`, no tolerance: `transferTimeout` is exactly 5 min at
+  0, 1 MiB and 25 MiB, 10 min at 50 MiB, 20 min at 100 MiB, and at 101 MiB is
+  exactly 20 min 12 s (positive, no overflow); `scanTimeoutFor` is exactly
+  60 s at 0 and 25 MiB, 2 min at 50 MiB and 4 min at 100 MiB.
 - Frontend: `AttachmentSizeLimitSection` shows 25 when unset, reports the
-  typed value, shows the scanner note above 25 only while scanning; the
+  typed value, shows the scanner hint above 25 only while scanning; shows
+  "Guests: up to 5 MB." with guest 5 and overall 25, and "Guests: up to 10 MB.
+  Their own limit is 20 MB; ..." with guest 20 and overall 10; the
   settings save sends `attachment_max_mb` only when changed; `GuestSizeSlider`
   has `max` equal to the overall limit, positions a stored 20 at 10 with the
   saved-as note, and its ticks are the two ends; raising the overall field
-  raises the slider's top before saving; `AttachmentUpload` uses the `maxBytes`
-  it is given and the composer passes `/me`'s figure; the wizard's guest
-  slider tops out at the stored overall limit.
+  raises the slider's top before saving; **an unsaved guest 20 with the
+  overall field then typed as 10** shows the slider at 10 with no "Saved as"
+  note and saves `{attachment_max_mb: 10, guest_attachment_max_mb: 10}`, and
+  typing the overall back to 30 before saving shows 20 again;
+  `AttachmentUpload` uses the `maxBytes` it is given; the composer and the
+  new-ticket page take the `['me']` query's figure, including **after a
+  password sign-in**: with the store holding a login-response user that has no
+  `attachment_max_bytes` and `/me` answering 30 MB, a 26 MB file is not
+  refused; the wizard's guest slider tops out at the stored overall limit.
 
 **Decisions taken without the owner.** Each can be overturned in one line.
 
@@ -2454,9 +2572,12 @@ features, *Administrators Can Set the Largest Upload (#673)*, with the default
   note states the cost instead.
 - **The image caps do not move.** Rejected: scaling them with the byte limit;
   they bound decoding, which the byte size never bounded.
-- **No check against clamd's StreamMaxLength; a note on the page and in the
-  docs.** Rejected: refusing values above 25 while scanning is on, which would
-  refuse the operator who has already raised clamd's limit.
+- **No check against clamd's limits; a grey hint on the page above 25 and a
+  line in the docs**, because the shipped clamd (0.105 and later: 100M stream
+  and file limits) already takes the whole range. Rejected: refusing values
+  above 25 while scanning is on, which would refuse the stock image that takes
+  them; and an amber warning at every value above 25, which would tell every
+  administrator on the stock image to change settings that already fit.
 - **Lowering the overall limit keeps the stored guest value.** Rejected:
   clamping the guest row to the new limit (a silent second change that loses
   the figure) and refusing the lower overall limit (makes tightening a
@@ -2469,6 +2590,26 @@ features, *Administrators Can Set the Largest Upload (#673)*, with the default
   `attachment_allowed_types`.
 - **The browser learns the limit from `/me.attachment_max_bytes`.** Rejected:
   `/site`, which anyone can read and no anonymous page needs.
+- **The composer and new-ticket page read the `['me']` query, with the auth
+  store's copy standing in until it answers.** Rejected: the store alone,
+  which a password sign-in fills from the login response (no
+  `attachment_max_bytes`) and a Settings save never refreshes; and changing
+  the login response to carry `meView`, a second shape on a security route
+  for one figure.
+- **The File size section shows the guest limit read-only ("Guests: up to G
+  MB"), and the guest slider stays with guest submission.** The issue asks the
+  File Attachments page to show both limits; #674 puts the slider on Guest
+  Access. Rejected: moving the slider onto the attachments page (contradicts
+  #674's table) and a second editable guest control (two inputs for one key).
+- **An unsaved guest value above the draft overall limit is shown and saved as
+  the overall limit; the draft is not rewritten.** Rejected: clamping the
+  draft on each overall keystroke (typing "10" passes through "1" and leaves
+  the guest at 1), and dropping the guest key from the patch (silently
+  discards an edit the administrator made).
+- **The deadline and scan formulas multiply by a second before dividing by
+  25 MiB, with no rate constant**, so the anchors are exact and tested with
+  `==`. Rejected: a bytes-per-second constant, which truncates and puts the
+  default deadline 0.3 ms past five minutes.
 - **The control is a number field, not a slider.** Rejected: a second slider;
   the value is set once, and a number field is what the guest cap and hourly
   rate beside it use.
