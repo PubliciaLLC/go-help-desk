@@ -63,18 +63,17 @@ func TestDeleteUser_ReturnsTheirOpenTicketsToTheQueue(t *testing.T) {
 	require.True(t, found, "the ticket is not in the unassigned queue")
 }
 
-// An address belonging to another account is a conflict, not a server fault.
+// An address belonging to another LIVE account is a conflict, not a server
+// fault. The unique constraint came back as an unmapped error, so an
+// administrator typing an address that already exists was told "an internal
+// error occurred".
 //
-// The unique constraint came back as an unmapped error, so an administrator
-// typing an address that already exists was told "an internal error
-// occurred". The message now says what is actually wrong — and mentions
-// deleted accounts, because the row stays and keeps its address, which is the
-// case nobody expects.
+// An address held only by a deleted account is not a conflict any more: the
+// form cannot restore a deleted account, so the old row gives up its address
+// (see the user package, CreateByAdmin) and the new account is created.
 func TestCreateUser_ATakenAddressIsAConflict(t *testing.T) {
 	// A harness each, because a refused insert aborts the transaction this
-	// suite runs every test inside — the second attempt would fail on the
-	// poisoned transaction rather than on the constraint, and pass for
-	// entirely the wrong reason.
+	// suite runs every test inside.
 	t.Run("a live account", func(t *testing.T) {
 		h, cleanup := newHarness(t)
 		defer cleanup()
@@ -85,11 +84,15 @@ func TestCreateUser_ATakenAddressIsAConflict(t *testing.T) {
 			"email": "taken@test.local", "display_name": "Someone Else",
 			"role": "user", "password": "a-real-passphrase",
 		})
-		defer res.Body.Close()
-		require.Equal(t, http.StatusConflict, res.StatusCode)
+		body, _ := readAllBody(res)
+		res.Body.Close()
+		require.Equal(t, http.StatusConflict, res.StatusCode, body)
+		require.Contains(t, body, "email_taken")
+		require.Contains(t, body, "already exists")
+		require.NotContains(t, body, "deleted", "a live account holds it; deleted ones no longer do")
 	})
 
-	t.Run("a deleted one, whose row keeps the address", func(t *testing.T) {
+	t.Run("a deleted one: the address is released and the account is created", func(t *testing.T) {
 		h, cleanup := newHarness(t)
 		defer cleanup()
 		ctx := context.Background()
@@ -104,10 +107,12 @@ func TestCreateUser_ATakenAddressIsAConflict(t *testing.T) {
 		})
 		body, _ := readAllBody(res)
 		res.Body.Close()
-		require.Equal(t, http.StatusConflict, res.StatusCode,
-			"re-hiring somebody should say the address is taken, not report a server fault: %s", body)
-		require.Contains(t, body, "deleted",
-			"the message should mention the case nobody expects")
+		require.Equal(t, http.StatusCreated, res.StatusCode, body)
+
+		old, err := h.userSvc.GetByIDAdmin(ctx, existing.ID)
+		require.NoError(t, err)
+		require.NotNil(t, old.DeletedAt)
+		require.Equal(t, "deleted-"+existing.ID.String()+"@invalid", old.Email)
 	})
 }
 

@@ -593,6 +593,52 @@ WHERE id = sqlc.arg('id')
   AND oidc_subject IN ('', sqlc.arg('oidc_subject'))
 RETURNING id;
 
+-- name: GetUserByEmailAnyState :one
+-- The one row that holds this address, whatever it is: live or deleted,
+-- person or service account. The unique constraint on users.email is over
+-- every row, so there is at most one. GetUserByEmail is the login lookup and
+-- hides deleted rows and service accounts; the SAML sign-in has to see them,
+-- because which of the two holds the address decides what happens.
+SELECT * FROM users WHERE email = $1;
+
+-- name: RelinkSAMLSubject :one
+-- Replaces the SAML subject of an account that was created by SAML, when the
+-- identity provider sends a NameID the account does not know. The conditions
+-- are asked at the write, not only by the caller, so an account that was
+-- deleted, disabled or changed kind between the read and this statement is
+-- not relinked on the strength of the older read. Writes the subject and the
+-- name and nothing else, so the role, the groups and the MFA state it carries
+-- are not touched. An empty display name leaves the stored one alone.
+UPDATE users
+SET saml_subject = sqlc.arg('saml_subject'),
+    display_name = COALESCE(sqlc.narg('display_name'), display_name),
+    updated_at   = now()
+WHERE id = sqlc.arg('id')
+  AND saml_subject <> ''
+  AND deleted_at IS NULL
+  AND disabled = FALSE
+  AND NOT service_account
+RETURNING *;
+
+-- name: ReleaseDeletedUserEmail :one
+-- Frees an address held by a deleted account, so a new account can have it:
+-- the old row's address becomes 'deleted-<id>@invalid' (a reserved top-level
+-- domain: it cannot receive mail, and no one can sign up as it) and its SAML
+-- subject is cleared. The row keeps its id, so the tickets, replies and audit
+-- entries that point at it stay on it. Only a deleted row is ever touched.
+-- saml_created_only narrows it to rows SAML created (a SAML sign-in recreates
+-- those and leaves a deleted local account blocking); an administrator
+-- creating an account passes false. At most one row can match: the address
+-- is unique across every row.
+UPDATE users
+SET email = 'deleted-' || id::text || '@invalid',
+    saml_subject = '',
+    updated_at = now()
+WHERE email = sqlc.arg('email')
+  AND deleted_at IS NOT NULL
+  AND (NOT sqlc.arg('saml_created_only')::boolean OR saml_subject <> '')
+RETURNING id;
+
 -- name: EnableMFAIfStillEnrolled :one
 -- Turns MFA on using whatever secret the row still holds, and reports whether
 -- it applied.

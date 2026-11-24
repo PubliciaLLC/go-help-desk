@@ -89,6 +89,21 @@ func (f *fakeUserStore) Create(_ context.Context, u user.User) error {
 	return nil
 }
 
+// The three below exist so the fake satisfies user.Store. How a SAML sign-in
+// matches, relinks and retires accounts is tested against Postgres (see
+// internal/database/userstore/saml_signin_test.go), not against this fake.
+func (f *fakeUserStore) GetByEmailAnyState(ctx context.Context, email string) (user.User, error) {
+	return f.GetByEmail(ctx, email)
+}
+
+func (f *fakeUserStore) RelinkSAMLSubject(context.Context, uuid.UUID, string, string) (user.User, bool, error) {
+	return user.User{}, false, nil
+}
+
+func (f *fakeUserStore) CreateReleasingDeleted(ctx context.Context, u user.User, _ bool) (uuid.UUID, error) {
+	return uuid.Nil, f.Create(ctx, u)
+}
+
 func (f *fakeUserStore) GetByID(_ context.Context, id uuid.UUID) (user.User, error) {
 	u, ok := f.byID[id]
 	if !ok {

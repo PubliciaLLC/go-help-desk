@@ -193,6 +193,61 @@ type CreateUserInput struct {
 
 // Create validates and persists a new user, hashing the password if provided.
 func (s *Service) Create(ctx context.Context, in CreateUserInput) (User, error) {
+	u, err := s.newUser(in)
+	if err != nil {
+		return User{}, err
+	}
+	if err := s.store.Create(ctx, u); err != nil {
+		if isUniqueViolation(err) {
+			return User{}, ErrEmailTaken
+		}
+		return User{}, fmt.Errorf("creating user: %w", err)
+	}
+	return u, nil
+}
+
+// CreateByAdmin is Create for the administrator's "New user" form. An address
+// held only by a deleted account is not a reason to refuse: deleting someone
+// means they are gone, and the form has no way to bring the old row back, so
+// the old row gives up its address (see releaseAudit) and keeps its id and
+// everything that points at it. An address a live account holds is still
+// ErrEmailTaken. actorID is the administrator, for the audit entry.
+func (s *Service) CreateByAdmin(ctx context.Context, in CreateUserInput, actorID *uuid.UUID) (User, error) {
+	u, err := s.newUser(in)
+	if err != nil {
+		return User{}, err
+	}
+	released, err := s.store.CreateReleasingDeleted(ctx, u, false)
+	if err != nil {
+		if isUniqueViolation(err) {
+			return User{}, ErrEmailTaken
+		}
+		return User{}, fmt.Errorf("creating user: %w", err)
+	}
+	s.releaseAudit(ctx, released, u.ID, actorID)
+	return u, nil
+}
+
+// releaseAudit records that a deleted account gave up its address to a new
+// one, on both rows. Ids only: neither address nor any subject is written.
+// Best effort and detached, like every user audit entry (writeAuditEntry).
+func (s *Service) releaseAudit(ctx context.Context, released, replacement uuid.UUID, actorID *uuid.UUID) {
+	if released == uuid.Nil {
+		return
+	}
+	ctx = context.WithoutCancel(ctx)
+	s.writeAuditEntry(ctx, audit.Entry{
+		ActorID: actorID, EntityType: "user", EntityID: released, Action: "email_released",
+		After: map[string]any{"replaced_by_user_id": replacement.String()},
+	})
+	s.writeAuditEntry(ctx, audit.Entry{
+		ActorID: actorID, EntityType: "user", EntityID: replacement, Action: "replaced_deleted_user",
+		After: map[string]any{"previous_user_id": released.String()},
+	})
+}
+
+// newUser validates in and builds the row, hashing the password if given.
+func (s *Service) newUser(in CreateUserInput) (User, error) {
 	u := User{
 		ID:          uuid.New(),
 		Email:       strings.TrimSpace(in.Email), // Validate normalises it
@@ -219,12 +274,6 @@ func (s *Service) Create(ctx context.Context, in CreateUserInput) (User, error) 
 			return User{}, fmt.Errorf("hashing password: %w", err)
 		}
 		u.PasswordHash = string(hash)
-	}
-	if err := s.store.Create(ctx, u); err != nil {
-		if isUniqueViolation(err) {
-			return User{}, ErrEmailTaken
-		}
-		return User{}, fmt.Errorf("creating user: %w", err)
 	}
 	return u, nil
 }
@@ -995,7 +1044,35 @@ func canAdoptByEmail(u User, oidcSubject string) error {
 	return nil
 }
 
+// errSAMLLostRace is what one pass of UpsertSAMLUser returns when something
+// changed under it (another request created or retired the row it was about to
+// write), so the sign-in is decided again from the start. Never leaves the
+// package.
+var errSAMLLostRace = errors.New("the account changed during the sign-in")
+
+// samlSignInAttempts bounds those passes. One lost race is the normal case
+// (two first sign-ins of one person); a third pass only happens when a second
+// concurrent change landed in between.
+const samlSignInAttempts = 3
+
+// UpsertSAMLUser finds or provisions the account for a SAML assertion. The
+// order, and why, is DESIGN.md's "First sign-in provisioning and account
+// matching": by subject; else by address among accounts SAML created (live:
+// relink the subject; deleted: retire the old row's address and create anew);
+// else create; an address a local account holds is refused.
 func (s *Service) UpsertSAMLUser(ctx context.Context, samlSubject, email, displayName string, allowedDomains []string) (User, error) {
+	for range samlSignInAttempts {
+		u, err := s.upsertSAMLOnce(ctx, samlSubject, email, displayName, allowedDomains)
+		if !errors.Is(err, errSAMLLostRace) {
+			return u, err
+		}
+	}
+	// Still changing underneath after three passes: the address is not ours to
+	// take, which is what the person is told.
+	return User{}, ErrEmailTaken
+}
+
+func (s *Service) upsertSAMLOnce(ctx context.Context, samlSubject, email, displayName string, allowedDomains []string) (User, error) {
 	samlSubject = strings.TrimSpace(samlSubject)
 	email = strings.TrimSpace(email) // ValidateEmail normalises it
 	displayName = strings.TrimSpace(displayName)
@@ -1059,16 +1136,69 @@ func (s *Service) UpsertSAMLUser(ctx context.Context, samlSubject, email, displa
 		return User{}, fmt.Errorf("looking up user by SAML subject: %w", err)
 	}
 
+	// No account has this subject. Who holds the address decides what happens.
+	// An address that does not parse (the NameID stands in for a missing email
+	// attribute) holds nothing; the create below refuses it.
+	if addr, addrErr := ValidateEmail(email); addrErr == nil {
+		holder, err := s.store.GetByEmailAnyState(ctx, addr)
+		switch {
+		case err == nil:
+			switch {
+			case holder.SAMLSubject == "" || holder.ServiceAccount:
+				// Not made by SAML (local, live or deleted) or not a person.
+				// SAML never takes over an account it did not create.
+				return User{}, ErrEmailTaken
+			case holder.DeletedAt == nil:
+				// The same person under a NameID the account does not know:
+				// an IdP that sends a different one each time, or an account
+				// made before persistent was requested.
+				if holder.Disabled {
+					return User{}, ErrUserDisabled
+				}
+				relinked, ok, err := s.store.RelinkSAMLSubject(ctx, holder.ID, samlSubject, displayName)
+				if err != nil {
+					return User{}, err
+				}
+				if !ok {
+					return User{}, errSAMLLostRace
+				}
+				s.writeAuditEntry(context.WithoutCancel(ctx), audit.Entry{
+					ActorID: &relinked.ID, EntityType: "user", EntityID: relinked.ID, Action: "saml_relinked",
+					After: map[string]any{"saml_subject_changed": true},
+				})
+				return relinked, nil
+			}
+			// A deleted account SAML created: it is gone. Fall through to
+			// create the new one, which retires the old row's address.
+		case !errors.Is(err, ErrNotFound):
+			return User{}, fmt.Errorf("looking up user by email: %w", err)
+		}
+	}
+
 	// New user — enforce domain restriction before creating.
 	if !IsEmailDomainAllowed(email, allowedDomains) {
 		return User{}, ErrDomainNotAllowed
 	}
-	return s.Create(ctx, CreateUserInput{
+	u, err = s.newUser(CreateUserInput{
 		Email:       email,
 		DisplayName: displayName,
 		Role:        RoleUser,
 		SAMLSubject: samlSubject,
 	})
+	if err != nil {
+		return User{}, err
+	}
+	released, err := s.store.CreateReleasingDeleted(ctx, u, true)
+	if err != nil {
+		if isUniqueViolation(err) {
+			// Someone took the address between the lookup and the insert;
+			// most often the same person's other request.
+			return User{}, errSAMLLostRace
+		}
+		return User{}, fmt.Errorf("creating user: %w", err)
+	}
+	s.releaseAudit(ctx, released, u.ID, &u.ID)
+	return u, nil
 }
 
 // AccountsOnOldPasswordHash is how many accounts are still on a password hash

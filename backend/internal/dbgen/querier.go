@@ -654,6 +654,12 @@ type Querier interface {
 	// same filter; the database already refuses a service account a subject, so
 	// that one is belt and braces.
 	GetUserByEmail(ctx context.Context, email string) (User, error)
+	// The one row that holds this address, whatever it is: live or deleted,
+	// person or service account. The unique constraint on users.email is over
+	// every row, so there is at most one. GetUserByEmail is the login lookup and
+	// hides deleted rows and service accounts; the SAML sign-in has to see them,
+	// because which of the two holds the address decides what happens.
+	GetUserByEmailAnyState(ctx context.Context, email string) (User, error)
 	GetUserByID(ctx context.Context, id uuid.UUID) (User, error)
 	GetUserByIDAdmin(ctx context.Context, id uuid.UUID) (User, error)
 	GetUserByOIDCSubject(ctx context.Context, oidcSubject string) (User, error)
@@ -1105,6 +1111,24 @@ type Querier interface {
 	// hashing wins, and zero rows means exactly that. updated_at is left alone;
 	// the account did not change.
 	RehashUserPassword(ctx context.Context, arg RehashUserPasswordParams) (int64, error)
+	// Frees an address held by a deleted account, so a new account can have it:
+	// the old row's address becomes 'deleted-<id>@invalid' (a reserved top-level
+	// domain: it cannot receive mail, and no one can sign up as it) and its SAML
+	// subject is cleared. The row keeps its id, so the tickets, replies and audit
+	// entries that point at it stay on it. Only a deleted row is ever touched.
+	// saml_created_only narrows it to rows SAML created (a SAML sign-in recreates
+	// those and leaves a deleted local account blocking); an administrator
+	// creating an account passes false. At most one row can match: the address
+	// is unique across every row.
+	ReleaseDeletedUserEmail(ctx context.Context, arg ReleaseDeletedUserEmailParams) (uuid.UUID, error)
+	// Replaces the SAML subject of an account that was created by SAML, when the
+	// identity provider sends a NameID the account does not know. The conditions
+	// are asked at the write, not only by the caller, so an account that was
+	// deleted, disabled or changed kind between the read and this statement is
+	// not relinked on the strength of the older read. Writes the subject and the
+	// name and nothing else, so the role, the groups and the MFA state it carries
+	// are not touched. An empty display name leaves the stored one alone.
+	RelinkSAMLSubject(ctx context.Context, arg RelinkSAMLSubjectParams) (User, error)
 	RemoveGroupMember(ctx context.Context, arg RemoveGroupMemberParams) (int64, error)
 	RemoveGroupScope(ctx context.Context, arg RemoveGroupScopeParams) (int64, error)
 	RemoveTicketFollower(ctx context.Context, arg RemoveTicketFollowerParams) (int64, error)

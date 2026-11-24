@@ -569,6 +569,44 @@ func (q *Queries) GetUserByEmail(ctx context.Context, email string) (User, error
 	return i, err
 }
 
+const getUserByEmailAnyState = `-- name: GetUserByEmailAnyState :one
+SELECT id, email, display_name, role, password_hash, mfa_secret, mfa_enabled, saml_subject, created_at, updated_at, deleted_at, disabled, oidc_subject, mfa_failed_attempts, mfa_locked_until, service_account, email_notify_assigned, email_notify_activity, email_notify_group, must_change_password, email_notify_sla FROM users WHERE email = $1
+`
+
+// The one row that holds this address, whatever it is: live or deleted,
+// person or service account. The unique constraint on users.email is over
+// every row, so there is at most one. GetUserByEmail is the login lookup and
+// hides deleted rows and service accounts; the SAML sign-in has to see them,
+// because which of the two holds the address decides what happens.
+func (q *Queries) GetUserByEmailAnyState(ctx context.Context, email string) (User, error) {
+	row := q.db.QueryRowContext(ctx, getUserByEmailAnyState, email)
+	var i User
+	err := row.Scan(
+		&i.ID,
+		&i.Email,
+		&i.DisplayName,
+		&i.Role,
+		&i.PasswordHash,
+		&i.MfaSecret,
+		&i.MfaEnabled,
+		&i.SamlSubject,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.DeletedAt,
+		&i.Disabled,
+		&i.OidcSubject,
+		&i.MfaFailedAttempts,
+		&i.MfaLockedUntil,
+		&i.ServiceAccount,
+		&i.EmailNotifyAssigned,
+		&i.EmailNotifyActivity,
+		&i.EmailNotifyGroup,
+		&i.MustChangePassword,
+		&i.EmailNotifySla,
+	)
+	return i, err
+}
+
 const getUserByID = `-- name: GetUserByID :one
 SELECT id, email, display_name, role, password_hash, mfa_secret, mfa_enabled, saml_subject, created_at, updated_at, deleted_at, disabled, oidc_subject, mfa_failed_attempts, mfa_locked_until, service_account, email_notify_assigned, email_notify_activity, email_notify_group, must_change_password, email_notify_sla FROM users WHERE id = $1 AND deleted_at IS NULL
 `
@@ -1162,6 +1200,93 @@ func (q *Queries) RehashUserPassword(ctx context.Context, arg RehashUserPassword
 		return 0, err
 	}
 	return result.RowsAffected()
+}
+
+const releaseDeletedUserEmail = `-- name: ReleaseDeletedUserEmail :one
+UPDATE users
+SET email = 'deleted-' || id::text || '@invalid',
+    saml_subject = '',
+    updated_at = now()
+WHERE email = $1
+  AND deleted_at IS NOT NULL
+  AND (NOT $2::boolean OR saml_subject <> '')
+RETURNING id
+`
+
+type ReleaseDeletedUserEmailParams struct {
+	Email           string `json:"email"`
+	SamlCreatedOnly bool   `json:"saml_created_only"`
+}
+
+// Frees an address held by a deleted account, so a new account can have it:
+// the old row's address becomes 'deleted-<id>@invalid' (a reserved top-level
+// domain: it cannot receive mail, and no one can sign up as it) and its SAML
+// subject is cleared. The row keeps its id, so the tickets, replies and audit
+// entries that point at it stay on it. Only a deleted row is ever touched.
+// saml_created_only narrows it to rows SAML created (a SAML sign-in recreates
+// those and leaves a deleted local account blocking); an administrator
+// creating an account passes false. At most one row can match: the address
+// is unique across every row.
+func (q *Queries) ReleaseDeletedUserEmail(ctx context.Context, arg ReleaseDeletedUserEmailParams) (uuid.UUID, error) {
+	row := q.db.QueryRowContext(ctx, releaseDeletedUserEmail, arg.Email, arg.SamlCreatedOnly)
+	var id uuid.UUID
+	err := row.Scan(&id)
+	return id, err
+}
+
+const relinkSAMLSubject = `-- name: RelinkSAMLSubject :one
+UPDATE users
+SET saml_subject = $1,
+    display_name = COALESCE($2, display_name),
+    updated_at   = now()
+WHERE id = $3
+  AND saml_subject <> ''
+  AND deleted_at IS NULL
+  AND disabled = FALSE
+  AND NOT service_account
+RETURNING id, email, display_name, role, password_hash, mfa_secret, mfa_enabled, saml_subject, created_at, updated_at, deleted_at, disabled, oidc_subject, mfa_failed_attempts, mfa_locked_until, service_account, email_notify_assigned, email_notify_activity, email_notify_group, must_change_password, email_notify_sla
+`
+
+type RelinkSAMLSubjectParams struct {
+	SamlSubject string         `json:"saml_subject"`
+	DisplayName sql.NullString `json:"display_name"`
+	ID          uuid.UUID      `json:"id"`
+}
+
+// Replaces the SAML subject of an account that was created by SAML, when the
+// identity provider sends a NameID the account does not know. The conditions
+// are asked at the write, not only by the caller, so an account that was
+// deleted, disabled or changed kind between the read and this statement is
+// not relinked on the strength of the older read. Writes the subject and the
+// name and nothing else, so the role, the groups and the MFA state it carries
+// are not touched. An empty display name leaves the stored one alone.
+func (q *Queries) RelinkSAMLSubject(ctx context.Context, arg RelinkSAMLSubjectParams) (User, error) {
+	row := q.db.QueryRowContext(ctx, relinkSAMLSubject, arg.SamlSubject, arg.DisplayName, arg.ID)
+	var i User
+	err := row.Scan(
+		&i.ID,
+		&i.Email,
+		&i.DisplayName,
+		&i.Role,
+		&i.PasswordHash,
+		&i.MfaSecret,
+		&i.MfaEnabled,
+		&i.SamlSubject,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.DeletedAt,
+		&i.Disabled,
+		&i.OidcSubject,
+		&i.MfaFailedAttempts,
+		&i.MfaLockedUntil,
+		&i.ServiceAccount,
+		&i.EmailNotifyAssigned,
+		&i.EmailNotifyActivity,
+		&i.EmailNotifyGroup,
+		&i.MustChangePassword,
+		&i.EmailNotifySla,
+	)
+	return i, err
 }
 
 const restoreUser = `-- name: RestoreUser :exec

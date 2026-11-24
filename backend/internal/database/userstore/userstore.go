@@ -41,7 +41,63 @@ func New(q *dbgen.Queries) *Store { return &Store{q: q} }
 func NewWithDB(q *dbgen.Queries, db *sql.DB) *Store { return &Store{q: q, db: db} }
 
 func (s *Store) Create(ctx context.Context, u user.User) error {
-	return s.q.CreateUser(ctx, dbgen.CreateUserParams{
+	return create(ctx, s.q, u)
+}
+
+// CreateReleasingDeleted frees the address and creates the account in one
+// transaction, so a create that fails puts the old row back as it was. When
+// two callers want the same deleted address, the second one's release waits
+// for the first to commit, then matches nothing (the row's address has
+// changed), and its insert meets the first one's account: a unique violation
+// for the caller to report as "taken", not a fault.
+func (s *Store) CreateReleasingDeleted(ctx context.Context, u user.User, samlCreatedOnly bool) (uuid.UUID, error) {
+	var released uuid.UUID
+	err := database.InTx(ctx, s.db, s.q, func(q *dbgen.Queries) error {
+		id, err := q.ReleaseDeletedUserEmail(ctx, dbgen.ReleaseDeletedUserEmailParams{
+			Email: u.Email, SamlCreatedOnly: samlCreatedOnly,
+		})
+		switch {
+		case err == nil:
+			released = id
+		case errors.Is(err, sql.ErrNoRows):
+			// Nothing deleted held it; the insert says whether anything else does.
+		default:
+			return fmt.Errorf("releasing deleted address: %w", err)
+		}
+		return create(ctx, q, u)
+	})
+	if err != nil {
+		return uuid.Nil, err
+	}
+	return released, nil
+}
+
+// GetByEmailAnyState: see the GetUserByEmailAnyState query.
+func (s *Store) GetByEmailAnyState(ctx context.Context, email string) (user.User, error) {
+	row, err := s.q.GetUserByEmailAnyState(ctx, email)
+	if err != nil {
+		return user.User{}, wrapNotFound(err, "user by email", email)
+	}
+	return fromRow(row), nil
+}
+
+// RelinkSAMLSubject: see the RelinkSAMLSubject query.
+func (s *Store) RelinkSAMLSubject(ctx context.Context, id uuid.UUID, subject, displayName string) (user.User, bool, error) {
+	row, err := s.q.RelinkSAMLSubject(ctx, dbgen.RelinkSAMLSubjectParams{
+		ID: id, SamlSubject: subject,
+		DisplayName: sql.NullString{String: displayName, Valid: displayName != ""},
+	})
+	switch {
+	case err == nil:
+		return fromRow(row), true, nil
+	case errors.Is(err, sql.ErrNoRows):
+		return user.User{}, false, nil
+	}
+	return user.User{}, false, fmt.Errorf("relinking SAML subject: %w", err)
+}
+
+func create(ctx context.Context, q *dbgen.Queries, u user.User) error {
+	return q.CreateUser(ctx, dbgen.CreateUserParams{
 		ID:           u.ID,
 		Email:        u.Email,
 		DisplayName:  u.DisplayName,
