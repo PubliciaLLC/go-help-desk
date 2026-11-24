@@ -93,7 +93,10 @@
       <li><a href="#tickets-formatting">Formatting Text</a></li>
       <li><a href="#tickets-custom-fields">Custom Fields</a></li>
       <li><a href="#tickets-attachments">Attachments</a></li>
+      <li><a href="#tickets-views">Ticket List Views</a></li>
       <li><a href="#tickets-search">Search and Filters</a></li>
+      <li><a href="#tickets-dashboard">Dashboard</a></li>
+      <li><a href="#tickets-reports">Reports</a></li>
       <li><a href="#tickets-phone">On a Phone</a></li>
     </ul>
   </div>
@@ -194,7 +197,7 @@
 
 <h3>Guest ticket submission <span class="badge-new">New in 1.3.0</span></h3>
 
-<p>Guest submission is off by default. When it is enabled (<em>Admin → System → Settings</em>), the public form at <code>/submit</code> is reachable without logging in. Required: <strong>name</strong>, <strong>email</strong>, <strong>subject</strong> and <strong>category</strong>, which must be an active one. Phone is optional. Type, Item and priority are not shown and are not accepted: priority is always Medium on a guest ticket.</p>
+<p>Guest submission is off by default. When it is enabled (<em>Admin → System → Guest Access</em>), the public form at <code>/submit</code> is reachable without logging in. Required: <strong>name</strong>, <strong>email</strong>, <strong>subject</strong> and <strong>category</strong>, which must be an active one. Phone is optional. Type, Item and priority are not shown and are not accepted: priority is always Medium on a guest ticket.</p>
 
 <img src="../screenshots/28-guest-submit.png" alt="The guest submission form at /submit: name, email, optional phone, subject, a description editor with a formatting toolbar, and category. There are no type, item or priority fields" width="2880" height="1800" loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
 
@@ -203,8 +206,8 @@
 <h4>The guest link</h4>
 <ul>
   <li><strong>It opens one ticket and nothing else.</strong> A guest sees the subject, description, status, and the public replies — internal notes are never included, and staff names are not shown. They can post a reply, subject to the same lifecycle rules as anyone else, including the reopen window.</li>
-  <li><strong>Attaching files is off unless an administrator allows it.</strong> The setting <em>Guests may attach files</em> (<em>Admin → System → Settings → General → Submissions</em>) is off by default, including after an upgrade, and works only while guest submission is on. While it is off, <code>POST /api/v1/guest/attachments</code> answers the same generic <code>404</code> a bad link gets. When it is on, the guest page has an <em>Add files</em> button while the ticket is open, and says how many more files can be added (the count covers only files attached in the current visit to the page; the server holds the real limit). The submission form (<code>/submit</code>) has none: the link to attach from is emailed once the ticket exists. Uploads follow the same type, scanning and reputation rules as everyone else's and are download-only. The guest page does not list attachments, and a guest cannot download one.</li>
-  <li><strong>Guest upload limits.</strong> Each file is held to the lower of <em>Largest file a guest may attach</em> (a slider from 1 to 100 MB, 5 MB by default) and the instance maximum of 25 MB (<code>413</code> over it). At most 5 files per ticket from guests (an administrator can set 1 to 50; <code>409 guest_attachment_limit</code> over it), and at most 3 uploads an hour per guest link (1 to 30; <code>429</code> with <code>Retry-After</code> over it). A refusal decided before the scan (too large, wrong type, a bad name) does not use up the hour; one decided after it, or a server fault, does. Refused attempts also share a budget of 20 an hour per ticket, charged before the hourly upload budget and given back when the upload succeeds or is turned away by the hourly limit, so reaching it never uses up an hourly upload. The hourly count is kept in memory by each server instance. All of these settings are session-only.</li>
+  <li><strong>Attaching files is off unless an administrator allows it.</strong> The setting <em>Guests may attach files</em> (<em>Admin → System → Guest Access → Submissions</em>) is off by default, including after an upgrade, and works only while guest submission is on. While it is off, <code>POST /api/v1/guest/attachments</code> answers the same generic <code>404</code> a bad link gets. When it is on, the guest page has an <em>Add files</em> button while the ticket is open, and says how many more files can be added (the count covers only files attached in the current visit to the page; the server holds the real limit). The submission form (<code>/submit</code>) has none: the link to attach from is emailed once the ticket exists. Uploads follow the same type, scanning and reputation rules as everyone else's and are download-only. The guest page does not list attachments, and a guest cannot download one.</li>
+  <li><strong>Guest upload limits.</strong> Each file is held to the lower of <em>Largest file a guest may attach</em> (a slider that runs from 1 MB up to the per-file limit, 5 MB by default) and the per-file limit itself, 25 MB unless an administrator has changed it (see <a href="#tickets-attachments">Attachments</a>). The slider cannot be set above that limit. A file over the limit is refused with <code>413</code>, and the message names the limit. At most 5 files per ticket from guests (an administrator can set 1 to 50; <code>409 guest_attachment_limit</code> over it), and at most 3 uploads an hour per guest link (1 to 30; <code>429</code> with <code>Retry-After</code> over it). A refusal decided before the scan (too large, wrong type, a bad name) does not use up the hour; one decided after it, or a server fault, does. Refused attempts also share a budget of 20 an hour per ticket, charged before the hourly upload budget and given back when the upload succeeds or is turned away by the hourly limit, so reaching it never uses up an hourly upload. The hourly count is kept in memory by each server instance. All of these settings are session-only.</li>
   <li><strong>It is replaced every time the help desk writes to them.</strong> A staff reply, a status change, a resolve or a reopen by staff each send a fresh link and invalidate the previous one immediately. There is no grace period, so the newest email is the one that works.</li>
   <li><strong>Closing the ticket stops the link being replaced, but does not revoke it.</strong> The last link sent still opens the ticket, read-only, until it expires. No mail is sent for the close. A guest can still open a follow-up from a closed ticket with the link.</li>
   <li><strong>It expires 30 days after it was issued.</strong></li>
@@ -390,13 +393,13 @@
 
 <p>A ticket can be assigned to:</p>
 <ul>
-  <li><strong>A specific staff member</strong>: the ticket appears in their personal queue, and they are emailed about it, unless they or an administrator have switched that email off. See <a href="#tickets-staff-email">Email to staff</a>.</li>
-  <li><strong>A group</strong> — the ticket appears in the queue of every member of that group. Useful when you want a team to handle the ticket without specifying an individual.</li>
-  <li><strong>Unassigned</strong> — visible to all staff with scope for the ticket's CTI classification.</li>
+  <li><strong>A specific staff member</strong>: the ticket is in their <em>Assigned to Me</em> view, and they are emailed about it, unless they or an administrator have switched that email off. See <a href="#tickets-staff-email">Email to staff</a>.</li>
+  <li><strong>A group</strong>: the ticket is in the <em>My Group's Tickets</em> view of every member of that group, under <em>Group queue</em> while nobody personally holds it. Useful when you want a team to handle the ticket without specifying an individual.</li>
+  <li><strong>Unassigned</strong> (no group and no person): the ticket is listed in the <em>Available</em> view. Administrators always see that view. Staff see it only while an administrator has ticked <em>Staff</em> under <em>Admin → System → Privacy → Available queue</em>; by default only administrators do. Anyone who can see the ticket can still find it through the <em>Search</em> view. See <a href="#tickets-views">Ticket list views</a>.</li>
 </ul>
 
 <h3>Who can assign</h3>
-<p>Staff and admins can assign tickets to any staff member or group, regardless of scope. This is intentional — cross-team escalation should not be blocked by routing rules. A ticket can be assigned to staff outside their normal scope, and it will appear in the assignee's queue.</p>
+<p>Staff and admins can assign tickets to any staff member or group, regardless of scope. This is intentional — cross-team escalation should not be blocked by routing rules. A ticket can be assigned to staff outside their normal scope, and it will appear in the assignee's <em>Assigned to Me</em> view.</p>
 
 <h3>Assign to me</h3>
 <p>Staff and admins see an <em>Assign to me</em> button in the Assignee panel of the ticket page. It is offered only while the ticket has no assignee, and not on a Resolved or Closed ticket; once anyone holds the ticket, you included, it is gone. It assigns the ticket to you and <strong>keeps the group</strong> the ticket is already assigned to. Picking a person from the list instead replaces the group, as before. Requesters never see the button.</p>
@@ -405,7 +408,8 @@
 <p>Reassigning a ticket emails the new assignee, and the assigned group's members when it is assigned to a group, as described under <a href="#tickets-staff-email">Email to staff</a>. The person who made the change is never emailed about it. Assigning a ticket to the person and group it already has, or clearing a ticket that is already unassigned, changes nothing and sends no email or webhook. The old assignee is not told. The change is recorded in the ticket's Activity feed, and a <code>ticket.assigned</code> event goes to subscribed webhooks. A reassignment also ends the old assignee's <a href="#tickets-follow">follow</a> of the ticket, if they had one.</p>
 
 <h3>Assignment and scope</h3>
-<p>Scope controls what tickets a staff member sees in their default queue. Assignment overrides this for the assignee: if you are assigned a ticket outside your scope, it appears in your queue. Scope narrows what staff can see only when <em>Limit staff to their group scope</em> is on under <em>Admin → System → Settings → General → Ticket visibility</em>. It is off by default, and then every staff member can open any ticket and jump to it by its tracking number. Searching the list covers every ticket the staff member can see, not only their queue (see <a href="#tickets-search">Search</a>). With it on, a ticket outside a staff member's visibility answers as not found, even by its tracking number.</p>
+<p>Scope controls which tickets a staff member can see. Assignment overrides this for the assignee: if you are assigned a ticket outside your scope, it appears in your <em>Assigned to Me</em> view. Scope narrows what staff can see only when <em>Limit staff to their group scope</em> is on under <em>Admin → System → Privacy → Ticket visibility</em>. It is off by default, and then every staff member can open any ticket and jump to it by its tracking number. With it on, a ticket outside a staff member's visibility answers as not found, even by its tracking number.</p>
+<p>The queue views (<em>Assigned to Me</em>, <em>My Group's Tickets</em> and <em>Available</em>) list only their own tickets, and a search typed in one stays in it. Only the <em>Search</em> view covers every ticket you can see (see <a href="#tickets-views">Ticket list views</a> and <a href="#tickets-search">Search and filters</a>). With the limit on, the default view no longer shows the unassigned tickets in your categories. They are in <em>Search</em>, or in <em>Available</em> once an administrator has ticked <em>Staff</em>.</p>
 
 
 <h2 id="tickets-priority">Changing priority</h2>
@@ -534,7 +538,7 @@
 <table>
   <thead><tr><th>Limit</th><th>Value</th></tr></thead>
   <tbody>
-    <tr><td>Maximum file size</td><td>25 MB per file</td></tr>
+    <tr><td>Maximum file size</td><td>25 MB per file by default. An administrator can set it from 1 to 100 MB under <em>Admin → System → File Attachments → File size</em>. A file over the limit is refused with <code>413 too_large</code>, and the message names the limit. It applies to staff, requesters and guests. A guest is held to the lower of this and their own limit.</td></tr>
     <tr><td>Maximum filename length</td><td>255 bytes, valid UTF-8, no NUL, control or text-direction characters</td></tr>
     <tr><td>Maximum image size</td><td>25 megapixels, and 100 MB once decoded — both worked out from the header before any decode</td></tr>
     <tr><td>Total per ticket</td><td>Unlimited</td></tr>
@@ -543,7 +547,7 @@
 
 <h3>Allowed file types</h3>
 
-<p><strong>Which extensions this instance accepts is an operator setting</strong> <span class="badge-new">Changed in 1.3.0</span>, <code>attachment_allowed_types</code> under <em>Admin → System → Settings → Attachments</em>. It was a fixed list in the source up to and including 1.2.0. An empty list is a valid setting and means this instance takes no attachments at all.</p>
+<p><strong>Which extensions this instance accepts is an operator setting</strong> <span class="badge-new">Changed in 1.3.0</span>, <code>attachment_allowed_types</code> under <em>Admin → System → File Attachments → Uploads</em>. It was a fixed list in the source up to and including 1.2.0. An empty list is a valid setting and means this instance takes no attachments at all.</p>
 
 <p>The shipped default is the same set 1.2.0 accepted:</p>
 
@@ -598,7 +602,7 @@
 
 <p>A file the scanner identifies is refused with <code>422 infected</code> and the user is shown the scanner's name for it — unless the operator has set <code>attachment_infected_handling</code> to <code>quarantine</code>, in which case it is stored inside a password-protected archive and the ticket carries a warning banner. See the <a href="admin-guide.html#admin-attachments">Admin Guide</a> for both settings.</p>
 
-<p>Docker Compose does not scan by default. To scan with the bundled ClamAV, set <code>CLAMAV_ADDR=tcp://clamav:3310</code> and <code>COMPOSE_PROFILES=antivirus</code> in <code>docker/.env</code>; see <a href="getting-started.html#config-scanning">Getting Started: Virus scanning</a>. For other installs, point <code>CLAMAV_ADDR</code> at your own daemon (<code>tcp://host:port</code> or <code>unix:///path/to/clamd.sock</code>), or set the address under <em>Admin → System → Settings → Attachments</em>, which takes effect without a restart.</p>
+<p>Docker Compose does not scan by default. To scan with the bundled ClamAV, set <code>CLAMAV_ADDR=tcp://clamav:3310</code> and <code>COMPOSE_PROFILES=antivirus</code> in <code>docker/.env</code>; see <a href="getting-started.html#config-scanning">Getting Started: Virus scanning</a>. For other installs, point <code>CLAMAV_ADDR</code> at your own daemon (<code>tcp://host:port</code> or <code>unix:///path/to/clamd.sock</code>), or set the address under <em>Admin → System → File Attachments → Malware scanning</em>, which takes effect without a restart. If you raise the per-file limit above 25 MB, the scanner and any reverse proxy in front of the help desk must accept files that large too; see the <a href="admin-guide.html#admin-attachments">Admin Guide</a>.</p>
 
 <h3>Downloads</h3>
 
@@ -609,12 +613,47 @@
 <p>The server checks at startup, and again before each upload, that <code>ATTACHMENT_DIR</code> and its <code>tickets</code> subfolder exist and can be written. While it cannot, an upload from anyone, a guest included, is refused with <code>503 attachments_unavailable</code> before the file is read, and administrators see an <em>Attachment uploads are disabled</em> banner. Files already stored can still be downloaded while the directory is readable.</p>
 
 
+<h2 id="tickets-views">Ticket list views <span class="badge-new">New in 1.3.0</span></h2>
+
+<p>Staff and administrators open the ticket list from the <em>Tickets</em> group in the sidebar, which has one link for each view. A view is a list of tickets. The search box, the filters and the sorting all work inside the view you are on. These views replace the <em>Mine</em>, <em>Unassigned</em> and <em>All</em> buttons that only administrators had.</p>
+
+<table>
+  <thead><tr><th>View</th><th>What it lists</th><th>Who sees it</th></tr></thead>
+  <tbody>
+    <tr><td><strong>Assigned to Me</strong></td><td>Tickets assigned to you personally. The list opens here.</td><td>Staff and administrators</td></tr>
+    <tr><td><strong>My Group's Tickets</strong></td><td>Tickets assigned to one of your groups. A choice above the list narrows it to <em>All</em>, <em>Group queue</em>, <em>Assigned to me</em> or <em>Assigned to others</em>.</td><td>Staff and administrators</td></tr>
+    <tr><td><strong>Available</strong></td><td>Tickets with no group and no person assigned.</td><td>Administrators always. Staff only while an administrator has ticked <em>Staff</em> under <em>Admin → System → Privacy → Available queue</em>. By default, administrators only.</td></tr>
+    <tr><td><strong>Search</strong></td><td>Every ticket you can see. With the search box and filters empty it is the whole list, newest first.</td><td>Staff and administrators</td></tr>
+  </tbody>
+</table>
+
+<img src="../screenshots/49-ticket-views-groups.png" alt="My Group's Tickets for a staff member, with the views listed under Tickets in the sidebar and the choice of All, Group queue, Assigned to me and Assigned to others above the list" width="2880" height="1800" loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
+<p style="margin:0.4rem 0 1.25rem;font-size:0.85rem;color:var(--muted);">The ticket views in the sidebar. My Group's Tickets splits the group's tickets by who holds them.</p>
+
+<ul>
+  <li><strong>Requesters have no views.</strong> For a requester, <em>Tickets</em> is one link to a list of their own tickets, as before.</li>
+  <li><strong>The sidebar depends on your role.</strong> Administrators see Assigned to Me, My Group's Tickets, Available and Search. Staff see Assigned to Me, My Group's Tickets and Search, and Available too once an administrator has ticked <em>Staff</em>. Staff and administrators also see <a href="#tickets-reports">Reports</a> below the ticket views.</li>
+  <li><strong>A ticket is in every view whose test it passes.</strong> Each view looks at one thing only: Assigned to Me at the person, and My Group's Tickets and Available at the group. A ticket assigned to you and to one of your groups is in both Assigned to Me and My Group's Tickets. A ticket assigned to someone else, in a group that is not yours, is in neither.</li>
+  <li><strong>My Group's Tickets splits three ways.</strong> <em>Group queue</em> is the group's tickets that no person holds, <em>Assigned to me</em> are the ones you hold, and <em>Assigned to others</em> are the ones a teammate holds. <em>All</em> is the three together. If you are in no group, this view is empty, even for an administrator.</li>
+  <li><strong>Search typed in a view stays in that view.</strong> Text and filters narrow the view you are on. The <em>Search</em> view is the wide search: it covers every ticket you can see, and its results area says <em>Searching all tickets you can see</em>. With <em>Limit staff to their group scope</em> on, that means the tickets in your scope, which is more than your queue views show (see <a href="#tickets-assignment">Assignment and scope</a>). A tracking number or UUID typed in the box still jumps to the ticket from any view.</li>
+  <li><strong>Some filters are left out where they make no sense.</strong> Assigned to Me has no Assignee filter, because the assignee is always you. Available has no Assignee, Group or Requester filter: no ticket there has an assignee or a group, and a Requester filter would list tickets that are not available. The other views offer every filter.</li>
+  <li><strong>Awaiting my reply.</strong> On Assigned to Me and My Group's Tickets, a filter lists the tickets that are not Resolved or Closed and whose newest public message came from the requester's side, so they are waiting for you. That means no reply yet, a guest's message, or a message from the requester. Internal notes do not count, and neither does a reply from staff.</li>
+  <li><strong>Old links still work.</strong> A link from before 1.3.0 is translated when it is opened. <code>scope=mine</code>, or no scope, opens Assigned to Me. <code>scope=unassigned</code> opens Available, and <code>scope=all</code> opens Search. A link that carries search text or filters, and no view, opens Search with them. A link to a view you may not use, such as Available for staff while Staff is not ticked, opens Assigned to Me without an error.</li>
+  <li><strong>On a phone</strong>, the views are in the navigation drawer, in the same order as on a desktop. The My Group's Tickets choice wraps onto more than one row instead of scrolling.</li>
+  <li><strong>Over the API</strong>, the same lists are the <code>scope</code> values <code>assigned_to_me</code>, <code>my_groups</code>, <code>unassigned</code> and <code>visible</code>, and the <code>held_by</code> filter. Every request that worked before returns the same tickets. See <a href="api.html#api-ticket-search">REST API: Searching tickets</a>.</li>
+</ul>
+
+<div class="callout callout-note">
+  <p><strong>If your administrator limits staff to their group scope, tell staff who pick up new tickets.</strong> Under that setting the default view no longer lists unassigned tickets. Staff find them through Search, or in Available once an administrator has ticked <em>Staff</em> under <em>Admin → System → Privacy → Available queue</em>.</p>
+</div>
+
+
 <h2 id="tickets-search">Search and filters</h2>
 
-<p>The ticket list has a search box, a <em>Filters</em> button and sortable column headings. <span class="badge-new">New in 1.3.0</span> The filters, the sorting and the reply search are new. The search box and the queue buttons were there before.</p>
+<p>The ticket list has a search box, a <em>Filters</em> button and sortable column headings. <span class="badge-new">New in 1.3.0</span> The filters, the sorting and the reply search are new. The search box was there before. For staff and administrators it works inside the <a href="#tickets-views">view</a> you are on, and the <em>Search</em> view is the one that covers every ticket you can see.</p>
 
-<img src="../screenshots/42-ticket-list-filters-and-sort.png" alt="The Tickets page as a staff member sees it, with the Filters panel open: Status (In Progress and Pending ticked), Priority (High ticked), Requester, Assignee, Group, Category, Type, Item, SLA, Created dates, Last updated dates and Came in by. Under the panel are chips for each active filter, the line Searching all tickets you can see with an Only my tickets chip, and a table sorted by Updated, newest first, with sortable Ticket, Subject, Status, Priority, SLA, Created and Updated headings" width="1440" height="1301" loading="lazy" style="width:100%;height:auto;max-width:1440px;border:1px solid var(--border);border-radius:8px;" />
-<p style="margin:0.4rem 0 1.25rem;font-size:0.85rem;color:var(--muted);">The ticket list with the Filters panel open and four filters on. Each one shows as a chip with its own ×.</p>
+<img src="../screenshots/42-ticket-list-filters-and-sort.png" alt="The Tickets page on the Search view as a staff member sees it, with the Filters panel open: Status (In Progress and Pending ticked), Priority (High ticked), Requester, Assignee, Group, Category, Type, Item, SLA, Created dates, Last updated dates and Came in by. Under the panel are chips for each active filter, the line Searching all tickets you can see, and a table sorted by Updated, newest first, with sortable Ticket, Subject, Status, Priority, SLA, Created and Updated headings" width="1440" height="1301" loading="lazy" style="width:100%;height:auto;max-width:1440px;border:1px solid var(--border);border-radius:8px;" />
+<p style="margin:0.4rem 0 1.25rem;font-size:0.85rem;color:var(--muted);">The Search view with the Filters panel open and four filters on. Each one shows as a chip with its own ×.</p>
 
 <h3 id="tickets-search-box">The search box</h3>
 <p>The box searches <strong>tracking number</strong>, <strong>subject</strong> and <strong>description</strong>. The last two use Postgres full-text search and are ranked by relevance. Results load as you type, after a short pause, with no minimum length. A spinner shows while they load.</p>
@@ -622,9 +661,9 @@
   <li>Tracking number searches use a <strong>prefix match</strong>: typing <code>GHD-2026-0</code> matches all tickets in that series.</li>
   <li>Subject and description searches split your text into words and <strong>prefix-match each one</strong>. <code>print jam</code> matches a ticket with a word starting with "print" and a word starting with "jam", in any order or field. A match in the <strong>subject</strong> ranks above one only in the description.</li>
   <li>Postgres ignores common English words such as "it", so searching for just "IT" finds nothing.</li>
-  <li>Users only see results from their own tickets. Staff and administrators search <strong>every ticket they can see</strong>, whatever queue is selected, and the results area says <em>Searching all tickets you can see</em>. With <em>Limit staff to their group scope</em> off, that is every ticket. With it on, it is the tickets reported by or assigned to the staff member, tickets assigned to one of their groups, and tickets in a category or type their groups cover. Nothing is searched that the staff member could not open.</li>
-  <li>An <em>Only my tickets</em> or <em>Only unassigned</em> chip, shown while you search from the <em>Mine</em> or <em>Unassigned</em> queue, narrows the search to that queue; click it again to widen it. The chip is not offered on an administrator's <em>All</em> queue, which is already everything. It switches off when you clear the search box and every filter, or change queue, so every new search starts wide. A box with only spaces counts as empty.</li>
-  <li><strong>A filter does the same.</strong> For staff and administrators, a filter with nothing typed in the box also covers every ticket they can see, not just the selected queue. The exception is a filter that names a set of tickets, such as Requester or Group: it has no queue at all.</li>
+  <li>Requesters only see results from their own tickets. Staff and administrators search the <strong>view they are on</strong>: a search typed in Assigned to Me, My Group's Tickets or Available stays in that view. To search <strong>every ticket you can see</strong>, use the <em>Search</em> view; its results area says <em>Searching all tickets you can see</em>. With <em>Limit staff to their group scope</em> off, that is every ticket. With it on, it is the tickets reported by or assigned to the staff member, tickets assigned to one of their groups, and tickets in a category or type their groups cover. Nothing is searched that the staff member could not open.</li>
+  <li>A box with only spaces counts as empty.</li>
+  <li><strong>A filter narrows the view you are on</strong>, with or without text in the box. It never widens it. To filter across every ticket you can see, use the filters on the <em>Search</em> view.</li>
 </ul>
 
 <h3 id="tickets-filters">Filters</h3>
@@ -641,11 +680,13 @@
     <tr><td>Last updated</td><td>A from date and a to date for when the ticket last changed.</td><td>Staff and administrators</td></tr>
     <tr><td>Came in by</td><td>Web, Email / guest, Phone, API or MCP. See <a href="#tickets-source">How a ticket arrived</a>.</td><td>Staff and administrators</td></tr>
     <tr><td>SLA</td><td>Breached or At risk, the same two states the list's SLA indicator shows. It is only offered while SLA tracking is on.</td><td>Staff and administrators</td></tr>
+    <tr><td>Awaiting my reply</td><td>Tickets waiting for the help desk to answer. See <a href="#tickets-views">Ticket list views</a>.</td><td>Staff and administrators, on Assigned to Me and My Group's Tickets</td></tr>
   </tbody>
 </table>
 <ul>
   <li>Dates are in <strong>your own time zone</strong>, as your browser reports it.</li>
   <li>Each active filter shows as a chip under the box, with an <em>×</em> to remove it and a <em>Clear all</em> link. The filters are kept in the address, so a link to a filtered list opens the same list for the person you send it to, within what they are allowed to see.</li>
+  <li>Not every view offers every filter; see <a href="#tickets-views">Ticket list views</a>.</li>
   <li>Requesters get the same panel with only the filters that make sense for their own tickets: Status, Priority, Category, Type, Item and Created.</li>
   <li><em>Include closed</em> leaves closed tickets out unless it is ticked. A Status filter that names Closed shows closed tickets whatever <em>Include closed</em> says.</li>
   <li>The Requester filter works whatever <em>Mask requester names in Audit Trail</em> is set to. That setting changes what the audit views display. It does not stop a staff member who can see a ticket from searching by its requester's name.</li>
@@ -698,7 +739,7 @@
 </ul>
 
 <h3 id="tickets-jump">Jump to ticket (staff and admin)</h3>
-<p>Staff and admins can type an exact tracking number or UUID in the search box and click <em>Jump to ticket</em> to go straight to that ticket. If no match is found, an inline error is shown.</p>
+<p>Staff and admins can type an exact tracking number or UUID in the search box, on any view, and click <em>Jump to ticket</em> to go straight to that ticket. If no match is found, an inline error is shown.</p>
 
 <h3 id="tickets-search-phone">On a phone</h3>
 <p>On a narrow screen the search box takes a full row of its own, so it is no longer squeezed. <em>Filters</em> opens a full-screen dialog. Changes in it wait until you tap <em>Show results</em>, and <em>Clear all</em> empties it. Results are cards, with the reply excerpt under the subject and the sort menu above them. Bulk selection is for a desktop-width screen only. Long text on a ticket is covered under <a href="#tickets-phone">Tickets on a phone</a>.</p>
@@ -712,11 +753,113 @@
 <h3 id="tickets-search-not-yet">Not in 1.3.0</h3>
 <p>Tags and custom fields are not filters. There is no fuzzy or typo-tolerant matching, and no saved searches.</p>
 
+<h2 id="tickets-dashboard">Dashboard <span class="badge-new">New in 1.3.0</span></h2>
+
+<p>The dashboard shows how your own work and the desk are doing. The status cards, the <em>View all tickets</em> button and, for administrators, the <em>By Client</em> list are as they were. Four blocks are new, from top to bottom: a health card (administrators only), <em>Your queue</em>, then <em>Needs attention</em> and a 30-day trend side by side on a wide screen and stacked on a narrow one.</p>
+
+<img src="../screenshots/02-dashboard.png" alt="Administrator's dashboard: a health card with one amber notice, a Your queue row of five counts, the status cards, a Needs attention list with breached, at-risk, unassigned and reopened tickets, and a 30-day chart of tickets created and resolved" width="2880" loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
+<p style="margin:0.4rem 0 1.25rem;font-size:0.85rem;color:var(--muted);">The dashboard for an administrator. Each number links to the ticket list it counts.</p>
+
+<h3 id="tickets-dashboard-queue">Your queue</h3>
+<p>A row of numbers, each a link to the ticket list showing exactly those tickets. Each number is the length of the list it opens.</p>
+<ul>
+  <li>Staff and administrators see <strong>Assigned to me</strong>, <strong>My groups</strong> and <strong>Awaiting my reply</strong>. While SLA tracking is on they also see <strong>Breached</strong> and <strong>At risk</strong>. Breached is red and At risk is amber while they are above zero.</li>
+  <li>The SLA numbers count the tickets assigned to you, not the whole desk. The desk's breaches are in <em>Needs attention</em>.</li>
+  <li><em>Awaiting my reply</em> counts your tickets that are waiting for the help desk to answer; see <a href="#tickets-views">Ticket list views</a>.</li>
+  <li>A requester sees one number, <strong>Your tickets</strong>: their tickets that are not Closed.</li>
+</ul>
+
+<h3 id="tickets-dashboard-attention">Needs attention</h3>
+<p>Staff and administrators see up to five open tickets that need a look. Each ticket is listed once, under its first reason, checked in this order:</p>
+<ol>
+  <li><strong>Breached</strong>, while SLA tracking is on.</li>
+  <li><strong>At risk</strong>, while SLA tracking is on.</li>
+  <li><strong>Unassigned</strong>: in the Available queue. Administrators see these. Staff see them only while an administrator has ticked <em>Staff</em> under <em>Admin → System → Privacy → Available queue</em>.</li>
+  <li><strong>Reopened</strong> in the last seven days.</li>
+</ol>
+<p>Each row shows its reason and how long ago the ticket was opened, or reopened. Breached and at-risk tickets are shown oldest first, and reopened ones most recently updated first. When there is nothing to show, the block says <em>Nothing needs attention right now.</em></p>
+
+<h3 id="tickets-dashboard-trend">The 30-day trend</h3>
+<p>Staff and administrators see a chart of tickets created and tickets resolved on each of the last 30 days, today included, with the total of each. Days are counted in <strong>your own time zone</strong>, as your browser reports it. A ticket counts as resolved on the day it was resolved, or on the day it was closed if it was never resolved. A ticket that is reopened no longer counts on its old day.</p>
+
+<h3 id="tickets-dashboard-scope">Who sees which numbers</h3>
+<p>Every number and every row follows ticket scope. With <em>Limit staff to their group scope</em> on, a staff member's numbers, rows and trend include only the tickets their scope lets them open. A requester's dashboard is as it was, plus <em>Your tickets</em>, and every count on it is of their own tickets.</p>
+
+<h3 id="tickets-dashboard-health">The health card</h3>
+<p>Administrators see a card at the top of the dashboard that lists up to four things that need attention, each with a link to where it is fixed:</p>
+<ul>
+  <li>A newer release is available. The link opens the release notes in a new tab.</li>
+  <li>SLA tracking is on, but its breach and at-risk alerts are off. The link goes to <em>Admin → System → Email → Notifications → SLA alerts</em>.</li>
+  <li>The passkey requirement is suspended because passkeys are unavailable. The link goes to <em>Admin → System → Authentication → Multi-factor authentication</em>.</li>
+  <li>The attachment scanner is unreachable while scanning is on. The link goes to <em>Admin → System → File Attachments → Malware scanning</em>.</li>
+</ul>
+<p>When there is nothing to report, the card is one line: <em>No problems to report.</em> If the card cannot load, it says so and offers <em>Retry</em>. It never says all is well when it could not check. It has no Hide button: it states what is true now. The same warnings also appear in the banner at the top of every page, which does have one.</p>
+
+<h3 id="tickets-dashboard-phone">On a phone</h3>
+<p>The queue numbers wrap into two columns, and <em>Needs attention</em> and the trend stack under the status cards.</p>
+
+<img src="../screenshots/51-mobile-dashboard.png" alt="The dashboard on a phone: the Your queue counts in two columns above the status cards and the start of the Needs attention list" width="390" height="844" loading="lazy" style="width:100%;height:auto;max-width:260px;border:1px solid var(--border);border-radius:8px;" />
+<p style="margin:0.4rem 0 1.25rem;font-size:0.85rem;color:var(--muted);">On a phone the queue counts wrap into two columns.</p>
+
+<p>Over the API, the same numbers are <code>GET /api/v1/dashboard</code>, which takes an optional <code>tz</code> time zone and needs <code>tickets:read</code> for an API key or OAuth client. There is no MCP tool for it. See the <a href="api-reference.html">API reference</a>.</p>
+
+
+<h2 id="tickets-reports">Reports <span class="badge-new">New in 1.3.0</span></h2>
+
+<p><strong>Reports</strong> shows how the desk is doing over a period: how long tickets take to resolve and to get a first response, how many met their SLA, how many came back, how old the open work is, how much arrived and who holds it. Staff and administrators see the <em>Reports</em> item in the sidebar, between Tickets and Admin. A requester has no Reports item, and opening the address sends them to the dashboard.</p>
+
+<img src="../screenshots/48-reports.png" alt="Reports page for the last 30 days compared with the 30 days before: time to resolve, first response, SLA attainment and reopen rate with their changes, a created-and-resolved chart, open tickets by age, and open tickets by assignee and by group" width="2880" loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
+<p style="margin:0.4rem 0 1.25rem;font-size:0.85rem;color:var(--muted);">Reports for the last 30 days. Every figure is compared with the previous period of the same length.</p>
+
+<h3 id="tickets-reports-measures">What each card measures</h3>
+<table>
+  <thead><tr><th>Card</th><th>What it shows</th></tr></thead>
+  <tbody>
+    <tr><td>Time to resolve</td><td>From creation to the ticket being finished, as a median and a 90th percentile. A ticket is finished when it is resolved, or closed if it was never resolved. Time in Resolved before a reopen is included.</td></tr>
+    <tr><td>First response</td><td>The median time to the first response, as the SLA measured it.</td></tr>
+    <tr><td>SLA attainment</td><td>The share of tracked tickets whose response and resolution targets were both met, with the response and resolution rates beside it. A ticket whose SLA was removed, by a priority change, a reclassification or a reopen, is left out.</td></tr>
+    <tr><td>Reopen rate</td><td>The share of finished tickets that were reopened at least once.</td></tr>
+    <tr><td>Volume</td><td>Tickets created and tickets resolved in the period, a daily chart, and the tickets created by priority and by category.</td></tr>
+    <tr><td>Backlog aging</td><td>Open tickets by age in whole days since creation, in four groups: 0 to 2, 3 to 7, 8 to 30 and over 30.</td></tr>
+    <tr><td>Workload</td><td>Open tickets by assignee and by group, with a row for tickets with no person and one for tickets with no group.</td></tr>
+  </tbody>
+</table>
+<ul>
+  <li><strong>Time to resolve leaves out time spent Pending.</strong> A ticket held for a customer is not shown as slow, and the first response is likewise measured less the time Pending before it.</li>
+  <li><strong>First response and SLA attainment need SLA tracking.</strong> A ticket is timed only while SLA tracking is on, so these two cards cover only tickets that were timed. While tracking is off, they say so.</li>
+  <li><strong>Reopens before 1.3.0 are not counted.</strong> The number of reopens was not kept before this release, so the reopen rate counts reopens from 1.3.0 on.</li>
+  <li><strong>Backlog and Workload show the open tickets now.</strong> They have no comparison.</li>
+  <li>A card with nothing to show says what it lacks, such as <em>No tickets were resolved in this period</em>, instead of showing zeros.</li>
+</ul>
+
+<h3 id="tickets-reports-period">Period, comparison and filters</h3>
+<ul>
+  <li><strong>The period</strong> is the last 7, 30 or 90 days (30 by default), or a custom range of dates. A custom range is at most 366 days. Dates are in your own time zone, as your browser reports it.</li>
+  <li><strong>Every figure is compared with the previous period</strong>: the same number of days, ending the day before the period starts. A change is shown as a percentage, or in points for a rate, and is coloured by whether the direction is better or worse. When there is no data in the previous period, the card says so.</li>
+  <li><strong>Filters</strong> narrow every card: <em>Category</em> (a top-level category, with everything under it), <em>Priority</em> and <em>Group</em>. They apply to a ticket's current values, so a ticket moved from Hardware to Network counts as Network.</li>
+  <li><strong>The address holds the state.</strong> A refresh, or a link sent to a colleague, shows the same board, within what that person may see.</li>
+</ul>
+
+<h3 id="tickets-reports-scope">Who sees which numbers</h3>
+<p>Administrators count every ticket. Staff count the tickets they could open on the ticket list. With <em>Limit staff to their group scope</em> off that is every ticket. With it on, it is the tickets reported by them, assigned to them or to one of their groups, or in a category or type their groups cover. There is no separate permission for reports.</p>
+
+<h3 id="tickets-reports-export">Downloads</h3>
+<ul>
+  <li><strong>Download CSV</strong> writes the numbers on screen, with the period and filters, to a file.</li>
+  <li><strong>Download image</strong> makes a PNG of the whole board, and each card has its own image button. The image is the screen as your browser laid it out, so a phone gives a narrower image than a desktop.</li>
+  <li>Both are made in your browser. Nothing is sent to the server for either one.</li>
+</ul>
+
+<p>Over the API, the same numbers are <code>GET /api/v1/reports/kpi</code>, for staff and administrators, which needs <code>tickets:read</code> for an API key or OAuth client. There is no MCP tool for it. See the <a href="api-reference.html">API reference</a>.</p>
+
+<p><strong>Not in 1.3.0:</strong> scheduled or emailed reports, cuts by channel or agent, first-contact resolution, and saved or custom reports.</p>
+
+
 <h2 id="tickets-phone">Tickets on a phone</h2>
 
 <ul>
   <li><strong>Long text wraps and is never cut.</strong> A word or link with no break in it, such as a 300-character URL in a reply, wraps at the edge of its box, down to a 320-pixel-wide screen. This holds for everything a person wrote on a ticket: the subject, description, replies and internal notes, author names, attachment filenames, the requester line, the activity feed and its diffs, the status history, followers, the assignee, status names, category, type and item names, custom-field labels and values, tags, and the requester picker. The text is never shortened, rewritten or turned into a link, so it stays whole and can be copied.</li>
-  <li><strong>Fourteen compact places still end in "…"</strong> because they are one-line rows or chips where wrapping would break the row. None is text a person wrote on a ticket, and each, except the SAML private key, shows its full text when you hover over it: in the Linked tickets panel, the linked ticket line; in the desktop ticket table, the subject; in the reply box, a pending upload's filename and the preview in the canned-response picker; in the page frame, the signed-in email at the foot of the sidebar and the brand name in the mobile top bar; on the Dashboard, each client's name and email in the By Client cards; on the Account page, a passkey's label; in the authenticator-app setup, the secret under the QR code; on a ticket, each attachment's SHA-256, cut to its first 12 characters; on the Canned responses admin page, the body preview, cut to 80 characters; and on the Settings Authentication tab, the SAML certificate (its first line, with the whole text on hover) and the SAML private key (its first line followed by "…", with no hover text on purpose, because the key is a secret). A touch screen shows no hover text, so the two ticket rows also open the ticket, where the text wraps in full.</li>
+  <li><strong>Fourteen compact places still end in "…"</strong> because they are one-line rows or chips where wrapping would break the row. None is text a person wrote on a ticket, and each, except the SAML private key, shows its full text when you hover over it: in the Linked tickets panel, the linked ticket line; in the desktop ticket table, the subject; in the reply box, a pending upload's filename and the preview in the canned-response picker; in the page frame, the signed-in email at the foot of the sidebar and the brand name in the mobile top bar; on the Dashboard, each client's name and email in the By Client cards; on the Account page, a passkey's label; in the authenticator-app setup, the secret under the QR code; on a ticket, each attachment's SHA-256, cut to its first 12 characters; on the Canned responses admin page, the body preview, cut to 80 characters; and on the Authentication page under System, the SAML certificate (its first line, with the whole text on hover) and the SAML private key (its first line followed by "…", with no hover text on purpose, because the key is a secret). A touch screen shows no hover text, so the two ticket rows also open the ticket, where the text wraps in full.</li>
   <li><strong>The header buttons get their own row.</strong> On a narrow screen (below tablet width) the ticket page's action buttons sit on a row under the title and tracking number, which keep the full width.</li>
 </ul>
 
