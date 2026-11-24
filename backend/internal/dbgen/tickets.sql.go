@@ -911,10 +911,10 @@ WITH reply_hits AS (
     SELECT r.ticket_id
     FROM ticket_replies r
     JOIN tickets rt ON rt.id = r.ticket_id
-    WHERE $34::bool
-      AND $30::text <> ''
-      AND r.body_tsv @@ to_tsquery('english', $30::text)
-      AND ($35::bool OR NOT r.internal)
+    WHERE $35::bool
+      AND $31::text <> ''
+      AND r.body_tsv @@ to_tsquery('english', $31::text)
+      AND ($36::bool OR NOT r.internal)
       AND (
         $4::bool
         OR ($5::bool AND rt.reporter_user_id = $6::uuid)
@@ -936,7 +936,7 @@ WITH reply_hits AS (
         )
       )
     ORDER BY r.created_at DESC, r.id
-    LIMIT $36
+    LIMIT $37
   ) m
 )
 SELECT t.id, t.tracking_number, t.subject, t.description, t.category_id, t.type_id, t.item_id, t.priority, t.status_id, t.assignee_user_id, t.assignee_group_id, t.reporter_user_id, t.guest_email, t.resolution_notes, t.resolved_at, t.closed_at, t.created_at, t.updated_at, t.guest_name, t.guest_phone, t.pending_since, t.sla_paused_seconds, t.reopen_count, t.last_reopened_at, t.paused_seconds_at_last_reopen, t.description_format, t.source_channel
@@ -1010,11 +1010,17 @@ WHERE
       )
     )
   )
-  -- queue: 'any' | 'mine' | 'unassigned'. Set by the handler, never the caller.
+  -- queue: 'any' | 'mine' | 'assigned_to_me' | 'my_groups' | 'unassigned'. Set by
+  -- the handler, never the caller. (#676: assigned_to_me and my_groups are the two
+  -- halves of mine; held_by below splits my_groups three ways.)
   AND (
     $11::text = 'any'
     OR ($11::text = 'unassigned'
         AND t.assignee_user_id IS NULL AND t.assignee_group_id IS NULL)
+    OR ($11::text = 'assigned_to_me'
+        AND t.assignee_user_id = $6::uuid)
+    OR ($11::text = 'my_groups'
+        AND t.assignee_group_id = ANY($12::uuid[]))
     -- mine_group_ids is the caller's groups, read by the store just before this
     -- runs and passed as a plain array. That is deliberate: the planner cannot
     -- know how many groups a subquery will return, assumes a lot, and then walks
@@ -1037,24 +1043,31 @@ WHERE
   AND ($18::uuid IS NULL OR t.item_id = $18::uuid)
   AND ($19::uuid IS NULL OR t.assignee_user_id = $19::uuid)
   AND ($20::uuid IS NULL OR t.assignee_group_id = $20::uuid)
-  AND ($21::uuid IS NULL OR t.reporter_user_id = $21::uuid)
+  -- held_by (#676): who personally holds the ticket, relative to the caller.
+  -- '' is no restriction. Only the assignee user is read, never the group.
+  AND ($21::text = ''
+       OR ($21::text = 'nobody' AND t.assignee_user_id IS NULL)
+       OR ($21::text = 'me' AND t.assignee_user_id = $6::uuid)
+       OR ($21::text = 'others' AND t.assignee_user_id IS NOT NULL
+           AND t.assignee_user_id <> $6::uuid))
+  AND ($22::uuid IS NULL OR t.reporter_user_id = $22::uuid)
   -- requester_pattern is '%' || LIKE-escaped text || '%', built in the store.
   -- It matches the ticket's guest fields and the reporting account's name and
   -- email. Deleted and disabled accounts are included on purpose: their tickets
   -- still exist and the ticket page still names them.
-  AND ($22::text IS NULL
-       OR t.guest_name ILIKE $22::text
-       OR t.guest_email ILIKE $22::text
+  AND ($23::text IS NULL
+       OR t.guest_name ILIKE $23::text
+       OR t.guest_email ILIKE $23::text
        -- ARRAY(subquery), not IN (subquery), so all three arms can be indexes
        -- feeding one BitmapOr (see the queue arm above for the same reason).
        OR t.reporter_user_id = ANY(ARRAY(SELECT u.id FROM users u
-                                         WHERE u.display_name ILIKE $22::text
-                                            OR u.email ILIKE $22::text)))
-  AND ($23::timestamptz IS NULL OR t.created_at >= $23::timestamptz)
-  AND ($24::timestamptz IS NULL OR t.created_at < $24::timestamptz)
-  AND ($25::timestamptz IS NULL OR t.updated_at >= $25::timestamptz)
-  AND ($26::timestamptz IS NULL OR t.updated_at < $26::timestamptz)
-  AND (cardinality($27::text[]) = 0 OR t.source_channel = ANY($27::text[]))
+                                         WHERE u.display_name ILIKE $23::text
+                                            OR u.email ILIKE $23::text)))
+  AND ($24::timestamptz IS NULL OR t.created_at >= $24::timestamptz)
+  AND ($25::timestamptz IS NULL OR t.created_at < $25::timestamptz)
+  AND ($26::timestamptz IS NULL OR t.updated_at >= $26::timestamptz)
+  AND ($27::timestamptz IS NULL OR t.updated_at < $27::timestamptz)
+  AND (cardinality($28::text[]) = 0 OR t.source_channel = ANY($28::text[]))
   AND ($2::text = ''
        OR ($2::text = 'breached' AND sb.bucket = 0)
        OR ($2::text = 'at_risk' AND sb.bucket = 1))
@@ -1065,39 +1078,39 @@ WHERE
   -- though each one matched. A search that tokenises to nothing must match on
   -- the tracking number or not at all.
   AND (
-    NOT $28::bool
-    OR t.tracking_number ILIKE $29::text
+    NOT $29::bool
+    OR t.tracking_number ILIKE $30::text
     OR (
-      $30::text <> ''
-      AND t.search_vector @@ to_tsquery('english', $30::text)
+      $31::text <> ''
+      AND t.search_vector @@ to_tsquery('english', $31::text)
     )
     OR t.id IN (SELECT ticket_id FROM reply_hits)
   )
 ORDER BY
-  CASE WHEN $3::text = 'relevance' AND $30::text <> ''
-       THEN ts_rank(t.search_vector, to_tsquery('english', $30::text)) END DESC,
-  CASE WHEN $3::text = 'number' AND $31::text = 'asc' THEN t.tracking_number END ASC,
-  CASE WHEN $3::text = 'number' AND $31::text = 'desc' THEN t.tracking_number END DESC,
-  CASE WHEN $3::text = 'subject' AND $31::text = 'asc' THEN lower(t.subject) END ASC,
-  CASE WHEN $3::text = 'subject' AND $31::text = 'desc' THEN lower(t.subject) END DESC,
+  CASE WHEN $3::text = 'relevance' AND $31::text <> ''
+       THEN ts_rank(t.search_vector, to_tsquery('english', $31::text)) END DESC,
+  CASE WHEN $3::text = 'number' AND $32::text = 'asc' THEN t.tracking_number END ASC,
+  CASE WHEN $3::text = 'number' AND $32::text = 'desc' THEN t.tracking_number END DESC,
+  CASE WHEN $3::text = 'subject' AND $32::text = 'asc' THEN lower(t.subject) END ASC,
+  CASE WHEN $3::text = 'subject' AND $32::text = 'desc' THEN lower(t.subject) END DESC,
   -- Status order is each status's place in (sort_order, name), looked up in an
   -- array built once per query. A join or a subquery per ticket cost 85 to
   -- 684 ms at 200k when sorting by status, and a join cost every other list too.
   CASE WHEN $3::text = 'status'
        THEN array_position((SELECT array_agg(s.id ORDER BY s.sort_order, s.name) FROM statuses s), t.status_id)
-            * CASE WHEN $31::text = 'asc' THEN 1 ELSE -1 END END ASC,
+            * CASE WHEN $32::text = 'asc' THEN 1 ELSE -1 END END ASC,
   CASE WHEN $3::text = 'priority'
        THEN (CASE t.priority WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END)
-            * CASE WHEN $31::text = 'asc' THEN 1 ELSE -1 END END ASC,
+            * CASE WHEN $32::text = 'asc' THEN 1 ELSE -1 END END ASC,
   CASE WHEN $3::text = 'sla'
-       THEN COALESCE(sb.bucket, 2) * CASE WHEN $31::text = 'asc' THEN 1 ELSE -1 END END ASC,
-  CASE WHEN $3::text = 'created' AND $31::text = 'asc' THEN t.created_at END ASC,
-  CASE WHEN $3::text = 'created' AND $31::text = 'desc' THEN t.created_at END DESC,
-  CASE WHEN $3::text = 'updated' AND $31::text = 'asc' THEN t.updated_at END ASC,
-  CASE WHEN $3::text = 'updated' AND $31::text = 'desc' THEN t.updated_at END DESC,
+       THEN COALESCE(sb.bucket, 2) * CASE WHEN $32::text = 'asc' THEN 1 ELSE -1 END END ASC,
+  CASE WHEN $3::text = 'created' AND $32::text = 'asc' THEN t.created_at END ASC,
+  CASE WHEN $3::text = 'created' AND $32::text = 'desc' THEN t.created_at END DESC,
+  CASE WHEN $3::text = 'updated' AND $32::text = 'asc' THEN t.updated_at END ASC,
+  CASE WHEN $3::text = 'updated' AND $32::text = 'desc' THEN t.updated_at END DESC,
   t.created_at DESC,
   t.id
-LIMIT $33 OFFSET $32
+LIMIT $34 OFFSET $33
 `
 
 type ListTicketsFilteredParams struct {
@@ -1121,6 +1134,7 @@ type ListTicketsFilteredParams struct {
 	ItemID               uuid.NullUUID  `json:"item_id"`
 	AssigneeUserID       uuid.NullUUID  `json:"assignee_user_id"`
 	AssigneeGroupID      uuid.NullUUID  `json:"assignee_group_id"`
+	HeldBy               string         `json:"held_by"`
 	ReporterID           uuid.NullUUID  `json:"reporter_id"`
 	RequesterPattern     sql.NullString `json:"requester_pattern"`
 	CreatedAfter         sql.NullTime   `json:"created_after"`
@@ -1262,6 +1276,7 @@ func (q *Queries) ListTicketsFiltered(ctx context.Context, arg ListTicketsFilter
 		arg.ItemID,
 		arg.AssigneeUserID,
 		arg.AssigneeGroupID,
+		arg.HeldBy,
 		arg.ReporterID,
 		arg.RequesterPattern,
 		arg.CreatedAfter,
