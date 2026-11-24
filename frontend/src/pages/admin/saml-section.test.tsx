@@ -132,6 +132,17 @@ describe('SAML section', () => {
     expect((container.querySelector('textarea') as HTMLTextAreaElement).value).toBe(KEY)
   })
 
+  it('resets the certificate file input, so the same file can be chosen again', async () => {
+    const { user, container } = await openPage()
+    const CERT = '-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----'
+    const certInput = container.querySelector('input[type="file"][accept=".pem,.crt,.cer"]') as HTMLInputElement
+
+    await user.upload(certInput, new File([CERT], 'sp.crt', { type: 'application/x-pem-file' }))
+    await waitFor(() => expect(container.querySelector('textarea')).not.toBeNull())
+    expect(certInput.value).toBe('')
+    expect((container.querySelector('textarea') as HTMLTextAreaElement).value).toBe(CERT)
+  })
+
   it('says Copied in a status line, and says so when the clipboard is refused', async () => {
     const { user } = await openPage()
     const entity = screen.getByText(ENTITY_ID).parentElement!

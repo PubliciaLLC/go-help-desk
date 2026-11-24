@@ -1835,47 +1835,55 @@ export function useSettingsDraft(): SettingsDraft
     null`, a `useState` initialiser. A page opened with the dump already
     cached (from another settings page) is seeded in its first render and
     shows its sections at once, with no spinner.
-  - The seeding effect is today's for an untouched draft (see the third
-    change below for what it keeps).
-  - `isLoading` is `query.isLoading || (query.data !== undefined && local
-    === null)`. It is true while the read is in flight, and for the one
-    render between the data arriving and the effect copying it. The shell
+  - Since the third change below, `local` is a `seeded` flag, set by the
+    effect when the dump has been seen (and initially true when the dump is
+    cached); the draft itself is composed from the layers.
+  - `isLoading` is `query.isLoading || (query.data !== undefined &&
+    !seeded)`. It is true while the read is in flight, and for the one
+    render between the data arriving and the effect seeing it. The shell
     shows its spinner in both, so no section mounts on an empty draft.
-  - The accessors and `buildSettingsPatch` read `local ?? {}`. A failed read
-    has no data, so `isLoading` is false and the page renders with an empty
-    draft, as today.
+  - The accessors and `buildSettingsPatch` read the composed draft, empty
+    for a failed read. A failed read has no data, so `isLoading` is false and
+    the page renders with an empty draft, as today.
 
   No section changes. A section that seeds its own state at mount sees the
   stored value, whichever way the page was opened.
-- **A third change: a refetch does not overwrite what the operator has edited
-  (`fix/saml-settings-save`).** The seeding effect used to copy every fresh dump
-  over the whole draft, so any refetch silently reset an unsaved edit, and with
-  it anything that was only shown while that edit stood. Two things refetch the
-  dump: the window regaining focus (the query's `staleTime` is 0, so for
-  instance closing the certificate file picker refetches), and, since this
-  change, "Save SAML config", which also invalidates `['admin', 'settings']`
-  because the save changes the `saml_*` keys the dump carries. The draft
-  therefore keeps the **edited keys**, each with the value last set:
-  `setBool`, `setNum`, `setStr`, `setStrArr` and `toggleStrArr` record theirs.
-  When fresh data arrives, an edited key keeps the operator's value and every
-  other key follows the fresh data; the first seeding, with nothing edited,
-  copies everything as before. A key put back to the stored value is not an
-  edit and is not held, so another administrator's later change to it comes
-  through. A successful save clears the marks of the keys that were edited as
-  of the send and have not been edited again since; a key edited while the
-  save was pending keeps its mark and its value, and the page stays dirty for
-  it, even when the key was set back to the value it had before the save (while
-  a save is on its way every touched key is held, since the stored value is
-  about to change; the hook knows this from a flag set when Save is clicked and
-  cleared when the save settles). Values are compared by content, so an array
-  toggled off and on again equals the one that was sent. After the save the draft is the fresh dump again for everything else (the
-  save stays pending until that dump has arrived, see the first change). A
-  refused save keeps every mark and edit. This applies to every System page,
-  not only Authentication. The write-only keys in `secrets` and `cleared` were
-  never in the draft and are unaffected. Separately, "Save SAML config" empties
-  the private key box once saved (the key is write-only and is not sent again).
+- **A third change: the draft is three layers, so a refetch does not overwrite
+  what the operator has edited (`fix/saml-settings-save`).** The seeding effect
+  used to copy every fresh dump over the whole draft, so any refetch silently
+  reset an unsaved edit, and with it anything that was only shown while that
+  edit stood. Two things refetch the dump: the window regaining focus (the
+  query's `staleTime` is 0, so for instance closing the certificate file picker
+  refetches), and, since this change, "Save SAML config", which also
+  invalidates `['admin', 'settings']` because the save changes the `saml_*`
+  keys the dump carries. The hook no longer copies the dump into `local`. A
+  key's value is the first of three layers that has it:
+  - **edits**: what the operator last set, for the keys they changed
+    (`setBool`, `setNum`, `setStr`, `setStrArr`, `toggleStrArr`);
+  - **committed**: what a save in flight carries, from the send until the
+    settings have been fetched again, and dropped when the save settles
+    (success after that fetch, or a refusal);
+  - **the dump**: the query's data.
+
+  Setting a key compares the new value, by content, with the value underneath
+  the edits (committed if it carries the key, else the dump). Equal: the edit
+  is deleted. Otherwise it is recorded. So a key put back to what the dump
+  holds is not held and another administrator's later change to it comes
+  through, and while a save is on its way a key put back to its pre-save value
+  is held, because it differs from what was sent. When the dump changes and when
+  a save settles, edits that equal the value underneath them are dropped. A
+  successful save drops the edits equal to what it sent; the rest stay. A
+  refused save drops only `committed`: every edit is still unsaved. A toggle
+  of an array starts from the draft's current value in whichever layer holds
+  it, including the window between the PATCH answer and the fresh settings.
+  `dirty` is the patch of the composed draft against the dump (as before), and
+  a key whose edit equals the dump never makes it dirty. This applies to every
+  System page, not only Authentication. The write-only keys in `secrets` and
+  `cleared` are not part of the draft and are unaffected. Separately, "Save
+  SAML config" empties the private key box once saved (the key is write-only
+  and is not sent again).
 - **`dirty`** is `!isPending && Object.keys(buildSettingsPatch(…)).length > 0`.
-  While `local` is `null` the patch is empty, so a page that is still loading
+  While there is no dump the patch is empty, so a page that is still loading
   is never dirty.
 
 Sections receive the draft as one prop, `draft: SettingsDraft`, instead of
