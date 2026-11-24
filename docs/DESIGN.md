@@ -1506,6 +1506,501 @@ An install upgraded from an earlier release has never been asked about the choic
 - **Small screens.** One column, wrapping buttons, no horizontal scroll at 320 px (an e2e test pins it). Each step has one `h2`, focus moves to it when the step changes, and "Step N of M" is announced.
 - **Setup.** The `/setup` form has an unchecked "Check for new releases (contacts GitHub once a week; sends nothing about your server)" box; `POST /setup` takes `update_check` (absent means false) and stores it as `update_check_enabled`.
 
+### Settings pages under System (#674)
+
+Until #674 every instance setting was on one page, `/admin/settings`
+(`SettingsPage.tsx`), behind six tabs: General, Branding, Authentication,
+Features, Email and Attachments. The tab was component state, not part of the
+address, so no link, notice or bookmark could open a tab: every one of them
+opened General. Email Templates was a separate page under Integrations. #674
+splits the tabs into pages listed in the sidebar under **System**, and moves
+Email Templates onto the Email page. It replaces #594's "System hub with
+tabs". #594's People, Tickets and Integrations hubs are not affected.
+
+**This is a frontend change only.** No endpoint, setting key, default, stored
+value, MCP tool or permission changes. Every section keeps its controls, its
+copy (except the cross-references listed under **Copy that names a place**),
+its API calls and its validation. There is no migration, and an existing
+install changes only in where things are on screen.
+
+#### The pages
+
+Every section that exists once #616, #670, #672, #673 and #676 have landed is
+assigned to exactly one page. Sections keep their current headings (the `h2`
+of `Section`) and keep their current order on the page.
+
+| Sidebar item | Address | Sections, in order | Comes from |
+| --- | --- | --- | --- |
+| **General** | `/admin/settings/general` | Tickets · Ticket lifecycle · Updates | General tab |
+| **Features** | `/admin/settings/features` | tab **SLA**: SLA (the `sla_enabled` switch and, while it is on, the SLA Policies editor from #672) | Features tab |
+| **Branding** | `/admin/settings/branding` | Identity (site name, logo) | Branding tab |
+| **Email** | `/admin/settings/email` | tab **Notifications**: Staff email about tickets (the four overrides, #670's included) · SLA alerts (`sla_alerts_enabled`) | Email tab; SLA alerts from the Features tab (#670) |
+| | `/admin/settings/email/templates` | tab **Templates**: the email template list and editor | the `/admin/email-templates` page |
+| **File Attachments** | `/admin/settings/attachments` | Uploads (allowed types, mismatch handling) · File size (#673) · Malware scanning (with the scanner status block) · Reputation lookup | Attachments tab |
+| **Guest Access** | `/admin/settings/guest-access` | Submissions (guest submission and its email note, guests may attach files, the guest size slider, files per ticket, uploads per hour) | General tab |
+| **Authentication** | `/admin/settings/authentication` | SAML · OIDC / OpenID Connect · Multi-factor authentication (with #616's passkey roles) · Passwords · API keys · Registration | Authentication tab |
+| **Privacy** | `/admin/settings/privacy` | Ticket visibility · Available queue (#676) · Audit log · Privacy | General tab |
+| **Audit Log** | `/admin/audit` (unchanged) | the audit viewer | unchanged |
+
+The issue's table leaves out the following. Each is placed here:
+
+- **Available queue** (`AvailableQueueSection`, #676). #676 put it under
+  General → Ticket visibility until #674 placed it. It goes on **Privacy**,
+  directly after Ticket visibility. Its copy is about `ticket_scope_enforced`,
+  which is the switch above it.
+- **The save warning about OAuth clients.** It appears when a save turns
+  `ticket_scope_enforced` on, and it includes the "Open OAuth clients" link to
+  `/admin/oauth-clients`. It moves with Ticket visibility to **Privacy**. An
+  SSO warning from the same `warning` field (a `saml_*` key saved through
+  `PATCH /admin/settings`) shows on **Authentication**. Both are shown by the
+  page shell, as described below.
+- **The "Email templates" section on the Email tab** (one sentence and a link
+  to `/admin/email-templates`). It is removed. The Templates tab next to it
+  replaces it.
+- **`sla_alerts_enabled`.** #670 put it on the Features tab under SLA
+  tracking. The owner's table moves "the fourth SLA alerts switch and
+  setting" to Email. The override row stays in Staff email about tickets.
+  The switch becomes its own section, **SLA alerts**, after it. The section
+  has the same `SettingRow`, label, description and `Toggle` that #670
+  specifies.
+- **`EmailStatusNote`.** It stays under the row it qualifies: under guest
+  submission on Guest Access, and under self-service signup on
+  Authentication.
+
+Audit Log stays administrator-only. The issue says it is "visible to staff",
+but that is not what it does today. Since #129 both the route and
+`GET /admin/audit` are administrator-only, and the sidebar's comment says so.
+#674 moves pages and does not change who may read the log (see the decisions
+below).
+
+#### Addresses and redirects
+
+All settings pages are under `/admin/settings/<page>`. The old address is a
+prefix of every new one, so the active-link rule (`pathname === to ||
+startsWith(to + '/')`) and `sectionOfPath` work without a special case. The
+redirects are routes whose `beforeLoad` throws `redirect({ to, search,
+replace: true })`. That replaces the history entry, so Back does not loop
+through the redirect.
+
+| Old address | New address |
+| --- | --- |
+| `/admin/settings` | `/admin/settings/general` |
+| `/admin/email-templates` | `/admin/settings/email/templates` |
+| `/admin/email-templates?t=<name>` | `/admin/settings/email/templates?t=<name>` (the query is kept as it was) |
+
+That is every old address. The six tabs never had an address, hash or
+query parameter, so no tab-level redirect is needed. A link that opened
+`/admin/settings` to reach, for example, Attachments opened General before
+#674 and opens General after it. `/admin/audit` does not move.
+
+The redirect routes do not check the signed-in user. The route they redirect
+to does: a signed-out visitor is sent on to `/login`, and a staff member to
+`/dashboard`, by the new route's `requireAdmin`, exactly as the old route
+did.
+
+#### Who sees what
+
+Every page in the table is administrator-only. Each new route has
+`beforeLoad: requireAdmin`, as `/admin/settings` and `/admin/email-templates`
+have today. The System section is inside the Admin group of the sidebar,
+which only an administrator is shown. A staff member or requester who types
+a settings address is sent to `/dashboard`, and someone signed out is sent to
+`/login`. The server already refuses `GET|PATCH /admin/settings` and the
+other admin endpoints to everyone but administrators, and that does not
+change.
+
+#### Sidebar
+
+`ADMIN_SECTIONS` in `Layout.tsx`:
+
+- **Integrations**: API Keys, OAuth Clients, Webhooks. Email Templates leaves
+  this section.
+- **System**: General (`SettingsIcon`), Features (`ToggleRightIcon`),
+  Branding (`PaletteIcon`), Email (`MailIcon`), File Attachments
+  (`PaperclipIcon`), Guest Access (`DoorOpenIcon`), Authentication
+  (`LockIcon`), Privacy (`EyeOffIcon`), Audit Log (`HistoryIcon`), in that
+  order. The links are dense `NavItem`s, like every section's.
+- The section ids (`people`, `tickets`, `integrations`, `system`) do not
+  change, so the remembered open section (`ghd.admin-nav-open`) reads as
+  before.
+- Email is the current link on both Email tabs, because
+  `/admin/settings/email/templates` starts with `/admin/settings/email/`.
+
+With nine links, System is now the longest section (Tickets has six). The fit
+test in `e2e/admin-nav-sections.spec.ts` gains the System case on
+`/admin/settings/general`, at 1440×768, 800 and 900, with the notice bar
+showing and #676's ticket views in the sidebar. It keeps all its
+assertions: every heading fully in view, and 24 px of headroom under every
+heading and under the last link. If the last-link assertion fails at 768 for
+System only, the nav, which is already `overflow-y-auto`, is allowed to
+scroll in that one case. The assertion for that case becomes "the current
+page's link is fully in view". `NavItem` then scrolls the current link into
+view (`scrollIntoView({ block: 'nearest' })`) when the path changes. The
+link rows are not made any denser. A finger needs their height, and so does
+the 44 px coarse-pointer rule.
+
+#### The page shell and tabs
+
+`frontend/src/pages/admin/settings/SettingsPageShell.tsx` renders
+`<Layout>`, then the page's `h1` (the sidebar label), then one line of
+description, then the tab bar if the page has one, then the save warning,
+then the page's content. Each page's content sits in `max-w-2xl`, as the tab
+panel does today. The Templates tab does not, because the template editor is
+full width today. The descriptions are:
+
+| Page | Description |
+| --- | --- |
+| General | Ticket numbers, the ticket lifecycle and update checks. |
+| Features | Optional features of this help desk. |
+| Branding | The name and logo in the sidebar and the browser tab. |
+| Email | The email staff receive about tickets, and the wording of every email this help desk sends. |
+| File Attachments | What can be uploaded, how large it may be, and how uploads are checked. |
+| Guest Access | Tickets from people without an account. |
+| Authentication | How people sign in, and who may create API keys. |
+| Privacy | Who sees which tickets, and what the audit trail shows and keeps. |
+
+`SettingsTabs` (same folder) takes `{ label, to }[]`. It renders a
+`<nav aria-label="<Page> sections">` of router `Link`s with the classes of
+today's tab bar (`-mb-px flex gap-6 overflow-x-auto`, a blue bottom border
+on the current tab). A tab is current, with `aria-current="page"`, when the
+pathname equals its `to` exactly. The tabs are links, not `role="tab"`
+buttons, because each tab has its own address, Back works between them and
+the banner can link straight to Templates. Features has one tab, **SLA**.
+Email has **Notifications** and **Templates**.
+
+**The Templates tab** is the body of today's `EmailTemplatesPage`: the intro
+paragraph with the advisory link, and the list or the editor. It sits inside
+the Email shell instead of its own `<Layout>`. Its "Email templates" heading
+becomes an `h2` under the page's `h1` "Email". Nothing else changes. It still
+keeps the open template in `?t=`, reading `window.location.search` and
+writing with `history.replaceState(window.location.pathname + …)`, so it
+works at the new path as it did at the old one.
+
+#### State: one draft per page
+
+**What is shared today.** `SettingsPage` holds one draft, `local`, seeded
+from `GET /admin/settings` (query key `['admin', 'settings']`). It holds the
+write-only key fields `apiKeys` and `clearedKeys`, one `saveMutation`, and
+one `saved`, `saveError` and `saveWarning`. All six tab panels read and write
+that draft through `bool`/`num`/`str`/`strArr`/`has` and their setters.
+Every tab's **Save changes** runs the same mutation, which sends every key
+that differs from the dump (#394) on all tabs, not only the tab you are on.
+An edit on General therefore survives a switch to Authentication, and is
+saved by Authentication's Save. The SAML and OIDC sections, the SLA
+policies editor (#672), the logo upload and the Available queue (#676) have
+their own state and saves and are not part of the draft.
+
+**After #674 each page has its own draft.** A page's Save sends only what
+was edited on that page. This is the rule #673 already states for the File
+Attachments and Guest Access pages. One shared draft above every page would
+keep the cross-tab behaviour, but a Save on one page would then write edits
+made on another page that is no longer on screen.
+
+The draft logic is moved out of `SettingsPage` unchanged, into
+`frontend/src/pages/admin/settings/useSettingsDraft.ts`:
+
+```ts
+interface SettingsDraft {
+  isLoading: boolean                       // the settings query's
+  stored: Record<string, unknown> | undefined  // the dump as last fetched
+  bool(k: string): boolean; num(k: string): number; str(k: string): string
+  strArr(k: string): string[]; has(k: string): boolean
+  setBool(k: string, v: boolean): void; setNum(k: string, v: number): void
+  setStr(k: string, v: string): void; setStrArr(k: string, v: string[]): void
+  toggleStrArr(k: string, item: string, checked: boolean): void
+  // Write-only keys (today: the three reputation API keys). Never in the draft.
+  secret(k: string): string; setSecret(k: string, v: string): void
+  secretCleared(k: string): boolean; setSecretCleared(k: string, v: boolean): void
+  dirty: boolean                           // the patch below is non-empty
+  save(): void; isPending: boolean; error: string; saved: boolean
+  warning: { text: string; aboutClients: boolean } | null
+}
+export function useSettingsDraft(): SettingsDraft
+```
+
+- **The patch is today's, in one pure function**, `buildSettingsPatch(stored,
+  local, secrets, cleared)`, exported for its tests. It skips `*_set` keys
+  and keys equal to the dump under `JSON.stringify`. It applies #673's guest
+  clamp: a changed `guest_attachment_max_mb` is sent as `min(local guest,
+  overallMB)`, where `overallMB` is `local.attachment_max_mb` if that is an
+  integer from 1 to 100, and 25 otherwise. On Guest Access that local value
+  is the stored one, because nothing on that page edits it, so the rule
+  needs no page-specific code. A key in `cleared` is sent as `''`. Any other
+  key in `secrets` whose trimmed value is not empty is sent trimmed.
+  `secrets` and `cleared` are a general map instead of a loop over
+  `REPUTATION_PROVIDERS`. Only the reputation rows ever set them, so what is
+  sent is identical.
+- **The rest is also today's:** the `email_required` message; `aboutClients`
+  (`patch.ticket_scope_enforced === true`); the success path, which sets
+  `saved` for 2.5 s, clears the secrets and invalidates `['admin',
+  'settings']`, `['site-config']`, `['security-warnings']` and `['me']`; and a
+  refused save, which keeps every edit.
+- **One change: a save stays pending until the settings have been fetched
+  again.** `onSuccess` awaits the `['admin', 'settings']` invalidation, so
+  `isPending`, and with it "Saving…", lasts until the fresh dump has
+  arrived. Without that, the draft would differ from the old dump for one
+  round trip after a successful save, and the leave guard below would ask
+  about changes that were already saved. The other three invalidations are
+  not awaited.
+- **`dirty`** is `!isPending && Object.keys(buildSettingsPatch(…)).length > 0`.
+  Before the dump arrives `local` is empty, so a page that is still loading
+  is never dirty.
+
+Sections receive the draft as one prop, `draft: SettingsDraft`, instead of
+today's ten to fifteen separate functions. The sections that do not use the
+draft (SAML and OIDC config, the SLA policies editor, the logo uploader,
+`AvailableQueueSection`) take no draft and keep their own state.
+
+**Cross-page reads.** The Guest Access slider's `max` is the **stored**
+`attachment_max_mb` (`draft.stored`, with the reader's fallback of 25), as
+#673 specifies for the split. File Attachments passes the stored guest value
+to `AttachmentSizeLimitSection` as `guestMB`, because the guest value cannot
+be edited on that page. `EmailStatusNote` and the scanner status read
+`['security-warnings']`, as they do today. No other section reads a key
+that is edited on another page. The server rules that check two keys
+together (open registration and the domain list, MFA and its roles, the
+guest limit and the overall limit) have both keys on one page, except the
+pair of size limits, which #673 handles.
+
+**The leave guard.** Splitting the draft means that leaving a page with
+unsaved edits would discard them without a word. That used to be a tab
+switch, which kept them. So every page that uses the draft calls
+`useBlocker({ shouldBlockFn: () => draft.dirty, enableBeforeUnload: () =>
+draft.dirty, withResolver: true })` (TanStack Router). While the blocker is
+`blocked`, the page shows `ConfirmDialog` with:
+
+- title "Leave without saving?"
+- description "Your changes on this page have not been saved. Leaving
+  discards them."
+- confirm label "Leave without saving" (`destructive`), which calls
+  `proceed`
+- cancel label "Stay", which calls `reset`
+
+The guard covers every router navigation: sidebar links, tab links, in-page
+links such as Open OAuth clients, and Back and Forward. Reloading or closing
+the tab gets the browser's own prompt. It covers only the draft. The SAML,
+OIDC, SLA and template forms keep their own state, as they do when you leave
+the Settings page today. A page with no edits, or with edits that were
+saved, never prompts. Clicking a link in the phone drawer closes the drawer
+before the dialog opens, and Stay leaves the drawer closed.
+
+**Loading and errors.** Each page shows the shell's spinner while
+`draft.isLoading`, as the tabbed page does today. A query that is already
+cached (from another settings page) shows at once, and the existing seeding
+effect updates the draft when the background refetch lands. A failed read
+renders the page as today, with an empty draft. There is no new empty
+state: every section already renders its own unset values.
+
+#### Copy that names a place
+
+Places are named the way the sidebar shows them: in UI copy as "System →
+Page → Section", and in the docs as "Admin → System → Page → Section". Each
+of these changes to the new name:
+
+| Where | Today | After |
+| --- | --- | --- |
+| `InsecureConfigBanner.tsx`, reopen-target notice | Settings → Ticket lifecycle → Reopen target status | System → General → Ticket lifecycle → Reopen target status |
+| same, SAML metadata notices (two) | Settings → SAML | System → Authentication → SAML |
+| same, scanner notice | Settings → Attachments | System → File Attachments |
+| same, template notice link | `href="/admin/email-templates?t=…"` | `href="/admin/settings/email/templates?t=…"` |
+| `AfterUpgradePage.tsx`, guest step | under Settings, General, Submissions | under System, Guest Access |
+| `SetupPage.tsx`, update-check box | under Settings | under System → General |
+| `handler_admin_settings.go`, reopen-target `warning` text | under Settings, Ticket lifecycle, Reopen target status | under System, General, Ticket lifecycle, Reopen target status |
+| `notify/templates.go`, `SiteName` variable help | from Settings | from System → Branding |
+| Email → Staff email, #670's SLA override help | Needs SLA alerts turned on under Features | Needs SLA alerts turned on below |
+| `GuestSizeSlider` description (#673) | set under Attachments | set under System → File Attachments |
+| `AttachmentSizeLimitSection` (#673) | — | names Guest Access as the place of the guest slider |
+
+The notices stay plain text. None of them was a link to a settings tab
+before, because a tab had no address, and making them links is not part of
+this issue. The only links into settings today are the template notice (its
+new address is in the table above) and Email's own link to templates, which
+is removed. The links out of settings (Open OAuth clients, and the user
+page's OAuth-clients links) keep their target. The backend `warning` string
+is human-readable text, not a code. No test pins it, and its `400`/`200`
+shapes do not change.
+
+#### Phone layout
+
+Nothing is redesigned. The rules in *Small screens → Admin pages (#522)*
+apply to each page, as they did to each tab:
+
+- Below `md` the System links are in the navigation drawer, which is the
+  same `SidebarContent`. They are full height on a coarse pointer and close
+  the drawer when followed.
+- The `h1` and description wrap. The tab bar scrolls sideways inside its own
+  row, as today's does.
+- `SettingRow` stacks the control under its label below `sm`.
+- The template editor keeps its own phone layout.
+- There is no sideways scroll at 320 or 375 px on any page or tab, with long
+  data and with short data. `e2e/mobile-layout.spec.ts`'s `ADMIN_PAGES` has
+  one entry per address in the table, with no `tab` field. The two SAML
+  certificate tests go straight to `/admin/settings/authentication`.
+
+#### Docs, screenshots and tests
+
+- **DESIGN.md.** Every "Admin → Settings → …" and "Settings → …" reference
+  is rewritten by the mapping in the table above. Today about twenty-five of
+  them: Tickets (tracking number), Ticket lifecycle (reopen target, closed
+  reopen policy), Privacy (masking), Ticket visibility, Branding (two), Updates,
+  Authentication (SAML, OIDC, Registration, Passwords, API keys, key
+  lifetime), Submissions (guests attaching files), Attachments (scanner
+  address, twice), Email (staff email, twice), Features (SLA), and the ones
+  #616, #670, #673 and #676 add. *Small screens → Admin pages (#522)*
+  becomes "each Settings page" instead of "each Settings tab", and "the
+  Settings Authentication tab" becomes "the Authentication page".
+  *Email templates* (Notifications) gives the new address.
+- **`docs/upgrade-notes-1.3.0.md`.** A new entry, *Settings Are Now Pages
+  Under System (#674)*. It says that the settings page is now eight pages
+  under System, with the table of where each old tab's sections went, and
+  that Email Templates is now the Templates tab of Email. Old addresses and
+  bookmarks redirect. No setting, default or API changes. Each page saves
+  only its own changes and asks before leaving with unsaved edits. Every
+  "Settings → …" location in the notes is rewritten, about fifteen of them.
+- **`README.md`** line 86: "turn it on under System → Email".
+- **`docs/api/openapi.yaml`, MCP, CLAUDE.md:** no change. No API moves.
+- **Screenshots** (`frontend/scripts/screenshots/capture.mjs`). The file
+  names do not change, so the pages that embed them keep working.
+  - `08-admin-settings.png`: path `/admin/settings/general`.
+  - `14-admin-settings-attachments.png`: path `/admin/settings/attachments`,
+    without the tab click.
+  - `19-admin-settings-privacy.png`: path `/admin/settings/privacy`. It
+    covers the same three sections, which are now on one page, plus Available
+    queue between them.
+  - `31-email-template-html.png` and `32-email-template-refused.png`: path
+    `/admin/settings/email/templates?t=ticket_created`.
+
+  The admin guide on the project site (gh-pages, outside this branch) names
+  "Settings → …" places. It is updated when the screenshots are taken
+  again.
+- **Browser tests.**
+  - `admin-nav-sections.spec.ts`: the new `SECTIONS` and the fit case (see
+    Sidebar).
+  - `mobile-layout.spec.ts`: as above.
+  - `email-templates.spec.ts` and `e2e-csp/email-template-preview.spec.ts`:
+    the new path. One test keeps the old path and asserts that it lands on
+    the new one with `?t=` kept.
+  - `after-upgrade.spec.ts`: unchanged, apart from copy.
+
+**Tests to write**:
+
+- *Router* (`router.settings-pages.test.tsx`):
+  - Each of the nine new paths has a `beforeLoad` that resolves for an
+    administrator, redirects staff and a requester to `/dashboard`, and
+    redirects someone signed out to `/login`.
+  - `/admin/settings` lands on `/admin/settings/general` and
+    `/admin/email-templates?t=ticket_created` lands on
+    `/admin/settings/email/templates?t=ticket_created`. Both replace the
+    history entry.
+  - `router.email-templates-guard.test.tsx` moves to the new path.
+- *The patch* (`buildSettingsPatch`, pure):
+  - An unchanged key is not sent, and a `*_set` key never is.
+  - A changed array is sent.
+  - A key that is absent from the dump and set in the draft is sent.
+  - A typed secret is sent trimmed, a blank one is not sent, and a cleared
+    one is sent as `''`.
+  - A changed guest 20 with a draft overall limit of 10 is sent as 10.
+- *The draft hook*:
+  - `dirty` is false while loading and false after load with no edits. It is
+    true after an edit and after typing a secret.
+  - `dirty` is false while the save is pending and after the save and its
+    refetch.
+  - A refused save keeps the edits and `dirty`.
+  - The `email_required` message is shown.
+  - `aboutClients` is set only when the patch turns `ticket_scope_enforced`
+    on.
+- *Each page holds exactly its sections*: render each page and assert the
+  list of `h2` names equals the table, in order. Features also checks its
+  one SLA tab, and Email checks both tabs and that Notifications has the
+  four overrides and the SLA alerts switch. Nothing else is on the page.
+- *Each page saves only its own keys*: edit one setting on General and save.
+  The `PATCH` body is exactly that key. Repeat on File Attachments with a
+  reputation key typed.
+- *The leave guard*:
+  - Edit, then follow a sidebar link: the dialog appears. Stay keeps the edit
+    and the address. Leave navigates and discards the edit.
+  - With no edits, after a successful save, and on the Templates tab,
+    following a link shows no dialog.
+  - Opening each page and leaving without touching anything never prompts.
+    This catches a control that writes the draft on mount.
+- *Guest Access and File Attachments*:
+  - With `attachment_max_mb` 10 stored, the guest slider's top is 10.
+  - After saving 30 on File Attachments, Guest Access shows a top of 30.
+  - File Attachments shows "Guests: up to …" from the stored guest value.
+- *Sidebar* (`AdminNavSections.test.tsx`):
+  - System lists the nine links in order, and Integrations no longer lists
+    Email Templates.
+  - On `/admin/settings/email/templates`, Email is the current link and
+    System is open.
+  - A non-administrator sees no System section.
+- *Banner*: the template notice links to
+  `/admin/settings/email/templates?t=<name>`, and the reopen-target, SAML and
+  scanner notices name the new places.
+- *Moved tests*: every existing test that renders `SettingsPage` and clicks a
+  tab renders the page that now holds the section instead. The ones on
+  origin/v1.3.0-beta are `settings-*`, `audit-*`, `api-key*`,
+  `password-grace-settings`, `saml-metadata`, `guest-attachments-setting`,
+  `scanner-status`, `attachment-security-settings`, `logo-uploader` and
+  `attachments-download-only`. #616, #670, #672 and #673 add
+  `settings-passkey-required`, `settings-sla-alerts`, `sla-policy-form` and
+  #673's. The assertions do not change. Only the rendered page and the
+  router mock change: the mock gains `useBlocker`. The `settings-sla-alerts`
+  switch test now renders Email.
+
+#### Decisions taken without the owner
+
+Each can be overturned in one line.
+
+- **The addresses are `/admin/settings/<page>`.** Rejected:
+  `/admin/system/<page>`. Audit Log stays at `/admin/audit`, so a `system`
+  prefix would not cover the System section anyway, and with
+  `/admin/settings` as a prefix the old address keeps meaning "the settings".
+- **Audit Log stays administrator-only.** Rejected: showing it to staff, as
+  the issue's table says. That is a permission change to `GET /admin/audit`
+  (#129), not a page move, and it would need its own issue.
+- **One draft per page, with a leave guard.** Rejected: one draft shared by
+  every page, which would save edits from a page that is no longer on screen
+  and contradicts #673's per-page rule. Also rejected: no guard, which
+  silently drops the edits that a tab switch used to keep.
+- **A save stays "Saving…" until the settings have been fetched again.**
+  Rejected: writing the patch into the query cache, which would show stored
+  bytes where the dump reports the value in force.
+- **Email has two tabs, Notifications and Templates, each with its own
+  address.** Rejected: one long page with the template editor under the
+  overrides. That would put two save models on one page and give the
+  editor's `?t=` deep link a page it does not own.
+- **Features shows its one tab (SLA) at `/admin/settings/features`, with no
+  tab segment in the address.** The owner asked for SLA as a tab. Rejected:
+  `/admin/settings/features/sla`, an address for a choice that does not
+  exist yet. The second feature tab adds its own segment.
+- **`sla_alerts_enabled` becomes its own section, SLA alerts, after Staff
+  email about tickets on Email.** This follows the owner's "switch and
+  setting". Rejected: one row inside the overrides section, which would mix
+  a gate with the per-person overrides.
+- **Available queue goes on Privacy after Ticket visibility.** Rejected:
+  General → Tickets. Its copy depends on `ticket_scope_enforced`, which is
+  on Privacy.
+- **Privacy keeps today's relative order: Ticket visibility, Available
+  queue, Audit log, Privacy.** Rejected: the order in the issue's table
+  (masking first), which reorders for no stated reason and changes the
+  composition of screenshot 19.
+- **Section headings do not change, including "Privacy" on the Privacy
+  page.** Rejected: renaming it to "Requester names", which is churn in
+  tests and screenshots for wording only.
+- **The Email tab's "Email templates" link section is removed.** Rejected:
+  keeping a link to the tab beside it.
+- **The redirect routes check nothing, and the target route guards.**
+  Rejected: a guard on both, which tests the same rule twice.
+- **UI copy says "System → Page → Section".** Rejected: keeping "Settings →
+  …", which names a page that no longer exists.
+- **Notices are reworded but not made into links.** Rejected: links on every
+  notice, which is new behaviour the issue does not ask for.
+- **The sidebar keeps its dense rows. If System does not fit at 768, the nav
+  scrolls for that case and the current link is scrolled into view.**
+  Rejected: denser rows, which make the coarse-pointer target harder to hit.
+- **Page titles are the sidebar labels.** Rejected: "General settings" and
+  similar, which repeat the section heading.
+
 ---
 
 ## Authentication
