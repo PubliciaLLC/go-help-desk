@@ -3680,7 +3680,8 @@ on the existing webhook feature instead of as plugins.
   | Template | Variables | Must print (outside any `if`) |
   | --- | --- | --- |
   | the seven requester mails (created, follow-up created, replied, status changed, resolved, reopened, guest link) | `TrackingNumber`, `TicketURL` | `TicketURL` |
-  | the fifteen staff mails (assigned, requester replied, reopened, SLA breached and SLA at risk, each to the assignee, the group and a follower) | `TrackingNumber`, `TicketURL` | `TicketURL` |
+  | the nine staff mails (assigned, requester replied, reopened, each to the assignee, the group and a follower) | `TrackingNumber`, `TicketURL` | `TicketURL` |
+  | the six SLA staff mails (SLA breached and SLA at risk, each to the assignee, the group and a follower) | `TrackingNumber`, `TicketURL`, `SLAStatus` | `TicketURL` |
   | email verification | `VerifyURL` | `VerifyURL` |
   | password reset | `ResetURL` | `ResetURL` |
   | header, footer | `SiteName` (the name in Settings) | nothing |
@@ -3867,8 +3868,9 @@ on the existing webhook feature instead of as plugins.
   `ticket.classified` (a category, type or item change), `ticket.unlinked` (a
   link removed), `ticket.attachment_added` (a file uploaded), `sla.breached`
   and `sla.at_risk` (the SLA sweep has just stamped a breach, or a target at
-  80%, and `sla_alerts_enabled` is on; SLA Tracking → Breach and at-risk
-  notifications), and the two
+  80%, and `sla_alerts_enabled` is on; a pass that does both on one ticket is
+  one `sla.breached` that also names the at-risk target; SLA Tracking → Breach
+  and at-risk notifications), and the two
   **opt-in** events `ticket.followed` and `ticket.unfollowed`. A hook matches a
   change when any of the change's kinds is in its list, and fires once. The raw
   body keeps its shape. See Ticket Events: One Change, One Event.
@@ -3894,7 +3896,9 @@ on the existing webhook feature instead of as plugins.
   `ticket.note_added` have `reply_id`; `ticket.attachment_added` has
   `attachment_id`; `ticket.followed` and `ticket.unfollowed` have `user_id`;
   `sla.breached` and `sla.at_risk` have `targets` (a list of `response` and/or
-  `resolution`, enums), `policy_id` and `record_id`, with `ActorID` null.
+  `resolution`, enums), `policy_id` and `record_id`, with `ActorID` null, and
+  `sla.breached` also has `at_risk_targets` (the same enums: targets that
+  reached 80% in the same pass and have not breached; omitted when none).
   Every other event has no payload, except that a hook which lists
   `ticket.unfollowed` also gets `user_id` on a delivery under whatever name it
   is told (for example `ticket.assigned`) when the change dropped a follow; a
@@ -4317,7 +4321,7 @@ raises into the transaction's collector; none dispatches after the commit.
 | `Follow`, `Unfollow` (REST `PUT` and `DELETE /follow`) | `ticket.followed` or `ticket.unfollowed`, only when it changed something, in the transaction that writes the follower row and its audit entry. **Opt-in by name.** | `user_id` (the person's id, not their name). No mail. |
 | `UnassignForUser` (an administrator deletes a user) | `ticket.assigned` per open ticket the user held, the assignee cleared, with the deleting administrator as the actor; plus `ticket.unfollowed` when the user followed it (the follow goes with the assignment). **Staff mail is suppressed.** | `user_id` only when an unfollow rides along. `Changes` has `assignee_user_id`. |
 | `DeleteGroup` (an administrator deletes a group) | `ticket.assigned` per ticket the group held, open or not, the group cleared, with the deleting administrator as the actor. **Staff mail is suppressed.** | `Changes` has `assignee_group_id`. |
-| `sla.Service.SweepBreaches` (the SLA sweep, every minute; `domain/sla`) | `sla.breached` or `sla.at_risk`, one per transaction: each crossing it newly stamps, announced only when fresh and `sla_alerts_enabled` is on, through `ticket.Atomic` so the stamp and the event commit together. Never merged with a ticket kind. | `targets`, `policy_id`, `record_id`; no actor; `Ticket` read in the transaction. Staff mail under the SLA alerts switch (SLA Tracking → Breach and at-risk notifications) |
+| `sla.Service.SweepBreaches` (the SLA sweep, every minute; `domain/sla`) | At most one per ticket per pass, in one transaction through `ticket.Atomic` that stamps every crossing the pass found on that ticket, so the stamps and the event commit together: `sla.breached` when a fresh breach was newly stamped (naming any fresh at-risk of the other target too), else `sla.at_risk` when a fresh at-risk was, else nothing. Only while `sla_alerts_enabled` is on. Never merged with a ticket kind. | `targets`, `policy_id`, `record_id`, and on `sla.breached` `at_risk_targets` when any; no actor; `Ticket` read in the transaction; the typed `SLA` field for mail. Staff mail under the SLA alerts switch (SLA Tracking → Breach and at-risk notifications) |
 | `RequestGuestLink` (guest "resend my link") | `guest.link_resent` through `OutboxDispatcher` | what the guest typed; no ticket id |
 | `registration.Service.Signup` | `registration.verify` through `OutboxDispatcher` | `pending_id` only |
 
@@ -4353,8 +4357,9 @@ under: `new_status_id` for `ticket.status_changed`, `target_id` for
 `ticket.linked`, `target_id` and `link_type` for `ticket.unlinked`, `reply_id`
 for `ticket.replied` and `ticket.note_added`, `attachment_id` for
 `ticket.attachment_added`, `user_id` for `ticket.followed` and
-`ticket.unfollowed`, `targets`, `policy_id` and `record_id` for `sla.breached`
-and `sla.at_risk`, nothing for any other name (`rawKeysFor`,
+`ticket.unfollowed`, `targets`, `at_risk_targets`, `policy_id` and `record_id`
+for `sla.breached`, `targets`, `policy_id` and `record_id` for `sla.at_risk`
+(ids and enums only), nothing for any other name (`rawKeysFor`,
 `notify/webhook_body.go`) with one exception: a hook that opted into
 `ticket.unfollowed` also gets `user_id` on a delivery under whatever name it is
 told (for example `ticket.assigned`) when the change dropped a follow, and a
@@ -4395,7 +4400,8 @@ name as `Type`), plus the signature. `*` does not include `ticket.followed` and
 | Follow or unfollow | `followed` or `unfollowed` | 0: only a hook that lists it by name |
 | Reassign a ticket away from a follower | `assigned` + `unfollowed` | 1 (a `*` hook is told `assigned`; the unfollow is for hooks that list it) |
 | Delete a user, or a group (per ticket held) | `assigned` (cleared) | 1 per ticket, **no staff mail** |
-| (no user action) The SLA sweep newly stamps a fresh breach of one or both targets, or a fresh at-risk | `sla.breached`, or `sla.at_risk` | 1 per ticket per kind per pass; 2 when one target breached and the other is at risk; 0 while `sla_alerts_enabled` is off or the crossing is stale |
+| (no user action) The SLA sweep newly stamps a fresh breach of one or both targets, with or without a fresh at-risk of the other | `sla.breached` (with `at_risk_targets` when the other target went at risk) | 1 per ticket per pass; 0 while `sla_alerts_enabled` is off or every crossing is stale |
+| (no user action) The SLA sweep newly stamps a fresh at-risk of one or both targets and no fresh breach | `sla.at_risk` | 1 per ticket per pass; 0 while `sla_alerts_enabled` is off or the crossing is stale |
 
 The same status change has the same names whichever button made it. A hook
 subscribed to `ticket.resolved` sees a resolve done with `PATCH`, and a hook
@@ -4437,8 +4443,11 @@ order (`notification.KindOrder`) is the order of importance:
 more came with #630: `ticket.unlinked`, `ticket.attachment_added`,
 `ticket.followed` and `ticket.unfollowed`, the last two opt-in by name. Two
 more came with #670: `sla.breached` and `sla.at_risk`, last because the sweep
-raises each in a transaction of its own, so neither ever shares an event with
-another kind.
+raises them in a transaction of its own, so neither ever shares an event with
+a ticket kind. The two never share an event with each other either: the sweep
+raises exactly one of them per ticket per transaction, and an at-risk crossing
+in the same pass as a breach rides on the `sla.breached` event as
+`at_risk_targets`, not as a second kind.
 
 **Status kinds are the same for every door** (`statusKinds`,
 `internal/domain/ticket/events.go`). Every status move carries
@@ -4648,7 +4657,8 @@ name. `ticket.unlinked` is "Unlinked from <ticket id> (<link type>)",
 `ticket.followed` and `ticket.unfollowed` are "Ticket followed" and "Ticket
 unfollowed": the person is an id, and a chat message does not look one up.
 `sla.breached` and `sla.at_risk` are "SLA breached" and "SLA at risk", naming no
-target and no policy. Jira has no headline and keeps the event name in its `event` key. Under
+target and no policy; an `sla.breached` with `at_risk_targets` is "SLA
+breached; another target at risk". Jira has no headline and keeps the event name in its `event` key. Under
 the headline:
 
 - **The "Also" line (ruling 10).** One line names the change's other kinds, such
@@ -5641,19 +5651,26 @@ newly stamps: see *Breach and at-risk notifications*, next.
 
 ([#670](https://github.com/PubliciaLLC/go-help-desk/issues/670), 1.3.x.) A
 breach used to tell nobody: the sweep stamped it and stopped. Now the sweep
-announces each crossing it stamps, by email to staff and to webhooks, once.
+announces each crossing it stamps, by email to staff and to webhooks, once,
+in at most one notification per ticket per pass.
 Escalation tiers and a group lead are not part of this; they stay with incident
 management (#408, v1.4).
 
 **Two events.** `sla.breached`: the sweep has just stamped a breach of one or
-both targets. `sla.at_risk`: the sweep has just stamped that one or both
-targets reached 80% while still outstanding and not breached. Both are raised
+both targets, and, when the other target reached 80% in the same pass, says
+that too (see *One notification per ticket per pass*). `sla.at_risk`: the
+sweep has just stamped that one or both targets reached 80% while still
+outstanding and not breached, and stamped no breach. Both are raised
 **only by the sweep**. A late first response or resolution that stamps its own
 breach (`SetSLAFirstResponse`, `SetSLAResolved`, `SetSLAResolvedAndFirstResponse`)
 sends nothing: somebody has just acted on the ticket, and the target it stamps
 is met, so the sweep never evaluates it again. Each event carries in `Payload`
-`targets` (a list of `response` and/or `resolution`, in that order),
-`policy_id` and `record_id` (the record the stamp was written on); `ActorID` is
+`targets` (a list of `response` and/or `resolution`, in that order: the
+targets that breached, for `sla.breached`, or reached 80%, for `sla.at_risk`),
+`policy_id` and `record_id` (the record the stamp was written on);
+`sla.breached` also carries `at_risk_targets` (same enums, same order) when a
+target that has not breached was announced at risk in the same pass, and
+omits the key when none was; `ActorID` is
 null, because the system acts; `Ticket` is the ticket as read inside the
 stamp's transaction, so per-hook filters and staff mail work as for any change.
 
@@ -5672,7 +5689,8 @@ and an at-risk stamp is never written once that target is breached. So at-risk
 never alerts once the same target has breached, by construction rather than by
 a check, and a target that jumps past both thresholds between ticks (a target
 of a minute or two, a downtime) gets one alert, the breach. A pass that finds
-one target breached and the other at risk stamps and announces both.
+one target breached and the other at risk stamps both, in one transaction,
+and announces both in one `sla.breached`.
 
 **Only fresh crossings are announced.** A crossing is announced only when the
 sweep stamps it within **15 minutes** of the threshold, measured on the SLA
@@ -5692,26 +5710,58 @@ finds open tickets already past 80%. Because it is measured on the SLA clock,
 pause time never makes a crossing stale: a ticket that leaves Pending and
 crosses 80% a minute later is announced.
 
-**One delivery per ticket per sweep per event.** Both targets breached in the
-same pass are one `sla.breached` with `targets: ["response", "resolution"]`;
-the same for at-risk. A pass that finds a breach and an at-risk on one ticket
-writes them in **two transactions**, breach first, each stamping its own
-columns and raising its own event: one transaction is one event per ticket
-(#506), and the two events cannot share one `targets`. So a `*` hook gets two
-deliveries and a person can get two mails in that case. An SLA event never
-shares an event with a ticket kind (the sweep's transaction changes nothing
-else), so the chat "Also" line never names one.
+Freshness is decided **per target and per crossing**, including inside one
+notification: each crossing the pass newly stamps is announced only if its own
+crossing is fresh. An at-risk target alongside a breach is named in
+`at_risk_targets` only if its own 80% crossing is fresh; otherwise its stamp
+is still set, silently, in the same transaction, it is left out of the event
+and counted as stale. The same holds the other way: a stale breach with a
+fresh at-risk of the other target is stamped silently and the pass raises
+`sla.at_risk` for the fresh one. There is no special case: the pass announces
+the fresh crossings it newly stamped, and which event that is follows from
+them (next).
 
-**The stamp and its event commit together.** Each crossing is written through
-`ticket.Atomic`, the same runner the ticket service uses: the stamp statement,
-then the raise, and the outbox rows are written inside that transaction before
-it commits (Ticket Events: One Change, One Event). An announcement committed
-apart from the stamp it describes is not reliable, for the same reason an audit
-entry committed apart from its change is not an audit trail. A rollback leaves
-neither the stamp nor a row, and the next pass finds the record unstamped and
-announces it if it is still fresh; once committed, the stamp is there and the
-record never announces that crossing again. The sweep's stamp is not audited,
-as it was not before.
+**One notification per ticket per pass.** Whatever the pass found on a
+ticket, it is written in **one transaction** and announced by **at most one
+event**, chosen from the fresh crossings that transaction newly stamped:
+
+| Fresh, newly stamped in this pass | Event | `targets` | `at_risk_targets` |
+| --- | --- | --- | --- |
+| one or both breaches, no at-risk | `sla.breached` | the breached targets | omitted |
+| one breach and an at-risk of the other target | `sla.breached` | the breached target | the at-risk target |
+| one or both at-risk, no breach | `sla.at_risk` | the at-risk targets | not a key of this event |
+| nothing fresh (or `sla_alerts_enabled` off) | none | | |
+
+Both targets breached in the same pass are one `sla.breached` with
+`targets: ["response", "resolution"]`; the same for at-risk. A target cannot be
+in both lists: an at-risk stamp is never written for a target that breaches in
+the same pass (written only below 100%, above). Because the at-risk stamp of a
+target named in `at_risk_targets` is set in that same transaction, it is
+never announced at risk again; when that target later breaches, a later pass
+stamps the breach and raises `sla.breached` with `targets` naming it, as for
+any breach. This is the shape #506 asks for: one transaction is one event per
+ticket, and the collector merges everything raised for a ticket in one
+transaction into one event, so two SLA raises in one transaction would have
+merged into one event with one `targets` key overwriting the other. Raising
+exactly one event per transaction means nothing is merged. An SLA event never
+shares an event with a ticket kind either (the sweep's transaction changes
+nothing else), so the chat "Also" line never names one. The event's `Kinds`
+is its own name only: a mixed pass is `sla.breached`, so a hook that lists
+`sla.at_risk` and not `sla.breached` is not told of it, and since the at-risk
+stamp is set, it is not told later either. A hook that wants to hear of
+breaches lists `sla.breached` (or `*`).
+
+**The stamps and their event commit together.** Each ticket's crossings in a
+pass are written through `ticket.Atomic`, the same runner the ticket service
+uses: one stamp statement for all of them, then at most one raise, and the
+outbox rows (one per channel, as for any change) are written inside that
+transaction before it commits (Ticket Events: One Change, One Event). An
+announcement committed apart from the stamps it describes is not reliable,
+for the same reason an audit entry committed apart from its change is not an
+audit trail. A rollback leaves neither the stamps nor a row, and the next pass
+finds the record unstamped and announces what is still fresh; once committed,
+the stamps are there and the record never announces those crossings again.
+The sweep's stamp is not audited, as it was not before.
 
 **The stamp statement says what it newly set.** `StampSLACrossings` replaces
 `StampSLABreaches` on the sweep's path. It locks the current record
@@ -5720,7 +5770,9 @@ as it was not before.
 is still NULL **and** its target is still outstanding (`first_response_at` /
 `resolved_at` NULL; an at-risk column also needs that target's breach column
 NULL), and returns, per column, whether **this** statement set it (NULL before,
-set after). Only a column this statement set is announced. `StampSLABreaches`
+set after). Only a column this statement set, and whose crossing the Go
+decision found fresh, is announced; the event is chosen from those after the
+statement, inside the same transaction. `StampSLABreaches`
 reported rows affected, which is 1 even when every column was already set, so
 its caller could not tell what it had stamped. It is kept, deprecated, with no
 production caller. No record row means the record was superseded: nothing is
@@ -5728,7 +5780,9 @@ written and nothing is raised, and the next pass evaluates its replacement.
 
 - **Two sweeps at once** (every replica runs one): both may decide the same
   crossing. The row lock puts one after the other; the second finds the column
-  set, sets nothing and announces nothing.
+  set, sets nothing and announces nothing. If the second, reading later, also
+  finds a crossing the first did not (the at-risk target has since breached),
+  it sets only that column and announces only that.
 - **A late reply racing the sweep.** The reply's statement and the stamp lock
   the same row. Reply first: the target is met, the stamp sets nothing and
   nothing is sent. Sweep first: the breach was true at the sweep's reading, so
@@ -5795,16 +5849,74 @@ three switches do not apply to these two events. Nobody is skipped as the
 actor, since there is none. Each event has three templates, own, group and
 follow: `staff_sla_breached`, `staff_sla_breached_group`,
 `staff_sla_breached_follow`, `staff_sla_at_risk`, `staff_sla_at_risk_group`,
-`staff_sla_at_risk_follow`, admin-editable like the rest, with the same two
-variables (`TrackingNumber`, `TicketURL`). The mail does not say which target:
-`targets` is in `Payload`, which email never reads, and the ticket page shows
-it. The send-time checks are those of every staff mail.
+`staff_sla_at_risk_follow`, admin-editable like the rest. A person gets one
+mail per notification, so a mixed pass is one mail, from the breached
+templates, that says both. The send-time checks are those of every staff mail.
+
+*Which targets.* The mail names the targets through a third variable,
+`SLAStatus`, besides `TrackingNumber` and `TicketURL` (`TicketURL` is still
+the one that must be printed). Email still never reads `Payload`: the sweep
+also sets a typed field on the event, `SLA` (`notification.SLAAlert`, the
+breached and the at-risk targets as the same enums as `targets` and
+`at_risk_targets`, excluded from JSON, stored by the outbox codec like
+`FollowUp`, carried onto the `staff.*` rows by the fan-out). `SLAStatus` is
+made from it by one function, and is one of exactly these eight, never text
+anyone typed:
+
+| Breached | At risk | `SLAStatus` |
+| --- | --- | --- |
+| response | | Response breached |
+| resolution | | Resolution breached |
+| response, resolution | | Response and resolution breached |
+| response | resolution | Response breached; resolution at risk |
+| resolution | response | Resolution breached; response at risk |
+| | response | Response at risk |
+| | resolution | Resolution at risk |
+| | response, resolution | Response and resolution at risk |
+
+*Default wording.* The subjects end on the tracking number in brackets, left
+out when there is none (as the follow-up mail's does). For the mixed case on
+`GHD-2026-000007`:
+
+| Template | Subject |
+| --- | --- |
+| `staff_sla_breached` | SLA alert on a ticket assigned to you: Response breached; resolution at risk [GHD-2026-000007] |
+| `staff_sla_breached_group` | SLA alert on a ticket assigned to your group: Response breached; resolution at risk [GHD-2026-000007] |
+| `staff_sla_breached_follow` | SLA alert on a ticket you follow: Response breached; resolution at risk [GHD-2026-000007] |
+
+that is, `SLA alert on a ticket assigned to you: {{.SLAStatus}}{{if
+.TrackingNumber}} [{{.TrackingNumber}}]{{end}}`, with "assigned to your
+group" and "you follow" in the other two. The three at-risk templates use the
+same three subjects (their `SLAStatus` says "at risk"). The bodies, with the
+same closing lines as the other staff mails:
+
+```
+An SLA target on a ticket assigned to you has been breached.
+
+Response breached; resolution at risk.
+
+Ticket: GHD-2026-000007
+
+Read it here:
+<TicketURL>
+
+You can choose which of these emails you get under your profile.
+```
+
+The first line is, for `staff_sla_breached_group`, "An SLA target on a ticket
+assigned to a group you belong to, which nobody has picked up, has been
+breached."; for `staff_sla_breached_follow`, "An SLA target on a ticket you
+follow has been breached."; for the at-risk three, the same with "is at risk:
+80% of its time has been used." in place of "has been breached." The second
+line is `{{.SLAStatus}}.`
 
 **Webhooks.** Both names are in `WebhookEvents` and are not opt-in, so a `*`
 hook receives them. The raw body carries `targets`, `policy_id` and
-`record_id`. The chat headlines are "SLA breached" and "SLA at risk", with no
-target named; Jira keeps the name in its `event` key. Redeliver keeps the same
-three keys.
+`record_id`, and for `sla.breached` also `at_risk_targets` when the pass
+announced an at-risk target with the breach (the key is absent otherwise, not
+an empty list). The chat headlines are "SLA breached", "SLA breached; another
+target at risk" and "SLA at risk", with no target named; Jira keeps the name in
+its `event` key. Redeliver keeps the same keys.
 
 **Known limits.**
 
@@ -5816,8 +5928,9 @@ three keys.
   response, under Re-matching when priority changes), leaves the breach stamp
   as before and has now also announced it. The window is the time between the
   two writes.
-- Breach and at-risk of different targets in one pass are two deliveries and
-  two mails, as above.
+- A hook that lists `sla.at_risk` but not `sla.breached` never hears of an
+  at-risk crossing that came in the same pass as a breach of the other target
+  (it rides on `sla.breached`, and its stamp is set).
 
 ### SLA Indicators
 
