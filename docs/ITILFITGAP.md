@@ -168,13 +168,14 @@ designate as "the problem" — by convention only. `DESIGN.md` itself gives this
 example ("a Problem with multiple Incidents").
 
 **Gap.** No problem entity; no root-cause or workaround fields; no known error
-database; no proactive trend analysis (there is no reporting at all, §3.13); no
-mechanism to surface a known workaround on incidents that match an open
-problem — which is the practice's main day-to-day payoff.
+database; no proactive problem identification from trends (the Reports page and
+the dashboard show volume over time, but nothing links incidents to a problem,
+§3.13); no mechanism to surface a known workaround on incidents that match an
+open problem — which is the practice's main day-to-day payoff.
 
 **Note.** Problem Management is cheap once three other things exist: ticket
-type (v4), a knowledge base (v3), and reporting (v3). It needs little unique
-machinery beyond a workaround field and an article link.
+type (v4), a knowledge base (v3), and reporting (largely shipped in 1.3, §3.13).
+It needs little unique machinery beyond a workaround field and an article link.
 
 ---
 
@@ -238,8 +239,10 @@ caller.
   Monday. This is the largest correctness problem for real-world SLA use, and
   it is independent of the bugs above.
 - No OLAs (internal team-to-team targets) or underpinning supplier contracts.
-- No SLA attainment reporting and no breach notification or escalation — even
-  once breaches are detected, nothing happens as a result.
+- SLA attainment is reported (1.3 Reports page, §3.13), and breaches and at-risk
+  targets send email and webhook alerts (#670). There is still no escalation:
+  an alert tells people, but nothing re-assigns the ticket or raises it to a
+  higher tier.
 - Targets anchor to ticket creation only. No per-status targets and no
   update-cadence targets ("customer updated at least every 24h").
 
@@ -336,23 +339,25 @@ out of scope in `DESIGN.md`.
 
 ---
 
-### 3.13 Measurement & Reporting — ❌ Gap *(deliberate — v3)*
+### 3.13 Measurement & Reporting — 🟡 Partial *(shipped in 1.3; rest v1.4)*
 
 *ITIL: the practice that makes every other practice manageable.*
 
-**Have.** The raw material is genuinely good and already being captured:
-`audit_log` (before/after JSONB on every mutation), `ticket_status_history`
-(every transition with actor and timestamp), `sla_records`, and timestamps on
-every entity. **Nothing consumes any of it.** `DashboardPage.tsx` shows ticket
-counts by status and a user count.
+**Have (1.3).** The Reports page (#131) answers over a chosen period, from the
+tickets and SLA records already captured: median and 90th-percentile time to
+resolve, median time to first response, SLA attainment, reopen rate, backlog
+aging, and volume by category and priority, plus workload by assignee and
+group. Every number is computed on the server. The page can be saved as CSV,
+and each card and the whole board as PNG. The dashboard (#675) adds a queue strip, a
+needs-attention list and a 30-day created-and-resolved trend. Neither adds a
+table.
 
-**Gap.** No MTTR or MTTA; no SLA attainment; no first-contact resolution; no
-reopen rate; no backlog aging; no volume by category/agent/channel/time; no
-CSV export; no scheduled reports.
+**Gap (still open).** No first-contact resolution; no scheduled or emailed
+reports; no volume cut by channel or by agent (the Reports page cuts by
+category and priority only).
 
-**Assessment.** Highest return-on-effort item on the v3 list, because the data
-model already supports it — this is a read-side and UI problem, not a schema
-problem.
+**Assessment.** The read side is built. What remains is smaller. Scheduled
+reports need a schedule and the notification outbox (v1.4; §6, finding B).
 
 ---
 
@@ -430,7 +435,7 @@ entities, for outage-driven major incidents and availability reporting.
 | 3.9 | Service Configuration Management | ❌ Gap | not on roadmap |
 | 3.10 | IT Asset Management | ❌ Gap | asset reference v1.4 (#415); Snipe-IT plugin v2 (#403) |
 | 3.11 | Monitoring & Event Management | ❌ Gap | v1.4 (#411) |
-| 3.13 | Measurement & Reporting | ❌ Gap | v1.4 (#131) |
+| 3.13 | Measurement & Reporting | 🟡 Partial | Reports and dashboard shipped in 1.3 (#131, #675); scheduled reports, channel and agent cuts, FCR v1.4 |
 | 3.14 | Continual Improvement | ❌ Gap | v1.4 #405 (CSAT #133 first) |
 | 3.16 | Supplier Management | ❌ Gap | v1.4 #406 |
 | 3.12 | Release & Deployment Management | ⚪ Out of scope | — |
@@ -491,9 +496,10 @@ Arguably maintenance, not new scope.
 
 ### Tier 2 — aligned with the existing v3 scope, high return
 
-6. **Reporting** (MTTR, SLA attainment, first-contact resolution, reopen rate,
-   backlog aging, volume by CTI/agent/channel). Already-scoped for v3, and the
-   data is already being captured — this is read-side work.
+6. **Reporting.** Largely shipped in 1.3 (#131): SLA attainment, reopen rate,
+   backlog aging, and volume by category and priority. Still open:
+   first-contact resolution, scheduled reports, and volume by channel and
+   agent.
 7. **Knowledge base** with ticket↔article linkage and a known-error flag. A
    known-error flag on articles covers a meaningful share of Problem Management
    for very little extra.

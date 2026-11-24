@@ -26,10 +26,13 @@ Go Help Desk is an open-source ticket management system. Staff submit and track 
 - Guest submission and self-service signup, both off by default
 - Custom fields, tags, canned responses, and full-text search
 - Optional SLA tracking; resolved tickets close automatically after a configurable reopen window
+- A dashboard with your queue, the tickets that need attention, and a 30-day created-and-resolved trend
+- Reports for staff and administrators: time to resolve, first response, SLA attainment, reopens, backlog and volume, exported as CSV or PNG
 - API keys for administrators, and for staff when an administrator allows it. Every new key expires, and keys cannot create keys or write users
 - Markdown in tickets: a formatting editor, strict rendering (no raw HTML, no images), and older text left as plain text
 - Staff can file a ticket for a requester, an existing user or a typed email address, and mark it as a phone call
 - Each ticket records how it arrived (web, API, MCP, guest form or phone); staff see it, requesters do not
+- Ticket list views in the sidebar: Assigned to Me, My Group's Tickets, Available, and Search over every ticket you can see
 - Readable audit log with opt-in retention
 - Email notifications, queued with retries. Staff are emailed about their tickets and can follow a ticket
 - Administrators can edit the wording of all 24 emails, plus a shared header and footer, with a live check and a test send. Each can have an optional HTML part. Never ticket content
@@ -83,7 +86,7 @@ Read the full notes before upgrading: [1.3.0](https://gohelpdesk.org/docs/upgrad
 - Email never sends a password unencrypted, to any server, and sends mail without a password unencrypted only to a private address. Check your SMTP setup before upgrading. [Details](https://gohelpdesk.org/docs/upgrading-1.3.0#smtp)
 - Accounts that have not signed in within 30 days of the first 1.3.0 start must reset their password. Administrators are exempt. When email is set up, the refused sign-in mails them a reset link. [Details](https://gohelpdesk.org/docs/upgrading-1.3.0#password-age)
 - Raw JSON webhooks now carry ids only, and internal notes are their own event. A hook now gets one delivery per change, not one per kind of change. [Details](https://gohelpdesk.org/docs/upgrading-1.3.0#one-event)
-- Staff and administrators can be emailed about their tickets once email is configured. On an upgraded install this starts off; turn it on under System → Email. [Details](https://gohelpdesk.org/docs/upgrading-1.3.0#staff-email)
+- Staff and administrators can be emailed about their tickets once email is configured. On an upgraded install this starts off; turn it on under System → Email → Notifications. [Details](https://gohelpdesk.org/docs/upgrading-1.3.0#staff-email)
 - API keys: a key can no longer create API keys or OAuth clients, write users or group membership, or change the ticket-scope and auto-assignment settings, and a new key needs an expiry. Scripts that do these break. [Details](https://gohelpdesk.org/docs/upgrading-1.3.0#api-keys)
 - After upgrading, the first administrator to sign in sees a one-time wizard for the new settings, and a weekly check for new releases is available but off unless you turn it on. [Details](https://gohelpdesk.org/docs/upgrading-1.3.0#after-upgrade-wizard)
 - Descriptions and replies can be Markdown. Text written before 1.3.0 stays plain; REST defaults to plain unless it sends `format`, and MCP defaults to Markdown. [Details](https://gohelpdesk.org/docs/upgrading-1.3.0#markdown)
