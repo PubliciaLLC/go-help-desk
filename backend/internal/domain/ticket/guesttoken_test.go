@@ -1,0 +1,380 @@
+package ticket_test
+
+import (
+	"context"
+	"testing"
+
+	"github.com/google/uuid"
+	"github.com/stretchr/testify/require"
+
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
+)
+
+func guestTicket(t *testing.T, h *harness) (ticket.Ticket, string) {
+	t.Helper()
+	email := "guest@example.test"
+	tk, err := h.svc.Create(context.Background(), ticket.CreateInput{
+		Subject: "Printer broken", Description: "it is", CategoryID: uuid.New(),
+		GuestEmail: &email, GuestName: "Ada",
+	})
+	require.NoError(t, err)
+	require.Len(t, h.dispatcher.events, 1)
+	tokenOf := h.dispatcher.events[0].GuestToken
+	require.NotEmpty(t, tokenOf, "creating a guest ticket must mint a link")
+	return tk, tokenOf
+}
+
+// The token is the guest's whole credential, so the first question is whether
+// it reaches the one ticket it names and nothing else.
+func TestGuestToken_ReachesItsOwnTicketAndNoOther(t *testing.T) {
+	h := newHarness(t)
+	tk, token := guestTicket(t, h)
+
+	got, err := h.svc.TicketForGuestToken(context.Background(), token)
+	require.NoError(t, err)
+	require.Equal(t, tk.ID, got.ID)
+
+	_, err = h.svc.TicketForGuestToken(context.Background(), token+"x")
+	require.ErrorIs(t, err, ticket.ErrGuestTokenNotFound)
+
+	_, err = h.svc.TicketForGuestToken(context.Background(), "")
+	require.ErrorIs(t, err, ticket.ErrGuestTokenNotFound)
+}
+
+// The raw token must never be what is stored. A test that looked a token up by
+// its raw value would not notice the day the hashing stopped.
+func TestGuestToken_IsStoredHashedNotRaw(t *testing.T) {
+	h := newHarness(t)
+	_, token := guestTicket(t, h)
+
+	require.NotContains(t, h.store.guestTokens, token,
+		"the raw token must not be a key in the store")
+	require.Len(t, h.store.guestTokens, 1)
+	for hash := range h.store.guestTokens {
+		require.NotEqual(t, token, hash)
+		require.Len(t, hash, 64, "sha-256, hex encoded")
+	}
+}
+
+// A ticket with a reporter account has nobody to send a link to, so minting one
+// would be a credential issued for no reason.
+func TestGuestToken_NotMintedForAnAccountHoldersTicket(t *testing.T) {
+	h := newHarness(t)
+	reporter := uuid.New()
+	_, err := h.svc.Create(context.Background(), ticket.CreateInput{
+		Subject: "Laptop", Description: "broken", CategoryID: uuid.New(),
+		ReporterUserID: &reporter,
+	})
+	require.NoError(t, err)
+	require.Empty(t, h.dispatcher.events[0].GuestToken)
+	require.Empty(t, h.store.guestTokens)
+}
+
+// Decision 2: which updates rotate. A staff reply, a status change, a
+// resolution and a reopen each replace the link and carry the replacement. An
+// internal note does not — rotating would lock the guest out, and the email
+// announcing a new link would disclose that staff had written privately about
+// their ticket.
+func TestGuestToken_RotatesOnlyOnWhatTheGuestIsTold(t *testing.T) {
+	staff := ticket.Actor{UserID: ptr(uuid.New()), Role: user.RoleStaff}
+
+	t.Run("a public reply rotates", func(t *testing.T) {
+		h := newHarness(t)
+		tk, first := guestTicket(t, h)
+		_, err := h.svc.AddReply(context.Background(), tk.ID, "looking into it",
+			false, true, "guest@example.test", staff, 7, h.newStatus.ID)
+		require.NoError(t, err)
+
+		ev := lastEventOfType(t, h, notification.EventTicketReplied)
+		require.NotEmpty(t, ev.GuestToken)
+		require.NotEqual(t, first, ev.GuestToken, "the link must change")
+		require.Equal(t, 1, h.store.guestTokenCount(tk.ID), "rotation replaces, it does not accumulate")
+
+		_, err = h.svc.TicketForGuestToken(context.Background(), first)
+		require.ErrorIs(t, err, ticket.ErrGuestTokenNotFound, "no grace period")
+		_, err = h.svc.TicketForGuestToken(context.Background(), ev.GuestToken)
+		require.NoError(t, err)
+	})
+
+	t.Run("an internal note does not rotate", func(t *testing.T) {
+		h := newHarness(t)
+		tk, first := guestTicket(t, h)
+		_, err := h.svc.AddReply(context.Background(), tk.ID, "cost code 4471",
+			true, false, "", staff, 7, h.newStatus.ID)
+		require.NoError(t, err)
+
+		ev := lastEventOfType(t, h, notification.EventTicketReplied)
+		require.Empty(t, ev.GuestToken, "an internal note must mint nothing")
+		require.Empty(t, ev.Recipient, "and must reach nobody")
+
+		_, err = h.svc.TicketForGuestToken(context.Background(), first)
+		require.NoError(t, err, "the guest's existing link must keep working")
+	})
+
+	t.Run("a status change rotates", func(t *testing.T) {
+		h := newHarness(t)
+		tk, first := guestTicket(t, h)
+		_, err := h.svc.UpdateStatus(context.Background(), tk.ID, h.resolvedStatus.ID, staff)
+		require.NoError(t, err)
+
+		ev := lastEventOfType(t, h, notification.EventTicketStatusChanged)
+		require.NotEmpty(t, ev.GuestToken)
+		require.NotEqual(t, first, ev.GuestToken)
+		require.Equal(t, "guest@example.test", ev.Recipient)
+	})
+
+	t.Run("a resolution rotates", func(t *testing.T) {
+		h := newHarness(t)
+		tk, first := guestTicket(t, h)
+		_, err := h.svc.Resolve(context.Background(), tk.ID, "replaced the drum", staff)
+		require.NoError(t, err)
+
+		ev := lastEventOfType(t, h, notification.EventTicketResolved)
+		require.NotEmpty(t, ev.GuestToken)
+		require.NotEqual(t, first, ev.GuestToken)
+	})
+
+	t.Run("an assignment does not rotate", func(t *testing.T) {
+		h := newHarness(t)
+		tk, first := guestTicket(t, h)
+		assignee := uuid.New()
+		_, err := h.svc.Assign(context.Background(), tk.ID, &assignee, nil, staff)
+		require.NoError(t, err)
+
+		_, err = h.svc.TicketForGuestToken(context.Background(), first)
+		require.NoError(t, err, "internal bookkeeping must not lock the guest out")
+	})
+}
+
+// Closing revokes without replacing: a closed ticket accepts nothing, so a live
+// link to it is a credential outliving the thing it reaches.
+func TestGuestToken_ClosingRevokesAndReopeningIssuesAfresh(t *testing.T) {
+	h := newHarness(t)
+	staff := ticket.Actor{UserID: ptr(uuid.New()), Role: user.RoleStaff}
+	tk, first := guestTicket(t, h)
+
+	require.NoError(t, h.svc.Close(context.Background(), tk.ID, staff))
+	require.Equal(t, 0, h.store.guestTokenCount(tk.ID), "closing leaves no token")
+	_, err := h.svc.TicketForGuestToken(context.Background(), first)
+	require.ErrorIs(t, err, ticket.ErrGuestTokenNotFound)
+
+	_, err = h.svc.Reopen(context.Background(), tk.ID, h.newStatus.ID, staff)
+	require.NoError(t, err)
+
+	ev := lastEventOfType(t, h, notification.EventTicketReopened)
+	require.NotEmpty(t, ev.GuestToken, "reopening must issue a way back in")
+	require.NotEqual(t, first, ev.GuestToken)
+	_, err = h.svc.TicketForGuestToken(context.Background(), ev.GuestToken)
+	require.NoError(t, err)
+}
+
+// The re-request flow needs both halves to match, and must not resurrect access
+// that closing revoked.
+func TestGuestToken_ReRequestNeedsBothHalvesAndRespectsClosure(t *testing.T) {
+	h := newHarness(t)
+	staff := ticket.Actor{UserID: ptr(uuid.New()), Role: user.RoleStaff}
+	tk, _ := guestTicket(t, h)
+	ctx := context.Background()
+
+	id, err := h.svc.GuestTicketIDFor(ctx, tk.TrackingNumber, "GUEST@EXAMPLE.TEST")
+	require.NoError(t, err, "the address match is case-insensitive")
+	require.Equal(t, tk.ID, id)
+
+	_, err = h.svc.GuestTicketIDFor(ctx, tk.TrackingNumber, "someone@else.test")
+	require.ErrorIs(t, err, ticket.ErrGuestTokenNotFound, "the address alone must not be guessable past")
+
+	_, err = h.svc.GuestTicketIDFor(ctx, "GHD-2026-999999", "guest@example.test")
+	require.ErrorIs(t, err, ticket.ErrGuestTokenNotFound)
+
+	require.NoError(t, h.svc.Close(ctx, tk.ID, staff))
+	_, err = h.svc.GuestTicketIDFor(ctx, tk.TrackingNumber, "guest@example.test")
+	require.ErrorIs(t, err, ticket.ErrGuestTokenNotFound, "a re-request must not undo revocation")
+}
+
+func lastEventOfType(t *testing.T, h *harness, ty notification.EventType) notification.Event {
+	t.Helper()
+	for i := len(h.dispatcher.events) - 1; i >= 0; i-- {
+		if h.dispatcher.events[i].Type == ty {
+			return h.dispatcher.events[i]
+		}
+	}
+	t.Fatalf("no %s event was dispatched; got %v", ty, h.dispatcher.types())
+	return notification.Event{}
+}
+
+// A guest reply carries no author, which is what lets a reader tell the
+// customer's words from staff's without another column.
+func TestGuestReply_HasNoAuthorAndIsNeverInternal(t *testing.T) {
+	h := newHarness(t)
+	tk, _ := guestTicket(t, h)
+
+	r, err := h.svc.AddGuestReply(context.Background(), tk.ID, "still broken", 7, h.newStatus.ID)
+	require.NoError(t, err)
+	require.Nil(t, r.AuthorID, "a guest has no account to be the author")
+	require.False(t, r.Internal, "a guest cannot write a staff-only note")
+	require.False(t, r.NotifyCustomer, "mailing the customer their own message back is noise")
+}
+
+// The lifecycle rules apply to a guest exactly as they apply to the reporter:
+// the window reopens a resolved ticket, and a closed one refuses.
+func TestGuestReply_ObeysTheLifecycleItDidNotAuthor(t *testing.T) {
+	staff := ticket.Actor{UserID: ptr(uuid.New()), Role: user.RoleStaff}
+
+	t.Run("reopens a resolved ticket inside the window", func(t *testing.T) {
+		h := newHarness(t)
+		tk, _ := guestTicket(t, h)
+		_, err := h.svc.Resolve(context.Background(), tk.ID, "done", staff)
+		require.NoError(t, err)
+
+		_, err = h.svc.AddGuestReply(context.Background(), tk.ID, "not fixed", 7, h.newStatus.ID)
+		require.NoError(t, err)
+
+		after, err := h.store.GetByID(context.Background(), tk.ID)
+		require.NoError(t, err)
+		require.Equal(t, h.newStatus.ID, after.StatusID, "the link is how a guest reopens")
+		require.Nil(t, after.ResolvedAt)
+	})
+
+	t.Run("is refused outside the window", func(t *testing.T) {
+		h := newHarness(t)
+		tk, _ := guestTicket(t, h)
+		_, err := h.svc.Resolve(context.Background(), tk.ID, "done", staff)
+		require.NoError(t, err)
+
+		_, err = h.svc.AddGuestReply(context.Background(), tk.ID, "too late", 0, h.newStatus.ID)
+		require.ErrorIs(t, err, ticket.ErrReopenWindowClosed,
+			"the window does not widen because the reply arrived by link")
+	})
+
+	t.Run("is refused on a closed ticket", func(t *testing.T) {
+		h := newHarness(t)
+		tk, _ := guestTicket(t, h)
+		require.NoError(t, h.svc.Close(context.Background(), tk.ID, staff))
+
+		_, err := h.svc.AddGuestReply(context.Background(), tk.ID, "hello", 7, h.newStatus.ID)
+		require.ErrorIs(t, err, ticket.ErrClosed)
+	})
+}
+
+// Replying is the one thing a guest comes back to do, and it used to lock them
+// out: a reply rotated the token unconditionally, while a guest's own reply
+// carries no recipient, so the replacement was minted and never sent.
+//
+// The rule is now rotate-iff-deliver, so these three cases mint nothing.
+func TestGuestToken_SurvivesEveryReplyThatMailsNothing(t *testing.T) {
+	staff := ticket.Actor{UserID: ptr(uuid.New()), Role: user.RoleStaff}
+
+	t.Run("the guest's own reply", func(t *testing.T) {
+		h := newHarness(t)
+		tk, token := guestTicket(t, h)
+
+		_, err := h.svc.AddGuestReply(context.Background(), tk.ID, "still broken", 7, h.newStatus.ID)
+		require.NoError(t, err)
+
+		_, err = h.svc.TicketForGuestToken(context.Background(), token)
+		require.NoError(t, err, "a guest must not lose their link by using it")
+		require.Equal(t, 1, h.store.guestTokenCount(tk.ID))
+	})
+
+	t.Run("a staff reply with notify_customer off", func(t *testing.T) {
+		h := newHarness(t)
+		tk, token := guestTicket(t, h)
+
+		_, err := h.svc.AddReply(context.Background(), tk.ID, "noting this",
+			false, false, "", staff, 7, h.newStatus.ID)
+		require.NoError(t, err)
+
+		_, err = h.svc.TicketForGuestToken(context.Background(), token)
+		require.NoError(t, err, "nothing was mailed, so nothing may be replaced")
+	})
+
+	t.Run("an internal note", func(t *testing.T) {
+		h := newHarness(t)
+		tk, token := guestTicket(t, h)
+
+		_, err := h.svc.AddReply(context.Background(), tk.ID, "cost code 4471",
+			true, false, "", staff, 7, h.newStatus.ID)
+		require.NoError(t, err)
+
+		_, err = h.svc.TicketForGuestToken(context.Background(), token)
+		require.NoError(t, err)
+	})
+}
+
+// The invariant, stated directly: a rotation always has somewhere to go.
+func TestGuestToken_IsNeverMintedWithoutARecipient(t *testing.T) {
+	h := newHarness(t)
+	staff := ticket.Actor{UserID: ptr(uuid.New()), Role: user.RoleStaff}
+	tk, _ := guestTicket(t, h)
+	ctx := context.Background()
+
+	_, err := h.svc.AddGuestReply(ctx, tk.ID, "one", 7, h.newStatus.ID)
+	require.NoError(t, err)
+	_, err = h.svc.AddReply(ctx, tk.ID, "two", false, false, "", staff, 7, h.newStatus.ID)
+	require.NoError(t, err)
+	_, err = h.svc.AddReply(ctx, tk.ID, "three", false, true, "guest@example.test", staff, 7, h.newStatus.ID)
+	require.NoError(t, err)
+
+	for _, ev := range h.dispatcher.events {
+		if ev.GuestToken != "" {
+			require.NotEmpty(t, ev.Recipient,
+				"%s minted a token with nobody to send it to", ev.Type)
+		}
+	}
+}
+
+// Moving to Closed by status change revokes; it must not rotate.
+//
+// Checking that the old link stops working cannot tell the two apart — both
+// delete it. What separates them is what goes out: rotating would mail the
+// customer a fresh link to a ticket nobody can act on, and leave a live token
+// row behind for it.
+func TestGuestToken_StatusChangeToClosedMintsNothing(t *testing.T) {
+	h := newHarness(t)
+	admin := ticket.Actor{UserID: ptr(uuid.New()), Role: user.RoleAdmin}
+	tk, _ := guestTicket(t, h)
+
+	_, err := h.svc.UpdateStatus(context.Background(), tk.ID, h.closedStatus.ID, admin)
+	require.NoError(t, err)
+
+	ev := lastEventOfType(t, h, notification.EventTicketStatusChanged)
+	require.Empty(t, ev.GuestToken,
+		"closing must not mail a link to a ticket that accepts nothing")
+	require.Equal(t, 0, h.store.guestTokenCount(tk.ID),
+		"and must leave no token behind")
+}
+
+// Closing by status change revokes, so there is no link to send — and sending
+// anyway fell back to the account URL, mailing the guest "see where it stands"
+// pointing at a page they have no account to open. Close() tells nobody; this
+// door now agrees with it.
+func TestGuestToken_ClosingByStatusTellsNobody(t *testing.T) {
+	h := newHarness(t)
+	admin := ticket.Actor{UserID: ptr(uuid.New()), Role: user.RoleAdmin}
+	tk, _ := guestTicket(t, h)
+
+	_, err := h.svc.UpdateStatus(context.Background(), tk.ID, h.closedStatus.ID, admin)
+	require.NoError(t, err)
+
+	ev := lastEventOfType(t, h, notification.EventTicketStatusChanged)
+	require.Empty(t, ev.GuestToken)
+	require.Empty(t, ev.Recipient,
+		"no token means no usable link, so the mail must not go at all")
+}
+
+// Every other status change still reaches the guest — the exclusion is closing,
+// not status changes.
+func TestGuestToken_OtherStatusChangesStillNotify(t *testing.T) {
+	h := newHarness(t)
+	staff := ticket.Actor{UserID: ptr(uuid.New()), Role: user.RoleStaff}
+	tk, _ := guestTicket(t, h)
+
+	_, err := h.svc.UpdateStatus(context.Background(), tk.ID, h.resolvedStatus.ID, staff)
+	require.NoError(t, err)
+
+	ev := lastEventOfType(t, h, notification.EventTicketStatusChanged)
+	require.NotEmpty(t, ev.GuestToken)
+	require.Equal(t, "guest@example.test", ev.Recipient)
+}

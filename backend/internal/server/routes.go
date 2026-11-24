@@ -1,0 +1,384 @@
+package server
+
+import (
+	"context"
+
+	"github.com/go-chi/chi/v5"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
+	authmw "github.com/publiciallc/go-help-desk/backend/internal/middleware"
+)
+
+func (s *Server) authRouter() *chi.Mux {
+	r := chi.NewRouter()
+
+	// Throttling lives in the handlers rather than here: the key differs per
+	// endpoint (account for login and MFA, address for signup) and two of the
+	// three are only known after the body is parsed.
+	r.Post("/local/login", s.handleLocalLogin)
+	r.Post("/local/logout", s.handleLogout)
+	// An API key reaches this too — APIKeyAuth sets MFAPassed, so the handler's
+	// "requires a session that already passed the password" is not what the
+	// routing enforces. Each wrong code spends the durable per-user MFA budget,
+	// so a leaked key could re-lock the account every fifteen minutes and the
+	// owner would never get in.
+	r.With(authmw.DenyMachineCredentials).Post("/local/mfa/verify", s.handleMFAVerify)
+
+	r.Post("/oauth/token", s.handleOAuthToken)
+	r.Get("/providers", s.handleAuthProviders)
+
+	// SAML routes are always registered; each handler returns 503 when not configured.
+	r.Get("/saml/login", s.handleSAMLLogin)
+
+	r.Get("/oidc/login", s.handleOIDCLogin)
+	r.Post("/saml/acs", s.handleSAMLACS)
+	r.Get("/saml/metadata", s.handleSAMLMetadata)
+	r.Get("/saml/complete", s.handleSAMLComplete)
+
+	r.Get("/oidc/callback", s.handleOIDCCallback)
+
+	// Self-service signup (enabled/disabled via admin settings).
+	r.Get("/signup/status", s.handleSignupStatus)
+	r.Post("/signup", s.handleSignup)
+	r.Post("/verify-email", s.handleVerifyEmail)
+
+	return r
+}
+
+func (s *Server) ticketRouter() *chi.Mux {
+	r := chi.NewRouter()
+	r.Use(authmw.RequireRole(user.RoleAdmin, user.RoleStaff, user.RoleUser))
+	r.Use(authmw.RequireMFA)
+	r.Use(authmw.RequireResource(auth.ResourceTickets))
+
+	r.Get("/", s.handleListTickets)
+	r.Post("/", s.handleCreateTicket)
+	// /tickets/fields must be registered before /{id} to avoid ambiguity
+	r.Get("/fields", s.handleResolveFieldsForCTI)
+	// Everything addressing a specific ticket goes through requireTicketAccess.
+	// Applying it per handler is what failed: at 1.1.1 the check was inline in
+	// handleGetTicket and handleListStatusHistory and nowhere else, so PATCH,
+	// the reply thread, links and tags on a ticket you could not read were all
+	// open. As a subtree middleware a new route cannot forget it.
+	r.Route("/{id}", func(r chi.Router) {
+		r.Use(s.requireTicketAccess)
+
+		r.Get("/", s.handleGetTicket)
+		r.Patch("/", s.handleUpdateTicket)
+
+		r.Post("/replies", s.handleAddReply)
+		r.Get("/replies", s.handleListReplies)
+
+		r.Post("/resolve", s.handleResolveTicket)
+		r.Post("/reopen", s.handleReopenTicket)
+		r.Post("/close", s.handleCloseTicket)
+
+		r.Post("/links", s.handleAddLink)
+		r.Delete("/links/{targetId}/{linkType}", s.handleRemoveLink)
+		r.Get("/links", s.handleListLinks)
+
+		r.Get("/history", s.handleListStatusHistory)
+
+		// Tags are how staff mark a ticket for other staff — "fraud-suspect",
+		// "legal-hold", "difficult-customer". DESIGN.md gives them to Staff and
+		// says nothing about them in the User row. Ungated, the reporting user
+		// saw the classification written about them, could delete it, and could
+		// add tags of their own to the global list.
+		r.Group(func(r chi.Router) {
+			r.Use(authmw.RequireRole(user.RoleAdmin, user.RoleStaff))
+			r.Get("/tags", s.handleListTicketTags)
+			r.Post("/tags", s.handleAddTicketTag)
+			r.Delete("/tags/{tagId}", s.handleRemoveTicketTag)
+		})
+
+		// Canned responses are for staff/admin composing replies, not the
+		// reporting user.
+		r.With(authmw.RequireRole(user.RoleAdmin, user.RoleStaff)).
+			Get("/canned-responses", s.handleListTicketCannedResponses)
+
+		r.Get("/attachments", s.handleListAttachments)
+		r.Post("/attachments", s.handleUploadAttachment)
+		r.Get("/attachments/{attachId}", s.handleDownloadAttachment)
+
+		r.Get("/custom-fields", s.handleListTicketCustomFields)
+		r.Put("/custom-fields", s.handlePutTicketCustomFields)
+	})
+
+	return r
+}
+
+func (s *Server) adminRouter() *chi.Mux {
+	r := chi.NewRouter()
+	r.Use(authmw.RequireRole(user.RoleAdmin))
+	r.Use(authmw.RequireMFA)
+
+	r.Route("/users", func(r chi.Router) {
+		r.Use(authmw.RequireResource(auth.ResourceUsers))
+		r.Get("/", s.handleListUsers)
+		r.Post("/", s.handleCreateUser)
+		r.Get("/{id}", s.handleGetUser)
+		r.Patch("/{id}", s.handleUpdateUser)
+		r.Delete("/{id}", s.handleDeleteUser)
+		r.Post("/{id}/password", s.handleAdminResetPassword)
+	})
+
+	r.Route("/groups", func(r chi.Router) {
+		r.Use(authmw.RequireResource(auth.ResourceGroups))
+		r.Get("/", s.handleListGroups)
+		r.Post("/", s.handleCreateGroup)
+		r.Get("/{id}", s.handleGetGroup)
+		r.Patch("/{id}", s.handleUpdateGroup)
+		r.Delete("/{id}", s.handleDeleteGroup)
+		r.Get("/{id}/members", s.handleListGroupMembers)
+		r.Post("/{id}/members", s.handleAddGroupMember)
+		r.Delete("/{id}/members/{userId}", s.handleRemoveGroupMember)
+		r.Post("/{id}/scopes", s.handleAddGroupScope)
+		r.Delete("/{id}/scopes", s.handleRemoveGroupScope)
+		r.Get("/{id}/scopes", s.handleListGroupScopes)
+	})
+
+	r.Route("/categories", func(r chi.Router) {
+		r.Use(authmw.RequireResource(auth.ResourceCategories))
+		r.Get("/", s.handleListCategories)
+		r.Post("/", s.handleCreateCategory)
+		r.Get("/{id}", s.handleGetCategory)
+		r.Patch("/{id}", s.handleUpdateCategory)
+		r.Delete("/{id}", s.handleDeleteCategory)
+
+		// CTI-level group scope (read-only from CTI perspective; mutations use /admin/groups/{id}/scopes)
+		r.Get("/{id}/groups", s.handleListGroupsForCategory)
+
+		// Category-level custom field assignments
+		r.Get("/{id}/fields", s.handleListAssignments)
+		r.Post("/{id}/fields", s.handleCreateAssignment)
+		r.Patch("/{id}/fields/{assignmentId}", s.handleUpdateAssignment)
+		r.Delete("/{id}/fields/{assignmentId}", s.handleDeleteAssignment)
+
+		r.Get("/{id}/types", s.handleListTypes)
+		r.Post("/{id}/types", s.handleCreateType)
+		r.Patch("/{id}/types/{typeId}", s.handleUpdateType)
+		r.Delete("/{id}/types/{typeId}", s.handleDeleteType)
+
+		// Type-level group scope
+		r.Get("/{id}/types/{typeId}/groups", s.handleListGroupsForType)
+
+		// Type-level custom field assignments
+		r.Get("/{id}/types/{typeId}/fields", s.handleListAssignments)
+		r.Post("/{id}/types/{typeId}/fields", s.handleCreateAssignment)
+		r.Patch("/{id}/types/{typeId}/fields/{assignmentId}", s.handleUpdateAssignment)
+		r.Delete("/{id}/types/{typeId}/fields/{assignmentId}", s.handleDeleteAssignment)
+
+		r.Get("/{id}/types/{typeId}/items", s.handleListItems)
+		r.Post("/{id}/types/{typeId}/items", s.handleCreateItem)
+		r.Patch("/{id}/types/{typeId}/items/{itemId}", s.handleUpdateItem)
+		r.Delete("/{id}/types/{typeId}/items/{itemId}", s.handleDeleteItem)
+
+		// Item-level custom field assignments
+		r.Get("/{id}/types/{typeId}/items/{itemId}/fields", s.handleListAssignments)
+		r.Post("/{id}/types/{typeId}/items/{itemId}/fields", s.handleCreateAssignment)
+		r.Patch("/{id}/types/{typeId}/items/{itemId}/fields/{assignmentId}", s.handleUpdateAssignment)
+		r.Delete("/{id}/types/{typeId}/items/{itemId}/fields/{assignmentId}", s.handleDeleteAssignment)
+	})
+
+	r.Route("/custom-fields", func(r chi.Router) {
+		r.Use(authmw.RequireResource(auth.ResourceCategories))
+		r.Get("/", s.handleListFieldDefs)
+		r.Post("/", s.handleCreateFieldDef)
+		r.Patch("/{id}", s.handleUpdateFieldDef)
+	})
+
+	r.Route("/sla/policies", func(r chi.Router) {
+		r.Use(authmw.RequireResource(auth.ResourceSLA))
+		r.Get("/", s.handleListSLAPolicies)
+		r.Post("/", s.handleCreateSLAPolicy)
+		r.Patch("/{id}", s.handleUpdateSLAPolicy)
+		r.Delete("/{id}", s.handleDeleteSLAPolicy)
+	})
+
+	r.Route("/statuses", func(r chi.Router) {
+		r.Use(authmw.RequireResource(auth.ResourceSettings))
+		r.Get("/", s.handleListStatuses)
+		r.Post("/", s.handleCreateStatus)
+		r.Patch("/{id}", s.handleUpdateStatus)
+		r.Delete("/{id}", s.handleDeleteStatus)
+	})
+
+	// Admin-only, and deliberately not on the public /api/v1/site payload:
+	// telling anonymous visitors that this instance signs sessions with a
+	// publicly known key is an invitation, not a warning.
+	// Discloses which secrets are still at their insecure defaults, which is
+	// exactly the reconnaissance an unscoped credential should not get.
+	r.Group(func(r chi.Router) {
+		r.Use(authmw.RequireResource(auth.ResourceSettings))
+		r.Get("/security-warnings", s.handleGetSecurityWarnings)
+	})
+
+	r.Route("/settings", func(r chi.Router) {
+		r.Use(authmw.RequireResource(auth.ResourceSettings))
+		r.Get("/", s.handleGetSettings)
+		r.Patch("/", s.handleUpdateSettings)
+		r.Post("/logo", s.handleUploadLogo)
+		r.Delete("/logo", s.handleDeleteLogo)
+	})
+
+	// Repointing the identity provider is a route to an administrator session:
+	// aim SAML or OIDC at an IdP you control, assert a federated
+	// administrator's subject, and the login succeeds at their role. The
+	// subject is the trust anchor, so it has to stay out of reach of a
+	// credential.
+	r.Route("/saml", func(r chi.Router) {
+		r.Use(authmw.RequireResource(auth.ResourceSettings))
+		r.Get("/", s.handleGetSAMLConfig)
+		// Writes only: reading the configuration is ordinary automation, and
+		// the handler already blanks the secrets. Changing it is the takeover.
+		r.With(authmw.DenyMachineCredentials).Put("/", s.handleSaveSAMLConfig)
+	})
+
+	r.Route("/oidc", func(r chi.Router) {
+		r.Use(authmw.RequireResource(auth.ResourceSettings))
+		r.Get("/", s.handleGetOIDCConfig)
+		r.With(authmw.DenyMachineCredentials).Put("/", s.handleSaveOIDCConfig)
+	})
+
+	r.Route("/plugins", func(r chi.Router) {
+		r.Use(authmw.RequireResource(auth.ResourcePlugins))
+		r.Get("/", s.handleListPlugins)
+		r.Post("/", s.handleInstallPlugin)
+		r.Patch("/{id}", s.handleUpdatePlugin)
+		r.Delete("/{id}", s.handleUninstallPlugin)
+	})
+
+	// The scope catalogue, for the admin UI's picker. Behind credentials:read
+	// because it is only useful to something issuing credentials.
+	r.Group(func(r chi.Router) {
+		r.Use(authmw.RequireResource(auth.ResourceCredentials))
+		r.Get("/scopes", s.handleListScopes)
+	})
+
+	r.Route("/api-keys", func(r chi.Router) {
+		r.Use(authmw.RequireResource(auth.ResourceCredentials))
+		r.Get("/", s.handleListAPIKeys)
+		r.Post("/", s.handleCreateAPIKey)
+		r.Delete("/{id}", s.handleDeleteAPIKey)
+	})
+
+	r.Route("/oauth-clients", func(r chi.Router) {
+		r.Use(authmw.RequireResource(auth.ResourceCredentials))
+		r.Get("/", s.handleListOAuthClients)
+		r.Post("/", s.handleCreateOAuthClient)
+		r.Delete("/{id}", s.handleDeleteOAuthClient)
+	})
+
+	r.Route("/webhooks", func(r chi.Router) {
+		r.Use(authmw.RequireResource(auth.ResourceWebhooks))
+		r.Get("/", s.handleListWebhooks)
+		r.Post("/", s.handleCreateWebhook)
+		r.Patch("/{id}", s.handleUpdateWebhook)
+		r.Delete("/{id}", s.handleDeleteWebhook)
+	})
+
+	r.Route("/tags", func(r chi.Router) {
+		r.Use(authmw.RequireResource(auth.ResourceTags))
+		r.Get("/", s.handleAdminListTags)
+		r.Post("/", s.handleAdminCreateTag)
+		r.Delete("/{id}", s.handleAdminDeleteTag)
+		r.Post("/{id}/restore", s.handleAdminRestoreTag)
+	})
+
+	r.Route("/canned-responses", func(r chi.Router) {
+		r.Use(authmw.RequireResource(auth.ResourceCannedResponses))
+		r.Get("/", s.handleAdminListCannedResponses)
+		r.Post("/", s.handleAdminCreateCannedResponse)
+		r.Patch("/{id}", s.handleAdminUpdateCannedResponse)
+		r.Delete("/{id}", s.handleAdminDeleteCannedResponse)
+	})
+
+	return r
+}
+
+// groupsRouter exposes a read-only view of groups to all authenticated staff
+// and admins — needed when assigning tickets in the UI.
+func (s *Server) groupsRouter() *chi.Mux {
+	r := chi.NewRouter()
+	r.Use(authmw.RequireRole(user.RoleAdmin, user.RoleStaff))
+	r.Use(authmw.RequireMFA)
+	r.Use(authmw.RequireResource(auth.ResourceGroups))
+
+	r.Get("/", s.handleListGroups)
+
+	return r
+}
+
+func (s *Server) meRouter() *chi.Mux {
+	r := chi.NewRouter()
+	r.Use(authmw.RequireRole(user.RoleAdmin, user.RoleStaff, user.RoleUser))
+
+	// Everything that changes how this account authenticates is refused to API
+	// keys and OAuth clients. A credential acts at its owner's identity, so
+	// without this a leaked key was account takeover rather than the access it
+	// was issued for: change the password, re-enroll MFA against the attacker's
+	// authenticator, and the owner is locked out by a credential they created
+	// for a cron job. Scopes cannot help — the narrowest key still belongs to
+	// its owner.
+	r.Group(func(r chi.Router) {
+		r.Use(authmw.DenyMachineCredentials)
+
+		// MFA enrollment stays outside RequireMFA — otherwise a user compelled
+		// to enroll cannot complete enrollment.
+		// POST, not GET: it mints and stages a secret. As a GET it was
+		// reachable by top-level navigation from any site — the session cookie
+		// is SameSite=Lax — so a single link could start enrolment for a
+		// logged-in victim.
+		r.Post("/mfa/enroll", s.handleMFAEnrollStart)
+		r.Post("/mfa/enroll/confirm", s.handleMFAEnrollConfirm)
+
+		r.Group(func(r chi.Router) {
+			r.Use(authmw.RequireMFA)
+			r.Patch("/password", s.handleChangePassword)
+		})
+	})
+
+	// Reading your own identity is left to machine credentials: an integration
+	// legitimately needs to know who it is acting as, and this discloses
+	// nothing it could not already infer.
+	r.Group(func(r chi.Router) {
+		r.Use(authmw.RequireMFA)
+		r.Get("/", s.handleGetMe)
+	})
+
+	return r
+}
+
+// guestRouter is the whole surface a per-ticket token reaches.
+//
+// Mounted at /api/v1/guest, outside ticketRouter. Submission and re-request are
+// public and throttled; the other two require a token, which the middleware
+// resolves to exactly one ticket. There is no id parameter anywhere below, so
+// there is nothing for a guest to change in order to reach a different ticket.
+func (s *Server) guestRouter() *chi.Mux {
+	r := chi.NewRouter()
+
+	// Public, gated on the instance setting inside the handler so that an
+	// instance with guest submission off answers 404 rather than advertising a
+	// route it will not serve.
+	r.Post("/tickets", s.handleGuestCreateTicket)
+	r.Post("/resend", s.handleGuestResend)
+
+	r.Group(func(r chi.Router) {
+		r.Use(authmw.GuestAuth(s.resolveGuestToken))
+		r.Get("/ticket", s.handleGuestGetTicket)
+		r.Post("/replies", s.handleGuestAddReply)
+	})
+	return r
+}
+
+// resolveGuestToken hashes and looks up a raw token, returning the id of the
+// one ticket it names. Every failure is the same error; the middleware turns
+// all of them into the same 404.
+func (s *Server) resolveGuestToken(ctx context.Context, raw string) (string, error) {
+	t, err := s.tickets.TicketForGuestToken(ctx, raw)
+	if err != nil {
+		return "", err
+	}
+	return t.ID.String(), nil
+}
