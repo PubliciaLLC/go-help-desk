@@ -564,7 +564,7 @@ export async function mockAdminApi(
     ],
     '/api/v1/admin/scopes': [{ scope: 'tickets:read', resource: 'tickets', action: 'read' }],
     '/api/v1/admin/settings': { sla_enabled: true, saml_enabled: false, setup_complete: true, post_upgrade_130_seen: true, ...opts.settings },
-    '/api/v1/admin/saml': { configured: true, metadata_url: u, metadata_xml: '', cert_pem: SAML_CERT, sp_metadata_url: u, sp_acs_url: u },
+    '/api/v1/admin/saml': { configured: true, metadata_url: u, metadata_xml: '', cert_pem: SAML_CERT, cert_not_after: '2036-11-24T12:00:00Z', cert_generated: true, sp_metadata_url: u, sp_acs_url: u },
     '/api/v1/admin/oidc': { enabled: true, issuer_url: u, client_id: d, client_secret: '', redirect_url: u, configured: true },
     '/api/v1/admin/audit': {
       entries: [
