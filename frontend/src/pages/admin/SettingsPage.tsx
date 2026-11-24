@@ -6,6 +6,7 @@ import { extractError, extractErrorCode } from '@/api/client'
 import { Layout } from '@/components/Layout'
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
+import { AvailableQueueSection } from '@/components/admin/AvailableQueueSection'
 import { LifetimeSlider } from '@/components/admin/LifetimeSlider'
 import { GuestSizeSlider } from '@/components/admin/GuestSizeSlider'
 import { BoundedNumberInput } from '@/components/admin/BoundedNumberInput'
@@ -670,6 +671,7 @@ function GeneralPanel({
             onChange={(v) => setBool('ticket_scope_enforced', v)}
           />
         </SettingRow>
+        <AvailableQueueSection />
       </Section>
 
       <Section title="Audit log">
