@@ -258,12 +258,23 @@ func (s *Service) GuestAttachmentsEnabled(ctx context.Context) bool {
 // GuestAttachmentMaxMB is a guest's per-file maximum in megabytes (#445), 1 to
 // 100, 5 until an administrator says otherwise. Unset, unreadable or out of
 // range reads as the default: a damaged row must not quietly lift the cap.
-// The instance-wide attachment maximum still applies on top; the handler takes
-// the lower of the two.
+// The instance-wide attachment maximum (AttachmentMaxMB, #673) still applies on
+// top; the handler takes the lower of the two.
 func (s *Service) GuestAttachmentMaxMB(ctx context.Context) int {
 	v, err := s.GetInt(ctx, KeyGuestAttachmentMaxMB)
 	if err != nil || !ValidGuestAttachmentMaxMB(v) {
 		return GuestAttachmentMaxMBDefault
+	}
+	return v
+}
+
+// AttachmentMaxMB is the instance-wide per-file maximum in megabytes (#673),
+// 1 to 100, 25 by default. Unset, unreadable or out of range reads as the
+// default: a damaged row must not quietly lift the limit or drop it to zero.
+func (s *Service) AttachmentMaxMB(ctx context.Context) int {
+	v, err := s.GetInt(ctx, KeyAttachmentMaxMB)
+	if err != nil || !ValidAttachmentMaxMB(v) {
+		return AttachmentMaxMBDefault
 	}
 	return v
 }
