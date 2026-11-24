@@ -154,7 +154,7 @@ test.describe('the keyboard', () => {
     await mockAdminApi(page, { short: true })
     await page.goto('/dashboard')
     const nav = page.locator('aside nav')
-    await expect(nav.getByRole('link', { name: 'Tickets', exact: true })).toBeVisible()
+    await expect(nav.getByRole('link', { name: 'Assigned to Me', exact: true })).toBeVisible()
     const admin = nav.getByRole('button', { name: 'Admin', exact: true })
 
     const focusedControl = () =>
@@ -203,8 +203,12 @@ test.describe('staff and requesters have no Admin menu and no Audit Log', () => 
       await mockApi(page, { me })
       await page.goto('/dashboard')
       const nav = page.locator('aside nav')
-      await expect(nav.getByRole('link', { name: 'Tickets', exact: true })).toBeVisible()
-      await expect(nav.getByRole('link')).toHaveText(['Dashboard', 'Tickets'])
+      // Staff see the Tickets views (#676); a requester keeps the one link.
+      if (who === 'staff') await expect(nav.getByRole('link', { name: 'Assigned to Me', exact: true })).toBeVisible()
+      else await expect(nav.getByRole('link', { name: 'Tickets', exact: true })).toBeVisible()
+      await expect(nav.getByRole('link')).toHaveText(
+        who === 'staff' ? ['Dashboard', 'Assigned to Me', "My Group's Tickets", 'Search'] : ['Dashboard', 'Tickets'],
+      )
       await expect(nav.getByRole('button')).toHaveCount(0)
       await expect(nav.getByRole('link', { name: 'Audit Log' })).toHaveCount(0)
 

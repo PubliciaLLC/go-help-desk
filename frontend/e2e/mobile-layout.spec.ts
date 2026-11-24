@@ -116,7 +116,7 @@ test.describe('the sidebar is reachable, not just absent', () => {
     // Scoped to the nav landmark, not the whole page: DashboardPage has its
     // own cards linking to /tickets, so an unscoped name query is ambiguous.
     await trigger.click()
-    await expect(page.getByRole('navigation').getByRole('link', { name: 'Tickets', exact: true })).toBeVisible()
+    await expect(page.getByRole('navigation').getByRole('link', { name: 'Assigned to Me', exact: true })).toBeVisible()
 
     await page.keyboard.press('Escape')
     await expect(page.getByRole('navigation')).toBeHidden()
@@ -127,7 +127,7 @@ test.describe('the sidebar is reachable, not just absent', () => {
     await page.goto('/dashboard')
 
     await page.getByRole('button', { name: /menu|navigation/i }).click()
-    await expect(page.getByRole('navigation').getByRole('link', { name: 'Tickets', exact: true })).toBeVisible()
+    await expect(page.getByRole('navigation').getByRole('link', { name: 'Assigned to Me', exact: true })).toBeVisible()
 
     // Widening past md (768px) is what a phone rotating to landscape, or a
     // window being resized, looks like. Without a listener for this, the
