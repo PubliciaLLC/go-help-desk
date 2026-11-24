@@ -1678,6 +1678,27 @@ func (q *Queries) ListTicketsFiltered(ctx context.Context, arg ListTicketsFilter
 	return items, nil
 }
 
+const localToday = `-- name: LocalToday :one
+
+SELECT ($2::timestamptz AT TIME ZONE $1::text)::date
+`
+
+type LocalTodayParams struct {
+	Tz  string    `json:"tz"`
+	Now time.Time `json:"now"`
+}
+
+// KPI reports (#131)
+// The local date of now in tz. Run before any other KPI query so that an
+// unknown zone (SQLSTATE 22023) fails here, and the store maps it to
+// ErrUnknownTimeZone. tz is only ever a parameter of AT TIME ZONE.
+func (q *Queries) LocalToday(ctx context.Context, arg LocalTodayParams) (time.Time, error) {
+	row := q.db.QueryRowContext(ctx, localToday, arg.Tz, arg.Now)
+	var column_1 time.Time
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const lockGroup = `-- name: LockGroup :one
 SELECT id FROM groups WHERE id = $1 FOR UPDATE
 `
@@ -1706,84 +1727,96 @@ func (q *Queries) NextTicketSeq(ctx context.Context) (int64, error) {
 }
 
 const ticketVolumeByDay = `-- name: TicketVolumeByDay :many
-WITH bounds AS (
-  SELECT date_trunc('day', $2::timestamptz AT TIME ZONE $1::text) - interval '29 days' AS first_day
-), w AS (
-  -- first_day is a local date-time; since_at is the instant it begins in tz
-  SELECT first_day, first_day AT TIME ZONE $1::text AS since_at FROM bounds
+WITH w AS (
+  -- since_at is the instant from_day begins in tz, until_at the instant the day
+  -- after to_day begins: every range test is >= since_at AND < until_at.
+  SELECT $1::date AS from_day,
+         $2::date AS to_day,
+         ($1::date)::timestamp AT TIME ZONE $3::text AS since_at,
+         (($2::date + 1)::timestamp) AT TIME ZONE $3::text AS until_at
 ), events AS (
-  SELECT (t.created_at AT TIME ZONE $1::text)::date AS day, 1 AS created, 0 AS resolved
+  SELECT (t.created_at AT TIME ZONE $3::text)::date AS day, 1 AS created, 0 AS resolved
   FROM tickets t, w
   WHERE
   -- visibility: begin
   (
-    $3::bool
+    $4::bool
     OR (
-      $4::bool
-      AND t.reporter_user_id = $5::uuid
+      $5::bool
+      AND t.reporter_user_id = $6::uuid
     )
     OR (
-      NOT $3::bool
-      AND NOT $4::bool
+      NOT $4::bool
+      AND NOT $5::bool
       AND (
-        t.reporter_user_id = $5::uuid
-        OR t.assignee_user_id = $5::uuid
-        OR t.assignee_group_id = ANY($6::uuid[])
-        OR t.category_id = ANY($7::uuid[])
-        OR (t.type_id = ANY($8::uuid[])
+        t.reporter_user_id = $6::uuid
+        OR t.assignee_user_id = $6::uuid
+        OR t.assignee_group_id = ANY($7::uuid[])
+        OR t.category_id = ANY($8::uuid[])
+        OR (t.type_id = ANY($9::uuid[])
             AND (t.category_id, t.type_id) IN (SELECT c.id, ty.id
-                FROM unnest($9::uuid[]) WITH ORDINALITY AS c(id, n)
-                JOIN unnest($8::uuid[]) WITH ORDINALITY AS ty(id, n) ON ty.n = c.n))
+                FROM unnest($10::uuid[]) WITH ORDINALITY AS c(id, n)
+                JOIN unnest($9::uuid[]) WITH ORDINALITY AS ty(id, n) ON ty.n = c.n))
       )
     )
   )
   -- visibility: end
-  AND t.created_at >= w.since_at
+  AND ($11::uuid IS NULL OR t.category_id = $11::uuid)
+  AND (cardinality($12::text[]) = 0 OR t.priority = ANY($12::text[]))
+  AND ($13::uuid IS NULL OR t.assignee_group_id = $13::uuid)
+  AND t.created_at >= w.since_at AND t.created_at < w.until_at
   UNION ALL
-  SELECT (COALESCE(t.resolved_at, t.closed_at) AT TIME ZONE $1::text)::date, 0, 1
+  SELECT (COALESCE(t.resolved_at, t.closed_at) AT TIME ZONE $3::text)::date, 0, 1
   FROM tickets t, w
   WHERE
   -- visibility: begin
   (
-    $3::bool
+    $4::bool
     OR (
-      $4::bool
-      AND t.reporter_user_id = $5::uuid
+      $5::bool
+      AND t.reporter_user_id = $6::uuid
     )
     OR (
-      NOT $3::bool
-      AND NOT $4::bool
+      NOT $4::bool
+      AND NOT $5::bool
       AND (
-        t.reporter_user_id = $5::uuid
-        OR t.assignee_user_id = $5::uuid
-        OR t.assignee_group_id = ANY($6::uuid[])
-        OR t.category_id = ANY($7::uuid[])
-        OR (t.type_id = ANY($8::uuid[])
+        t.reporter_user_id = $6::uuid
+        OR t.assignee_user_id = $6::uuid
+        OR t.assignee_group_id = ANY($7::uuid[])
+        OR t.category_id = ANY($8::uuid[])
+        OR (t.type_id = ANY($9::uuid[])
             AND (t.category_id, t.type_id) IN (SELECT c.id, ty.id
-                FROM unnest($9::uuid[]) WITH ORDINALITY AS c(id, n)
-                JOIN unnest($8::uuid[]) WITH ORDINALITY AS ty(id, n) ON ty.n = c.n))
+                FROM unnest($10::uuid[]) WITH ORDINALITY AS c(id, n)
+                JOIN unnest($9::uuid[]) WITH ORDINALITY AS ty(id, n) ON ty.n = c.n))
       )
     )
   )
   -- visibility: end
-  AND COALESCE(t.resolved_at, t.closed_at) >= w.since_at
+  AND ($11::uuid IS NULL OR t.category_id = $11::uuid)
+  AND (cardinality($12::text[]) = 0 OR t.priority = ANY($12::text[]))
+  AND ($13::uuid IS NULL OR t.assignee_group_id = $13::uuid)
+  AND COALESCE(t.resolved_at, t.closed_at) >= w.since_at AND COALESCE(t.resolved_at, t.closed_at) < w.until_at
 )
 SELECT d::date AS day, COALESCE(sum(e.created), 0)::bigint AS created, COALESCE(sum(e.resolved), 0)::bigint AS resolved
-FROM w, generate_series(w.first_day, w.first_day + interval '29 days', interval '1 day') AS d
+FROM w, generate_series(w.from_day::timestamp, w.to_day::timestamp, interval '1 day') AS d
 LEFT JOIN events e ON e.day = d::date
 GROUP BY d ORDER BY d
 `
 
 type TicketVolumeByDayParams struct {
-	Tz                   string      `json:"tz"`
-	Now                  time.Time   `json:"now"`
-	Unrestricted         bool        `json:"unrestricted"`
-	ReporterOnly         bool        `json:"reporter_only"`
-	ActorID              uuid.UUID   `json:"actor_id"`
-	ScopeGroupIds        []uuid.UUID `json:"scope_group_ids"`
-	ScopeCategoryIds     []uuid.UUID `json:"scope_category_ids"`
-	ScopeTypeIds         []uuid.UUID `json:"scope_type_ids"`
-	ScopeTypeCategoryIds []uuid.UUID `json:"scope_type_category_ids"`
+	FromDay              time.Time     `json:"from_day"`
+	ToDay                time.Time     `json:"to_day"`
+	Tz                   string        `json:"tz"`
+	Unrestricted         bool          `json:"unrestricted"`
+	ReporterOnly         bool          `json:"reporter_only"`
+	ActorID              uuid.UUID     `json:"actor_id"`
+	ScopeGroupIds        []uuid.UUID   `json:"scope_group_ids"`
+	ScopeCategoryIds     []uuid.UUID   `json:"scope_category_ids"`
+	ScopeTypeIds         []uuid.UUID   `json:"scope_type_ids"`
+	ScopeTypeCategoryIds []uuid.UUID   `json:"scope_type_category_ids"`
+	CategoryID           uuid.NullUUID `json:"category_id"`
+	Priorities           []string      `json:"priorities"`
+	AssigneeGroupID      uuid.NullUUID `json:"assignee_group_id"`
 }
 
 type TicketVolumeByDayRow struct {
@@ -1792,17 +1825,21 @@ type TicketVolumeByDayRow struct {
 	Resolved int64     `json:"resolved"`
 }
 
-// The dashboard's 30-day trend (#675, DESIGN.md "Volume trend"): per local day in
-// tz, ending with the day that contains now, the tickets created and the tickets
-// resolved. The visibility block is the list's, copied into both arms and pinned
-// to it by TestSQL_DashboardQueriesShareTheListRule. The resolved arm is served
-// by tickets_done_at_idx (000066), the created arm by tickets_created_at_idx.
-// tz is only ever a parameter of AT TIME ZONE; a name Postgres does not know
-// fails with SQLSTATE 22023, which the store maps to ErrUnknownTimeZone.
+// Per local day in tz from from_day to to_day, both included, the tickets
+// created and the tickets resolved (the dashboard's trend, #675, and the KPI
+// volume card, #131, DESIGN.md "Volume trend" and "KPI reports"). One row per
+// day, zeros included, oldest first. The visibility block is the list's, copied
+// into both arms and pinned to it by TestSQL_DashboardQueriesShareTheListRule;
+// the three filters are the list's, on the ticket's current values, and an
+// empty priorities array means no filter. The resolved arm is served by
+// tickets_done_at_idx (000066), the created arm by tickets_created_at_idx. tz
+// is only ever a parameter of AT TIME ZONE; a name Postgres does not know fails
+// with SQLSTATE 22023, which localToday has normally reported already.
 func (q *Queries) TicketVolumeByDay(ctx context.Context, arg TicketVolumeByDayParams) ([]TicketVolumeByDayRow, error) {
 	rows, err := q.db.QueryContext(ctx, ticketVolumeByDay,
+		arg.FromDay,
+		arg.ToDay,
 		arg.Tz,
-		arg.Now,
 		arg.Unrestricted,
 		arg.ReporterOnly,
 		arg.ActorID,
@@ -1810,6 +1847,9 @@ func (q *Queries) TicketVolumeByDay(ctx context.Context, arg TicketVolumeByDayPa
 		pq.Array(arg.ScopeCategoryIds),
 		pq.Array(arg.ScopeTypeIds),
 		pq.Array(arg.ScopeTypeCategoryIds),
+		arg.CategoryID,
+		pq.Array(arg.Priorities),
+		arg.AssigneeGroupID,
 	)
 	if err != nil {
 		return nil, err

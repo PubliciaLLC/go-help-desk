@@ -778,19 +778,32 @@ WHERE
     OR t.id IN (SELECT ticket_id FROM reply_hits)
   );
 
+-- KPI reports (#131)
+
+-- name: LocalToday :one
+-- The local date of now in tz. Run before any other KPI query so that an
+-- unknown zone (SQLSTATE 22023) fails here, and the store maps it to
+-- ErrUnknownTimeZone. tz is only ever a parameter of AT TIME ZONE.
+SELECT (sqlc.arg(now)::timestamptz AT TIME ZONE sqlc.arg(tz)::text)::date;
+
 -- name: TicketVolumeByDay :many
--- The dashboard's 30-day trend (#675, DESIGN.md "Volume trend"): per local day in
--- tz, ending with the day that contains now, the tickets created and the tickets
--- resolved. The visibility block is the list's, copied into both arms and pinned
--- to it by TestSQL_DashboardQueriesShareTheListRule. The resolved arm is served
--- by tickets_done_at_idx (000066), the created arm by tickets_created_at_idx.
--- tz is only ever a parameter of AT TIME ZONE; a name Postgres does not know
--- fails with SQLSTATE 22023, which the store maps to ErrUnknownTimeZone.
-WITH bounds AS (
-  SELECT date_trunc('day', sqlc.arg(now)::timestamptz AT TIME ZONE sqlc.arg(tz)::text) - interval '29 days' AS first_day
-), w AS (
-  -- first_day is a local date-time; since_at is the instant it begins in tz
-  SELECT first_day, first_day AT TIME ZONE sqlc.arg(tz)::text AS since_at FROM bounds
+-- Per local day in tz from from_day to to_day, both included, the tickets
+-- created and the tickets resolved (the dashboard's trend, #675, and the KPI
+-- volume card, #131, DESIGN.md "Volume trend" and "KPI reports"). One row per
+-- day, zeros included, oldest first. The visibility block is the list's, copied
+-- into both arms and pinned to it by TestSQL_DashboardQueriesShareTheListRule;
+-- the three filters are the list's, on the ticket's current values, and an
+-- empty priorities array means no filter. The resolved arm is served by
+-- tickets_done_at_idx (000066), the created arm by tickets_created_at_idx. tz
+-- is only ever a parameter of AT TIME ZONE; a name Postgres does not know fails
+-- with SQLSTATE 22023, which localToday has normally reported already.
+WITH w AS (
+  -- since_at is the instant from_day begins in tz, until_at the instant the day
+  -- after to_day begins: every range test is >= since_at AND < until_at.
+  SELECT sqlc.arg(from_day)::date AS from_day,
+         sqlc.arg(to_day)::date AS to_day,
+         (sqlc.arg(from_day)::date)::timestamp AT TIME ZONE sqlc.arg(tz)::text AS since_at,
+         ((sqlc.arg(to_day)::date + 1)::timestamp) AT TIME ZONE sqlc.arg(tz)::text AS until_at
 ), events AS (
   SELECT (t.created_at AT TIME ZONE sqlc.arg(tz)::text)::date AS day, 1 AS created, 0 AS resolved
   FROM tickets t, w
@@ -818,7 +831,10 @@ WITH bounds AS (
     )
   )
   -- visibility: end
-  AND t.created_at >= w.since_at
+  AND (sqlc.narg(category_id)::uuid IS NULL OR t.category_id = sqlc.narg(category_id)::uuid)
+  AND (cardinality(sqlc.arg(priorities)::text[]) = 0 OR t.priority = ANY(sqlc.arg(priorities)::text[]))
+  AND (sqlc.narg(assignee_group_id)::uuid IS NULL OR t.assignee_group_id = sqlc.narg(assignee_group_id)::uuid)
+  AND t.created_at >= w.since_at AND t.created_at < w.until_at
   UNION ALL
   SELECT (COALESCE(t.resolved_at, t.closed_at) AT TIME ZONE sqlc.arg(tz)::text)::date, 0, 1
   FROM tickets t, w
@@ -846,9 +862,12 @@ WITH bounds AS (
     )
   )
   -- visibility: end
-  AND COALESCE(t.resolved_at, t.closed_at) >= w.since_at
+  AND (sqlc.narg(category_id)::uuid IS NULL OR t.category_id = sqlc.narg(category_id)::uuid)
+  AND (cardinality(sqlc.arg(priorities)::text[]) = 0 OR t.priority = ANY(sqlc.arg(priorities)::text[]))
+  AND (sqlc.narg(assignee_group_id)::uuid IS NULL OR t.assignee_group_id = sqlc.narg(assignee_group_id)::uuid)
+  AND COALESCE(t.resolved_at, t.closed_at) >= w.since_at AND COALESCE(t.resolved_at, t.closed_at) < w.until_at
 )
 SELECT d::date AS day, COALESCE(sum(e.created), 0)::bigint AS created, COALESCE(sum(e.resolved), 0)::bigint AS resolved
-FROM w, generate_series(w.first_day, w.first_day + interval '29 days', interval '1 day') AS d
+FROM w, generate_series(w.from_day::timestamp, w.to_day::timestamp, interval '1 day') AS d
 LEFT JOIN events e ON e.day = d::date
 GROUP BY d ORDER BY d;

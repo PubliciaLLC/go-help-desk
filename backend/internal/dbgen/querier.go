@@ -945,6 +945,11 @@ type Querier interface {
 	ListWebhookConfigs(ctx context.Context) ([]WebhookConfig, error)
 	// No event column: the history shows outcomes, never content.
 	ListWebhookDeliveries(ctx context.Context, webhookID uuid.UUID) ([]ListWebhookDeliveriesRow, error)
+	// KPI reports (#131)
+	// The local date of now in tz. Run before any other KPI query so that an
+	// unknown zone (SQLSTATE 22023) fails here, and the store maps it to
+	// ErrUnknownTimeZone. tz is only ever a parameter of AT TIME ZONE.
+	LocalToday(ctx context.Context, arg LocalTodayParams) (time.Time, error)
 	// Every definition, locked, in id order (the order LockCustomFieldDefsForShare
 	// takes them in). Reordering rewrites all the numbers, so it holds them all.
 	LockAllCustomFieldDefsForUpdate(ctx context.Context) ([]CustomFieldDef, error)
@@ -1323,13 +1328,16 @@ type Querier interface {
 	// clock; replicas whose clocks differ by a second differ by a second in when a
 	// window ends, which no limit here is sensitive to.
 	TakeRateLimit(ctx context.Context, arg TakeRateLimitParams) (TakeRateLimitRow, error)
-	// The dashboard's 30-day trend (#675, DESIGN.md "Volume trend"): per local day in
-	// tz, ending with the day that contains now, the tickets created and the tickets
-	// resolved. The visibility block is the list's, copied into both arms and pinned
-	// to it by TestSQL_DashboardQueriesShareTheListRule. The resolved arm is served
-	// by tickets_done_at_idx (000066), the created arm by tickets_created_at_idx.
-	// tz is only ever a parameter of AT TIME ZONE; a name Postgres does not know
-	// fails with SQLSTATE 22023, which the store maps to ErrUnknownTimeZone.
+	// Per local day in tz from from_day to to_day, both included, the tickets
+	// created and the tickets resolved (the dashboard's trend, #675, and the KPI
+	// volume card, #131, DESIGN.md "Volume trend" and "KPI reports"). One row per
+	// day, zeros included, oldest first. The visibility block is the list's, copied
+	// into both arms and pinned to it by TestSQL_DashboardQueriesShareTheListRule;
+	// the three filters are the list's, on the ticket's current values, and an
+	// empty priorities array means no filter. The resolved arm is served by
+	// tickets_done_at_idx (000066), the created arm by tickets_created_at_idx. tz
+	// is only ever a parameter of AT TIME ZONE; a name Postgres does not know fails
+	// with SQLSTATE 22023, which localToday has normally reported already.
 	TicketVolumeByDay(ctx context.Context, arg TicketVolumeByDayParams) ([]TicketVolumeByDayRow, error)
 	// First use stamps the row. Separate from the lookup so a read of the ticket
 	// is not also a write on the hot path when the column is already set.
