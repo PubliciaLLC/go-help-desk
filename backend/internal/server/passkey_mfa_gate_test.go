@@ -66,3 +66,16 @@ func TestMarkPasskeyRegistrationSatisfiesMFA(t *testing.T) {
 		}
 	})
 }
+
+// #616c: registering a key is what a passkey-required sign-in owed, so the debt
+// is cleared with MFAPassed. Left set, a later TOTP step-up would read it and
+// drop MFAPassed from a session that had passed.
+func TestMarkPasskeyRegistrationSatisfiesMFA_ClearsPasskeyOwed(t *testing.T) {
+	got := markPasskeyRegistrationSatisfiesMFA(auth.SessionData{UserID: uuid.New(), PasskeyOwed: true})
+	if got.PasskeyOwed {
+		t.Fatal("PasskeyOwed is still set after a passkey was registered")
+	}
+	if !got.MFAPassed {
+		t.Fatal("MFAPassed is false after a passkey was registered")
+	}
+}

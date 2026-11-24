@@ -33,6 +33,15 @@ import (
 // when BASE_URL cannot be a relying-party id (#494).
 func (s *Server) passkeysAvailable() bool { return s.passkeys != nil }
 
+// passkeyRequiredFor is the passkey requirement as it applies right now: the
+// role's setting, suspended while passkeys are unavailable (#494). A policy
+// nobody can satisfy would lock them out, so TOTP passes again until BASE_URL
+// is fixed and the administrator is told (security warnings). This is the one
+// place the two are combined.
+func (s *Server) passkeyRequiredFor(ctx context.Context, role string) bool {
+	return s.passkeysAvailable() && s.adminSvc.PasskeyRequiredFor(ctx, role)
+}
+
 // requirePasskeys answers 503 on every route that would use the ceremony
 // service while passkeys are unavailable, so none of them can dereference the
 // nil service. It runs before the handler's own checks on purpose: nothing
@@ -210,6 +219,23 @@ func (s *Server) requireFactorOrFirstEnrolment(w http.ResponseWriter, r *http.Re
 	return true
 }
 
+// requirePasskeyNotHeld refuses adding or removing a passkey from a sign-in
+// that is owed a key the account already has (auth.SessionData.PasskeyHeld).
+// Such a session proves itself with that key; any factor it has proved some
+// other way does not let it change which keys exist.
+//
+// Reports whether the caller may go on.
+func requirePasskeyNotHeld(w http.ResponseWriter, r *http.Request) bool {
+	a := authmw.GetActor(r)
+	if a != nil && a.PasskeyHeld {
+		Error(w, http.StatusForbidden, "passkey_required",
+			"this account must sign in with a passkey it already has. Use it before adding or removing one, "+
+				"or ask an administrator to remove the key or reset your sign-in factors.")
+		return false
+	}
+	return true
+}
+
 // Bytes, not characters: this is a storage bound rather than a display one.
 const maxPasskeyNameBytes = 128
 
@@ -239,7 +265,7 @@ func capPasskeyName(name string) string {
 
 // POST /api/v1/me/passkeys/register/start
 func (s *Server) handlePasskeyRegisterStart(w http.ResponseWriter, r *http.Request) {
-	if !s.requireFactorOrFirstEnrolment(w, r) {
+	if !s.requireFactorOrFirstEnrolment(w, r) || !requirePasskeyNotHeld(w, r) {
 		return
 	}
 	a := authmw.GetActor(r)
@@ -262,7 +288,7 @@ func (s *Server) handlePasskeyRegisterStart(w http.ResponseWriter, r *http.Reque
 
 // POST /api/v1/me/passkeys/register/finish
 func (s *Server) handlePasskeyRegisterFinish(w http.ResponseWriter, r *http.Request) {
-	if !s.requireFactorOrFirstEnrolment(w, r) {
+	if !s.requireFactorOrFirstEnrolment(w, r) || !requirePasskeyNotHeld(w, r) {
 		return
 	}
 	a := authmw.GetActor(r)
@@ -345,6 +371,9 @@ func (s *Server) handlePasskeyRegisterFinish(w http.ResponseWriter, r *http.Requ
 func markPasskeyRegistrationSatisfiesMFA(sd auth.SessionData) auth.SessionData {
 	sd.MFAPassed = true
 	sd.FactorVerified = true
+	// A passkey is what a passkey-required sign-in was owed (#616c).
+	sd.PasskeyOwed = false
+	sd.PasskeyHeld = false
 	return sd
 }
 
@@ -380,7 +409,7 @@ func (s *Server) handleDeletePasskey(w http.ResponseWriter, r *http.Request) {
 	// Removing a factor is the same class of act as adding one. A session
 	// holding only the password must not be able to strip the second factor
 	// off an account and leave it protected by the password alone.
-	if !s.requireFactorOrFirstEnrolment(w, r) {
+	if !s.requireFactorOrFirstEnrolment(w, r) || !requirePasskeyNotHeld(w, r) {
 		return
 	}
 	a := authmw.GetActor(r)
@@ -524,6 +553,8 @@ func (s *Server) handlePasskeyLoginFinish(w http.ResponseWriter, r *http.Request
 	sd.Role = a.Role
 	sd.MFAPassed = true
 	sd.FactorVerified = true
+	sd.PasskeyOwed = false
+	sd.PasskeyHeld = false
 	if err := s.writeSession(w, r, sd); err != nil {
 		handleError(w, err)
 		return

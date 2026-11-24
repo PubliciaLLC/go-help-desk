@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useNavigate, Link } from '@tanstack/react-router'
-import { login, verifyMFA, getMe, changePassword, getSignupStatus, getAuthProviders } from '@/api/auth'
+import { login, logout, verifyMFA, getMe, changePassword, getSignupStatus, getAuthProviders } from '@/api/auth'
 import type { LoginResponse } from '@/api/auth'
 import { getSiteConfig } from '@/api/admin'
 import { useAuthStore } from '@/store/auth'
@@ -12,8 +12,9 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { useSiteBranding } from '@/hooks/useSiteBranding'
 import { signInWithPasskey, wasCancelled } from '@/api/passkeys'
 import { MFAEnrollForm } from '@/components/MFAEnrollForm'
+import { PasskeyEnrollForm } from '@/components/PasskeyEnrollForm'
 
-type Step = 'credentials' | 'verify' | 'enroll' | 'passkey' | 'newpassword'
+type Step = 'credentials' | 'verify' | 'enroll' | 'passkey' | 'passkey-enroll' | 'newpassword'
 
 // Refusal codes the server puts in /login?error= after SAML or OIDC sends the
 // browser back. Only these strings are ever shown: the query string is
@@ -38,6 +39,23 @@ const SSO_ERRORS = new Map<string, string>([
 ])
 const SSO_ERROR_FALLBACK = 'Single sign-on did not finish. Please try again, or ask an administrator.'
 
+// The step the server wants shown after a single sign-on that still owes a
+// passkey (#616): /login?sso_step=<code>. Like the error codes this is a key
+// into an allowlist and never text, and an unknown value is ignored. It only
+// chooses which screen to show; the server enforces the step whatever it says.
+// `thenPasskeyEnrol` is true when an authenticator code comes first and a key
+// is registered after it.
+const SSO_STEPS = new Map<string, { step: Step; thenPasskeyEnrol: boolean }>([
+  ['passkey', { step: 'passkey', thenPasskeyEnrol: false }],
+  ['passkey_enroll', { step: 'passkey-enroll', thenPasskeyEnrol: false }],
+  ['verify_then_passkey_enroll', { step: 'verify', thenPasskeyEnrol: true }],
+])
+
+function ssoStep(search: string) {
+  const code = new URLSearchParams(search).get('sso_step')
+  return code === null ? undefined : SSO_STEPS.get(code)
+}
+
 function ssoErrorMessage(search: string): string {
   const code = new URLSearchParams(search).get('error')
   if (code === null) return ''
@@ -48,13 +66,28 @@ export function LoginPage() {
   const navigate = useNavigate()
   const { name: siteName } = useSiteBranding()
   const { setUser } = useAuthStore()
-  const [step, setStep] = useState<Step>('credentials')
+  const [sso] = useState(() => ssoStep(window.location.search))
+  const [step, setStep] = useState<Step>(sso?.step ?? 'credentials')
+  // The authenticator code is checked first and a passkey is registered after
+  // it (#616): TOTP proves a factor for this role but does not pass MFA.
+  const [passkeyEnrolAfterVerify, setPasskeyEnrolAfterVerify] = useState(sso?.thenPasskeyEnrol ?? false)
+  // True while the page is on a step it was sent to by ?sso_step=. That step
+  // needs a live pending session; with none (a bookmark, an expired window)
+  // it cannot succeed, so it carries a way back to the ordinary form.
+  const [viaSSOStep, setViaSSOStep] = useState(sso !== undefined)
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [mfaCode, setMfaCode] = useState('')
   // The unlock command's password has to be replaced before the rest of the
   // sign-in (#497). What the sign-in answered is kept so it can carry on.
   const [afterPasswordChange, setAfterPasswordChange] = useState<LoginResponse | null>(null)
+  // True from a sign-in that owes a password change until the change is made:
+  // an account that holds a factor proves it first (see handleLogin), and the
+  // change follows the factor step instead of replacing it.
+  const [passwordChangeOwed, setPasswordChangeOwed] = useState(false)
+  // True once the factor step has been passed while a change is still owed, so
+  // the page knows what follows the new password.
+  const [factorProved, setFactorProved] = useState(false)
   const [newPassword, setNewPassword] = useState('')
   const [confirmPassword, setConfirmPassword] = useState('')
   // Seeded from ?error= so a refused single sign-on says why; handleLogin
@@ -110,7 +143,14 @@ export function LoginPage() {
     setLoading(true)
     try {
       const answer = await login(email, password)
-      if (answer.password_change_required) {
+      setPasswordChangeOwed(!!answer.password_change_required)
+      setFactorProved(false)
+      // The server will not change the password of an account that holds a
+      // factor until the factor is proved (403 mfa_required, #498): a held
+      // authenticator (mfa_needed) or key (passkey_needed) comes first, and the
+      // new password after it. An account that holds none has nothing to prove
+      // and changes it first, as enrolment waits behind it (#497).
+      if (answer.password_change_required && !answer.mfa_needed && !answer.passkey_needed) {
         setAfterPasswordChange(answer)
         setStep('newpassword')
       } else {
@@ -124,11 +164,17 @@ export function LoginPage() {
   }
 
   // Where a sign-in goes once the password is settled.
-  function proceed({ user, mfa_needed, passkey_needed, mfa_enrollment_needed }: LoginResponse) {
+  function proceed({
+    user, mfa_needed, passkey_needed, mfa_enrollment_needed, passkey_enrollment_needed,
+  }: LoginResponse) {
     if (mfa_enrollment_needed) {
       setStep('enroll')
     } else if (mfa_needed) {
+      setPasskeyEnrolAfterVerify(!!passkey_enrollment_needed)
       setStep('verify')
+    } else if (passkey_enrollment_needed) {
+      // A role that must use a passkey, and the account has none (#616).
+      setStep('passkey-enroll')
     } else if (passkey_needed) {
       // An account holding passkeys and no authenticator app. The password
       // has been accepted and the session already names the account; this
@@ -138,6 +184,24 @@ export function LoginPage() {
       setUser(user)
       navigate({ to: '/dashboard' })
     }
+  }
+
+  // Back to the ordinary form from a step that ?sso_step= opened (#616). Any
+  // partial session is ended, but a failure to do that is not a reason to stay
+  // stuck: with no session there is nothing to end.
+  async function startOver() {
+    await logout().catch(() => {})
+    const params = new URLSearchParams(window.location.search)
+    params.delete('sso_step')
+    const qs = params.toString()
+    window.history.replaceState(
+      {}, '', window.location.pathname + (qs ? `?${qs}` : '') + window.location.hash,
+    )
+    setViaSSOStep(false)
+    setPasskeyEnrolAfterVerify(false)
+    setMfaCode('')
+    setError('')
+    setStep('credentials')
   }
 
   async function handleNewPassword(e: React.FormEvent) {
@@ -151,7 +215,15 @@ export function LoginPage() {
     try {
       // The password just typed to sign in is the current one.
       await changePassword(password, newPassword)
-      if (afterPasswordChange) proceed(afterPasswordChange)
+      setPasswordChangeOwed(false)
+      if (factorProved) {
+        // The factor came first: what is left is the key a passkey-required
+        // role registers, or nothing.
+        if (passkeyEnrolAfterVerify) setStep('passkey-enroll')
+        else await completeLogin()
+      } else if (afterPasswordChange) {
+        proceed(afterPasswordChange)
+      }
     } catch (err) {
       setError(extractError(err))
     } finally {
@@ -165,7 +237,16 @@ export function LoginPage() {
     setLoading(true)
     try {
       await verifyMFA(mfaCode)
-      await completeLogin()
+      if (passwordChangeOwed) {
+        setFactorProved(true)
+        setStep('newpassword')
+      } else if (passkeyEnrolAfterVerify) {
+        // The code proved a factor, which is what lets a key be registered;
+        // the key is what finishes the sign-in.
+        setStep('passkey-enroll')
+      } else {
+        await completeLogin()
+      }
     } catch (err) {
       setError(extractError(err))
     } finally {
@@ -178,7 +259,12 @@ export function LoginPage() {
     setLoading(true)
     try {
       await signInWithPasskey()
-      await completeLogin()
+      if (passwordChangeOwed) {
+        setFactorProved(true)
+        setStep('newpassword')
+      } else {
+        await completeLogin()
+      }
     } catch (err) {
       // Dismissing the browser prompt is a choice, not a failure, and the
       // person is still on this screen with the button in front of them.
@@ -195,6 +281,7 @@ export function LoginPage() {
     : step === 'verify' ? 'Two-factor authentication'
     : step === 'enroll' ? 'Set up two-factor authentication'
     : step === 'passkey' ? 'Confirm it is you'
+    : step === 'passkey-enroll' ? 'Register a passkey'
     : `Sign in to ${siteName}`
 
   return (
@@ -357,6 +444,14 @@ export function LoginPage() {
           )}
 
           {step === 'enroll' && <MFAEnrollForm onEnrolled={completeLogin} />}
+
+          {step === 'passkey-enroll' && <PasskeyEnrollForm onEnrolled={completeLogin} />}
+
+          {viaSSOStep && step !== 'credentials' && (
+            <Button type="button" variant="link" className="mt-3 w-full" onClick={startOver}>
+              Start over
+            </Button>
+          )}
         </CardContent>
       </Card>
     </div>
