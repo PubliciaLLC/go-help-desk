@@ -1861,8 +1861,11 @@ export function useSettingsDraft(): SettingsDraft
   - **edits**: what the operator last set, for the keys they changed
     (`setBool`, `setNum`, `setStr`, `setStrArr`, `toggleStrArr`);
   - **committed**: what a save in flight carries, from the send until the
-    settings have been fetched again, and dropped when the save settles
-    (success after that fetch, or a refusal);
+    save settles. It is dropped when the fresh settings have been fetched
+    after the PATCH answered, or when the save is refused. If the PATCH went
+    through and that fetch failed, it stays as the base under the edits, so the
+    form keeps showing what was saved (the page is not dirty), until the next
+    dump arrives and takes over;
   - **the dump**: the query's data.
 
   Setting a key compares the new value, by content, with the value underneath
@@ -1870,15 +1873,20 @@ export function useSettingsDraft(): SettingsDraft
   is deleted. Otherwise it is recorded. So a key put back to what the dump
   holds is not held and another administrator's later change to it comes
   through, and while a save is on its way a key put back to its pre-save value
-  is held, because it differs from what was sent. When the dump changes and when
-  a save settles, edits that equal the value underneath them are dropped. A
+  is held, because it differs from what was sent. A key the save in flight
+  carries is always held as an edit, whatever its value, and so is not judged
+  by a dump that arrives meanwhile: it is judged when the save settles. When
+  the dump changes (a fetch that changed nothing counts) and when a save
+  settles, the other edits that equal the value underneath them are dropped. A
   successful save drops the edits equal to what it sent; the rest stay. A
-  refused save drops only `committed`: every edit is still unsaved. A toggle
+  refused save puts what it sent back under the edits (`{...committed,
+  ...edits}`) before anything is dropped, so every value the operator sent is
+  still on the page, the page is still dirty, and Save sends it again. A toggle
   of an array starts from the draft's current value in whichever layer holds
   it, including the window between the PATCH answer and the fresh settings.
-  `dirty` is the patch of the composed draft against the dump (as before), and
-  a key whose edit equals the dump never makes it dirty. This applies to every
-  System page, not only Authentication. The write-only keys in `secrets` and
+  `dirty` is the patch of the composed draft against the base (the dump, with
+  `committed` over it), and a key whose edit equals the base never makes it
+  dirty. This applies to every System page, not only Authentication. The write-only keys in `secrets` and
   `cleared` are not part of the draft and are unaffected. Separately, "Save
   SAML config" empties the private key box once saved (the key is write-only
   and is not sent again).
@@ -2081,7 +2089,10 @@ apply to each page, as they did to each tab:
     edit follows it; a successful save clears the edited keys, so the next
     refetch is followed in full; an edit made while a save is pending is kept
     and still dirty, also when it was set back to its pre-save value; an edit
-    put back to the stored value, with no save pending, is not held.
+    put back to the stored value, with no save pending, is not held; a refused
+    save keeps every value it sent, dirty, also after the same value was set
+    again or another key's fetch landed meanwhile; a save whose fresh fetch
+    failed still shows what was saved and is not dirty.
   - A refused save keeps the edits and `dirty`.
   - The `email_required` message is shown.
   - `aboutClients` is set only when the patch turns `ticket_scope_enforced`

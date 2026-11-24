@@ -483,6 +483,91 @@ describe('useSettingsDraft: around a save', () => {
     expect(result.current.dirty).toBe(false)
   })
 
+  // The save is refused: what the operator sent is still theirs, still unsaved.
+  describe('a refused save keeps what was sent', () => {
+    async function pendingSave(set: (d: SettingsDraft) => void) {
+      dump = { ...DUMP, n: 30 }
+      const hook = setup()
+      await loaded(hook.result)
+      const p = holdPatch()
+      act(() => set(hook.result.current))
+      act(() => hook.result.current.save())
+      await waitFor(() => expect(hook.result.current.isPending).toBe(true))
+      return { ...hook, p }
+    }
+    const refused = async (h: { result: { current: SettingsDraft }; p: { no: () => void } }) => {
+      await act(async () => h.p.no())
+      await waitFor(() => expect(h.result.current.isPending).toBe(false))
+      await waitFor(() => expect(h.result.current.error).not.toBe(''))
+    }
+
+    it('after the same value is set again while saving', async () => {
+      const h = await pendingSave((d) => d.setStrArr('allowed', ['.pdf', '.txt']))
+      act(() => h.result.current.setStrArr('allowed', ['.pdf', '.txt']))
+      await refused(h)
+      expect(h.result.current.strArr('allowed')).toEqual(['.pdf', '.txt'])
+      expect(h.result.current.dirty).toBe(true)
+    })
+
+    it('after the value is set off and on again while saving', async () => {
+      const h = await pendingSave((d) => d.setBool('sla_enabled', true))
+      act(() => h.result.current.setBool('sla_enabled', false))
+      act(() => h.result.current.setBool('sla_enabled', true))
+      await refused(h)
+      expect(h.result.current.bool('sla_enabled')).toBe(true)
+      expect(h.result.current.dirty).toBe(true)
+    })
+
+    it.each([
+      { name: 'a number', set: (d: SettingsDraft) => d.setNum('n', 5), read: (d: SettingsDraft) => d.num('n'), want: 5 },
+      { name: 'a switch', set: (d: SettingsDraft) => d.setBool('sla_enabled', true), read: (d: SettingsDraft) => d.bool('sla_enabled'), want: true },
+    ])('after the settings are fetched again, with another key changed, while saving: $name', async ({ set, read, want }) => {
+      const h = await pendingSave(set)
+      dump = { ...dump, ticket_scope_enforced: true }
+      await refetch(h.queryClient)
+      await waitFor(() => expect(h.result.current.stored?.ticket_scope_enforced).toBe(true))
+      await refused(h)
+      expect(read(h.result.current)).toBe(want)
+      expect(h.result.current.dirty).toBe(true)
+    })
+
+    it('and a later Save sends it', async () => {
+      const h = await pendingSave((d) => d.setBool('sla_enabled', true))
+      await refused(h)
+      act(() => h.result.current.save())
+      await waitFor(() => expect(patchSpy).toHaveBeenCalledTimes(2))
+      expect(patchSpy.mock.calls[1][1]).toEqual({ sla_enabled: true })
+    })
+  })
+
+  describe('a save that went through but whose fresh settings could not be fetched', () => {
+    it('still shows what was saved, is not dirty, and is taken over by the next fetch', async () => {
+      const { result, queryClient } = setup()
+      await loaded(result)
+      const p = holdPatch()
+      act(() => result.current.setBool('sla_enabled', true))
+      act(() => result.current.save())
+      await waitFor(() => expect(result.current.isPending).toBe(true))
+      vi.spyOn(api, 'get').mockRejectedValueOnce(new Error('down'))
+      await act(async () => p.ok())
+      await waitFor(() => expect(result.current.isPending).toBe(false))
+      // The page still has the old dump, and says so nowhere; it shows the saved value.
+      expect(result.current.stored?.sla_enabled).toBe(false)
+      expect(result.current.bool('sla_enabled')).toBe(true)
+      expect(result.current.dirty).toBe(false)
+      // An edit now is judged against what was saved: setting it back is an edit.
+      act(() => result.current.setBool('sla_enabled', false))
+      expect(result.current.dirty).toBe(true)
+      act(() => result.current.setBool('sla_enabled', true))
+      expect(result.current.dirty).toBe(false)
+      // The next fetch that works takes over, and another administrator's change comes through.
+      dump = { ...dump, sla_enabled: false }
+      await refetch(queryClient) // the dump is what it was before the save: no change in its data
+      await waitFor(() => expect(result.current.bool('sla_enabled')).toBe(false))
+      expect(result.current.dirty).toBe(false)
+    })
+  })
+
   it('never stays dirty over a key that equals the dump', async () => {
     const { result, queryClient } = setup()
     await loaded(result)

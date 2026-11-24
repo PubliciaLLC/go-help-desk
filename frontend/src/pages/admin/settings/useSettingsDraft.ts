@@ -47,14 +47,26 @@ type Values = Record<string, unknown>
                 have been fetched again (null when no save is in flight);
      the dump   the query's data.
    Nothing else is tracked: the draft, "dirty" and what a refetch keeps all
-   follow from these. */
+   follow from these. While a save is in flight (`inFlight`), a key it carries
+   is held as an edit whatever its value, since the save may yet be refused and
+   then the edit is all that is left of it.
+
+   `committed` outlives the save in one case: the PATCH went through and the
+   fresh settings could not be fetched. The dump is then older than what was
+   saved, so `committed` stays under the edits as the base, and the next dump
+   that arrives takes over. That keeps the form on what was saved, and "dirty"
+   honest (it is judged against the base, not the stale dump). */
 interface Layers {
   edits: Values
   committed: Values | null
+  inFlight: boolean
 }
-const NO_LAYERS: Layers = { edits: {}, committed: null }
+const NO_LAYERS: Layers = { edits: {}, committed: null, inFlight: false }
 
-// Equal by content: an array set again with the same entries is the same value.
+// Equal by content, by JSON.stringify: an array set again with the same entries
+// is the same value. The known looseness is harmless here: NaN equals null, and
+// two objects with the same entries in another key order differ. A setting is a
+// boolean, a number, a string or an array of strings.
 function sameValue(a: unknown, b: unknown): boolean {
   return JSON.stringify(a) === JSON.stringify(b)
 }
@@ -65,13 +77,18 @@ function baseValue(L: Layers, dump: Values | undefined, key: string): unknown {
   return L.committed && key in L.committed ? L.committed[key] : dump?.[key]
 }
 
+// Whether a save in flight carries the key: its edit is held, not judged.
+function inFlightKey(L: Layers, key: string): boolean {
+  return L.inFlight && L.committed !== null && key in L.committed
+}
+
 // The edits that are not just the value underneath them. An edit that equals
 // its base is not a change, and must not hold the key against whoever changes
-// it next.
+// it next. A key a save in flight carries is judged when the save settles.
 function withoutNoopEdits(L: Layers, dump: Values | undefined): Layers {
   const edits: Values = {}
   for (const [k, v] of Object.entries(L.edits)) {
-    if (!sameValue(v, baseValue(L, dump, k))) edits[k] = v
+    if (inFlightKey(L, k) || !sameValue(v, baseValue(L, dump, k))) edits[k] = v
   }
   return Object.keys(edits).length === Object.keys(L.edits).length ? L : { ...L, edits }
 }
@@ -133,12 +150,19 @@ export function useSettingsDraft(): SettingsDraft {
   useEffect(() => {
     if (!settings) return
     setSeeded(true)
-    putLayers(withoutNoopEdits(live.current, settings))
-  }, [settings])
+    const L = live.current
+    // A dump that arrives while no save is in flight is newer than a save that
+    // went through without its fetch; it takes over from `committed`.
+    putLayers(withoutNoopEdits(L.inFlight ? L : { ...L, committed: null }, settings))
+  }, [settings, query.dataUpdatedAt]) // a fetch that changed nothing is a dump too
   /* eslint-enable react-hooks/set-state-in-effect */
 
   // The composed draft, as an object for the accessors and the patch.
   const draft: Values = { ...settings, ...layers.committed, ...layers.edits }
+
+  // When the PATCH answered: a fetch of the settings that landed after it has
+  // the saved values in it.
+  const answeredAt = useRef(0)
 
   const saveMutation = useMutation({
     mutationFn: async () => {
@@ -148,13 +172,16 @@ export function useSettingsDraft(): SettingsDraft {
       // Only what the operator changed (#394), with the guest clamp (#673); see
       // buildSettingsPatch.
       const L = live.current
-      const patch = buildSettingsPatch(dumpNow(), { ...dumpNow(), ...L.edits }, secrets, cleared)
+      // Against what is under the edits: after a save whose fetch failed, that
+      // is not the dump.
+      const base = { ...dumpNow(), ...L.committed }
+      const patch = buildSettingsPatch(base, { ...base, ...L.edits }, secrets, cleared)
       // What the save carries, as the operator set it (the patch can hold a
       // clamped figure instead). It is what the draft shows until the settings
       // have been fetched again.
-      const committed: Values = {}
+      const committed: Values = { ...L.committed }
       for (const k of Object.keys(patch)) if (k in L.edits) committed[k] = L.edits[k]
-      putLayers({ ...L, committed })
+      putLayers({ ...L, committed, inFlight: true })
       const res = await updateSettings(patch)
       // The save that turned ticket scope on is the one whose warning is about
       // OAuth clients; an SSO warning shares the field and gets no such link.
@@ -169,7 +196,13 @@ export function useSettingsDraft(): SettingsDraft {
       setSecrets({})
       setCleared({})
       // What was sent is saved. A key the operator has set again since keeps its edit.
-      putLayers(withoutNoopEdits(live.current, dumpNow()))
+      const L = live.current
+      const edits = { ...L.edits }
+      for (const [k, v] of Object.entries(L.committed ?? {})) {
+        if (k in edits && sameValue(edits[k], v)) delete edits[k]
+      }
+      putLayers({ ...L, edits })
+      answeredAt.current = Date.now()
       setTimeout(() => setSaved(false), 2500)
       qc.invalidateQueries({ queryKey: ['site-config'] })
       // The scan policy and address feed the banner and the scanner status;
@@ -181,10 +214,22 @@ export function useSettingsDraft(): SettingsDraft {
       // draft never differs from the old dump because of a change already saved.
       await qc.invalidateQueries({ queryKey: SETTINGS_KEY })
     },
-    // After the fresh settings have arrived, or the save was refused: nothing is
-    // in flight, and the edits that remain are the ones that are still unsaved.
-    onSettled: () => {
-      putLayers(withoutNoopEdits({ ...live.current, committed: null }, dumpNow()))
+    // After the fresh settings have been asked for, or the save was refused:
+    // nothing is in flight, and the edits that remain are the ones still unsaved.
+    onSettled: (_data, error) => {
+      const L = live.current
+      let next: Layers
+      if (error) {
+        // Refused: what was sent is still the operator's, and unsaved.
+        next = { edits: { ...L.committed, ...L.edits }, committed: null, inFlight: false }
+      } else if ((qc.getQueryState(SETTINGS_KEY)?.dataUpdatedAt ?? 0) >= answeredAt.current) {
+        // The fresh settings have the saved values in them.
+        next = { ...L, committed: null, inFlight: false }
+      } else {
+        // The fetch failed: keep showing what was saved until a dump arrives.
+        next = { ...L, inFlight: false }
+      }
+      putLayers(withoutNoopEdits(next, dumpNow()))
     },
     onError: (err) =>
       setSaveError(
@@ -202,13 +247,13 @@ export function useSettingsDraft(): SettingsDraft {
   function set(key: string, v: unknown) {
     const L = live.current
     const edits = { ...L.edits }
-    if (sameValue(v, baseValue(L, dumpNow(), key))) delete edits[key]
+    if (!inFlightKey(L, key) && sameValue(v, baseValue(L, dumpNow(), key))) delete edits[key]
     else edits[key] = v
     putLayers({ ...L, edits })
   }
 
   const dirty = !saveMutation.isPending
-    && Object.keys(buildSettingsPatch(settings, draft, secrets, cleared)).length > 0
+    && Object.keys(buildSettingsPatch({ ...settings, ...layers.committed }, draft, secrets, cleared)).length > 0
 
   return {
     isLoading: query.isLoading || (settings !== undefined && !seeded),
