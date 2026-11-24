@@ -723,6 +723,12 @@ func (s *Server) buildRouter() *chi.Mux {
 		r.With(authmw.RequireRole(user.RoleAdmin, user.RoleStaff, user.RoleUser), authmw.RequireMFA).
 			With(authmw.RequireResource(auth.ResourceTickets)).Get("/statuses", s.handleListStatuses)
 
+		// The dashboard's queue strip, needs-attention list and trend (#675),
+		// behind the same middleware as the ticket router: an API key or OAuth
+		// client needs tickets:read, as for GET /tickets.
+		r.With(authmw.RequireRole(user.RoleAdmin, user.RoleStaff, user.RoleUser), authmw.RequireMFA).
+			With(authmw.RequireResource(auth.ResourceTickets)).Get("/dashboard", s.handleGetDashboard)
+
 		// Who work can be given to: id and display name, for staff and
 		// admins.
 		//
