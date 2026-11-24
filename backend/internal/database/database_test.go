@@ -1451,8 +1451,8 @@ func TestSLAStore_ListBreachCandidates_LeavingPending(t *testing.T) {
 
 	// 4. A sweep at that point stamps it, and it drops out of the next sweep
 	// at the same instant.
-	svc := sla.NewService(ss)
-	res, err := svc.SweepBreaches(ctx, ts, now.Add(21*time.Minute))
+	svc := sla.NewService(ss, testutil.NewJoiningTxRunner(q, nil))
+	res, err := svc.SweepBreaches(ctx, ts, now.Add(21*time.Minute), true)
 	require.NoError(t, err)
 	require.Equal(t, 1, res.Stamped)
 

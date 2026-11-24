@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"time"
 
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/sla"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 )
 
@@ -143,6 +145,35 @@ func (g *gatedSLA) RecordFirstResponse(ctx context.Context, t ticket.Ticket, at 
 
 func (g *gatedSLA) RecordResolved(ctx context.Context, t ticket.Ticket, at time.Time) error {
 	return g.inner.RecordResolved(ctx, t, at)
+}
+
+// sweepSLA is one tick's sweep: it reads sla_alerts_enabled now, never cached,
+// and hands it to the sweep as whether to announce (#670). The sweep stamps
+// either way. A failed read returns the error without sweeping, so the tick is
+// skipped and nothing is stamped silently because a setting could not be read;
+// the caller logs it, as domain code does not.
+func sweepSLA(
+	ctx context.Context,
+	alertsEnabled func(ctx context.Context) (bool, error),
+	sweep func(ctx context.Context, now time.Time, announce bool) (sla.SweepResult, error),
+	now time.Time,
+) (sla.SweepResult, error) {
+	announce, err := alertsEnabled(ctx)
+	if err != nil {
+		return sla.SweepResult{}, fmt.Errorf("reading SLA alerts setting, skipping this sweep tick: %w", err)
+	}
+	return sweep(ctx, now, announce)
+}
+
+// logSLASweep is the one line a pass logs, with the counts, when it stamped
+// anything. Never one line per ticket: a backlog of a thousand tickets stamped
+// silently is one line saying how many.
+func logSLASweep(ctx context.Context, log *slog.Logger, res sla.SweepResult) {
+	if res.Stamped == 0 && res.Announced == 0 && res.Stale == 0 {
+		return
+	}
+	log.InfoContext(ctx, "swept SLA crossings",
+		"evaluated", res.Evaluated, "stamped", res.Stamped, "announced", res.Announced, "stale", res.Stale)
 }
 
 // slaToggle returns the reader ticket.Service.SetSLAEnabled takes: the same

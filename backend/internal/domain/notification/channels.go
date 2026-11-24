@@ -58,6 +58,10 @@ func (e Event) MailsStaff() bool {
 		switch {
 		case k == EventTicketAssigned, k == EventTicketReopened:
 			return true
+		case k.IsSLA():
+			// Queued whole, like any change that may mean staff mail; the
+			// worker decides who (#670).
+			return true
 		case k == EventTicketReplied && e.FromRequester:
 			return true
 		}
@@ -73,7 +77,10 @@ func Carries(channel string, ev Event) bool {
 	switch channel {
 	case "webhook":
 		// Any one kind is enough: the hook that subscribes to it gets the change.
-		return slices.ContainsFunc(ev.AllKinds(), func(k EventType) bool { return IsWebhookEvent(string(k)) })
+		//
+		// The SLA events are queued for it too (#670); the webhook list and
+		// the hook filter are completed with the webhook work of that issue.
+		return slices.ContainsFunc(ev.AllKinds(), func(k EventType) bool { return IsWebhookEvent(string(k)) || k.IsSLA() })
 	case "email":
 		// An account holder's status change has nobody to mail. A guest-link
 		// event may have no recipient yet: the send-time step fills it in. So

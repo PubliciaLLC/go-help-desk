@@ -477,7 +477,7 @@ func TestSLAToggleOff_StillStampsALateBreachAtRecordTime(t *testing.T) {
 	store.policies[policyID] = sla.Policy{ID: policyID, ResponseTargetMin: 30, ResolutionTargetMin: 60}
 	store.records[ticketID] = sla.Record{TicketID: ticketID, PolicyID: policyID}
 
-	real := sla.NewService(store)
+	real := sla.NewService(store, nil)
 	toggle := &mutableEnabler{on: false}
 	g := newGatedSLA(real, toggle, discardLogger())
 

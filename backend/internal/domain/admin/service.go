@@ -427,6 +427,14 @@ func (s *Service) SLAEnabled(ctx context.Context) (bool, error) {
 	return s.GetBool(ctx, KeySLAEnabled)
 }
 
+// SLAAlertsEnabled returns whether the SLA sweep announces what it stamps
+// (#670), and any error reading the setting. The error is returned for the
+// reason SLAEnabled's is: the sweep skips its tick on a failed read rather than
+// stamp crossings silently, and logging belongs to the caller.
+func (s *Service) SLAAlertsEnabled(ctx context.Context) (bool, error) {
+	return s.GetBool(ctx, KeySLAAlertsEnabled)
+}
+
 // MFAEnabled returns whether MFA is available.
 func (s *Service) MFAEnabled(ctx context.Context) bool {
 	v, _ := s.GetBool(ctx, KeyMFAEnabled)

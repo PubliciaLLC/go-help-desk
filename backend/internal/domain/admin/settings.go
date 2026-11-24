@@ -94,6 +94,11 @@ const (
 	KeyStaffEmailActivityOverride = "staff_email_activity_override"
 	KeyStaffEmailGroupOverride    = "staff_email_group_override"
 
+	// Whether the SLA sweep announces what it stamps: sla.breached and
+	// sla.at_risk, mail and webhooks alike (#670). Off, the sweep still stamps
+	// and raises nothing.
+	KeySLAAlertsEnabled = "sla_alerts_enabled"
+
 	// Deprecated: replaced by the per-provider settings below, and read by
 	// nothing.
 	//
@@ -461,7 +466,7 @@ func KnownKeys() []string {
 		KeyOIDCEnabled, KeyOIDCIssuerURL, KeyOIDCClientID, KeyOIDCClientSecret, KeyOIDCRedirectURL,
 		KeyGuestSubmissionEnabled, KeyGuestAttachmentsEnabled, KeyGuestAttachmentMaxMB,
 		KeyGuestAttachmentMaxPerTicket, KeyGuestAttachmentUploadsPerHour,
-		KeySLAEnabled, KeyMFAEnabled, KeyMFAEnforcedRoles,
+		KeySLAEnabled, KeySLAAlertsEnabled, KeyMFAEnabled, KeyMFAEnforcedRoles,
 		KeyReopenWindowDays, KeyReopenTargetStatusName,
 		KeyAttachmentScanPolicy, KeyAttachmentScanAddress,
 		KeySiteName, KeySiteLogoURL,

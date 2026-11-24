@@ -261,7 +261,7 @@ func TestSLAService_AttachPolicy_NoPolicy(t *testing.T) {
 	store := newFakeSLAStore()
 	store.findResult = nil // no matching policy
 
-	svc := sla.NewService(store)
+	svc := sla.NewService(store, nil)
 	tk := ticket.Ticket{
 		ID:         uuid.New(),
 		CategoryID: uuid.New(),
@@ -284,7 +284,7 @@ func TestSLAService_AttachPolicy_WithPolicy(t *testing.T) {
 	store.policies[policy.ID] = policy
 	store.findResult = &policy
 
-	svc := sla.NewService(store)
+	svc := sla.NewService(store, nil)
 	tk := ticket.Ticket{
 		ID:         uuid.New(),
 		CategoryID: uuid.New(),
@@ -312,7 +312,7 @@ func TestSLAService_RecordFirstResponse_Idempotent(t *testing.T) {
 		ResponseElapsedAtMetSeconds: &frozen,
 	}
 
-	svc := sla.NewService(store)
+	svc := sla.NewService(store, nil)
 	tk := ticket.Ticket{ID: ticketID, CreatedAt: firstTime.Add(-time.Hour)}
 	later := time.Now()
 	require.NoError(t, svc.RecordFirstResponse(context.Background(), tk, later))
@@ -339,7 +339,7 @@ func TestSLAService_RecordFirstResponse_FreezesElapsed(t *testing.T) {
 	respondedAt := createdAt.Add(60 * time.Minute)
 	tk := ticket.Ticket{ID: ticketID, CreatedAt: createdAt}
 
-	svc := sla.NewService(store)
+	svc := sla.NewService(store, nil)
 	require.NoError(t, svc.RecordFirstResponse(context.Background(), tk, respondedAt))
 
 	rec := store.records[ticketID]
@@ -371,7 +371,7 @@ func TestFrozenResponseElapsed_SurvivesLaterPendingCycles(t *testing.T) {
 	// this is a breach at the moment it is recorded.
 	respondedAt := createdAt.Add(60 * time.Minute)
 
-	svc := sla.NewService(store)
+	svc := sla.NewService(store, nil)
 	require.NoError(t, svc.RecordFirstResponse(context.Background(), tk, respondedAt))
 	rec := store.records[ticketID]
 
@@ -416,7 +416,7 @@ func TestSLAService_EvaluateBreaches(t *testing.T) {
 		CreatedAt: createdAt,
 	}
 
-	svc := sla.NewService(store)
+	svc := sla.NewService(store, nil)
 	require.NoError(t, svc.EvaluateBreaches(context.Background(), tk, now))
 
 	rec := store.records[ticketID]
@@ -454,7 +454,7 @@ func TestSLAService_EvaluateBreaches_PausedTicketDoesNotBreach(t *testing.T) {
 		PendingSince: timePtr(createdAt.Add(10 * time.Minute)),
 	}
 
-	svc := sla.NewService(store)
+	svc := sla.NewService(store, nil)
 	require.NoError(t, svc.EvaluateBreaches(context.Background(), tk, now))
 
 	rec := store.records[ticketID]
@@ -495,7 +495,7 @@ func TestEvaluateBreaches_Idempotent(t *testing.T) {
 	now := time.Now()
 	tk := ticket.Ticket{ID: ticketID, CreatedAt: createdAt}
 
-	svc := sla.NewService(store)
+	svc := sla.NewService(store, nil)
 	require.NoError(t, svc.EvaluateBreaches(context.Background(), tk, now))
 	require.Equal(t, 1, store.stampCalls)
 
@@ -527,7 +527,7 @@ func TestEvaluateBreaches_NeverWritesThroughUpdateRecord(t *testing.T) {
 
 	tk := ticket.Ticket{ID: ticketID, CreatedAt: time.Now().Add(-3 * time.Hour)}
 
-	svc := sla.NewService(store)
+	svc := sla.NewService(store, nil)
 	require.NoError(t, svc.EvaluateBreaches(context.Background(), tk, time.Now()))
 
 	require.Equal(t, 0, store.updateRecordCalls, "a fresh breach must not go through UpdateRecord")
@@ -551,7 +551,7 @@ func TestEvaluateBreaches_StampSurvivesPolicyChange(t *testing.T) {
 	now := time.Now()
 	tk := ticket.Ticket{ID: ticketID, CreatedAt: createdAt}
 
-	svc := sla.NewService(store)
+	svc := sla.NewService(store, nil)
 	require.NoError(t, svc.EvaluateBreaches(context.Background(), tk, now))
 	stamped := store.records[ticketID]
 	require.NotNil(t, stamped.ResponseBreachedAt)
@@ -583,9 +583,10 @@ func TestEvaluateBreaches_StampSurvivesPolicyChange(t *testing.T) {
 func TestSweepBreaches(t *testing.T) {
 	t.Run("empty candidate set", func(t *testing.T) {
 		store := newFakeSLAStore()
-		svc := sla.NewService(store)
+		tickets := newFakeTickets()
+		svc := sla.NewService(store, sweepAtomic(store, tickets))
 
-		res, err := svc.SweepBreaches(context.Background(), newFakeTickets(), time.Now())
+		res, err := svc.SweepBreaches(context.Background(), tickets, time.Now(), true)
 		require.NoError(t, err)
 		require.Equal(t, sla.SweepResult{}, res)
 	})
@@ -605,10 +606,11 @@ func TestSweepBreaches(t *testing.T) {
 		tickets.tickets[breachedID] = ticket.Ticket{ID: breachedID, CreatedAt: now.Add(-3 * time.Hour)}
 		tickets.tickets[freshID] = ticket.Ticket{ID: freshID, CreatedAt: now.Add(-5 * time.Minute)}
 
-		svc := sla.NewService(store)
-		res, err := svc.SweepBreaches(context.Background(), tickets, now)
+		svc := sla.NewService(store, sweepAtomic(store, tickets))
+		res, err := svc.SweepBreaches(context.Background(), tickets, now, true)
 		require.NoError(t, err)
-		require.Equal(t, sla.SweepResult{Evaluated: 2, Stamped: 1}, res)
+		require.Equal(t, sla.SweepResult{Evaluated: 2, Stamped: 1, Stale: 2}, res,
+			"three hours past both targets: both crossings are old, stamped silently")
 		require.NotNil(t, store.records[breachedID].ResponseBreachedAt)
 		require.Nil(t, store.records[freshID].ResponseBreachedAt)
 	})
@@ -628,8 +630,8 @@ func TestSweepBreaches(t *testing.T) {
 		boom := errors.New("ticket store unavailable")
 		tickets.errs[missingID] = boom
 
-		svc := sla.NewService(store)
-		res, err := svc.SweepBreaches(context.Background(), tickets, now)
+		svc := sla.NewService(store, sweepAtomic(store, tickets))
+		res, err := svc.SweepBreaches(context.Background(), tickets, now, true)
 		require.ErrorIs(t, err, boom)
 		require.Equal(t, 1, res.Evaluated, "only the successful load counts")
 		require.Equal(t, 1, res.Stamped)
@@ -653,8 +655,8 @@ func TestSweepBreaches(t *testing.T) {
 		tickets := newFakeTickets()
 		tickets.tickets[ticketID] = ticket.Ticket{ID: ticketID, CreatedAt: now.Add(-3 * time.Hour)}
 
-		svc := sla.NewService(store)
-		res, err := svc.SweepBreaches(context.Background(), tickets, now)
+		svc := sla.NewService(store, sweepAtomic(store, tickets))
+		res, err := svc.SweepBreaches(context.Background(), tickets, now, true)
 		require.NoError(t, err)
 		require.Equal(t, sla.SweepResult{Evaluated: 1, Stamped: 0}, res)
 		require.Zero(t, store.stampCalls, "an already-stamped record must not be written")
@@ -669,8 +671,8 @@ func TestSweepBreaches(t *testing.T) {
 		cancel()
 
 		tickets := newFakeTickets() // no ticket registered: GetByID would error if called
-		svc := sla.NewService(store)
-		res, err := svc.SweepBreaches(ctx, tickets, time.Now())
+		svc := sla.NewService(store, sweepAtomic(store, tickets))
+		res, err := svc.SweepBreaches(ctx, tickets, time.Now(), true)
 		require.ErrorIs(t, err, context.Canceled)
 		require.Zero(t, res.Evaluated)
 	})
@@ -819,7 +821,7 @@ func TestRecordFirstResponse_PropagatesStoreFailures(t *testing.T) {
 	f := &swallowProbeStore{hasRecord: true, setErr: boom}
 
 	tk := ticket.Ticket{ID: uuid.New(), CreatedAt: time.Now().Add(-time.Hour)}
-	err := sla.NewService(f).RecordFirstResponse(context.Background(), tk, time.Now())
+	err := sla.NewService(f, nil).RecordFirstResponse(context.Background(), tk, time.Now())
 
 	require.ErrorIs(t, err, boom, "a store failure must not be reported as success")
 	require.Zero(t, f.updates)
@@ -829,7 +831,7 @@ func TestRecordFirstResponse_NoRecordIsNotAnError(t *testing.T) {
 	f := &swallowProbeStore{hasRecord: false}
 
 	tk := ticket.Ticket{ID: uuid.New(), CreatedAt: time.Now().Add(-time.Hour)}
-	require.NoError(t, sla.NewService(f).RecordFirstResponse(context.Background(), tk, time.Now()))
+	require.NoError(t, sla.NewService(f, nil).RecordFirstResponse(context.Background(), tk, time.Now()))
 	require.Zero(t, f.updates, "nothing to update when the ticket is not under an SLA")
 }
 
@@ -837,7 +839,7 @@ func TestEvaluateBreaches_PropagatesStoreFailures(t *testing.T) {
 	boom := errors.New("connection reset by peer")
 	f := &swallowProbeStore{getErr: boom}
 
-	err := sla.NewService(f).EvaluateBreaches(context.Background(), ticket.Ticket{ID: uuid.New()}, time.Now())
+	err := sla.NewService(f, nil).EvaluateBreaches(context.Background(), ticket.Ticket{ID: uuid.New()}, time.Now())
 	require.ErrorIs(t, err, boom)
 }
 
@@ -868,7 +870,7 @@ func TestRecordResolved(t *testing.T) {
 	}
 	tk := ticket.Ticket{ID: ticketID, CreatedAt: now.Add(-3 * time.Hour)}
 
-	require.NoError(t, sla.NewService(f).RecordResolved(context.Background(), tk, now))
+	require.NoError(t, sla.NewService(f, nil).RecordResolved(context.Background(), tk, now))
 	require.Equal(t, 1, f.updates, "#233: the resolution fact and the #219 response backfill are ONE store write")
 	require.NotNil(t, f.record.ResolvedAt)
 	require.True(t, f.record.ResolvedAt.Equal(now))
@@ -880,7 +882,7 @@ func TestRecordResolved(t *testing.T) {
 	// Re-resolving must not touch the store at all: the record is already
 	// resolved, so RecordResolved is a full no-op (#220).
 	later := now.Add(2 * time.Hour)
-	require.NoError(t, sla.NewService(f).RecordResolved(context.Background(), tk, later))
+	require.NoError(t, sla.NewService(f, nil).RecordResolved(context.Background(), tk, later))
 	require.Equal(t, 1, f.updates, "already resolved: no further store writes")
 	require.True(t, f.record.ResolvedAt.Equal(now), "already recorded")
 	require.Equal(t, int64(3*time.Hour/time.Second), *f.record.ResolutionElapsedAtMetSeconds)
@@ -900,7 +902,7 @@ func TestRecordResolved_FoldsIntoOneStoreCall(t *testing.T) {
 	store.records[ticketID] = sla.Record{TicketID: ticketID, PolicyID: policyID}
 
 	tk := ticket.Ticket{ID: ticketID, CreatedAt: time.Now().Add(-time.Hour)}
-	require.NoError(t, sla.NewService(store).RecordResolved(context.Background(), tk, time.Now()))
+	require.NoError(t, sla.NewService(store, nil).RecordResolved(context.Background(), tk, time.Now()))
 
 	require.Equal(t, 1, store.setResolvedAndFirstResponseCalls,
 		"RecordResolved must fold both facts into the one combined store call")
@@ -971,7 +973,7 @@ func TestRecordFirstResponse_StampBreachesFailureDoesNotLoseTheLateSignal(t *tes
 	respondedAt := createdAt.Add(60 * time.Minute) // 60 > 30-minute target: late
 	tk := ticket.Ticket{ID: ticketID, CreatedAt: createdAt}
 
-	svc := sla.NewService(store)
+	svc := sla.NewService(store, nil)
 	require.NoError(t, svc.RecordFirstResponse(context.Background(), tk, respondedAt),
 		"a StampBreaches failure must not surface here at all: this door no longer calls it")
 
@@ -1000,7 +1002,7 @@ func TestRecordResolved_LateResolutionEntirelyBetweenSweepTicksStillStamped(t *t
 	resolvedAt := createdAt.Add(90 * time.Minute) // 90 > 60-minute resolution target: late
 	tk := ticket.Ticket{ID: ticketID, CreatedAt: createdAt}
 
-	svc := sla.NewService(store)
+	svc := sla.NewService(store, nil)
 	require.NoError(t, svc.RecordResolved(context.Background(), tk, resolvedAt))
 
 	rec := store.records[ticketID]
@@ -1027,7 +1029,7 @@ func TestRecordResolved_NoPriorReplyDoesNotShowFalseResponseBreach(t *testing.T)
 	resolvedAt := createdAt.Add(20 * time.Minute)
 	tk := ticket.Ticket{ID: ticketID, CreatedAt: createdAt}
 
-	svc := sla.NewService(store)
+	svc := sla.NewService(store, nil)
 	require.NoError(t, svc.RecordResolved(context.Background(), tk, resolvedAt))
 
 	rec := store.records[ticketID]
@@ -1063,7 +1065,7 @@ func TestRecordResolved_ClosedWithoutResolvingFreezesStatusInsteadOfGrowingLive(
 	closedAt := createdAt.Add(90 * time.Minute) // later than the 60-minute resolution target
 	tk := ticket.Ticket{ID: ticketID, CreatedAt: createdAt}
 
-	svc := sla.NewService(store)
+	svc := sla.NewService(store, nil)
 	// This is exactly what ticket.Service.close()/UpdateStatus now do: call
 	// RecordResolved with closed_at as the resolution instant.
 	require.NoError(t, svc.RecordResolved(context.Background(), tk, closedAt))
@@ -1132,7 +1134,7 @@ func TestSLAService_PolicyPriorityValidation(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			svc := sla.NewService(newFakeSLAStore())
+			svc := sla.NewService(newFakeSLAStore(), nil)
 			in := sla.Policy{
 				Name:                "P",
 				Priority:            tc.priority,
@@ -1216,7 +1218,7 @@ func TestSLAService_PolicyValidation_NameAndTargets(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			svc := sla.NewService(newFakeSLAStore())
+			svc := sla.NewService(newFakeSLAStore(), nil)
 			in := tc.modify(valid)
 
 			_, err := svc.CreatePolicy(context.Background(), in)
@@ -1236,7 +1238,7 @@ func TestSLAService_PolicyValidation_NameAndTargets(t *testing.T) {
 func TestSLAService_PolicyValidation_AcceptsInt32Boundary(t *testing.T) {
 	valid := sla.Policy{Name: "P", ResponseTargetMin: math.MaxInt32, ResolutionTargetMin: math.MaxInt32}
 
-	svc := sla.NewService(newFakeSLAStore())
+	svc := sla.NewService(newFakeSLAStore(), nil)
 	_, err := svc.CreatePolicy(context.Background(), valid)
 	require.NoError(t, err)
 
@@ -1273,7 +1275,7 @@ func (e *erroringSLAStore) UpdatePolicy(ctx context.Context, p sla.Policy) error
 // never mistaken for sla.ErrValidation.
 func TestSLAService_PolicyStoreFailure_IsNotReportedAsValidation(t *testing.T) {
 	store := &erroringSLAStore{fakeSLAStore: newFakeSLAStore(), err: errors.New("boom")}
-	svc := sla.NewService(store)
+	svc := sla.NewService(store, nil)
 	in := sla.Policy{Name: "P", ResponseTargetMin: 60, ResolutionTargetMin: 480}
 
 	_, err := svc.CreatePolicy(context.Background(), in)
@@ -1292,7 +1294,7 @@ func TestSLAService_PolicyStoreFailure_IsNotReportedAsValidation(t *testing.T) {
 func TestSLAService_StatusesFor(t *testing.T) {
 	t.Run("empty input makes zero store calls", func(t *testing.T) {
 		store := newFakeSLAStore()
-		svc := sla.NewService(store)
+		svc := sla.NewService(store, nil)
 
 		got, err := svc.StatusesFor(context.Background(), nil, time.Now())
 		require.NoError(t, err)
@@ -1315,7 +1317,7 @@ func TestSLAService_StatusesFor(t *testing.T) {
 		store.records[withRecordA.ID] = sla.Record{TicketID: withRecordA.ID, PolicyID: policy.ID}
 		store.records[withRecordB.ID] = sla.Record{TicketID: withRecordB.ID, PolicyID: policy.ID}
 
-		svc := sla.NewService(store)
+		svc := sla.NewService(store, nil)
 		got, err := svc.StatusesFor(context.Background(),
 			[]ticket.Ticket{withRecordA, withRecordB, noRecordC, noRecordD, noRecordE}, time.Now())
 		require.NoError(t, err)
@@ -1339,7 +1341,7 @@ func TestSLAService_StatusesFor(t *testing.T) {
 		tk := ticket.Ticket{ID: uuid.New(), CreatedAt: time.Now()}
 		store.records[tk.ID] = sla.Record{TicketID: tk.ID, PolicyID: orphanID}
 
-		svc := sla.NewService(store)
+		svc := sla.NewService(store, nil)
 		got, err := svc.StatusesFor(context.Background(), []ticket.Ticket{tk}, time.Now())
 		require.NoError(t, err)
 		require.Empty(t, got)
@@ -1361,7 +1363,7 @@ func TestRecord_RestartedRecordFreezesFromItsOwnStart(t *testing.T) {
 		store.policies[policyID] = sla.Policy{ID: policyID, ResponseTargetMin: 5, ResolutionTargetMin: 5}
 		store.records[ticketID] = sla.Record{TicketID: ticketID, PolicyID: policyID, StartedAt: &start}
 		tk.ID = ticketID
-		return store, sla.NewService(store)
+		return store, sla.NewService(store, nil)
 	}
 
 	t.Run("first response", func(t *testing.T) {
@@ -1393,7 +1395,7 @@ func TestEvaluateBreaches_ExactlyAtTargetStamps(t *testing.T) {
 	store.policies[policyID] = sla.Policy{ID: policyID, ResponseTargetMin: 30, ResolutionTargetMin: 120}
 	store.records[ticketID] = sla.Record{TicketID: ticketID, PolicyID: policyID}
 
-	svc := sla.NewService(store)
+	svc := sla.NewService(store, nil)
 
 	// Response only: 30 minutes old, so resolution (120) is still under.
 	tk := ticket.Ticket{ID: ticketID, CreatedAt: now.Add(-30 * time.Minute)}
@@ -1418,15 +1420,18 @@ func TestSweepBreaches_ExactlyAtTargetStampsOnce(t *testing.T) {
 	tickets := newFakeTickets()
 	tickets.tickets[ticketID] = ticket.Ticket{ID: ticketID, CreatedAt: now.Add(-30 * time.Minute)}
 
-	svc := sla.NewService(store)
-	res, err := svc.SweepBreaches(context.Background(), tickets, now)
+	// Announcing is off so the result is the same one this test has always
+	// pinned: a breach exactly at target is fresh, and would otherwise be
+	// announced (sweep_alerts_test.go).
+	svc := sla.NewService(store, sweepAtomic(store, tickets))
+	res, err := svc.SweepBreaches(context.Background(), tickets, now, false)
 	require.NoError(t, err)
 	require.Equal(t, sla.SweepResult{Evaluated: 1, Stamped: 1}, res)
 	stamped := *store.records[ticketID].ResponseBreachedAt
 
 	// A later pass stamps nothing and leaves the first instant alone: the
 	// same moment is never recorded twice.
-	res, err = svc.SweepBreaches(context.Background(), tickets, now.Add(time.Minute))
+	res, err = svc.SweepBreaches(context.Background(), tickets, now.Add(time.Minute), false)
 	require.NoError(t, err)
 	require.Equal(t, sla.SweepResult{Evaluated: 1, Stamped: 0}, res)
 	require.True(t, stamped.Equal(*store.records[ticketID].ResponseBreachedAt))
@@ -1445,7 +1450,7 @@ func TestRecordFirstResponseAndResolved_ExactlyAtTargetStamps(t *testing.T) {
 	respID, resID := uuid.New(), uuid.New()
 	store.records[respID] = sla.Record{TicketID: respID, PolicyID: policyID}
 	store.records[resID] = sla.Record{TicketID: resID, PolicyID: policyID}
-	svc := sla.NewService(store)
+	svc := sla.NewService(store, nil)
 
 	require.NoError(t, svc.RecordFirstResponse(context.Background(),
 		ticket.Ticket{ID: respID, CreatedAt: created}, created.Add(30*time.Minute)))

@@ -69,7 +69,34 @@ const (
 	EventStaffAssigned         EventType = "staff.assigned"
 	EventStaffRequesterReplied EventType = "staff.requester_replied"
 	EventStaffReopened         EventType = "staff.reopened"
+
+	// EventSLABreached and EventSLAAtRisk are raised only by the SLA sweep
+	// (#670), at most one per ticket per pass: the sweep has just stamped a
+	// breach, or a target reaching 80%. Their Payload carries targets (and
+	// at_risk_targets on a breach), policy_id and record_id, and no actor.
+	EventSLABreached EventType = "sla.breached"
+	EventSLAAtRisk   EventType = "sla.at_risk"
 )
+
+// IsSLA reports whether e is one of the two events the SLA sweep raises.
+func (e EventType) IsSLA() bool { return e == EventSLABreached || e == EventSLAAtRisk }
+
+// SLATarget names one of a ticket's two SLA targets, as an event lists it.
+type SLATarget string
+
+const (
+	SLATargetResponse   SLATarget = "response"
+	SLATargetResolution SLATarget = "resolution"
+)
+
+// SLAAlert is what an SLA event says, as enums: the targets that breached and
+// the ones that reached 80% while still outstanding, each in the order response
+// then resolution. A typed field, not Payload keys, because email never reads
+// Payload.
+type SLAAlert struct {
+	Breached []SLATarget `json:"breached,omitempty"`
+	AtRisk   []SLATarget `json:"at_risk,omitempty"`
+}
 
 // Event carries the data for a single lifecycle event on a ticket.
 type Event struct {
@@ -113,6 +140,12 @@ type Event struct {
 	// stores it. Excluded from JSON like GuestLink: the webhook body is
 	// unchanged.
 	FollowUp bool `json:"-"`
+
+	// SLA is what an sla.breached or sla.at_risk event says (#670), for the
+	// staff mail that names the targets. Nil on every other event. Stored by
+	// the outbox codec like FollowUp and excluded from JSON like it: the
+	// webhook body carries the same facts as Payload keys.
+	SLA *SLAAlert `json:"-"`
 
 	// Kinds is everything that happened in the change this event announces,
 	// as the existing event names, in KindOrder (#506). Consumers match on it:
