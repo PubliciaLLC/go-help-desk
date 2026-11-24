@@ -6,9 +6,27 @@
 //
 // --phase pre-setup runs against the empty instance, before seed.mjs (shots 15,
 // 15m). --phase main needs $SHOTS_OUT/seed.json written by seed.mjs. --phase
-// extras (shots 29 and later) needs the same file after `seed.mjs --extras` has
-// added to it, and runs last because its data and settings changes would show in
-// the older shots. Output is
+// extras needs the same file after `seed.mjs --extras` has added to it, and runs
+// last because its data and settings changes would show in the older shots.
+//
+// The order of a full run (scripts/screenshots.sh):
+//   1. capture pre-setup      the empty instance: 15, 15m
+//   2. seed.mjs               users, groups, ten tickets
+//   3. capture main           01 to 28 except 02, then 08, 09, 14, 19, 23, 25
+//   4. seed.mjs --extras      a phone-call ticket, custom fields, a retired
+//                             category; and the history of two months: SLA
+//                             tracking and policies, about seventy tickets, a
+//                             reopened one, a breached and an at-risk one,
+//                             Alex in IT Support, Available ticked for staff
+//   5. backdate.sql           moves that history back in time (SQL, screenshot
+//                             database only). Everything before this step
+//                             was captured on an instance with no history
+//   6. capture extras         02 (the dashboard needs the history), 29 to 41,
+//                             and 48 to 52 (Reports, the group view, the file
+//                             size, the mobile dashboard, Email settings)
+// Shot 02 is in phase extras for that reason: its counts, health card and
+// trend exist only after steps 4 and 5. No shot of 01 to 28 changes because of
+// them, except that 02 is no longer a main shot. Output is
 // $SHOTS_OUT/png/*.png (default ${TMPDIR:-/tmp}/ghd-shots), plus
 // $SHOTS_OUT/manifest.txt listing exactly the PNG files this invocation wrote, one
 // name per line (overwritten by each invocation). Env: SHOTS_BASE_URL (pre-setup only; main reads seed.json),
@@ -33,6 +51,7 @@ import path from 'node:path'
 
 const DESK = { width: 1440, height: 900 }
 const MOBILE = { width: 390, height: 844 }
+const TALL_DASHBOARD_PHONE = { width: 390, height: 1243 }
 const PAD = 16
 const PASSWORD_FALLBACK = 'Screenshots-2026!'
 const RILEY_PASSWORD = 'Riley-Screenshot-2026!'
@@ -93,6 +112,15 @@ async function waitCirclKnown(page) {
 
 const noticeBar = (page) => page.getByRole('region', { name: 'Server notices' })
 
+// JSON from the API with the session of the shot's own sign-in. A data check
+// that reads what the page reads, so a seed that lacks the data fails the shot.
+async function apiGet(ctx, url) {
+  const r = await ctx.request.get(url)
+  if (!r.ok()) throw new Error(`GET ${url}: HTTP ${r.status()}`)
+  return r.json()
+}
+
+
 // Desktop shows a row's archive, restore and delete buttons only under the
 // pointer. A still image has no pointer, and the touch layout shows them all, so
 // the desktop shot is made to show them the same way.
@@ -124,12 +152,6 @@ const SHOTS = [
   {
     file: '01-login.png', phase: 'main', path: '/login', vp: DESK,
     async prepare() {},
-  },
-  {
-    file: '02-dashboard.png', phase: 'main', role: 'admin', path: '/dashboard', vp: DESK,
-    async prepare(page) {
-      await waitVisible(page.getByRole('heading', { name: 'By Client', exact: true }))
-    },
   },
   {
     file: '03-ticket-list.png', phase: 'main', role: 'admin', path: '/tickets?view=search', vp: DESK,
@@ -178,7 +200,9 @@ const SHOTS = [
     },
   },
   {
-    file: '09-staff-ticket-list.png', phase: 'main', role: 'jordan', path: '/tickets', vp: DESK,
+    // Staff land on Assigned to Me, which holds one ticket for Jordan. The Search
+    // view lists every ticket Jordan can see, which is the list this shot is for.
+    file: '09-staff-ticket-list.png', phase: 'main', role: 'jordan', path: '/tickets?view=search', vp: DESK,
     async prepare(page) {
       await waitVisible(page.getByText('GHD-2026-000001', { exact: true }))
     },
@@ -331,7 +355,8 @@ const SHOTS = [
     },
   },
   {
-    file: '23-mobile-ticket-list.png', phase: 'main', role: 'jordan', path: '/tickets', vp: MOBILE, mobile: true,
+    // The Search view, as 09: Assigned to Me holds one ticket for Jordan.
+    file: '23-mobile-ticket-list.png', phase: 'main', role: 'jordan', path: '/tickets?view=search', vp: MOBILE, mobile: true,
     async prepare(page) {
       // The card list is md:hidden; the desktop table with the same text is in the DOM too.
       await waitVisible(page.locator('ul.md\\:hidden').getByText('GHD-2026-000001', { exact: true }))
@@ -374,6 +399,147 @@ const SHOTS = [
   },
 
   // ── Extras: the 1.3.0 screens added after the first set (phase "extras") ──
+  // ── The dashboard, Reports and the ticket views (phase "extras": they need the
+  // history seed.mjs --extras filed and backdate.sql moved). They come first in
+  // this phase: 37 turns the upgrade wizard back on and 38 adds an OAuth client,
+  // whose notice would sit on every admin page after it. Nothing here saves a
+  // setting. ──
+  {
+    // The administrator's dashboard on an instance that has run for two months. The
+    // health card has its one amber item (SLA tracking on, alerts off), the queue
+    // strip has counts in every cell, and Needs attention lists a breached, an
+    // at-risk, two unassigned and a reopened ticket. The checks read the API the
+    // page reads, so a missing piece of the history fails here and not in the image.
+    file: '02-dashboard.png', phase: 'extras', role: 'admin', path: '/dashboard', vp: DESK,
+    target: { tall: 2400 },
+    async prepare(page, ctx) {
+      const dash = await apiGet(ctx, '/api/v1/dashboard?tz=UTC')
+      const q = Object.fromEntries(dash.queues.map((c) => [c.key, c.count]))
+      console.log(`02 queue: ${JSON.stringify(q)}; attention: ${dash.attention.map((a) => `${a.reason}:${a.ticket.tracking_number}`).join(' ')}`)
+      for (const k of ['assigned_to_me', 'my_groups', 'sla_breached', 'sla_at_risk', 'awaiting_my_reply']) {
+        if (!(q[k] > 0)) throw new Error(`dashboard: Your queue cell ${k} is ${q[k]}; the history seed should make it more than 0`)
+      }
+      const reasons = new Set(dash.attention.map((a) => a.reason))
+      for (const r of ['breached', 'at_risk', 'unassigned', 'reopened']) {
+        if (!reasons.has(r)) throw new Error(`dashboard: Needs attention has no ${r} row (rows: ${dash.attention.map((a) => `${a.reason} ${a.ticket.subject}`).join('; ')})`)
+      }
+      const busy = dash.volume.days.filter((d) => d.created > 0).length
+      if (busy < 15) throw new Error(`dashboard: the 30-day trend has tickets created on only ${busy} days`)
+
+      const health = page.getByRole('region', { name: 'Health' })
+      await waitVisible(health.getByText('SLA tracking is on, but breach and at-risk alerts are off.'))
+      const items = await health.locator('li').count()
+      if (items !== 1) throw new Error(`dashboard: the health card has ${items} items, expected the one amber item`)
+      await waitVisible(page.getByRole('heading', { name: 'Needs attention', exact: true }))
+      await waitVisible(page.getByText('Reopened', { exact: false }))
+      if (await page.getByText('Nothing needs attention').count()) throw new Error('dashboard: Needs attention is empty on the page')
+      await waitVisible(page.getByRole('heading', { name: 'By Client', exact: true }))
+      await waitVisible(page.getByTestId('queue-count'))
+    },
+  },
+  {
+    // Reports for the last 30 days against the 30 before. Every card has figures
+    // and a comparison, and every chart has bars.
+    file: '48-reports.png', phase: 'extras', role: 'admin', path: '/reports', vp: DESK,
+    target: { tall: 2600 },
+    async prepare(page, ctx) {
+      const k = await apiGet(ctx, '/api/v1/reports/kpi?tz=UTC')
+      const { current, previous, change } = k.measures
+      if (!(current.created > 10 && previous.created > 5)) throw new Error(`reports: created ${current.created} now and ${previous.created} before`)
+      if (!(current.resolved > 5 && current.time_to_resolve.count > 5)) throw new Error('reports: too few resolved tickets in the period')
+      if (!(current.first_response.count > 5 && previous.first_response.count > 3)) throw new Error('reports: too few first responses to compare')
+      if (!(current.sla.tracked > 5 && previous.sla.tracked > 3)) throw new Error('reports: too few SLA-tracked tickets to compare')
+      if (!(current.reopen.reopened > 0)) throw new Error('reports: no ticket reopened in the period (reopen rate would be 0)')
+      for (const m of ['created', 'resolved', 'time_to_resolve_median', 'first_response_median', 'sla_met_rate', 'reopen_rate']) {
+        if (!['change', 'from_zero'].includes(change[m].state)) throw new Error(`reports: ${m} compares as ${change[m].state}`)
+      }
+      if (k.volume.days.filter((d) => d.created > 0).length < 15) throw new Error('reports: the volume chart has fewer than 15 busy days')
+      for (const b of k.backlog.buckets) if (!(b.count > 0)) throw new Error(`reports: backlog bucket ${b.key} is empty`)
+      if (k.workload.by_assignee.length < 3 || k.workload.by_group.length < 2) throw new Error('reports: the workload card has too few rows')
+
+      await waitVisible(page.getByRole('heading', { name: 'Reports', exact: true }))
+      await waitVisible(page.getByText('All categories · All priorities · All groups'))
+      for (const t of ['Time to resolve', 'First response', 'SLA attainment', 'Reopen rate', 'Volume', 'Backlog aging', 'Workload']) {
+        await waitVisible(page.getByRole('heading', { name: t, exact: true }))
+      }
+      await waitVisible(page.getByRole('button', { name: 'Download CSV' }))
+      await waitVisible(page.getByRole('button', { name: 'Download image' }))
+    },
+  },
+  {
+    // My Group's Tickets: held by nobody, by Jordan and by a teammate.
+    file: '49-ticket-views-groups.png', phase: 'extras', role: 'jordan', path: '/tickets?view=groups', vp: DESK,
+    async prepare(page, ctx) {
+      const me = await apiGet(ctx, '/api/v1/me')
+      const list = await apiGet(ctx, '/api/v1/tickets?scope=my_groups&limit=100')
+      const held = new Set(list.map((t) => (t.assignee_user_id === null || t.assignee_user_id === undefined ? 'nobody' : t.assignee_user_id === me.id ? 'me' : 'other')))
+      for (const h of ['nobody', 'me', 'other']) if (!held.has(h)) throw new Error(`views: no group ticket is held by ${h}`)
+      if (list.length < 4) throw new Error(`views: only ${list.length} group tickets`)
+
+      await waitVisible(page.getByRole('heading', { name: "My Group's Tickets", level: 1 }))
+      for (const name of ['Assigned to Me', "My Group's Tickets", 'Search', 'Available', 'Reports']) {
+        await waitVisible(page.getByRole('link', { name, exact: true }))
+      }
+      for (const name of ['All', 'Group queue', 'Assigned to me', 'Assigned to others']) {
+        await waitVisible(page.getByRole('button', { name, exact: true }))
+      }
+      await waitVisible(page.locator('tbody tr'))
+      if ((await page.locator('tbody tr').count()) < 4) throw new Error('views: fewer than four rows on the page')
+    },
+  },
+  {
+    // The File size section with 50 typed and not saved, so the note about the
+    // virus scanner shows (scanning is required in the seed).
+    file: '50-system-file-size.png', phase: 'extras', role: 'admin', path: '/admin/settings/attachments', vp: DESK,
+    target: { element: (page) => sectionOf(page, 'File size') },
+    async prepare(page) {
+      await page.getByLabel('Largest file anyone may attach').fill('50')
+      const section = sectionOf(page, 'File size')
+      await waitVisible(section.getByText(/Your virus scanner must accept files this large/))
+      await waitVisible(section.getByText('Applies to every upload: staff, requesters and guests.', { exact: false }))
+      const line = (await section.getByTestId('guest-limit-line').innerText()).trim()
+      if (line !== 'Guests: up to 5 MB.') throw new Error(`file size: the guest line reads "${line}"`)
+    },
+  },
+  {
+    // The dashboard of a staff member on a phone: the queue strip as two columns,
+    // the first status cards and the start of Needs attention. At 844 px the queue
+    // and the five status cards fill the screen and the list is below it, so the
+    // viewport is 1243 px tall: the list is in the shot, and nothing else changes.
+    file: '51-mobile-dashboard.png', phase: 'extras', role: 'jordan', path: '/dashboard', vp: TALL_DASHBOARD_PHONE, mobile: true,
+    async prepare(page, ctx) {
+      const dash = await apiGet(ctx, '/api/v1/dashboard?tz=UTC')
+      console.log(`51 queue: ${JSON.stringify(Object.fromEntries(dash.queues.map((c) => [c.key, c.count])))}`)
+      const risky = await apiGet(ctx, '/api/v1/tickets?scope=assigned_to_me&sla=at_risk&limit=20')
+      console.log(`51 at risk: ${risky.map((t) => t.tracking_number + ' ' + t.subject).join('; ')}`)
+      if (dash.queues.length !== 5) throw new Error(`mobile dashboard: ${dash.queues.length} queue cells, expected 5`)
+      if (!(dash.attention.length >= 3)) throw new Error('mobile dashboard: Needs attention has fewer than 3 rows')
+      await waitVisible(page.getByRole('heading', { name: 'Your queue', exact: true }))
+      await waitVisible(page.getByRole('heading', { name: 'Needs attention', exact: true }))
+      await waitVisible(page.getByTestId('queue-count'))
+      if ((await page.getByTestId('queue-count').count()) !== 5) throw new Error('mobile dashboard: the page does not show five queue cells')
+    },
+  },
+  {
+    // Email -> Notifications: the tab bar, the four overrides and the SLA alerts switch.
+    file: '52-system-email-notifications.png', phase: 'extras', role: 'admin', path: '/admin/settings/email', vp: DESK,
+    target: {
+      union: (page) => [
+        page.getByRole('navigation', { name: 'Email sections' }),
+        sectionOf(page, 'Staff email about tickets'),
+        sectionOf(page, 'SLA alerts'),
+      ],
+    },
+    async prepare(page) {
+      const staff = sectionOf(page, 'Staff email about tickets')
+      await waitVisible(staff)
+      if ((await staff.getByRole('combobox').count()) !== 4) throw new Error('email: the staff email section has no four drop-downs')
+      await waitVisible(page.getByRole('link', { name: 'Notifications', exact: true }))
+      await waitVisible(page.getByRole('link', { name: 'Templates', exact: true }))
+      await waitVisible(sectionOf(page, 'SLA alerts').getByText(/Tell staff by email/))
+    },
+  },
+
   {
     // Typed, not pasted: the editor turns the Markdown marks into formatting as
     // they are typed. The card is cropped to the composer.
@@ -550,7 +716,7 @@ const SHOTS = [
     // so the pages above are captured without it.
     file: '38-server-notice-collapsed.png', phase: 'extras', role: 'admin', path: '/tickets', vp: DESK,
     before: ensureBlindOAuthClient,
-    target: { element: (page) => noticeBar(page), padBottom: 120 },
+    target: { element: (page) => noticeBar(page), padBottom: 90 },
     async prepare(page) {
       await waitVisible(noticeBar(page).getByText('An OAuth client sees no tickets'), DATA_WAIT)
     },
@@ -558,7 +724,7 @@ const SHOTS = [
   {
     file: '39-server-notice-expanded.png', phase: 'extras', role: 'admin', path: '/tickets', vp: DESK,
     before: ensureBlindOAuthClient,
-    target: { element: (page) => noticeBar(page), padBottom: 120 },
+    target: { element: (page) => noticeBar(page), padBottom: 90 },
     async prepare(page) {
       await noticeBar(page).getByRole('button', { name: 'Details' }).click()
       await waitVisible(noticeBar(page).getByRole('button', { name: /^Hide / }), DATA_WAIT)
@@ -614,7 +780,7 @@ function expectedSize(shot) {
   if (t?.cutBetween || t?.union || t?.element) return null
   if (t?.exact) return [DESK.width * 2, t.tall * 2]
   if (t?.tall) return null
-  if (shot.vp === MOBILE) return [MOBILE.width * 2, MOBILE.height * 2]
+  if (shot.vp.width === MOBILE.width) return [MOBILE.width * 2, shot.vp.height * 2]
   return [DESK.width * 2, DESK.height * 2]
 }
 
@@ -731,7 +897,15 @@ async function captureShot(browser, shot, s) {
     const p = typeof shot.path === 'function' ? shot.path(s) : shot.path
     await page.goto(p, { waitUntil: 'domcontentloaded' })
     await settle(page)
-    await shot.prepare(page, ctx, s)
+    try {
+      await shot.prepare(page, ctx, s)
+    } catch (err) {
+      // What the page looked like when the check failed, for whoever reads the failure.
+      const dbg = path.join(OUT, 'debug')
+      fs.mkdirSync(dbg, { recursive: true })
+      await page.screenshot({ path: path.join(dbg, shot.file), fullPage: true }).catch(() => {})
+      throw err
+    }
     if (shot.css) await page.addStyleTag({ content: shot.css })
     await settle(page, { keepFocus: false })
 
