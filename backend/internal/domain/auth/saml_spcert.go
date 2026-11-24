@@ -74,11 +74,22 @@ type SPCert struct {
 	// SHA256 is the DER certificate's fingerprint, as Fingerprint writes it.
 	SHA256 string
 	// Generated is true for a certificate GenerateSPCertificate made: self-signed,
-	// with subject organisation "Go Help Desk". Read off the certificate rather
+	// organisation "Go Help Desk", not a CA, key usage exactly digitalSignature and
+	// keyEncipherment. Read off the certificate rather
 	// than stored beside it, so it cannot disagree with the pair however the
 	// pair was written; an administrator's certificate made to look the same
 	// reads as generated, which only changes a label.
 	Generated bool
+}
+
+// madeByGenerateSPCertificate: self-signed, our organisation, and the rest of
+// what GenerateSPCertificate sets that openssl does not by default (not a CA,
+// exactly digitalSignature and keyEncipherment).
+func madeByGenerateSPCertificate(c *x509.Certificate) bool {
+	return len(c.Subject.Organization) == 1 && c.Subject.Organization[0] == spCertOrganization &&
+		c.BasicConstraintsValid && !c.IsCA &&
+		c.KeyUsage == x509.KeyUsageDigitalSignature|x509.KeyUsageKeyEncipherment &&
+		c.CheckSignature(c.SignatureAlgorithm, c.RawTBSCertificate, c.Signature) == nil
 }
 
 // SPCertificateInfo parses certPEM. ok is false when it holds no certificate
@@ -94,9 +105,8 @@ func SPCertificateInfo(certPEM string) (SPCert, bool) {
 	}
 	sum := sha256.Sum256(c.Raw)
 	return SPCert{
-		NotAfter: c.NotAfter,
-		SHA256:   Fingerprint(sum[:]),
-		Generated: len(c.Subject.Organization) == 1 && c.Subject.Organization[0] == spCertOrganization &&
-			c.CheckSignature(c.SignatureAlgorithm, c.RawTBSCertificate, c.Signature) == nil,
+		NotAfter:  c.NotAfter,
+		SHA256:    Fingerprint(sum[:]),
+		Generated: madeByGenerateSPCertificate(c),
 	}, true
 }

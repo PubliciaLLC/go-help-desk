@@ -155,6 +155,9 @@ func TestSPCertificateInfo(t *testing.T) {
 		{"a generated certificate", generated, true, true},
 		// Self-signed too, but not ours.
 		{"an uploaded certificate", selfSignedPEM(t, "Example Corp"), true, false},
+		// What openssl makes with this organisation (the repository's own test
+		// fixture is one): self-signed, but a CA and with no key usage.
+		{"an uploaded certificate with our organisation", selfSignedPEM(t, "Go Help Desk"), true, false},
 		{"nothing stored", "", false, false},
 		{"not a certificate", "not pem", false, false},
 	}
