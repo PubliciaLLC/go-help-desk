@@ -329,6 +329,7 @@ func newRecheckRig(t *testing.T, h *harness, respond http.HandlerFunc) *recheckR
 		h.authStore,
 		nil, // registration
 		h.cannedResponses,
+		nil, // reports: likewise
 		server.WithReputationLookup(store, reputation.WithBaseURL(ts.URL)),
 		server.WithAuditStore(h.auditStore),
 	)

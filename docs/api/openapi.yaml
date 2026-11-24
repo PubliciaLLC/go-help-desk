@@ -3090,6 +3090,117 @@ paths:
           $ref: '#/components/responses/TooManyRequests'
         '404':
           $ref: '#/components/responses/NotFound'
+  /api/v1/reports/kpi:
+    get:
+      operationId: getKpiReport
+      summary: Read the KPI report for a period, with its comparison to the period before.
+      description: |
+        Staff and administrators only (second factor required). A requester gets 403.
+        The numbers behind the Reports page (#131), computed live on the server over the tickets the caller can
+        see (the same visibility as GET /tickets: with ticket scope enforcement on, a staff member's numbers
+        count only what their scope admits; an administrator sees every ticket).
+        - period: the days counted, from and to inclusive, in the time zone tz; previous is the period of the
+          same length that ends the day before it begins. With no from and to it is the 30 days ending today in tz.
+        - measures.current and measures.previous: tickets created, tickets resolved, time to resolve (median and
+          90th percentile, in seconds, less time spent Pending), time to first response (median, seconds), SLA
+          attainment and reopens. A median or percentile is null when its count is 0; a rate is a fraction
+          between 0 and 1 rounded to four places, null when its denominator is 0.
+        - measures.change: the period-over-period change of the nine compared measures, always all nine.
+          kind is relative for counts and durations and points for rates; state says which rule applied and
+          value is null unless state is change.
+        - volume: created and resolved per day over the period, oldest first, and the tickets created in
+          the period by category and by priority (always the four priorities, in order).
+        - backlog and workload: the tickets open as of as_of, by age and by the person and the group holding
+          them. They do not depend on from and to. A row with a null id and name is the tickets with no person,
+          or no group, and is last.
+        The filters narrow every figure, the snapshots included. sla_enabled is whether SLA tracking is on
+        now (false when the setting cannot be read); the SLA figures are computed either way from the records
+        that exist. Nothing is cached on the server. A store failure answers 500 for the whole response.
+        The checks run in a fixed order and the first failure answers: tz, then from and to together, from, to,
+        category_id, priority and assignee_group_id, then whether the zone exists, then the length of the range.
+      tags: ['Tickets']
+      x-ghd-handler: handleGetKPI
+      security:
+        - sessionCookie: []
+        - apiKey: ['tickets:read']
+        - oauthClient: ['tickets:read']
+      x-ghd-roles: [admin, staff]
+      x-ghd-mfa: true
+      parameters:
+        - name: tz
+          in: query
+          required: false
+          description: >-
+            The IANA time zone the period's days are counted in, for example Europe/London. Absent or empty is
+            UTC. At most 64 bytes of A-Z, a-z, 0-9, _, +, - and /. Any other value is 400 bad_request,
+            "invalid tz"; a name the database does not know is 400 bad_request, "unknown time zone".
+          schema:
+            type: string
+            maxLength: 64
+            pattern: '^[A-Za-z0-9_+/-]*$'
+        - name: from
+          in: query
+          required: false
+          description: >-
+            First day of the period, YYYY-MM-DD, a date in tz. Goes with to: one without the other is 400
+            "from and to go together"; a malformed date is "invalid from". Both absent is the last 30 days
+            ending today in tz.
+          schema: {type: string, format: date}
+        - name: to
+          in: query
+          required: false
+          description: >-
+            Last day of the period, inclusive, YYYY-MM-DD. A malformed date is 400 "invalid to"; a to before
+            from is "from must not be after to"; a range of more than 366 days is "the range is longer than
+            366 days". A to after today is allowed; its days count zero.
+          schema: {type: string, format: date}
+        - name: category_id
+          in: query
+          required: false
+          description: Only tickets in this category. Not a UUID is 400 "invalid category_id".
+          schema: {$ref: '#/components/schemas/Uuid'}
+        - name: priority
+          in: query
+          required: false
+          style: form
+          explode: true
+          description: >-
+            Only tickets at these priorities; repeat the parameter for several. A value that is not a
+            priority is 400 "invalid priority"; more than four values is "too many priority values".
+          schema:
+            type: array
+            maxItems: 4
+            items: {$ref: '#/components/schemas/Priority'}
+        - name: assignee_group_id
+          in: query
+          required: false
+          description: Only tickets assigned to this group. Not a UUID is 400 "invalid assignee_group_id".
+          schema: {$ref: '#/components/schemas/Uuid'}
+      responses:
+        '200':
+          description: The report.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KpiReport'
+        '400':
+          description: >-
+            `bad_request` with the message of the first failed check: "invalid tz", "from and to go together",
+            "invalid from", "invalid to", "invalid category_id", "invalid priority", "too many priority values",
+            "invalid assignee_group_id", "unknown time zone", "from must not be after to" or "the range is
+            longer than 366 days".
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          description: A store failure (`internal_error`) fails the whole response.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
   /api/v1/staff:
     get:
       operationId: listAssignableStaff
@@ -11793,6 +11904,218 @@ components:
           format: int64
           minimum: 0
           description: Tickets the caller can see whose resolved_at, or closed_at when it is null, falls on this day in tz.
+    KpiReport:
+      description: What GET /api/v1/reports/kpi returns.
+      type: object
+      required: [tz, period, previous, filters, sla_enabled, measures, volume, backlog, workload]
+      properties:
+        tz:
+          type: string
+          description: The time zone the days are counted in, as sent (UTC when tz was absent).
+        period: {$ref: '#/components/schemas/KpiPeriod'}
+        previous: {$ref: '#/components/schemas/KpiPeriod'}
+        filters:
+          type: object
+          description: The filters that were applied, echoed. priority is in the fixed order, critical first.
+          required: [category_id, priority, assignee_group_id]
+          properties:
+            category_id:
+              anyOf:
+                - $ref: '#/components/schemas/Uuid'
+                - type: 'null'
+            priority:
+              type: array
+              items: {$ref: '#/components/schemas/Priority'}
+            assignee_group_id:
+              anyOf:
+                - $ref: '#/components/schemas/Uuid'
+                - type: 'null'
+        sla_enabled:
+          type: boolean
+          description: Whether SLA tracking is on now. The SLA figures are computed either way.
+        measures:
+          type: object
+          required: [current, previous, change]
+          properties:
+            current: {$ref: '#/components/schemas/KpiMeasures'}
+            previous: {$ref: '#/components/schemas/KpiMeasures'}
+            change:
+              type: object
+              description: The change of each compared measure from previous to current. All nine keys are always present.
+              required:
+                - created
+                - resolved
+                - time_to_resolve_median
+                - time_to_resolve_p90
+                - first_response_median
+                - sla_met_rate
+                - sla_response_met_rate
+                - sla_resolution_met_rate
+                - reopen_rate
+              properties:
+                created: {$ref: '#/components/schemas/KpiChange'}
+                resolved: {$ref: '#/components/schemas/KpiChange'}
+                time_to_resolve_median: {$ref: '#/components/schemas/KpiChange'}
+                time_to_resolve_p90: {$ref: '#/components/schemas/KpiChange'}
+                first_response_median: {$ref: '#/components/schemas/KpiChange'}
+                sla_met_rate: {$ref: '#/components/schemas/KpiChange'}
+                sla_response_met_rate: {$ref: '#/components/schemas/KpiChange'}
+                sla_resolution_met_rate: {$ref: '#/components/schemas/KpiChange'}
+                reopen_rate: {$ref: '#/components/schemas/KpiChange'}
+              additionalProperties: false
+        volume:
+          type: object
+          required: [days, by_category, by_priority]
+          properties:
+            days:
+              type: array
+              description: One entry for each day of the period, oldest first, zeros included.
+              items: {$ref: '#/components/schemas/DashboardVolumeDay'}
+            by_category:
+              type: array
+              description: Tickets created in the period by category, as named now. Rows above zero only, largest first, then by name.
+              items:
+                type: object
+                required: [id, name, count]
+                properties:
+                  id: {$ref: '#/components/schemas/Uuid'}
+                  name: {type: string}
+                  count: {type: integer, format: int64, minimum: 1}
+            by_priority:
+              type: array
+              description: Tickets created in the period by priority. Always the four, critical first, zeros included.
+              minItems: 4
+              maxItems: 4
+              items:
+                type: object
+                required: [priority, count]
+                properties:
+                  priority: {$ref: '#/components/schemas/Priority'}
+                  count: {type: integer, format: int64, minimum: 0}
+        backlog:
+          type: object
+          required: [as_of, total, buckets]
+          properties:
+            as_of:
+              type: string
+              format: date-time
+              description: The instant the open tickets were counted at, in UTC.
+            total: {type: integer, format: int64, minimum: 0}
+            buckets:
+              type: array
+              description: Open tickets by age in days. Always the four, in order.
+              minItems: 4
+              maxItems: 4
+              items:
+                type: object
+                required: [key, min_days, max_days, count]
+                properties:
+                  key:
+                    type: string
+                    enum: ['0_2', '3_7', '8_30', over_30]
+                  min_days: {type: integer, minimum: 0}
+                  max_days:
+                    type: [integer, 'null']
+                    description: Null for the open-ended band.
+                  count: {type: integer, format: int64, minimum: 0}
+        workload:
+          type: object
+          required: [as_of, total, by_assignee, by_group]
+          properties:
+            as_of:
+              type: string
+              format: date-time
+              description: The instant the open tickets were counted at, in UTC.
+            total: {type: integer, format: int64, minimum: 0}
+            by_assignee:
+              type: array
+              description: Open tickets by the person holding them, largest first, then by name; the row with a null id and name, tickets with no person, is last.
+              items: {$ref: '#/components/schemas/KpiHolder'}
+            by_group:
+              type: array
+              description: Open tickets by the group holding them, as by_assignee.
+              items: {$ref: '#/components/schemas/KpiHolder'}
+    KpiPeriod:
+      type: object
+      required: [from, to, days]
+      properties:
+        from: {type: string, format: date}
+        to: {type: string, format: date, description: Inclusive.}
+        days: {type: integer, minimum: 1, maximum: 366}
+    KpiMeasures:
+      type: object
+      required: [created, resolved, time_to_resolve, first_response, sla, reopen]
+      properties:
+        created:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Tickets created in the period.
+        resolved:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Tickets finished in the period (resolved, or closed without being resolved).
+        time_to_resolve:
+          type: object
+          required: [count, median_seconds, p90_seconds]
+          properties:
+            count: {type: integer, format: int64, minimum: 0}
+            median_seconds: {type: [integer, 'null'], format: int64, description: Null when count is 0.}
+            p90_seconds: {type: [integer, 'null'], format: int64, description: Null when count is 0.}
+        first_response:
+          type: object
+          required: [count, median_seconds]
+          properties:
+            count: {type: integer, format: int64, minimum: 0}
+            median_seconds: {type: [integer, 'null'], format: int64, description: Null when count is 0.}
+        sla:
+          type: object
+          required: [tracked, met, response_met, resolution_met, met_rate, response_met_rate, resolution_met_rate]
+          properties:
+            tracked: {type: integer, format: int64, minimum: 0}
+            met: {type: integer, format: int64, minimum: 0}
+            response_met: {type: integer, format: int64, minimum: 0}
+            resolution_met: {type: integer, format: int64, minimum: 0}
+            met_rate: {type: [number, 'null'], minimum: 0, maximum: 1, description: Null when tracked is 0.}
+            response_met_rate: {type: [number, 'null'], minimum: 0, maximum: 1, description: Null when tracked is 0.}
+            resolution_met_rate: {type: [number, 'null'], minimum: 0, maximum: 1, description: Null when tracked is 0.}
+        reopen:
+          type: object
+          required: [reopened, rate]
+          properties:
+            reopened: {type: integer, format: int64, minimum: 0}
+            rate: {type: [number, 'null'], minimum: 0, maximum: 1, description: Null when no ticket was resolved.}
+    KpiChange:
+      type: object
+      required: [kind, state, value]
+      properties:
+        kind:
+          type: string
+          enum: [relative, points]
+          description: relative is (current - previous) / previous, for counts and durations; points is current - previous, for rates (both fractions).
+        state:
+          type: string
+          enum: [change, from_zero, no_previous, no_current]
+          description: |
+            Which rule applied, the first that holds. no_current: the current value is null. no_previous: the
+            previous value is null. change: a number, 0 when the two are equal. from_zero: a relative change from 0,
+            which has no value.
+        value:
+          type: [number, 'null']
+          description: A number, rounded to four places, only when state is change; otherwise null.
+    KpiHolder:
+      type: object
+      required: [id, name, count]
+      properties:
+        id:
+          anyOf:
+            - $ref: '#/components/schemas/Uuid'
+            - type: 'null'
+        name:
+          type: [string, 'null']
+          description: The current name, of a deleted or disabled person too. Null with a null id.
+        count: {type: integer, format: int64, minimum: 1}
     SlaStatus:
       description: |
         A ticket's live SLA status. Computed fresh on every read from the

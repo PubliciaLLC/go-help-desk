@@ -49,6 +49,7 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/passwordreset"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/plugin"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/registration"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/report"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/sla"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/tag"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
@@ -472,6 +473,7 @@ func run() error {
 		authStore,
 		registrationSvc,
 		cannedResponseSvc,
+		report.NewService(tStore),
 		// The verdict cache. The provider and the API key are not passed:
 		// both are settings an operator can change while this process runs,
 		// so they are read per request. The Budget that holds the counters is

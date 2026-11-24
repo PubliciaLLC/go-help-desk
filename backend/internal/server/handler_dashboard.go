@@ -13,10 +13,6 @@ import (
 	authmw "github.com/publiciallc/go-help-desk/backend/internal/middleware"
 )
 
-// maxTZLen is the longest time zone name the dashboard accepts. The longest
-// name in the tz database is under 40 bytes.
-const maxTZLen = 64
-
 type dashboardQueue struct {
 	Key   string `json:"key"`
 	Count int64  `json:"count"`
@@ -44,25 +40,6 @@ type dashboardResponse struct {
 	Volume    *dashboardVolume     `json:"volume"`
 }
 
-// validTZ reports whether s may be handed to Postgres as a time zone name:
-// at most maxTZLen bytes of A-Z a-z 0-9 _ + - /. Postgres says whether the name
-// exists; this only keeps junk out of the parameter and the error text.
-func validTZ(s string) bool {
-	if len(s) > maxTZLen {
-		return false
-	}
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		switch {
-		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9',
-			c == '_', c == '+', c == '-', c == '/':
-		default:
-			return false
-		}
-	}
-	return true
-}
-
 // handleGetDashboard is GET /api/v1/dashboard (#675): the queue strip, the
 // needs-attention list and the 30-day trend, each computed by the path
 // GET /tickets uses (TicketVisibility, ResolveQueue, the list's own WHERE), so
@@ -71,12 +48,9 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 	a := authmw.GetActor(r)
 	ctx := r.Context()
 
-	tz := r.URL.Query().Get("tz")
-	if tz == "" {
-		tz = "UTC"
-	}
-	if !validTZ(tz) {
-		Error(w, http.StatusBadRequest, "bad_request", "invalid tz")
+	tz, err := parseTZ(r)
+	if err != nil {
+		Error(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}
 	fail := func(err error) {
