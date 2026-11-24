@@ -667,6 +667,41 @@ describe('useSettingsDraft: around a save', () => {
     expect(result.current.secret('virustotal_api_key')).toBe('two')
   })
 
+  it('a removal save also discards the key typed under it, and an unrelated Save then sends nothing for it', async () => {
+    const { result } = setup()
+    await loaded(result)
+    // The operator types a key, then ticks "remove the stored key" (the box is only disabled).
+    act(() => result.current.setSecret('virustotal_api_key', 'typed'))
+    act(() => result.current.setSecretCleared('virustotal_api_key', true))
+    act(() => result.current.save())
+    await waitFor(() => expect(result.current.saved).toBe(true))
+    await waitFor(() => expect(result.current.isPending).toBe(false))
+    expect(patchSpy.mock.calls[0][1]).toEqual({ virustotal_api_key: '' })
+    expect(result.current.secretCleared('virustotal_api_key')).toBe(false)
+    expect(result.current.secret('virustotal_api_key')).toBe('')
+    expect(result.current.dirty).toBe(false)
+    act(() => result.current.setBool('sla_enabled', true))
+    act(() => result.current.save())
+    await waitFor(() => expect(patchSpy).toHaveBeenCalledTimes(2))
+    expect(patchSpy.mock.calls[1][1]).toEqual({ sla_enabled: true })
+  })
+
+  it('a key typed over the one a removal save carried stays', async () => {
+    const { result } = setup()
+    await loaded(result)
+    const p = holdPatch()
+    act(() => result.current.setSecret('virustotal_api_key', 'typed'))
+    act(() => result.current.setSecretCleared('virustotal_api_key', true))
+    act(() => result.current.save())
+    await waitFor(() => expect(result.current.isPending).toBe(true))
+    act(() => result.current.setSecret('virustotal_api_key', 'typed again'))
+    await act(async () => p.ok())
+    await waitFor(() => expect(result.current.isPending).toBe(false))
+    expect(result.current.secret('virustotal_api_key')).toBe('typed again')
+    expect(result.current.secretCleared('virustotal_api_key')).toBe(false)
+    expect(result.current.dirty).toBe(true)
+  })
+
   it('clears a write-only key the save carried', async () => {
     const { result } = setup()
     await loaded(result)

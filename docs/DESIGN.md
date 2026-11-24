@@ -1897,8 +1897,11 @@ export function useSettingsDraft(): SettingsDraft
   `saved` over it), and a key whose edit equals the base never makes it dirty.
   This applies to every System page, not only Authentication. The write-only
   keys in `secrets` and `cleared` are not part of the draft. A successful save
-  clears the ones its patch carried (a secret only if it still holds what was
-  sent); one typed or ticked while the save was on its way stays.
+  clears the ones its patch carried: a box is emptied if it still holds what it
+  held when the patch was built, so a removal save also discards a key typed
+  under the ticked "remove" (the patch carries `''` for it), and a key typed over
+  it, or a key typed or ticked for another setting, while the save was on its
+  way stays.
   Separately, "Save SAML config" empties the private key box once saved (the
   key is write-only and is not sent again).
 - **`dirty`** is `!isPending && Object.keys(buildSettingsPatch(…)).length > 0`.

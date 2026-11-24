@@ -195,7 +195,8 @@ export function useSettingsDraft(): SettingsDraft {
       const res = await updateSettings(patch)
       // The save that turned ticket scope on is the one whose warning is about
       // OAuth clients; an SSO warning shares the field and gets no such link.
-      return { ...res, aboutClients: patch.ticket_scope_enforced === true, patch }
+      // `typed` is what the box held when the patch was built.
+      return { ...res, aboutClients: patch.ticket_scope_enforced === true, patch, typed: secrets }
     },
     onSuccess: async (res) => {
       setSaved(true)
@@ -203,11 +204,12 @@ export function useSettingsDraft(): SettingsDraft {
       setWarning(res.warning ? { text: res.warning, aboutClients: res.aboutClients } : null)
       // Only on success: a refused save leaves every edit where it was,
       // including a key typed but not yet accepted.
-      // The write-only keys the save carried; one typed (or ticked) while it was
-      // on its way, or typed over, is still to be saved.
+      // The write-only keys the save carried: the box is emptied unless it was
+      // typed in again since (a removal save discards the key typed under it
+      // too); a removal ticked since stays ticked.
       setSecrets((s) => {
         const left = { ...s }
-        for (const [k, v] of Object.entries(res.patch)) if (v !== '' && (left[k] ?? '').trim() === v) delete left[k]
+        for (const k of Object.keys(res.patch)) if (k in res.typed && left[k] === res.typed[k]) delete left[k]
         return left
       })
       setCleared((c) => {
