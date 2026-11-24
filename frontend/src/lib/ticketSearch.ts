@@ -86,6 +86,11 @@ export interface TicketSearch {
   updated_to?: string
   channel?: SourceChannel[]
   sla?: SLAFilter
+  // Stored only when on: the ticket's newest public reply is the requester's.
+  // Named as the address spells it, like the other filters. Offered on Assigned
+  // to Me and My Group's Tickets, and never sent to a requester (DESIGN.md,
+  // Dashboard).
+  awaiting_reply?: true
   // Stored only when on: closed tickets are left out by default.
   closed?: true
   sort?: SortKey
@@ -98,7 +103,7 @@ export interface TicketSearch {
 // it is two parameters (a date range, a category and what is under it).
 export type FilterKey =
   | 'status' | 'priority' | 'category' | 'type' | 'item' | 'assignee' | 'group'
-  | 'requester' | 'created' | 'updated' | 'channel' | 'sla'
+  | 'requester' | 'created' | 'updated' | 'channel' | 'sla' | 'awaiting'
 
 const FILTER_FIELDS: Record<FilterKey, (keyof TicketSearch)[]> = {
   status: ['status'],
@@ -114,6 +119,7 @@ const FILTER_FIELDS: Record<FilterKey, (keyof TicketSearch)[]> = {
   updated: ['updated_from', 'updated_to'],
   channel: ['channel'],
   sla: ['sla'],
+  awaiting: ['awaiting_reply'],
 }
 
 const FILTER_KEYS = Object.keys(FILTER_FIELDS) as FilterKey[]
@@ -121,13 +127,16 @@ const FILTER_KEYS = Object.keys(FILTER_FIELDS) as FilterKey[]
 // The filters each view offers. Assigned to Me leaves out Assignee (it is always
 // me); Available leaves out Assignee and Group (always empty for that queue) and
 // Requester (the server lets a named set replace the unassigned queue, which
-// would list tickets that are not available). A filter a view does not offer is
-// neither shown nor sent, even if the address carries it.
+// would list tickets that are not available). Awaiting my reply is offered on
+// Assigned to Me and My Group's Tickets only: a reply lookup per ticket is cheap
+// on a person's or a group's queue and not on the whole desk (DESIGN.md,
+// Dashboard). A filter a view does not offer is neither shown nor sent, even if
+// the address carries it.
 export const VIEW_FILTERS: Record<View, readonly FilterKey[]> = {
   me: FILTER_KEYS.filter(k => k !== 'assignee'),
   groups: FILTER_KEYS,
-  available: FILTER_KEYS.filter(k => k !== 'assignee' && k !== 'group' && k !== 'requester'),
-  search: FILTER_KEYS,
+  available: FILTER_KEYS.filter(k => k !== 'assignee' && k !== 'group' && k !== 'requester' && k !== 'awaiting'),
+  search: FILTER_KEYS.filter(k => k !== 'awaiting'),
 }
 
 // --- URL to state ------------------------------------------------------------
@@ -231,6 +240,7 @@ export function parseTicketSearch(raw: Record<string, unknown>): TicketSearch {
     updated_to: day(raw.updated_to),
     channel: listOf(raw.channel, CHANNELS),
     sla: oneOf(raw.sla, SLA_STATES),
+    awaiting_reply: isOn(raw.awaiting_reply) ? true : undefined,
     closed: isOn(raw.closed) ? true : undefined,
     sort,
     // An order with no sort is ignored by the server; do not keep it.
@@ -392,6 +402,7 @@ export interface TicketListParams {
   updated_before?: string
   source_channel?: SourceChannel[]
   sla?: SLAFilter
+  awaiting_reply?: true
   sort?: SortKey
   order?: SortOrder
   limit: number
@@ -480,6 +491,7 @@ export function toApiParams(s: TicketSearch, viewer: Viewer): TicketListParams {
     set('updated_before', s.updated_to ? dayEnd(s.updated_to) : undefined)
     set('source_channel', s.channel)
     if (viewer.slaOn) set('sla', s.sla)
+    if (offers('awaiting')) set('awaiting_reply', s.awaiting_reply)
   }
 
   if (s.sort && (viewer.staff || REQUESTER_SORTS.includes(s.sort)) && (s.sort !== 'sla' || viewer.slaOn)) {

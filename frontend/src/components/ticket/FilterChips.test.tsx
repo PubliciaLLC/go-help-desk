@@ -150,6 +150,37 @@ describe('FilterChips', () => {
     })
   })
 
+  // The chip names the filter by who reads it. A requester is never offered it:
+  // their request drops it, so they get no chip claiming a filter not applied.
+  describe('awaiting my reply', () => {
+    it('is one chip named for a staff member, with no value after it', () => {
+      setup({ awaiting_reply: true, priority: ['high'] }, { offered: VIEW_FILTERS.me })
+      const chips = within(screen.getByRole('group', { name: 'Active filters' }))
+        .getAllByRole('listitem')
+        .map(li => li.textContent?.replace(/\s+/g, ' ').trim())
+      expect(chips).toEqual(['Awaiting my reply', 'Priority: High'])
+    })
+
+    it('removes with its own button, through the awaiting key', () => {
+      const { onClear } = setup({ awaiting_reply: true }, { offered: VIEW_FILTERS.groups })
+      fireEvent.click(screen.getByRole('button', { name: 'Remove Awaiting my reply filter' }))
+      expect(onClear).toHaveBeenCalledWith('awaiting')
+    })
+
+    it('is shown for a view that offers it, and not on Available or Search', () => {
+      const { unmount } = setup({ awaiting_reply: true }, { offered: VIEW_FILTERS.me })
+      expect(screen.getByText('Awaiting my reply')).toBeTruthy()
+      unmount()
+      const { container } = setup({ awaiting_reply: true }, { offered: VIEW_FILTERS.available })
+      expect(container.textContent).toBe('')
+    })
+
+    it('is not shown to a requester, whose request does not send it', () => {
+      const { container } = setup({ awaiting_reply: true }, { staff: false })
+      expect(container.textContent).toBe('')
+    })
+  })
+
   describe('for a requester (not staff)', () => {
     it('shows only the filters the page actually sends them', () => {
       setup(

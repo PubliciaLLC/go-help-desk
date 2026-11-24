@@ -136,20 +136,20 @@ describe('translateAddress: the address that replaces the one typed or bookmarke
 })
 
 describe('VIEW_FILTERS: the filters each view offers', () => {
-  const ALL: FilterKey[] = ['status', 'priority', 'category', 'type', 'item', 'assignee', 'group', 'requester', 'created', 'updated', 'channel', 'sla']
+  const ALL: FilterKey[] = ['status', 'priority', 'category', 'type', 'item', 'assignee', 'group', 'requester', 'created', 'updated', 'channel', 'sla', 'awaiting']
   const sorted = (a: readonly FilterKey[]) => [...a].sort()
 
   it('Assigned to Me leaves out Assignee, which is always me', () => {
     expect(sorted(VIEW_FILTERS.me)).toEqual(sorted(ALL.filter(k => k !== 'assignee')))
   })
 
-  it('Available leaves out Assignee, Group and Requester', () => {
-    expect(sorted(VIEW_FILTERS.available)).toEqual(sorted(ALL.filter(k => !['assignee', 'group', 'requester'].includes(k))))
+  it('Available leaves out Assignee, Group, Requester and Awaiting my reply', () => {
+    expect(sorted(VIEW_FILTERS.available)).toEqual(sorted(ALL.filter(k => !['assignee', 'group', 'requester', 'awaiting'].includes(k))))
   })
 
-  it("My Group's Tickets and Search offer every filter", () => {
+  it("My Group's Tickets offers every filter; Search every filter but Awaiting my reply", () => {
     expect(sorted(VIEW_FILTERS.groups)).toEqual(sorted(ALL))
-    expect(sorted(VIEW_FILTERS.search)).toEqual(sorted(ALL))
+    expect(sorted(VIEW_FILTERS.search)).toEqual(sorted(ALL.filter(k => k !== 'awaiting')))
   })
 
   it('a filter a view does not offer is not counted either', () => {

@@ -338,6 +338,14 @@ export function TicketFilters({
         ))}
       </Group>
     ),
+    awaiting: staff && offers('awaiting') && (
+      <Check
+        layout={layout}
+        label="Awaiting my reply"
+        checked={value.awaiting_reply ?? false}
+        onChange={() => onChange({ awaiting_reply: value.awaiting_reply ? undefined : true })}
+      />
+    ),
     requester: staff && offers('requester') && (
       <RequesterField reporter={value.reporter} requester={value.requester} layout={layout} onChange={onChange} />
     ),
@@ -419,6 +427,7 @@ export function TicketFilters({
       <div className="space-y-5">
         {fields.status}
         {fields.priority}
+        {fields.awaiting}
         {fields.requester}
         {fields.category}
         {fields.type}
@@ -451,6 +460,7 @@ export function TicketFilters({
     <div className="grid grid-cols-2 gap-x-6 gap-y-5 lg:grid-cols-4">
       {fields.status}
       {fields.priority}
+      {fields.awaiting}
       <div className="col-span-2 grid grid-cols-1 gap-y-4 lg:grid-cols-2 lg:gap-x-6">
         {fields.requester}
         {(fields.assignee || fields.group) && <div className="space-y-4">{fields.assignee}{fields.group}</div>}
