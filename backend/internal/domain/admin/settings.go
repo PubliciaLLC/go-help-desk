@@ -225,6 +225,12 @@ const (
 	// upgrade would hide tickets people are working on.
 	KeyTicketScopeEnforced = "ticket_scope_enforced" // bool
 
+	// JSON array of role names that may open the Available view (tickets with
+	// no assignee group and no assignee user), beside administrators, who
+	// always may. Absent means admins only. Accepted values are admin and
+	// staff; see Service.AvailableQueueAllowed. #676.
+	KeyAvailableQueueRoles = "available_queue_roles"
+
 	// Auto-assign settings. Group takes priority over users; if neither is set, tickets stay unassigned.
 	KeyAutoAssignGroupID = "auto_assign_group_id" // string UUID — assign new tickets to this group
 	KeyAutoAssignUserIDs = "auto_assign_user_ids" // []string UUIDs — round-robin among these users
@@ -474,7 +480,7 @@ func KnownKeys() []string {
 		KeyAttachmentReputationPolySwarmEnabled, KeyAttachmentReputationPolySwarmKey,
 		KeyAttachmentReputationCIRCLEnabled, KeyAttachmentReputationRefresh,
 		KeyAllowedEmailDomains, KeySelfSignupEnabled, KeyOpenRegistrationEnabled,
-		KeyTicketPrefix, KeyTicketScopeEnforced,
+		KeyTicketPrefix, KeyTicketScopeEnforced, KeyAvailableQueueRoles,
 		KeyAutoAssignGroupID, KeyAutoAssignUserIDs,
 		KeyStaffCanViewTicketChangeHistory, KeyAuditRetentionDays, KeyStaffCanViewFollowAudit,
 		KeyStaffCanCreateAPIKeys, KeyAPIKeyMaxLifetimeYears,
@@ -558,7 +564,7 @@ func AuthCriticalKeys() []string {
 		// Switching scope enforcement off, or pointing auto-assign at an
 		// account a key controls, widens what that account sees or is given,
 		// so a leaked key must not do it.
-		KeyTicketScopeEnforced, KeyAutoAssignGroupID, KeyAutoAssignUserIDs,
+		KeyTicketScopeEnforced, KeyAvailableQueueRoles, KeyAutoAssignGroupID, KeyAutoAssignUserIDs,
 		// Who may mint an API key (#450). A key is a long-lived bearer
 		// credential that acts as its owner, so widening the set of people who
 		// can hold one is a permission change, not configuration: a leaked
