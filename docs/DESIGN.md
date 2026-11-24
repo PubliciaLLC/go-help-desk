@@ -2179,9 +2179,12 @@ Each can be overturned in one line.
   base and adding the five later, which means splitting `SettingsPage.tsx`
   twice and resolving each branch's conflicts against files that no longer
   exist.
-- **The sidebar keeps its dense rows. If System does not fit at 768, the nav
-  scrolls for that case and the current link is scrolled into view.**
-  Rejected: denser rows, which make the coarse-pointer target harder to hit.
+- **The sidebar keeps its dense rows. If System does not fit at 768 or at 800,
+  the nav scrolls for that case and the current link is scrolled into view
+  (decided without the owner, after the build showed System's nine links run
+  39 px past the headroom at 800; at 900 it fits).** Rejected: denser rows,
+  which make the coarse-pointer target harder to hit, and dropping the last-link
+  headroom check for System at every height.
 - **Page titles are the sidebar labels.** Rejected: "General settings" and
   similar, which repeat the section heading.
 
