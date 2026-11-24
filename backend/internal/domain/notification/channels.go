@@ -22,6 +22,8 @@ var WebhookEvents = []EventType{
 	EventTicketAttachmentAdded,
 	EventTicketFollowed,
 	EventTicketUnfollowed,
+	EventSLABreached,
+	EventSLAAtRisk,
 }
 
 // OptInWebhookEvents are the WebhookEvents a hook receives only if it lists
@@ -47,9 +49,9 @@ func IsWebhookEvent(e string) bool {
 }
 
 // MailsStaff reports whether the event can mean mail to staff: an assignment,
-// a reopen, or a requester's reply. Who is mailed is decided by the worker
-// when it picks the row up (#506), so the row has to be queued for any change
-// that could mean someone.
+// a reopen, a requester's reply, or an SLA breach or at-risk alert (#670). Who
+// is mailed is decided by the worker when it picks the row up (#506), so the
+// row has to be queued for any change that could mean someone.
 func (e Event) MailsStaff() bool {
 	if e.SuppressStaffMail {
 		return false
@@ -77,10 +79,7 @@ func Carries(channel string, ev Event) bool {
 	switch channel {
 	case "webhook":
 		// Any one kind is enough: the hook that subscribes to it gets the change.
-		//
-		// The SLA events are queued for it too (#670); the webhook list and
-		// the hook filter are completed with the webhook work of that issue.
-		return slices.ContainsFunc(ev.AllKinds(), func(k EventType) bool { return IsWebhookEvent(string(k)) || k.IsSLA() })
+		return slices.ContainsFunc(ev.AllKinds(), func(k EventType) bool { return IsWebhookEvent(string(k)) })
 	case "email":
 		// An account holder's status change has nobody to mail. A guest-link
 		// event may have no recipient yet: the send-time step fills it in. So

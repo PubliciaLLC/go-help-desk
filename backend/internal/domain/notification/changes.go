@@ -32,6 +32,10 @@ var KindOrder = []EventType{
 	EventTicketAttachmentAdded,
 	EventTicketFollowed,
 	EventTicketUnfollowed,
+	// Last: the sweep raises them in a transaction of its own, so neither
+	// ever shares an event with a ticket kind (#670).
+	EventSLABreached,
+	EventSLAAtRisk,
 }
 
 // Change is one field moving from one value to another. Ids and enums only,

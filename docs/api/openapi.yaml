@@ -8774,6 +8774,10 @@ paths:
         ticket.unfollowed never gets it there. Opting in counts from when the hook named
         the event: a change that happened before the hook listed it is never upgraded,
         so a retry after the edit carries no user_id.
+        sla.breached and sla.at_risk have a Payload of targets (a list of "response"
+        and/or "resolution"), policy_id and record_id, and a null ActorID; sla.breached
+        also has at_risk_targets (the same two names) when the pass found the other
+        target at 80%, and omits the key otherwise.
         A hook on "*" (or with no events) does not receive ticket.followed or
         ticket.unfollowed; list them by name to receive them. The secret is write-only. When it is set, each delivery
         carries sha256=<hex HMAC-SHA256 of the body> in the X-GHD-Signature header, and the
@@ -12428,8 +12432,14 @@ components:
         ticket.followed and ticket.unfollowed a person starting or stopping following a
         ticket (the person's id is in the payload, never their name). None of the four
         sends email. The raw Payload ids each name carries are listed on createWebhook.
+        sla.breached and sla.at_risk are raised only by the SLA sweep, at most one per
+        ticket per pass, while the SLA alerts setting is on: a breach just stamped, or a
+        target that reached 80% and has not breached. A pass that does both on one ticket
+        is one sla.breached that also names the at-risk target. "*" includes both.
+        A hook that lists sla.at_risk and not sla.breached is not told of an at-risk
+        target that came in the same pass as a breach of the other.
       type: string
-      enum: ['*', ticket.created, ticket.assigned, ticket.status_changed, ticket.replied, ticket.note_added, ticket.resolved, ticket.closed, ticket.reopened, ticket.linked, ticket.priority_changed, ticket.classified, ticket.unlinked, ticket.attachment_added, ticket.followed, ticket.unfollowed]
+      enum: ['*', ticket.created, ticket.assigned, ticket.status_changed, ticket.replied, ticket.note_added, ticket.resolved, ticket.closed, ticket.reopened, ticket.linked, ticket.priority_changed, ticket.classified, ticket.unlinked, ticket.attachment_added, ticket.followed, ticket.unfollowed, sla.breached, sla.at_risk]
     WebhookPayloadFormat:
       description: >-
         The body shape a delivery uses.

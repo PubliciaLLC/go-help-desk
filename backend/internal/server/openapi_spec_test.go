@@ -35,6 +35,7 @@ import (
 
 	"github.com/publiciallc/go-help-desk/backend/internal/config"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 	authmw "github.com/publiciallc/go-help-desk/backend/internal/middleware"
@@ -1031,6 +1032,32 @@ func probeRoute(t *testing.T, r walkedRoute, keys map[string]probeKey) routeAuth
 		ra.oauthScopes = minimalScopes(all, func(sc []string) bool { return admits("Authorization", bearer(sc)) })
 	}
 	return ra
+}
+
+// The WebhookEvent enum is the list a hook may subscribe to: "*" and every
+// name notification.WebhookEvents holds, in its order, and nothing else. The
+// SLA names (#670) are in both.
+func TestOpenAPISpec_WebhookEventEnumMatchesCode(t *testing.T) {
+	doc := loadSpec(t)
+	comps, _ := doc.root["components"].(map[string]any)
+	schemas, _ := comps["schemas"].(map[string]any)
+	ev, _ := schemas["WebhookEvent"].(map[string]any)
+	var got []string
+	for _, v := range ev["enum"].([]any) {
+		got = append(got, fmt.Sprint(v))
+	}
+	want := []string{"*"}
+	for _, e := range notification.WebhookEvents {
+		want = append(want, string(e))
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("%s: components.schemas.WebhookEvent.enum is\n  %v\nwant\n  %v", specFile, got, want)
+	}
+	for _, n := range []notification.EventType{notification.EventSLABreached, notification.EventSLAAtRisk} {
+		if !slices.Contains(got, string(n)) {
+			t.Errorf("%s: WebhookEvent.enum does not list %s", specFile, n)
+		}
+	}
 }
 
 func TestOpenAPISpec_AuthMatchesRouter(t *testing.T) {

@@ -69,3 +69,17 @@ func TestCarries_SLAEvents(t *testing.T) {
 		require.False(t, Carries("verification", ev), typ)
 	}
 }
+
+// The two names are webhook events, ordinary ones (a "*" hook gets them, they
+// are not opt-in), last in KindOrder because the sweep raises them in a
+// transaction of their own (#670).
+func TestSLAEvents_AreOrdinaryWebhookEventsAndLast(t *testing.T) {
+	for _, n := range []EventType{EventSLABreached, EventSLAAtRisk} {
+		require.True(t, IsWebhookEvent(string(n)), "%s must be a name a hook can list", n)
+		require.Contains(t, WebhookEvents, n)
+		require.False(t, IsOptInWebhookEvent(n), "%s goes to every hook that lists *", n)
+		require.True(t, Event{Type: n, Kinds: []EventType{n}}.MailsStaff(), n)
+	}
+	require.Equal(t, []EventType{EventSLABreached, EventSLAAtRisk}, KindOrder[len(KindOrder)-2:])
+	require.Equal(t, EventTicketUnfollowed, KindOrder[len(KindOrder)-3], "after every ticket kind")
+}
