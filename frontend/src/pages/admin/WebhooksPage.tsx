@@ -13,8 +13,10 @@ import { Spinner } from '@/components/ui/spinner'
 import { PlusIcon, PencilIcon, Trash2Icon } from 'lucide-react'
 import type { WebhookConfig, WebhookPayloadFormat, WebhookDelivery, WebhookDeliveryRecord, WebhookFilter, Priority, Category, Group, TicketType, TicketItem } from '@/api/types'
 
-// What the server accepts, in the order it lists them (notify.WebhookEvents).
-// "*" is sent for "all events"; the server refuses an empty list.
+// What the server accepts (notify.WebhookEvents, the OpenAPI WebhookEvent enum):
+// the ordinary events, which "All events" covers. The two opt-in events are
+// listed apart, below. "*" is sent for "all events"; the server refuses an
+// empty list. The SLA events (#670) are ordinary, so they sit here.
 const EVENTS = [
   'ticket.created',
   'ticket.assigned',
@@ -29,6 +31,8 @@ const EVENTS = [
   'ticket.classified',
   'ticket.unlinked',
   'ticket.attachment_added',
+  'sla.breached',
+  'sla.at_risk',
 ] as const
 
 // The events a hook gets only if it lists them by name (notification.OptInWebhookEvents):

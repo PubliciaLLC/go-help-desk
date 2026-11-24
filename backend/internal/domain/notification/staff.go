@@ -3,11 +3,12 @@ package notification
 import "github.com/google/uuid"
 
 // Staff email (#441). Staff are mailed when a ticket is assigned and when a
-// requester replies. Who is mailed is decided by three per-user switches and
-// an administrator's override of each; this file is that rule and nothing
-// else, so it can be read and tested without a database or a mail server.
+// requester replies. Who is mailed is decided by four per-user switches (three
+// for assignments and replies, one for SLA alerts) and an administrator's
+// override of each; this file is that rule and nothing else, so it can be read
+// and tested without a database or a mail server.
 
-// StaffSwitch names one of the three per-user email switches. A switch is
+// StaffSwitch names one of the four per-user email switches. A switch is
 // also the REASON a person is being considered for an email: the same person
 // can be a candidate for two reasons (the assignee who also belongs to the
 // assigned group), and is mailed once if either reason passes.
@@ -27,6 +28,10 @@ const (
 	// following exists (PR-D of #464); it is here so the switch rule and the
 	// send-time check are settled first. It answers to the activity switch.
 	SwitchFollow StaffSwitch = "follow"
+	// SwitchSLA: a target on a ticket of mine (assigned, in my group and
+	// unheld, or followed) breached or is at risk (#670). It decides those two
+	// events alone; the activity and group switches do not apply to them.
+	SwitchSLA StaffSwitch = "sla"
 )
 
 // OverrideMode is an administrator's decision about one switch for everyone.
@@ -49,15 +54,17 @@ func ValidOverrideMode(s string) bool {
 	return false
 }
 
-// StaffPrefs is one person's own three switches.
+// StaffPrefs is one person's own switches.
 type StaffPrefs struct {
 	Assigned, Activity, Group bool
+	SLA                       bool
 }
 
 // StaffOverrides is the administrator's decision for each switch. The zero
 // value defers every switch to the user.
 type StaffOverrides struct {
 	Assigned, Activity, Group OverrideMode
+	SLA                       OverrideMode
 }
 
 // Allows reports whether the switch sw is on for a person with prefs p: the
@@ -73,6 +80,8 @@ func (o StaffOverrides) Allows(sw StaffSwitch, p StaffPrefs) bool {
 		mode, own = o.Activity, p.Activity
 	case SwitchGroup:
 		mode, own = o.Group, p.Group
+	case SwitchSLA:
+		mode, own = o.SLA, p.SLA
 	}
 	switch mode {
 	case OverrideOn:
@@ -94,6 +103,8 @@ func (o StaffOverrides) Forced(sw StaffSwitch) bool {
 		mode = o.Activity
 	case SwitchGroup:
 		mode = o.Group
+	case SwitchSLA:
+		mode = o.SLA
 	}
 	return mode == OverrideOn || mode == OverrideOff
 }
@@ -105,6 +116,11 @@ type StaffCandidate struct {
 	UserID uuid.UUID
 	Prefs  StaffPrefs
 	Reason StaffSwitch
+	// Switch is the preference that decides whether the person is mailed.
+	// Empty means Reason, which is every candidate but an SLA alert's (#670):
+	// there the reason (assignee, group, follower) still picks the template and
+	// the send-time check, and the SLA switch alone picks the preference.
+	Switch StaffSwitch
 	// Mail is the staff.* event the person would be mailed with, so a person
 	// who qualifies for several kinds of one change keeps the mail of the
 	// first that passes (#506). Unused by the switch rule.
@@ -136,7 +152,11 @@ func StaffRecipients(cands []StaffCandidate, actor *uuid.UUID, ov StaffOverrides
 		if actor != nil && c.UserID == *actor {
 			continue
 		}
-		if !ov.Allows(c.Reason, c.Prefs) {
+		sw := c.Switch
+		if sw == "" {
+			sw = c.Reason
+		}
+		if !ov.Allows(sw, c.Prefs) {
 			continue
 		}
 		seen[c.UserID] = true

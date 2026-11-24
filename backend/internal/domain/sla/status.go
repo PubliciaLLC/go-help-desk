@@ -103,16 +103,23 @@ func targetStatus(rec Record, metAt *time.Time, frozenSeconds *int64, targetMin 
 	}
 }
 
-// colorFor is the whole 80/100 rule. It works in time.Duration, comparing
-// elapsed*5 against target*4 rather than dividing, so the 80% boundary is
-// exact integer arithmetic and never subject to floating-point rounding.
+// colorFor is the whole 80/100 rule, with the 80% line in atRisk.
 func colorFor(elapsed, target time.Duration) Color {
 	switch {
 	case elapsed >= target:
 		return Red // at or past 100%
-	case elapsed*5 >= target*4:
+	case atRisk(elapsed, target):
 		return Amber // at or past 80%
 	default:
 		return Green
 	}
+}
+
+// atRisk reports whether elapsed is at or past 80% of target. It is the one
+// home of the 80% line: the indicator's amber and the sweep's at-risk crossing
+// both read it. It works in time.Duration, comparing elapsed*5 against target*4
+// rather than dividing, so the boundary is exact integer arithmetic and never
+// subject to floating-point rounding.
+func atRisk(elapsed, target time.Duration) bool {
+	return elapsed*5 >= target*4
 }

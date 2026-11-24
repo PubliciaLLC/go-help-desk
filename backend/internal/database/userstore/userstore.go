@@ -574,6 +574,7 @@ func nullBool(b *bool) sql.NullBool {
 func (s *Store) SetEmailPreferences(ctx context.Context, id uuid.UUID, p user.EmailPreferencesPatch) error {
 	if err := s.q.SetUserEmailPreferences(ctx, dbgen.SetUserEmailPreferencesParams{
 		ID: id, Assigned: nullBool(p.Assigned), Activity: nullBool(p.Activity), Grp: nullBool(p.Group),
+		Sla: nullBool(p.SLA),
 	}); err != nil {
 		return fmt.Errorf("setting email preferences: %w", err)
 	}
@@ -660,6 +661,7 @@ func fromRow(r dbgen.User) user.User {
 		EmailNotifyAssigned: r.EmailNotifyAssigned,
 		EmailNotifyActivity: r.EmailNotifyActivity,
 		EmailNotifyGroup:    r.EmailNotifyGroup,
+		EmailNotifySLA:      r.EmailNotifySla,
 	}
 }
 
