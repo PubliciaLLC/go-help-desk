@@ -179,11 +179,22 @@
     <tr><td><code>category_id</code></td><td>string (optional)</td><td>Only tickets in this category (see <code>list_categories</code>).</td></tr>
     <tr><td><code>q</code></td><td>string (optional)</td><td>Full-text search over subject, description and tracking number.</td></tr>
     <tr><td><code>search_replies</code></td><td>boolean (optional)</td><td>With <code>q</code>, also match the replies. A ticket matches when <strong>one</strong> reply holds every word. Default <code>false</code>. <span class="badge-new">New in 1.3.0</span></td></tr>
+    <tr><td><code>scope</code></td><td>string (optional)</td><td>Which queue: <code>mine</code>, <code>assigned_to_me</code>, <code>my_groups</code>, <code>unassigned</code>, <code>all</code> or <code>visible</code>. Absent or null means <code>visible</code>, which is what this tool has always listed. An unknown value, an empty string or a value that is not a string is refused ("invalid scope"). <span class="badge-new">New in 1.3.0</span> See <a href="#mcp-queues">Queues over MCP</a>.</td></tr>
+    <tr><td><code>held_by</code></td><td>string (optional)</td><td><code>nobody</code>, <code>me</code> or <code>others</code>: no person holds the ticket, the caller holds it, or someone else does. Any other value is refused ("invalid held_by"). Staff and administrators only. <span class="badge-new">New in 1.3.0</span></td></tr>
+    <tr><td><code>awaiting_reply</code></td><td>boolean (optional)</td><td><code>true</code> keeps the tickets that are not Resolved or Closed and whose newest public message is from the requester's side, so they are waiting for the help desk. The string <code>"true"</code> is refused ("invalid awaiting_reply"). Staff and administrators only. <span class="badge-new">New in 1.3.0</span></td></tr>
     <tr><td><code>limit</code></td><td>number (optional)</td><td>1 to 100, default 20. A larger value is clamped to 100.</td></tr>
     <tr><td><code>offset</code></td><td>number (optional)</td><td>Pagination offset.</td></tr>
   </tbody>
 </table>
 <p>The filters narrow what the caller can already see. They never widen it: a reporting user lists only their own tickets whatever the arguments say.</p>
+
+<h4 id="mcp-queues">Queues over MCP <span class="badge-new">New in 1.3.0</span></h4>
+<ul>
+  <li><code>scope</code> takes the same six values as <code>scope</code> on <code>GET /api/v1/tickets</code>, with the same rules and the same refusals in the same words: <code>unassigned</code> is for administrators, and for staff only while an administrator has ticked Staff under <em>Admin &rarr; System &rarr; Privacy &rarr; Available queue</em>, and <code>all</code> is for administrators only. Otherwise the answer is "only admins can use this scope". See <a href="api.html#api-ticket-search-scope">Queues</a> over REST for what each value returns.</li>
+  <li><strong>A call that sends no <code>scope</code> returns what it always did</strong>, every ticket the caller can see. The queues never widen what the caller may see.</li>
+  <li><code>held_by</code> and <code>awaiting_reply</code> are refused for a reporting user, as over REST ("held_by is not available to requesters", "awaiting_reply is not available to requesters").</li>
+  <li>There is no tool for the dashboard or for reports. <code>GET /api/v1/dashboard</code> and <code>GET /api/v1/reports/kpi</code> are REST only (see <a href="api.html#api-dashboard-reports">Dashboard and reports</a>).</li>
+</ul>
 
 <h4 id="mcp-search-replies">Searching replies <span class="badge-new">New in 1.3.0</span></h4>
 <ul>
