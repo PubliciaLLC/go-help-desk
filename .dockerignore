@@ -1,0 +1,38 @@
+# What the image build does not need.
+#
+# The context is the repo root and there was no .dockerignore, so every build
+# uploaded ~500 MB of .git, node_modules and local worktrees to the daemon.
+# Size is the small problem. The real one is that `COPY frontend .` in
+# backend/Dockerfile runs AFTER `npm ci`, so the host's node_modules landed on
+# top of the one the container had just installed — darwin-arm64 binaries
+# inside a linux image. It worked only because COPY merges rather than
+# replaces, leaving the linux binary present to win. That is luck, and the kind
+# that runs out on a dependency bump with an unreadable error.
+
+# Version control. Also keeps repository history out of every build stage.
+.git
+.gitignore
+.github
+
+# Installed and built artifacts: the container builds its own.
+**/node_modules
+frontend/dist
+backend/internal/ui/dist
+
+# Local tooling, worktrees and drafts. .claude alone is ~200 MB here.
+.claude
+.claire
+.security
+.remember
+.vscode
+.idea
+.DS_Store
+
+# Not part of any image.
+docker
+docs
+
+# Test output. Globbed, because these land in backend/ — a pattern without a
+# slash matches at the root only, which is the same reason *.md is not here.
+**/coverage.out
+**/*.test
