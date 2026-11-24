@@ -83,7 +83,7 @@ describe('the ticket page and followers', () => {
     serve()
     renderWithQuery(<TicketDetailPage />)
 
-    expect(await screen.findByRole('combobox', { name: 'Add follower' })).toBeTruthy()
+    expect(await screen.findByRole('combobox', { name: 'Person to add as follower' })).toBeTruthy()
     expect(await screen.findByRole('button', { name: 'Remove Alex Admin as a follower' })).toBeTruthy()
   })
 
@@ -103,7 +103,7 @@ describe('the ticket page and followers', () => {
 
     expect(screen.queryByText('Followers')).toBeNull()
     expect(screen.queryByRole('button', { name: 'Follow' })).toBeNull()
-    expect(screen.queryByRole('combobox', { name: 'Add follower' })).toBeNull()
+    expect(screen.queryByRole('combobox', { name: 'Person to add as follower' })).toBeNull()
     expect(get.mock.calls.map((c) => c[0])).not.toContain(`/tickets/${TICKET_ID}/followers`)
   })
 })

@@ -69,6 +69,12 @@ func (s *Server) handleListFollowers(w http.ResponseWriter, r *http.Request) {
 // under ticket_scope_enforced (422 follower_cannot_view_ticket). The domain
 // cannot know scope, so the second check is here, as StillEntitled's is.
 // Idempotent, 204. The person added is not mailed.
+//
+// The eligibility, the person's role and the visibility check run before the
+// AddFollower transaction, not inside it. If the ticket's category or the
+// person's groups change in between, somebody out of scope can end up on the
+// list. That is harmless: a follow row grants no access, and StillEntitled
+// checks visibility again whenever follower mail is sent.
 func (s *Server) handleAddFollower(w http.ResponseWriter, r *http.Request) {
 	target, ok := followerUserID(w, r)
 	if !ok {

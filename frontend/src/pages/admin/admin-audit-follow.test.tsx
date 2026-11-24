@@ -55,6 +55,24 @@ describe('follow entries on the admin audit page', () => {
     expect(screen.queryByText('Unfollowed')).toBeNull()
   })
 
+  it('says who was added or removed by somebody else (#695)', async () => {
+    serve([
+      {
+        ...base, id: 'e1', action: 'followed', actor_id: 'u-jane', actor_name: 'Jane Staff',
+        after: { follower_user_id: 'u-bob' }, names: { 'u-bob': { name: 'Bob Staff' } },
+      },
+      {
+        ...base, id: 'e2', action: 'unfollowed', actor_id: 'u-jane', actor_name: 'Jane Staff',
+        before: { follower_user_id: 'u-bob' }, names: { 'u-bob': { name: 'Bob Staff' } },
+      },
+    ])
+    renderWithQuery(<AdminAuditPage />)
+
+    await waitFor(() => expect(screen.getByText('Added Bob Staff as a follower')).toBeTruthy())
+    expect(screen.getByText('Removed Bob Staff as a follower')).toBeTruthy()
+    expect(screen.queryByText('Followed')).toBeNull()
+  })
+
   it('leaves an ordinary unfollow and every other action as they were', async () => {
     serve([
       { ...base, id: 'e1', action: 'unfollowed', actor_id: 'u1', actor_name: 'Sam' },

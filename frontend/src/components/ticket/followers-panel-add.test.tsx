@@ -50,7 +50,7 @@ beforeEach(signIn)
 afterEach(() => vi.restoreAllMocks())
 
 async function picker() {
-  return (await screen.findByRole('combobox', { name: 'Add follower' })) as HTMLSelectElement
+  return (await screen.findByRole('combobox', { name: 'Person to add as follower' })) as HTMLSelectElement
 }
 
 describe('FollowersPanel: adding a follower', () => {
@@ -73,7 +73,7 @@ describe('FollowersPanel: adding a follower', () => {
     renderWithQuery(<FollowersPanel ticketId={TICKET} />)
     const select = await picker()
     await waitFor(() => expect(within(select).getAllByRole('option').length).toBe(3))
-    const add = screen.getByRole('button', { name: 'Add' }) as HTMLButtonElement
+    const add = screen.getByRole('button', { name: 'Add follower' }) as HTMLButtonElement
     expect(add.disabled).toBe(true)
 
     await userEvent.selectOptions(select, 'u-bea')
@@ -104,7 +104,7 @@ describe('FollowersPanel: adding a follower', () => {
     await waitFor(() => expect(within(select).getAllByRole('option').length).toBe(3))
 
     await userEvent.selectOptions(select, 'u-bea')
-    await userEvent.click(screen.getByRole('button', { name: 'Add' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Add follower' }))
 
     expect((await screen.findByRole('alert')).textContent).toBe(text)
     expect(screen.queryByText('Bea Staff', { selector: 'li *' })).toBeNull()
@@ -118,7 +118,7 @@ describe('FollowersPanel: adding a follower', () => {
     await waitFor(() => expect(within(select).getAllByRole('option').length).toBe(3))
 
     await userEvent.selectOptions(select, 'u-cal')
-    await userEvent.click(screen.getByRole('button', { name: 'Add' }))
+    await userEvent.click(screen.getByRole('button', { name: 'Add follower' }))
 
     expect((await screen.findByRole('alert')).textContent).toBe('sign in as a person')
   })
@@ -131,8 +131,8 @@ describe('FollowersPanel: adding a follower', () => {
     await waitFor(() => expect(within(select).getAllByRole('option').length).toBe(3))
     await userEvent.selectOptions(select, 'u-cal')
 
-    await userEvent.click(screen.getByRole('button', { name: 'Add' }))
-    expect((screen.getByRole('button', { name: 'Add' }) as HTMLButtonElement).disabled).toBe(true)
+    await userEvent.click(screen.getByRole('button', { name: 'Add follower' }))
+    expect((screen.getByRole('button', { name: 'Add follower' }) as HTMLButtonElement).disabled).toBe(true)
     expect(put).toHaveBeenCalledTimes(1)
   })
 
@@ -183,5 +183,165 @@ describe('FollowersPanel: removing a follower', () => {
 
     expect((await screen.findByRole('alert')).textContent).toBe('not allowed')
     expect(screen.getByText('Alex Admin', { selector: 'li *' })).toBeTruthy()
+  })
+})
+
+describe('FollowersPanel: keyboard focus and announcements', () => {
+  it('after a remove, focus goes to the next row\'s remove button', async () => {
+    const cal = { user_id: 'u-cal', display_name: 'Cal Colleague', created_at: '2026-10-03T09:00:00Z' }
+    const s = serve([ALEX, cal, ME])
+    vi.spyOn(api, 'delete').mockResolvedValue({ status: 204 } as never)
+    renderWithQuery(<FollowersPanel ticketId={TICKET} />)
+    const removeAlex = await screen.findByRole('button', { name: 'Remove Alex Admin as a follower' })
+    s.set([cal, ME])
+
+    removeAlex.focus()
+    await userEvent.keyboard('{Enter}')
+
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Remove Cal Colleague as a follower' })))
+  })
+
+  it('after removing the last other follower, focus goes to the picker', async () => {
+    const s = serve([ALEX, ME])
+    vi.spyOn(api, 'delete').mockResolvedValue({ status: 204 } as never)
+    renderWithQuery(<FollowersPanel ticketId={TICKET} />)
+    const removeAlex = await screen.findByRole('button', { name: 'Remove Alex Admin as a follower' })
+    s.set([ME])
+
+    removeAlex.focus()
+    await userEvent.keyboard('{Enter}')
+
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('combobox', { name: 'Person to add as follower' })))
+  })
+
+  it('after an add, focus returns to the picker', async () => {
+    const s = serve([ALEX])
+    vi.spyOn(api, 'put').mockResolvedValue({ status: 204 } as never)
+    renderWithQuery(<FollowersPanel ticketId={TICKET} />)
+    const select = await picker()
+    await waitFor(() => expect(within(select).getAllByRole('option').length).toBe(3))
+    await userEvent.selectOptions(select, 'u-bea')
+    s.set([ALEX, { user_id: 'u-bea', display_name: 'Bea Staff', created_at: '2026-10-02T09:00:00Z' }])
+
+    const add = screen.getByRole('button', { name: 'Add follower' })
+    add.focus()
+    await userEvent.keyboard('{Enter}')
+
+    await waitFor(() => expect(document.activeElement).toBe(select))
+  })
+
+  it('after a refused add, focus is on the picker, not the page', async () => {
+    serve([ALEX])
+    vi.spyOn(api, 'put').mockRejectedValue(refusal(422, 'follower_cannot_view_ticket', 'x'))
+    renderWithQuery(<FollowersPanel ticketId={TICKET} />)
+    const select = await picker()
+    await waitFor(() => expect(within(select).getAllByRole('option').length).toBe(3))
+    await userEvent.selectOptions(select, 'u-bea')
+
+    screen.getByRole('button', { name: 'Add follower' }).focus()
+    await userEvent.keyboard('{Enter}')
+
+    await screen.findByRole('alert')
+    await waitFor(() => expect(document.activeElement).toBe(select))
+  })
+
+  it('a refused remove leaves focus on the button', async () => {
+    serve([ALEX, ME])
+    vi.spyOn(api, 'delete').mockRejectedValue(refusal(403, 'forbidden', 'not allowed'))
+    renderWithQuery(<FollowersPanel ticketId={TICKET} />)
+    const removeAlex = await screen.findByRole('button', { name: 'Remove Alex Admin as a follower' })
+
+    removeAlex.focus()
+    await userEvent.keyboard('{Enter}')
+
+    await screen.findByRole('alert')
+    expect(document.activeElement).toBe(removeAlex)
+  })
+
+  it('announces a successful add and remove in a polite live region that is always there', async () => {
+    const s = serve([ALEX])
+    vi.spyOn(api, 'put').mockResolvedValue({ status: 204 } as never)
+    vi.spyOn(api, 'delete').mockResolvedValue({ status: 204 } as never)
+    renderWithQuery(<FollowersPanel ticketId={TICKET} />)
+    const status = await screen.findByRole('status')
+    expect(status.getAttribute('aria-live')).toBe('polite')
+    expect(status.textContent).toBe('')
+
+    const select = await picker()
+    await waitFor(() => expect(within(select).getAllByRole('option').length).toBe(3))
+    await userEvent.selectOptions(select, 'u-bea')
+    s.set([ALEX, { user_id: 'u-bea', display_name: 'Bea Staff', created_at: '2026-10-02T09:00:00Z' }])
+    await userEvent.click(screen.getByRole('button', { name: 'Add follower' }))
+    await waitFor(() => expect(screen.getByRole('status').textContent).toBe('Added Bea Staff as a follower'))
+    expect(screen.getByRole('status')).toBe(status)
+
+    s.set([ALEX])
+    await userEvent.click(await screen.findByRole('button', { name: 'Remove Bea Staff as a follower' }))
+    await waitFor(() => expect(screen.getByRole('status').textContent).toBe('Removed Bea Staff as a follower'))
+  })
+
+  it('does not announce a refusal as a success', async () => {
+    serve([ALEX])
+    vi.spyOn(api, 'put').mockRejectedValue(refusal(422, 'follower_not_eligible', 'x'))
+    renderWithQuery(<FollowersPanel ticketId={TICKET} />)
+    const select = await picker()
+    await waitFor(() => expect(within(select).getAllByRole('option').length).toBe(3))
+    await userEvent.selectOptions(select, 'u-bea')
+    await userEvent.click(screen.getByRole('button', { name: 'Add follower' }))
+    await screen.findByRole('alert')
+    expect(screen.getByRole('status').textContent).toBe('')
+  })
+})
+
+describe('FollowersPanel: the picker and its list', () => {
+  it('names the select and the button differently', async () => {
+    serve([ALEX])
+    renderWithQuery(<FollowersPanel ticketId={TICKET} />)
+    await picker()
+    expect(screen.queryAllByRole('combobox', { name: 'Add follower' })).toHaveLength(0)
+    expect(screen.getByRole('button', { name: 'Add follower' })).toBeTruthy()
+  })
+
+  it('reloads the staff list after a not-eligible refusal so the person leaves the picker', async () => {
+    const s = serve([ALEX])
+    vi.spyOn(api, 'put').mockRejectedValue(refusal(422, 'follower_not_eligible', 'x'))
+    renderWithQuery(<FollowersPanel ticketId={TICKET} />)
+    const select = await picker()
+    await waitFor(() => expect(within(select).getAllByRole('option').length).toBe(3))
+    await userEvent.selectOptions(select, 'u-bea')
+    s.get.mockImplementation(((url: string) => {
+      if (url === `/tickets/${TICKET}/followers`) return Promise.resolve({ data: [ALEX] })
+      if (url === '/staff') return Promise.resolve({ data: STAFF.map((p) => (p.id === 'u-bea' ? { ...p, assignable: false } : p)) })
+      return Promise.resolve({ data: [] })
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    }) as any)
+
+    await userEvent.click(screen.getByRole('button', { name: 'Add follower' }))
+
+    await waitFor(() => expect(within(select).queryByRole('option', { name: 'Bea Staff' })).toBeNull())
+  })
+
+  it('keeps the picker disabled while the followers list has not loaded, or failed', async () => {
+    vi.spyOn(api, 'get').mockImplementation(((url: string) => {
+      if (url === `/tickets/${TICKET}/followers`) return Promise.reject(new Error('down'))
+      if (url === '/staff') return Promise.resolve({ data: STAFF })
+      return Promise.resolve({ data: [] })
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    }) as any)
+    renderWithQuery(<FollowersPanel ticketId={TICKET} />)
+
+    expect(await screen.findByText('Could not load followers')).toBeTruthy()
+    expect((screen.getByRole('combobox', { name: 'Person to add as follower' }) as HTMLSelectElement).disabled).toBe(true)
+    expect((screen.getByRole('button', { name: 'Add follower' }) as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('gives the remove buttons and the picker a touch-sized hit area on coarse pointers', async () => {
+    serve([ALEX])
+    renderWithQuery(<FollowersPanel ticketId={TICKET} />)
+    const remove = await screen.findByRole('button', { name: 'Remove Alex Admin as a follower' })
+    expect(remove.className).toContain('pointer-coarse:h-11')
+    expect(remove.className).toContain('pointer-coarse:w-11')
+    expect((await picker()).className).toContain('pointer-coarse:h-11')
+    expect(screen.getByRole('button', { name: 'Add follower' }).className).toContain('pointer-coarse:h-11')
   })
 })

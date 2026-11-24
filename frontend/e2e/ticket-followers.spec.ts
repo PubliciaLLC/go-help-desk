@@ -62,14 +62,14 @@ for (const width of [320, 1280]) {
       const writes = await mockFollowers(page)
       await page.goto(`/tickets/${T}`)
 
-      const picker = page.getByRole('combobox', { name: 'Add follower' })
+      const picker = page.getByRole('combobox', { name: 'Person to add as follower' })
       await expect(picker).toBeVisible()
       await expect(page.getByRole('button', { name: 'Remove Alex Admin as a follower' })).toBeVisible()
       // Offered: people not already following, and not me.
       await expect(picker.locator('option')).toHaveText(['Select a person…', 'Bea Staff', 'Cal Colleague'])
 
       await picker.selectOption('u-bea')
-      await page.getByRole('button', { name: 'Add', exact: true }).click()
+      await page.getByRole('button', { name: 'Add follower', exact: true }).click()
       await expect(page.getByRole('button', { name: 'Remove Bea Staff as a follower' })).toBeVisible()
       await expect(picker.locator('option')).toHaveText(['Select a person…', 'Cal Colleague'])
       expect(writes).toEqual(['PUT u-bea'])
@@ -88,8 +88,8 @@ for (const width of [320, 1280]) {
       })
       await page.goto(`/tickets/${T}`)
 
-      await page.getByRole('combobox', { name: 'Add follower' }).selectOption('u-cal')
-      await page.getByRole('button', { name: 'Add', exact: true }).click()
+      await page.getByRole('combobox', { name: 'Person to add as follower' }).selectOption('u-cal')
+      await page.getByRole('button', { name: 'Add follower', exact: true }).click()
 
       await expect(page.getByRole('alert').filter({ hasText: 'cannot see this ticket' })).toHaveText(
         'Cal Colleague cannot see this ticket, so they cannot follow it.',
@@ -103,9 +103,9 @@ for (const width of [320, 1280]) {
       await mockFollowers(page)
       await page.goto(`/tickets/${T}`)
 
-      const picker = page.getByRole('combobox', { name: 'Add follower' })
+      const picker = page.getByRole('combobox', { name: 'Person to add as follower' })
       const remove = page.getByRole('button', { name: 'Remove Alex Admin as a follower' })
-      const add = page.getByRole('button', { name: 'Add', exact: true })
+      const add = page.getByRole('button', { name: 'Add follower', exact: true })
       for (const c of [picker, remove, add]) {
         await c.scrollIntoViewIfNeeded()
         const box = (await c.boundingBox())!
@@ -115,8 +115,66 @@ for (const width of [320, 1280]) {
       await remove.focus()
       await expect(remove).toBeFocused()
     })
+
+    test('keyboard focus stays in the panel and each change is announced', async ({ page }) => {
+      await mockApi(page)
+      await mockFollowers(page)
+      await page.goto(`/tickets/${T}`)
+      const picker = page.getByRole('combobox', { name: 'Person to add as follower' })
+
+      // Add with the keyboard: focus comes back to the picker.
+      await picker.focus()
+      await picker.selectOption('u-bea')
+      await page.getByRole('button', { name: 'Add follower', exact: true }).focus()
+      await page.keyboard.press('Enter')
+      await expect(page.locator('p[role="status"][aria-live="polite"]')).toHaveText('Added Bea Staff as a follower')
+      await expect(picker).toBeFocused()
+
+      // Remove: focus goes to the next remove button, and then to the picker.
+      const removeAlex = page.getByRole('button', { name: 'Remove Alex Admin as a follower' })
+      await removeAlex.focus()
+      await page.keyboard.press('Enter')
+      await expect(page.locator('p[role="status"][aria-live="polite"]')).toHaveText('Removed Alex Admin as a follower')
+      await expect(page.getByRole('button', { name: 'Remove Bea Staff as a follower' })).toBeFocused()
+
+      await page.keyboard.press('Enter')
+      await expect(page.locator('p[role="status"][aria-live="polite"]')).toHaveText('Removed Bea Staff as a follower')
+      await expect(picker).toBeFocused()
+    })
   })
 }
+
+// A phone: coarse pointer, where the remove buttons, the picker and Add are 44px
+// (the compact size above is for a mouse). Two rows, so a mis-tap on the
+// neighbour is not one pixel away.
+test.describe('followers panel on a touch screen', () => {
+  test.use({ viewport: { width: 320, height: 900 }, hasTouch: true, isMobile: true })
+
+  test('the controls are at least 44px', async ({ page }) => {
+    await mockApi(page)
+    await mockFollowers(page)
+    await page.route(`**/api/v1/tickets/${T}/followers`, (route) => route.fulfill({ json: [ALEX, BEA] }))
+    await page.goto(`/tickets/${T}`)
+
+    expect(await page.evaluate(() => matchMedia('(pointer: coarse)').matches)).toBe(true)
+    const remove = [
+      page.getByRole('button', { name: 'Remove Alex Admin as a follower' }),
+      page.getByRole('button', { name: 'Remove Bea Staff as a follower' }),
+    ]
+    const controls = [
+      ...remove,
+      page.getByRole('combobox', { name: 'Person to add as follower' }),
+      page.getByRole('button', { name: 'Add follower', exact: true }),
+    ]
+    for (const c of controls) {
+      await c.scrollIntoViewIfNeeded()
+      const box = (await c.boundingBox())!
+      expect(box.height, await c.innerHTML()).toBeGreaterThanOrEqual(44)
+    }
+    for (const c of remove) expect((await c.boundingBox())!.width).toBeGreaterThanOrEqual(44)
+    await noHorizontalScroll(page, 320)
+  })
+})
 
 test('a requester never sees the panel', async ({ page }) => {
   await mockApi(page, { me: ME_REPORTER })
@@ -126,7 +184,7 @@ test('a requester never sees the panel', async ({ page }) => {
   await page.goto(`/tickets/${T}`)
 
   await expect(page.getByText(TICKET_DETAIL.subject)).toBeVisible()
-  await expect(page.getByRole('combobox', { name: 'Add follower' })).toHaveCount(0)
+  await expect(page.getByRole('combobox', { name: 'Person to add as follower' })).toHaveCount(0)
   await expect(page.getByText('Followers', { exact: true })).toHaveCount(0)
   expect(asked.filter((p) => p.includes('/followers'))).toEqual([])
 })
