@@ -376,3 +376,127 @@ describe('useSettingsDraft', () => {
     expect(result.current.dirty).toBe(false)
   })
 })
+
+// What the draft does while a save is on its way, and in the moment after the
+// PATCH has answered and before the settings have been fetched again. The draft
+// is the dump, then the patch that was sent, then what the operator last set.
+describe('useSettingsDraft: around a save', () => {
+  // The next PATCH waits to be answered: ok() applies it, no() refuses it.
+  function holdPatch() {
+    const h = { ok: () => {}, no: () => {} }
+    patchSpy.mockImplementationOnce(((_url: string, body: Record<string, unknown>) =>
+      new Promise((resolve, reject) => {
+        h.ok = () => {
+          dump = { ...dump, ...body }
+          resolve({ data: undefined })
+        }
+        h.no = () => reject(refusal('invalid', 'nope'))
+      })) as never)
+    return h
+  }
+  // The next fetch of the settings waits to be answered.
+  function holdFetch() {
+    const h = { ok: () => {} }
+    vi.spyOn(api, 'get').mockImplementationOnce((() =>
+      new Promise((resolve) => {
+        h.ok = () => resolve({ data: { ...dump } })
+      })) as never)
+    return h
+  }
+  const refetch = (qc: { invalidateQueries: (o: { queryKey: string[] }) => Promise<void> }) =>
+    act(async () => { await qc.invalidateQueries({ queryKey: ['admin', 'settings'] }) })
+
+  it.each([
+    { name: 'the save goes through', outcome: 'ok' as const },
+    { name: 'the save is refused', outcome: 'no' as const },
+  ])('an unsent key put back to its stored value while saving is not held: $name', async ({ outcome }) => {
+    dump = { ...DUMP, n: 30 }
+    const { result, queryClient } = setup()
+    await loaded(result)
+    const p = holdPatch()
+    act(() => result.current.setBool('sla_enabled', true)) // the save
+    act(() => result.current.save())
+    await waitFor(() => expect(result.current.isPending).toBe(true))
+    // Two keys the save does not carry, touched and put back to what the dump holds.
+    act(() => result.current.toggleStrArr('allowed', '.txt', true))
+    act(() => result.current.toggleStrArr('allowed', '.txt', false))
+    act(() => result.current.setNum('n', 3))
+    act(() => result.current.setNum('n', 30))
+    await act(async () => p[outcome]())
+    await waitFor(() => expect(result.current.isPending).toBe(false))
+    // Another administrator changes both. They are not the operator's edits.
+    dump = { ...dump, allowed: ['.png'], n: 40 }
+    await refetch(queryClient)
+    await waitFor(() => expect(result.current.num('n')).toBe(40))
+    expect(result.current.strArr('allowed')).toEqual(['.png'])
+    expect(result.current.dirty).toBe(outcome === 'no') // the refused save's own edit is still there
+  })
+
+  it('a toggle between the PATCH answer and the fresh settings starts from what was just saved', async () => {
+    const { result } = setup()
+    await loaded(result)
+    const p = holdPatch()
+    act(() => result.current.toggleStrArr('allowed', '.txt', true))
+    act(() => result.current.save())
+    await waitFor(() => expect(result.current.isPending).toBe(true))
+    const f = holdFetch()
+    await act(async () => p.ok())
+    await waitFor(() => expect(patchSpy).toHaveBeenCalledTimes(1))
+    // The PATCH has answered; the settings have not come back yet.
+    expect(result.current.isPending).toBe(true)
+    act(() => result.current.toggleStrArr('allowed', '.png', true))
+    expect(result.current.strArr('allowed')).toEqual(['.pdf', '.txt', '.png'])
+    await act(async () => f.ok())
+    await waitFor(() => expect(result.current.isPending).toBe(false))
+    expect(result.current.strArr('allowed')).toEqual(['.pdf', '.txt', '.png'])
+    expect(result.current.dirty).toBe(true)
+  })
+
+  it('a key set back to its pre-save value during the save is the last word, and saves next', async () => {
+    const { result } = setup()
+    await loaded(result)
+    const p = holdPatch()
+    act(() => result.current.setBool('sla_enabled', true))
+    act(() => result.current.save())
+    await waitFor(() => expect(result.current.isPending).toBe(true))
+    act(() => result.current.setBool('sla_enabled', false))
+    await act(async () => p.ok())
+    await waitFor(() => expect(result.current.isPending).toBe(false))
+    expect(result.current.bool('sla_enabled')).toBe(false)
+    expect(result.current.dirty).toBe(true)
+    act(() => result.current.save())
+    await waitFor(() => expect(patchSpy).toHaveBeenCalledTimes(2))
+    expect(patchSpy.mock.calls[1][1]).toEqual({ sla_enabled: false })
+  })
+
+  it('an edit made equal to what was sent, during the save, is not an edit', async () => {
+    const { result } = setup()
+    await loaded(result)
+    const p = holdPatch()
+    act(() => result.current.setBool('sla_enabled', true))
+    act(() => result.current.save())
+    await waitFor(() => expect(result.current.isPending).toBe(true))
+    act(() => result.current.setBool('sla_enabled', false))
+    act(() => result.current.setBool('sla_enabled', true))
+    await act(async () => p.ok())
+    await waitFor(() => expect(result.current.isPending).toBe(false))
+    expect(result.current.dirty).toBe(false)
+  })
+
+  it('never stays dirty over a key that equals the dump', async () => {
+    const { result, queryClient } = setup()
+    await loaded(result)
+    act(() => result.current.setBool('sla_enabled', true))
+    // The same change is made by someone else: the edit is now the dump's value.
+    dump = { ...dump, sla_enabled: true }
+    await refetch(queryClient)
+    await waitFor(() => expect(result.current.stored?.sla_enabled).toBe(true))
+    expect(result.current.dirty).toBe(false)
+    // And when they change it back, it is theirs to change.
+    dump = { ...dump, sla_enabled: false }
+    await refetch(queryClient)
+    await waitFor(() => expect(result.current.stored?.sla_enabled).toBe(false))
+    expect(result.current.bool('sla_enabled')).toBe(false)
+    expect(result.current.dirty).toBe(false)
+  })
+})
