@@ -18,16 +18,20 @@ export interface User {
   email_notify_assigned?: boolean
   email_notify_activity?: boolean
   email_notify_group?: boolean
+  /** The SLA alerts switch (#670): a target breached or at risk on a ticket
+   *  assigned to me, a group ticket nobody holds, or a ticket I follow. */
+  email_notify_sla?: boolean
   /** The instance-wide per-file attachment limit in bytes (#673). Only on /me,
    *  not on the login response, so a client reads it after signing in. */
   attachment_max_bytes?: number
   /** What the switches amount to for this person, with whether an administrator
-   *  forced each one (#441). Only on /me and the preferences answer, and only
-   *  for staff and administrators. */
+   *  forced each one (#441, and sla for #670). Only on /me and the preferences
+   *  answer, and only for staff and administrators. */
   email_notifications?: {
     assigned: EmailSwitchState
     activity: EmailSwitchState
     group: EmailSwitchState
+    sla: EmailSwitchState
   }
   /** Whether Account should offer to make an API key (#450): always for an
    *  administrator, for staff only while an administrator allows it. Only on
@@ -49,7 +53,7 @@ export interface EmailSwitchState {
 }
 
 export type EmailPreferencesPatch = Partial<
-  Pick<User, 'email_notify_assigned' | 'email_notify_activity' | 'email_notify_group'>
+  Pick<User, 'email_notify_assigned' | 'email_notify_activity' | 'email_notify_group' | 'email_notify_sla'>
 >
 
 // How an account signs in, from the credentials it holds. 'both' is local plus

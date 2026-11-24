@@ -16,6 +16,7 @@ async function mockUpgradedInstall(page: Page, extra: Record<string, unknown> = 
     staff_email_assigned_override: 'off',
     staff_email_activity_override: 'off',
     staff_email_group_override: 'off',
+    staff_email_sla_override: 'off',
   }
   const patches: Record<string, unknown>[] = []
 

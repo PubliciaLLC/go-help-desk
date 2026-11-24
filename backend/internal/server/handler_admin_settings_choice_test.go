@@ -41,6 +41,8 @@ var choiceKeys = []struct {
 		}},
 	{admin.KeyStaffEmailGroupOverride, []string{"user", "on", "off"},
 		func(h *harness, ctx context.Context) string { return string(h.adminSvc.StaffEmailOverrides(ctx).Group) }},
+	{admin.KeyStaffEmailSLAOverride, []string{"user", "on", "off"},
+		func(h *harness, ctx context.Context) string { return string(h.adminSvc.StaffEmailSLAOverride(ctx)) }},
 }
 
 // Stored values the PATCH refuses. Only a direct database edit puts one there.

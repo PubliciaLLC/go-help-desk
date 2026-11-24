@@ -61,13 +61,14 @@ type User struct {
 	UpdatedAt          time.Time  `json:"updated_at"`
 	DeletedAt          *time.Time `json:"-"`
 
-	// The person's own staff-email switches (#441); see
-	// notification.StaffPrefs for what each means and how an administrator's
+	// The person's own staff-email switches (#441, and SLA alerts from #670);
+	// see notification.StaffPrefs for what each means and how an administrator's
 	// override applies. All on for a new account and for every account that
 	// existed before the columns did.
 	EmailNotifyAssigned bool `json:"email_notify_assigned"`
 	EmailNotifyActivity bool `json:"email_notify_activity"`
 	EmailNotifyGroup    bool `json:"email_notify_group"`
+	EmailNotifySLA      bool `json:"email_notify_sla"`
 }
 
 // IsActive returns true when the user is neither disabled nor soft-deleted.
@@ -86,6 +87,7 @@ func (u User) CanReceiveStaffMail() bool {
 // EmailPreferencesPatch changes only the switches that are set.
 type EmailPreferencesPatch struct {
 	Assigned, Activity, Group *bool
+	SLA                       *bool
 }
 
 // Validate returns an error if the user is structurally invalid.

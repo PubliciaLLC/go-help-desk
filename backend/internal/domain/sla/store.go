@@ -36,7 +36,11 @@ var ErrUnknownCategory = errors.New("SLA policy category does not exist")
 // replaced it after the caller read it. The caller's reading was computed from
 // that record's clock and policy, so it must not be applied to the record that
 // replaced it; it reads the current record again and starts over (#623).
-var ErrRecordSuperseded = errors.New("SLA record is no longer current")
+//
+// It is ticket.ErrSLARecordSuperseded (#670): the sweep's stamp runs on a
+// ticket.Store, which cannot name this package, and the two must be one error
+// so the sweep and the record writes treat a lost race alike.
+var ErrRecordSuperseded = ticket.ErrSLARecordSuperseded
 
 // ErrNotFound is returned when an SLA policy is not found.
 var ErrNotFound = errors.New("not found")
@@ -137,7 +141,8 @@ type Store interface {
 
 	// ListBreachCandidates returns the ids of tickets the breach sweep must
 	// evaluate: open, under a policy, with at least one target that is
-	// neither met nor already stamped. The prefilter uses the same
+	// neither met nor already stamped, or (#670) one that has reached 80% while
+	// outstanding, unbreached and not yet stamped at risk. The prefilter uses the same
 	// pause-aware elapsed time as sla.Elapsed, so a ticket parked in Pending
 	// whose frozen elapsed time is still under target is never selected. It
 	// still returns a superset, not an exact answer: Go makes the final call

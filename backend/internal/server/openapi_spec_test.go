@@ -35,6 +35,7 @@ import (
 
 	"github.com/publiciallc/go-help-desk/backend/internal/config"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 	authmw "github.com/publiciallc/go-help-desk/backend/internal/middleware"
@@ -1033,6 +1034,32 @@ func probeRoute(t *testing.T, r walkedRoute, keys map[string]probeKey) routeAuth
 	return ra
 }
 
+// The WebhookEvent enum is the list a hook may subscribe to: "*" and every
+// name notification.WebhookEvents holds, in its order, and nothing else. The
+// SLA names (#670) are in both.
+func TestOpenAPISpec_WebhookEventEnumMatchesCode(t *testing.T) {
+	doc := loadSpec(t)
+	comps, _ := doc.root["components"].(map[string]any)
+	schemas, _ := comps["schemas"].(map[string]any)
+	ev, _ := schemas["WebhookEvent"].(map[string]any)
+	var got []string
+	for _, v := range ev["enum"].([]any) {
+		got = append(got, fmt.Sprint(v))
+	}
+	want := []string{"*"}
+	for _, e := range notification.WebhookEvents {
+		want = append(want, string(e))
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("%s: components.schemas.WebhookEvent.enum is\n  %v\nwant\n  %v", specFile, got, want)
+	}
+	for _, n := range []notification.EventType{notification.EventSLABreached, notification.EventSLAAtRisk} {
+		if !slices.Contains(got, string(n)) {
+			t.Errorf("%s: WebhookEvent.enum does not list %s", specFile, n)
+		}
+	}
+}
+
 func TestOpenAPISpec_AuthMatchesRouter(t *testing.T) {
 	doc := loadSpec(t)
 	keys := map[string]probeKey{}
@@ -1187,4 +1214,70 @@ func stringList(v any) []string {
 		out = append(out, s)
 	}
 	return out
+}
+
+// The three passkey routes that requirePasskeyNotHeld guards answer 403
+// passkey_required (#616c). The tests above cannot see a refusal a handler
+// makes, so pin that the spec says so.
+func TestOpenAPISpec_PasskeyRequiredIsDocumented(t *testing.T) {
+	doc := loadSpec(t)
+	for _, key := range []string{
+		"POST /api/v1/me/passkeys/register/start",
+		"POST /api/v1/me/passkeys/register/finish",
+		"DELETE /api/v1/me/passkeys/{id}",
+	} {
+		t.Run(key, func(t *testing.T) {
+			o, ok := doc.ops[key]
+			if !ok {
+				t.Fatalf("%s is not in the spec", key)
+			}
+			resps, _ := o.op["responses"].(map[string]any)
+			r403, _ := resps["403"].(map[string]any)
+			desc, _ := r403["description"].(string)
+			if !strings.Contains(desc, "passkey_required") {
+				t.Errorf("403 does not document passkey_required; description: %q", desc)
+			}
+		})
+	}
+}
+
+// TestOpenAPISpec_SLAAlertsDocumented pins the places the SLA alerts change
+// (#670) reaches the API: the fourth staff-email switch on the account and on
+// its PATCH, and the two settings keys. Each is a name a client can send or
+// read, so each must be in the spec.
+func TestOpenAPISpec_SLAAlertsDocumented(t *testing.T) {
+	doc := loadSpec(t)
+	comps, _ := doc.root["components"].(map[string]any)
+	schemas, _ := comps["schemas"].(map[string]any)
+	userSchema, _ := schemas["User"].(map[string]any)
+	userProps, _ := userSchema["properties"].(map[string]any)
+	emailNotes, _ := userProps["email_notifications"].(map[string]any)
+	emailNotesProps, _ := emailNotes["properties"].(map[string]any)
+	settings, _ := schemas["SettingsValues"].(map[string]any)
+	settingsProps, _ := settings["properties"].(map[string]any)
+
+	patch := doc.ops["PATCH /api/v1/me/email-preferences"]
+	reqBody, _ := patch.op["requestBody"].(map[string]any)
+	reqContent, _ := reqBody["content"].(map[string]any)
+	reqMedia, _ := reqContent["application/json"].(map[string]any)
+	reqSchema, _ := reqMedia["schema"].(map[string]any)
+	reqProps, _ := reqSchema["properties"].(map[string]any)
+
+	cases := []struct {
+		name  string
+		found bool
+	}{
+		{"schemas.User.required lists email_notify_sla", slices.Contains(stringList(userSchema["required"]), "email_notify_sla")},
+		{"schemas.User.properties.email_notify_sla", userProps["email_notify_sla"] != nil},
+		{"schemas.User.properties.email_notifications.properties.sla", emailNotesProps["sla"] != nil},
+		{"schemas.User.properties.email_notifications.required lists sla", slices.Contains(stringList(emailNotes["required"]), "sla")},
+		{"PATCH /me/email-preferences requestBody.email_notify_sla", reqProps["email_notify_sla"] != nil},
+		{"schemas.SettingsValues.properties.sla_alerts_enabled", settingsProps["sla_alerts_enabled"] != nil},
+		{"schemas.SettingsValues.properties.staff_email_sla_override", settingsProps["staff_email_sla_override"] != nil},
+	}
+	for _, c := range cases {
+		if !c.found {
+			t.Errorf("%s: %s is not documented", specFile, c.name)
+		}
+	}
 }

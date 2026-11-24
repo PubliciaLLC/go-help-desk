@@ -495,14 +495,22 @@ func (d *EmailDispatcher) eventToEmail(event notification.Event) (templateName, 
 	path := "/tickets/" + event.TicketID.String()
 	// Staff sign in; a guest credential has no place in their mail, whatever
 	// the event carries.
-	isStaffMail := event.Type == notification.EventStaffAssigned || event.Type == notification.EventStaffRequesterReplied ||
-		event.Type == notification.EventStaffReopened
-	if event.GuestToken != "" && !isStaffMail {
+	if event.GuestToken != "" && !isStaffMail(event.Type) {
 		path = "/g#" + event.GuestToken
 	}
 	view := map[string]string{
 		"TrackingNumber": event.TrackingNumber,
 		"TicketURL":      strings.TrimRight(d.cfg.BaseURL, "/") + path,
+	}
+	// An SLA alert names its targets through one more variable, built here from
+	// the typed field the sweep set, never from Payload (#670). An event with no
+	// usable alert has nothing true to say, so it sends nothing.
+	if isSLAMail(event.Type) {
+		status, ok := slaStatus(event.SLA)
+		if !ok {
+			return "", "", "", nil, false
+		}
+		view["SLAStatus"] = status
 	}
 
 	templateName, ok = emailTemplateFor(event)
@@ -571,10 +579,86 @@ func emailTemplateFor(event notification.Event) (string, bool) {
 		return staff("staff_requester_replied")
 	case notification.EventStaffReopened:
 		return staff("staff_reopened")
+	case notification.EventStaffSLABreached:
+		return staff("staff_sla_breached")
+	case notification.EventStaffSLAAtRisk:
+		return staff("staff_sla_at_risk")
 	case notification.EventGuestLinkResent:
 		return "guest_link.tmpl", true
 	}
 	return "", false
+}
+
+// isStaffMail reports whether t is one of the staff.* mails, which sign in
+// through a link to the ticket and never carry a guest credential.
+func isStaffMail(t notification.EventType) bool {
+	switch t {
+	case notification.EventStaffAssigned, notification.EventStaffRequesterReplied, notification.EventStaffReopened:
+		return true
+	}
+	return isSLAMail(t)
+}
+
+// isSLAMail reports whether t is one of the two staff SLA mails (#670).
+func isSLAMail(t notification.EventType) bool {
+	return t == notification.EventStaffSLABreached || t == notification.EventStaffSLAAtRisk
+}
+
+// slaStatus is the sentence an SLA mail names its targets with: exactly one of
+// eight, chosen by which targets breached and which are at risk, and built here
+// from the two enum lists so that no text anyone typed can reach it (#670). ok is
+// false for anything the sweep cannot raise: no alert, no target, a target in
+// both lists or one that is not a target. Order within a list does not matter.
+func slaStatus(a *notification.SLAAlert) (string, bool) {
+	if a == nil {
+		return "", false
+	}
+	breached, ok1 := targetMask(a.Breached)
+	atRisk, ok2 := targetMask(a.AtRisk)
+	if !ok1 || !ok2 {
+		return "", false
+	}
+	const both = maskResponse | maskResolution
+	switch [2]uint8{breached, atRisk} {
+	case [2]uint8{maskResponse, 0}:
+		return "Response breached", true
+	case [2]uint8{maskResolution, 0}:
+		return "Resolution breached", true
+	case [2]uint8{both, 0}:
+		return "Response and resolution breached", true
+	case [2]uint8{maskResponse, maskResolution}:
+		return "Response breached; resolution at risk", true
+	case [2]uint8{maskResolution, maskResponse}:
+		return "Resolution breached; response at risk", true
+	case [2]uint8{0, maskResponse}:
+		return "Response at risk", true
+	case [2]uint8{0, maskResolution}:
+		return "Resolution at risk", true
+	case [2]uint8{0, both}:
+		return "Response and resolution at risk", true
+	}
+	return "", false
+}
+
+const (
+	maskResponse   uint8 = 1
+	maskResolution uint8 = 2
+)
+
+// targetMask is the set of targets in a list; ok is false for a name that is
+// not a target.
+func targetMask(ts []notification.SLATarget) (m uint8, ok bool) {
+	for _, t := range ts {
+		switch t {
+		case notification.SLATargetResponse:
+			m |= maskResponse
+		case notification.SLATargetResolution:
+			m |= maskResolution
+		default:
+			return 0, false
+		}
+	}
+	return m, true
 }
 
 // SendVerificationEmail sends a transactional email containing the account

@@ -238,15 +238,13 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 	// keeps it on purpose; copying it forward would carry that sign-in's
 	// MustChangePassword, staged factor and pending-MFA deadline onto the
 	// identity the provider vouched for.
-	if err := s.writeSession(w, r, auth.SessionData{
-		UserID:         u.ID,
-		Role:           u.Role,
-		MFAPassed:      true,
-		FactorVerified: claims.AssertedMFA(),
-	}); err != nil {
+	// Counts as MFA, except for a role that must use a passkey and was not
+	// given a passkey-grade assertion (#616c): see signInSSO.
+	to, err := s.signInSSO(w, r, u, claims.AssertedMFA(), claims.AssertedPasskey())
+	if err != nil {
 		handleError(w, err)
 		return
 	}
 
-	http.Redirect(w, r, "/", http.StatusSeeOther)
+	http.Redirect(w, r, to, http.StatusSeeOther)
 }

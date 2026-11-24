@@ -26,6 +26,31 @@ type SessionData struct {
 	// factors.
 	FactorVerified bool
 
+	// PasskeyOwed: this sign-in must end with a passkey, so a TOTP code proves
+	// a factor here (FactorVerified) but does not pass MFA (#616c).
+	//
+	// Set only when a sign-in creates the session, from the role's policy at
+	// that moment; nothing sets it on a session that already exists, so a
+	// policy change applies at the next sign-in and revokes nobody. A session
+	// saved before this field existed decodes it false. Carried through every
+	// rewrite of a pending session (TOTP verify, TOTP enrolment, a password
+	// change) and cleared only when a passkey sets MFAPassed.
+	PasskeyOwed bool
+
+	// PasskeyHeld narrows PasskeyOwed: the sign-in owed a passkey the account
+	// ALREADY had, so it is owed that key and no other way of getting a
+	// passkey proved. A session with it set may neither register a passkey nor
+	// delete one: a TOTP code, or an identity provider's MFA assertion, would
+	// otherwise buy a new authenticator of the caller's own (and so the whole
+	// session) without the owner's key ever being used, and deleting the keys
+	// first would turn the session into the "no key yet" case. Admin remove-key
+	// or Reset MFA is the way back for a lost key.
+	//
+	// Set with PasskeyOwed, carried with it, cleared with it. Zero on a session
+	// that owed no existing key, which keeps the onboarding path (verify TOTP,
+	// register a first key) open.
+	PasskeyHeld bool
+
 	// MustChangePassword mirrors users.must_change_password as of sign-in
 	// (#497). While it is set the session may change the password and do
 	// nothing else; see middleware.RequireMFA.

@@ -2,6 +2,7 @@ package ticket
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/google/uuid"
@@ -190,6 +191,44 @@ type Store interface {
 	SupersedeSLARecord(ctx context.Context, id uuid.UUID, at time.Time) error
 	// StartSLARecord inserts the record a re-match starts.
 	StartSLARecord(ctx context.Context, r SLARecordStart) error
+
+	// StampSLACrossings is the SLA sweep's one write (#670): in one statement
+	// it locks the current record recordID (FOR UPDATE; superseded_at IS NULL)
+	// and sets each of the four stamp columns asked for in stamps, only where
+	// that column is still NULL and its target is still outstanding, and says
+	// which columns THIS statement set. Only a column it set may be announced;
+	// a column already set, a met target, or an at-risk stamp for a target that
+	// is breached (or breaches in this same statement) is left alone and
+	// reported false.
+	//
+	// A record that is not current (a re-match superseded it, or it never
+	// existed) is ErrSLARecordSuperseded and nothing is written.
+	//
+	// It lives on this Store, not the SLA store, because the sweep stamps and
+	// raises its event in one ticket.Atomic transaction, which hands out only a
+	// Store and an audit.Store.
+	StampSLACrossings(ctx context.Context, recordID uuid.UUID, stamps SLAStampRequest) (SLAStamped, error)
+}
+
+// ErrSLARecordSuperseded reports that a write addressed an SLA record that is
+// no longer the ticket's current one. sla.ErrRecordSuperseded is this same
+// error: the sla package cannot be imported here, and one condition should not
+// have two identities.
+var ErrSLARecordSuperseded = errors.New("SLA record is no longer current")
+
+// SLAStampRequest says which of a record's four stamp columns to set, and at
+// what instant. The caller decided each from its own reading of the record; the
+// statement still sets a column only while it is NULL and its target
+// outstanding.
+type SLAStampRequest struct {
+	At                                                                 time.Time
+	ResponseBreach, ResolutionBreach, ResponseAtRisk, ResolutionAtRisk bool
+}
+
+// SLAStamped says which stamp columns one StampSLACrossings statement newly
+// set: NULL before, set after.
+type SLAStamped struct {
+	ResponseBreach, ResolutionBreach, ResponseAtRisk, ResolutionAtRisk bool
 }
 
 // StatusStore manages ticket statuses. Method names use a "Status" suffix to

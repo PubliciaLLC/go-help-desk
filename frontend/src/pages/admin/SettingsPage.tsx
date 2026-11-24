@@ -1,7 +1,7 @@
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useMutation, useQueryClient, useMutationState } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
 import { getSettings, updateSettings, getSAMLConfig, saveSAMLConfig, getOIDCConfig, saveOIDCConfig, getSiteConfig, uploadLogo, deleteLogo, listStatuses, listCategories, listSLAPolicies, getSecurityWarnings, createSLAPolicy, updateSLAPolicy, deleteSLAPolicy } from '@/api/admin'
-import type { SLAPolicy } from '@/api/types'
+import type { Priority, SLAPolicy } from '@/api/types'
 import { extractError, extractErrorCode } from '@/api/client'
 import { Layout } from '@/components/Layout'
 import { Button } from '@/components/ui/button'
@@ -16,7 +16,7 @@ import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
 import { Spinner } from '@/components/ui/spinner'
 import { cn } from '@/lib/utils'
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useId } from 'react'
 import { fmtMin } from '@/lib/format'
 import { UPDATE_CHECK_LABEL, UPDATE_CHECK_DETAIL } from '@/lib/updateCheck'
 
@@ -979,13 +979,46 @@ function AuthPanel({
             description="Users in the selected roles must enroll in MFA to sign in. Unenrolled users are forced through setup on their next login; leave all unchecked to keep MFA opt-in."
           >
             <div className="flex gap-4">
+              {(['admin', 'staff', 'user'] as const).map((r) => {
+                // A role that must use a passkey is MFA-enforced by
+                // implication (#616). Shown checked and dimmed; the stored
+                // list is not touched, so unticking the passkey requirement
+                // gives the role back whatever it was set to before.
+                const viaPasskey = strArr('passkey_required_roles').includes(r)
+                return (
+                  <label
+                    key={r}
+                    className={`flex items-center gap-1.5 select-none ${viaPasskey ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'}`}
+                    title={viaPasskey ? 'Required because this role must use a passkey' : undefined}
+                  >
+                    <input
+                      type="checkbox"
+                      className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                      checked={viaPasskey || strArr('mfa_enforced_roles').includes(r)}
+                      disabled={viaPasskey}
+                      onChange={(e) => toggleStrArr('mfa_enforced_roles', r, e.target.checked)}
+                    />
+                    <span className="text-sm capitalize text-gray-700">{r}</span>
+                  </label>
+                )
+              })}
+            </div>
+          </SettingRow>
+        )}
+        {bool('mfa_enabled') && (
+          <SettingRow
+            label="Require passkeys for roles"
+            description="Users in the selected roles must finish every sign-in with a passkey. An authenticator app code still proves a factor, but is not enough on its own: a user with no passkey registers one right after signing in, and a single sign-on user is let in only when the identity provider reports a passkey sign-in (Microsoft Entra reports it; other providers are not recognised and ask for the passkey here). Applies at each person's next sign-in; sessions already open are not ended. These roles are also required to use MFA. While passkeys are unavailable on this server (BASE_URL) the requirement is paused and authenticator codes are accepted."
+          >
+            <div className="flex gap-4">
               {(['admin', 'staff', 'user'] as const).map((r) => (
                 <label key={r} className="flex items-center gap-1.5 cursor-pointer select-none">
                   <input
                     type="checkbox"
                     className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-                    checked={strArr('mfa_enforced_roles').includes(r)}
-                    onChange={(e) => toggleStrArr('mfa_enforced_roles', r, e.target.checked)}
+                    aria-label={`Require passkeys for ${r}`}
+                    checked={strArr('passkey_required_roles').includes(r)}
+                    onChange={(e) => toggleStrArr('passkey_required_roles', r, e.target.checked)}
                   />
                   <span className="text-sm capitalize text-gray-700">{r}</span>
                 </label>
@@ -1133,80 +1166,130 @@ const EMPTY_FORM: PolicyForm = {
   resolution_target_min: 2880,
 }
 
-function PolicyFormRow({
-  form, setForm, categories, onSave, onCancel, isPending,
+// The stacked add and edit form. It is a block outside the policy table (the
+// table scrolls sideways in a narrow card, and a form inside it would too), so
+// it lays out at the card's width. Name is full width. Priority and Category,
+// and Response and Resolution, sit side by side from the sm breakpoint (640px)
+// up and stack in one column below it, which includes 375px. Buttons underneath.
+function PolicyFormFields({
+  form, setForm, categories, onSave, onCancel, nameRef,
 }: {
+  nameRef: React.Ref<HTMLInputElement>
   form: PolicyForm
   setForm: React.Dispatch<React.SetStateAction<PolicyForm>>
   categories: { id: string; name: string; active: boolean }[]
   onSave: () => void
   onCancel: () => void
-  isPending: boolean
 }) {
+  const id = useId()
   return (
-    <tr className="bg-blue-50">
-      <td className="px-3 py-2">
+    <div className="space-y-3 rounded border bg-blue-50 p-3">
+      <div className="space-y-1">
+        <label htmlFor={`${id}-name`} className="block text-sm font-medium text-gray-900">Policy name</label>
         <Input
-          className="h-7 text-sm"
+          id={`${id}-name`}
+          ref={nameRef}
+          className="h-9 text-sm"
           value={form.name}
           onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
-          placeholder="Policy name"
         />
-      </td>
-      <td className="px-3 py-2">
-        <Select
-          className="h-7 text-sm"
-          value={form.priority}
-          onChange={(e) => setForm((f) => ({ ...f, priority: e.target.value }))}
-        >
-          <option value="">Any priority</option>
-          {PRIORITIES.map((p) => (
-            <option key={p} value={p} className="capitalize">{p}</option>
-          ))}
-        </Select>
-      </td>
-      <td className="px-3 py-2">
-        <Select
-          className="h-7 text-sm"
-          value={form.category_id}
-          onChange={(e) => setForm((f) => ({ ...f, category_id: e.target.value }))}
-        >
-          <option value="">All categories</option>
-          {categories.filter((c) => c.active).map((c) => (
-            <option key={c.id} value={c.id}>{c.name}</option>
-          ))}
-        </Select>
-      </td>
-      <td className="px-3 py-2">
-        <div className="flex items-center gap-1">
-          <Input
-            type="number" min={1} className="h-7 w-20 text-sm"
-            value={form.response_target_min}
-            onChange={(e) => setForm((f) => ({ ...f, response_target_min: Math.max(1, parseInt(e.target.value, 10) || 1) }))}
-          />
-          <span className="text-xs text-gray-400">min</span>
+      </div>
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <div className="space-y-1">
+          <label htmlFor={`${id}-priority`} className="block text-sm font-medium text-gray-900">Priority</label>
+          <Select
+            id={`${id}-priority`}
+            className="h-9 text-sm"
+            value={form.priority}
+            onChange={(e) => setForm((f) => ({ ...f, priority: e.target.value }))}
+          >
+            <option value="">Any priority</option>
+            {PRIORITIES.map((p) => (
+              <option key={p} value={p} className="capitalize">{p}</option>
+            ))}
+          </Select>
         </div>
-      </td>
-      <td className="px-3 py-2">
-        <div className="flex items-center gap-1">
-          <Input
-            type="number" min={1} className="h-7 w-20 text-sm"
-            value={form.resolution_target_min}
-            onChange={(e) => setForm((f) => ({ ...f, resolution_target_min: Math.max(1, parseInt(e.target.value, 10) || 1) }))}
-          />
-          <span className="text-xs text-gray-400">min</span>
+        <div className="space-y-1">
+          <label htmlFor={`${id}-category`} className="block text-sm font-medium text-gray-900">Category</label>
+          <Select
+            id={`${id}-category`}
+            className="h-9 text-sm"
+            value={form.category_id}
+            onChange={(e) => setForm((f) => ({ ...f, category_id: e.target.value }))}
+          >
+            <option value="">All categories</option>
+            {categories.filter((c) => c.active).map((c) => (
+              <option key={c.id} value={c.id}>{c.name}</option>
+            ))}
+          </Select>
         </div>
-      </td>
-      <td className="px-3 py-2">
-        <div className="flex gap-2">
-          <Button size="sm" onClick={onSave} disabled={isPending}>Save</Button>
-          <Button size="sm" variant="outline" onClick={onCancel}>Cancel</Button>
+      </div>
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <div className="space-y-1">
+          <label htmlFor={`${id}-response`} className="block text-sm font-medium text-gray-900">Response target</label>
+          <div className="flex items-center gap-2">
+            <Input
+              id={`${id}-response`}
+              type="number" min={1} className="h-9 w-24 text-sm"
+              value={form.response_target_min}
+              onChange={(e) => setForm((f) => ({ ...f, response_target_min: Math.max(1, parseInt(e.target.value, 10) || 1) }))}
+            />
+            <span className="text-xs text-gray-500">min</span>
+          </div>
         </div>
-      </td>
-    </tr>
+        <div className="space-y-1">
+          <label htmlFor={`${id}-resolution`} className="block text-sm font-medium text-gray-900">Resolution target</label>
+          <div className="flex items-center gap-2">
+            <Input
+              id={`${id}-resolution`}
+              type="number" min={1} className="h-9 w-24 text-sm"
+              value={form.resolution_target_min}
+              onChange={(e) => setForm((f) => ({ ...f, resolution_target_min: Math.max(1, parseInt(e.target.value, 10) || 1) }))}
+            />
+            <span className="text-xs text-gray-500">min</span>
+          </div>
+        </div>
+      </div>
+      <div className="flex gap-2">
+        <Button size="sm" onClick={onSave}>Save</Button>
+        <Button size="sm" variant="outline" onClick={onCancel}>Cancel</Button>
+      </div>
+    </div>
   )
 }
 
+// One add or edit of a policy, as the form held it when Save was pressed.
+// id is the policy being edited, or null for an add.
+type SaveVars = { id: string | null; form: PolicyForm }
+
+const SLA_KEY = ['sla-policies']
+const SAVE_KEY = ['sla-policy-save']
+// Keys for the temporary rows of adds the server has not answered yet.
+const TEMP_PREFIX = 'saving-'
+
+function rowFromForm(id: string, f: PolicyForm): SLAPolicy {
+  return {
+    id,
+    name: f.name,
+    priority: (f.priority || undefined) as Priority | undefined,
+    category_id: f.category_id || undefined,
+    response_target_min: f.response_target_min,
+    resolution_target_min: f.resolution_target_min,
+  }
+}
+
+// What the table shows: a server row, or an overlay of a save still in flight.
+type Row = { policy: SLAPolicy; saving: boolean; unsaved: boolean }
+
+// Saves are asynchronous (#672): Save closes the form at once and the request
+// runs on its own. Nothing is written to the query cache for a save. The table
+// is the server's list with an overlay of the saves in flight, and both the
+// overlay and the failures are read from react-query's mutation cache, which
+// outlives this component: leaving the tab and coming back changes nothing.
+// A save is held pending until the refetch it triggers has landed, so its row
+// is not dropped before the list has caught up. A failed save stays in the
+// mutation cache, listed above the table with Reopen, until it is reopened or
+// dismissed. Nothing a save does when it finishes touches the open form.
 function SLAPoliciesSection() {
   const qc = useQueryClient()
   const [editingId, setEditingId] = useState<string | null>(null)
@@ -1214,9 +1297,41 @@ function SLAPoliciesSection() {
   const [showAdd, setShowAdd] = useState(false)
   const [form, setForm] = useState<PolicyForm>(EMPTY_FORM)
   const [formError, setFormError] = useState('')
+  const nameRef = useRef<HTMLInputElement>(null)
 
-  const { data: policies = [] } = useQuery({ queryKey: ['sla-policies'], queryFn: listSLAPolicies })
+  // The form renders below the whole table, so on opening it (or switching it
+  // to another policy) move focus to its Name field and bring it into view.
+  // Keyed on what is open, not on the form values, so typing does not re-run it.
+  useEffect(() => {
+    if (!showAdd && editingId === null) return
+    nameRef.current?.focus()
+    nameRef.current?.scrollIntoView?.({ block: 'nearest' })
+  }, [showAdd, editingId])
+
+  const { data: policies = [] } = useQuery({ queryKey: SLA_KEY, queryFn: listSLAPolicies })
   const { data: categories = [] } = useQuery({ queryKey: ['categories'], queryFn: listCategories })
+
+  const inFlight = useMutationState({
+    filters: { mutationKey: SAVE_KEY, status: 'pending' },
+    select: (m) => ({ key: m.mutationId, vars: m.state.variables as SaveVars }),
+  })
+  const failed = useMutationState({
+    filters: { mutationKey: SAVE_KEY, status: 'error' },
+    select: (m) => ({ key: m.mutationId, vars: m.state.variables as SaveVars, error: m.state.error }),
+  })
+
+  // Last writer wins: of several saves of one policy, the latest shows.
+  const ordered = [...inFlight].sort((a, b) => a.key - b.key)
+  const edits = new Map(ordered.filter((m) => m.vars.id !== null).map((m) => [m.vars.id, m.vars.form]))
+  const rows: Row[] = [
+    ...policies.map((p) => {
+      const f = edits.get(p.id)
+      return { policy: f ? rowFromForm(p.id, f) : p, saving: f !== undefined, unsaved: false }
+    }),
+    ...ordered
+      .filter((m) => m.vars.id === null)
+      .map((m) => ({ policy: rowFromForm(`${TEMP_PREFIX}${m.key}`, m.vars.form), saving: true, unsaved: true })),
+  ]
 
   function startEdit(p: SLAPolicy) {
     setEditingId(p.id)
@@ -1238,45 +1353,63 @@ function SLAPoliciesSection() {
     setForm(EMPTY_FORM)
   }
 
-  const createMutation = useMutation({
-    mutationFn: () => createSLAPolicy({
-      name: form.name,
-      priority: form.priority || undefined,
-      category_id: form.category_id || undefined,
-      response_target_min: form.response_target_min,
-      resolution_target_min: form.resolution_target_min,
-    }),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['sla-policies'] })
-      setShowAdd(false)
-      setForm(EMPTY_FORM)
-      setFormError('')
-    },
-    onError: (err) => setFormError(extractError(err)),
-  })
+  function discard(key: number) {
+    const cache = qc.getMutationCache()
+    const m = cache.getAll().find((x) => x.mutationId === key)
+    if (m) cache.remove(m)
+  }
 
-  const updateMutation = useMutation({
-    mutationFn: (id: string) => updateSLAPolicy(id, {
-      name: form.name,
-      priority: form.priority || undefined,
-      clear_priority: !form.priority,
-      category_id: form.category_id || undefined,
-      clear_category: !form.category_id,
-      response_target_min: form.response_target_min,
-      resolution_target_min: form.resolution_target_min,
-    }),
-    onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['sla-policies'] })
-      setEditingId(null)
-      setFormError('')
+  function reopen(f: (typeof failed)[number]) {
+    discard(f.key)
+    setFormError('')
+    setForm(f.vars.form)
+    setEditingId(f.vars.id)
+    setShowAdd(f.vars.id === null)
+  }
+
+  const saveMutation = useMutation({
+    mutationKey: SAVE_KEY,
+    // Failed saves stay in the mutation cache: they are the error list, and
+    // they must outlive this component.
+    gcTime: Infinity,
+    mutationFn: async ({ id, form: f }: SaveVars) => {
+      if (id === null) {
+        await createSLAPolicy({
+          name: f.name,
+          priority: f.priority || undefined,
+          category_id: f.category_id || undefined,
+          response_target_min: f.response_target_min,
+          resolution_target_min: f.resolution_target_min,
+        })
+      } else {
+        await updateSLAPolicy(id, {
+          name: f.name,
+          priority: f.priority || undefined,
+          clear_priority: !f.priority,
+          category_id: f.category_id || undefined,
+          clear_category: !f.category_id,
+          response_target_min: f.response_target_min,
+          resolution_target_min: f.resolution_target_min,
+        })
+      }
+      // Stay pending until the refetch lands, so the row keeps its marker
+      // until the real one is in the list.
+      await qc.invalidateQueries({ queryKey: SLA_KEY })
     },
-    onError: (err) => setFormError(extractError(err)),
+    // A save that worked has nothing left to show (the list has caught up), so
+    // it leaves the cache, which then holds only saves pending or failed. The
+    // variables object is the one handed to mutate(), so it identifies this one.
+    onSuccess: (_data, vars) => {
+      const cache = qc.getMutationCache()
+      const self = cache.find({ mutationKey: SAVE_KEY, predicate: (m) => m.state.variables === vars })
+      if (self) cache.remove(self)
+    },
   })
 
   const deleteMutation = useMutation({
     mutationFn: (id: string) => deleteSLAPolicy(id),
     onSuccess: () => {
-      qc.invalidateQueries({ queryKey: ['sla-policies'] })
+      qc.invalidateQueries({ queryKey: SLA_KEY })
       setPendingDelete(null)
       setFormError('')
     },
@@ -1286,15 +1419,25 @@ function SLAPoliciesSection() {
     },
   })
 
-  const showTable = policies.length > 0 || showAdd
-
   return (
     <div className="border-t bg-gray-50">
       <div className="px-5 pt-3 pb-0">
         <p className="text-xs font-medium uppercase tracking-wider text-gray-400">SLA Policies</p>
       </div>
       <div className="px-5 py-4 space-y-3">
-        {showTable ? (
+        {failed.map((f) => {
+          const name = f.vars.form.name || 'unnamed policy'
+          return (
+            <div key={f.key} className="flex items-start justify-between gap-3 rounded border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+              <span role="alert">Saving '{name}' failed: {extractError(f.error)}</span>
+              <span className="flex shrink-0 gap-3">
+                <button aria-label={`Reopen '${name}'`} className="text-xs font-medium text-red-700 underline" onClick={() => reopen(f)}>Reopen</button>
+                <button aria-label={`Dismiss '${name}'`} className="text-xs text-red-700 hover:underline" onClick={() => discard(f.key)}>Dismiss</button>
+              </span>
+            </div>
+          )
+        })}
+        {rows.length > 0 ? (
           <div className="overflow-x-auto rounded border bg-white">
             <table className="w-full text-sm">
               <thead className="border-b bg-gray-50">
@@ -1308,18 +1451,16 @@ function SLAPoliciesSection() {
                 </tr>
               </thead>
               <tbody className="divide-y">
-                {policies.map((p) =>
-                  editingId === p.id ? (
-                    <PolicyFormRow
-                      key={p.id}
-                      form={form} setForm={setForm} categories={categories}
-                      onSave={() => updateMutation.mutate(p.id)}
-                      onCancel={() => { setFormError(''); setEditingId(null) }}
-                      isPending={updateMutation.isPending}
-                    />
-                  ) : (
-                    <tr key={p.id} className="hover:bg-gray-50">
-                      <td className="px-3 py-2 font-medium">{p.name}</td>
+                {rows.map(({ policy: p, saving, unsaved }) => {
+                  const isEditing = editingId === p.id
+                  const marked = isEditing || saving
+                  return (
+                    <tr key={p.id} aria-current={marked ? 'true' : undefined} className={marked ? 'bg-blue-50' : 'hover:bg-gray-50'}>
+                      <td className="px-3 py-2 font-medium">
+                        {p.name}
+                        {isEditing && <span className="ml-2 text-xs font-normal text-blue-700">Editing</span>}
+                        {saving && <span className="ml-2 text-xs font-normal text-blue-700">Saving…</span>}
+                      </td>
                       <td className="px-3 py-2">
                         {p.priority ? (
                           <span className={cn('rounded-full px-2 py-0.5 text-xs font-medium capitalize', PRIORITY_COLORS[p.priority])}>
@@ -1337,36 +1478,45 @@ function SLAPoliciesSection() {
                       <td className="px-3 py-2 tabular-nums text-gray-600">{fmtMin(p.response_target_min)}</td>
                       <td className="px-3 py-2 tabular-nums text-gray-600">{fmtMin(p.resolution_target_min)}</td>
                       <td className="px-3 py-2">
-                        <div className="flex gap-3">
-                          <button className="text-xs text-blue-600 hover:underline" onClick={() => startEdit(p)}>Edit</button>
-                          <button
-                            className="text-xs text-red-600 hover:underline disabled:opacity-40"
-                            onClick={() => { setFormError(''); setPendingDelete(p) }}
-                            disabled={deleteMutation.isPending}
-                          >
-                            Delete
-                          </button>
-                        </div>
+                        {!isEditing && !unsaved && (
+                          <div className="flex gap-3">
+                            <button className="text-xs text-blue-600 hover:underline" onClick={() => startEdit(p)}>Edit</button>
+                            <button
+                              className="text-xs text-red-600 hover:underline disabled:opacity-40"
+                              onClick={() => { setFormError(''); setPendingDelete(p) }}
+                              disabled={deleteMutation.isPending}
+                            >
+                              Delete
+                            </button>
+                          </div>
+                        )}
                       </td>
                     </tr>
                   )
-                )}
-                {showAdd && (
-                  <PolicyFormRow
-                    form={form} setForm={setForm} categories={categories}
-                    onSave={() => createMutation.mutate()}
-                    onCancel={() => { setFormError(''); setShowAdd(false) }}
-                    isPending={createMutation.isPending}
-                  />
-                )}
+                })}
               </tbody>
             </table>
           </div>
         ) : (
-          <p className="text-sm text-gray-500">No SLA policies defined.</p>
+          !showAdd && editingId === null && <p className="text-sm text-gray-500">No SLA policies defined.</p>
+        )}
+        {(showAdd || editingId !== null) && (
+          <PolicyFormFields
+            form={form} setForm={setForm} categories={categories} nameRef={nameRef}
+            onSave={() => {
+              saveMutation.mutate({ id: editingId, form })
+              if (editingId !== null) {
+                setEditingId(null)
+              } else {
+                setShowAdd(false)
+                setForm(EMPTY_FORM)
+              }
+            }}
+            onCancel={() => { setFormError(''); setShowAdd(false); setEditingId(null) }}
+          />
         )}
         {formError && <p role="alert" className="text-sm text-red-600">{formError}</p>}
-        {!showAdd && !editingId && (
+        {!showAdd && editingId === null && (
           <Button size="sm" variant="outline" onClick={startAdd}>+ Add policy</Button>
         )}
       </div>
@@ -1405,6 +1555,12 @@ function FeaturesPanel({
             description="Track response and resolution targets per priority and category. A policy is attached when a ticket is created, a background sweep marks a target breached when it reaches or passes it, and the queue shows each ticket's standing. This toggle is the switch; SLA_ENABLED in the environment turns it on at every start."
           >
             <Toggle checked={bool('sla_enabled')} onChange={(v) => setBool('sla_enabled', v)} />
+          </SettingRow>
+          <SettingRow
+            label="SLA alerts"
+            description="Tell staff by email, and send to webhooks that subscribe to them, when a ticket's response or resolution target is breached or has reached 80% of its time. Each person's SLA alerts switch and the Email override still decide who is mailed. Off on an install upgraded from 1.2, so nothing is sent until you turn it on; a breach that happened while this was off is not announced later."
+          >
+            <Toggle label="SLA alerts" checked={bool('sla_alerts_enabled')} onChange={(v) => setBool('sla_alerts_enabled', v)} />
           </SettingRow>
           {bool('sla_enabled') && <SLAPoliciesSection />}
         </div>
@@ -1825,9 +1981,9 @@ function ReputationProviderRow({
 
 // ── Email ────────────────────────────────────────────────────────────────────
 
-// The three per-user staff-email switches live on each person's profile (#441).
-// These override them for everyone: leave it to each person (the default),
-// force it on, or force it off.
+// The four per-user staff-email switches live on each person's profile (#441,
+// and SLA alerts from #670). These override them for everyone: leave it to each
+// person (the default), force it on, or force it off.
 const STAFF_EMAIL_SWITCHES: { key: string; name: string; help: string }[] = [
   {
     key: 'staff_email_assigned_override',
@@ -1843,6 +1999,11 @@ const STAFF_EMAIL_SWITCHES: { key: string; name: string; help: string }[] = [
     key: 'staff_email_group_override',
     name: "My groups' tickets",
     help: 'A ticket is assigned to a group, a requester replies on a group ticket nobody has taken yet, or a group ticket nobody has taken yet is reopened. Goes to every member of the group.',
+  },
+  {
+    key: 'staff_email_sla_override',
+    name: 'SLA alerts',
+    help: 'A target on a ticket assigned to a person, on a group ticket nobody has taken yet, or on a ticket a person follows is breached or at risk. Needs SLA alerts turned on under Features.',
   },
 ]
 
@@ -1870,10 +2031,10 @@ function EmailPanel({
 
       <Section title="Staff email about tickets">
         <div className="px-5 py-4 text-sm text-gray-500">
-          Staff are emailed when a ticket is assigned to them or their group, and when a requester replies on a ticket
-          that is theirs. Each person chooses on their profile; their own switches start on. Nobody is emailed about
+          Staff are emailed when a ticket is assigned to them or their group, when a requester replies on a ticket
+          that is theirs, and when an SLA target on one of their tickets is breached or at risk. Each person chooses on their profile; their own switches start on. Nobody is emailed about
           their own action. These settings decide for everyone: "Use each person's choice" leaves it to them,
-          "On for everyone" and "Off for everyone" ignore what they chose. On an install upgraded from 1.2 all three
+          "On for everyone" and "Off for everyone" ignore what they chose. On an install upgraded from 1.2 all four
           start as "Off for everyone", so no staff email is sent until you change them. Only has an effect once email
           is set up.
         </div>

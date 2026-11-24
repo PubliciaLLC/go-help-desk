@@ -288,7 +288,7 @@ func run() error {
 
 	// slaPolicySvc is always created so the admin blade can manage policies
 	// regardless of whether SLA enforcement is active.
-	slaPolicySvc := sla.NewService(slStore)
+	slaPolicySvc := sla.NewService(slStore, nil)
 
 	// slaSvc is always wired into the ticket service now — never nil. What
 	// used to gate it (cfg.SLAEnabled, decided once here at boot) and what
@@ -305,7 +305,7 @@ func run() error {
 	// off) is still reported — the ticket service treats these as non-fatal
 	// and drops them, and domain code does not log, so without this wrapper
 	// they would vanish entirely.
-	slaSvc := ticket.SLAService(newLoggingSLA(newGatedSLA(sla.NewService(slStore), adminSvc, slog.Default()), slog.Default()))
+	slaSvc := ticket.SLAService(newLoggingSLA(newGatedSLA(sla.NewService(slStore, nil), adminSvc, slog.Default()), slog.Default()))
 
 	// SLA_ENABLED is a startup-time convenience only: DESIGN.md documents it
 	// as a way to pre-enable the feature so a fresh instance works from first
@@ -392,6 +392,10 @@ func run() error {
 	// The dispatcher is for what is not a change to a ticket: the guest's link
 	// resend.
 	ticketSvc := ticket.NewService(tStore, tStore, dispatcher, auStore, txRunner, slaSvc)
+	// The SLA sweep stamps what it finds and raises its event in one
+	// transaction through the same runner (#670), so it is built here, after
+	// txRunner. The policy service above never sweeps.
+	slaSweeper := sla.NewService(slStore, txRunner)
 	// The SLA re-match a priority change makes is gated on the same live
 	// toggle as AttachPolicy (#443).
 	ticketSvc.SetSLAEnabled(slaToggle(adminSvc, slog.Default()))
@@ -616,20 +620,23 @@ func run() error {
 						return enabled
 					},
 					func(ctx context.Context, now time.Time) (sla.SweepResult, error) {
-						return slaPolicySvc.SweepBreaches(ctx, tStore, now)
+						// sla_alerts_enabled is read per tick; a failed read
+						// skips the tick (sweepSLA) rather than stamp silently.
+						return sweepSLA(ctx, adminSvc.SLAAlertsEnabled,
+							func(ctx context.Context, now time.Time, announce bool) (sla.SweepResult, error) {
+								return slaSweeper.SweepBreaches(ctx, tStore, now, announce)
+							}, now)
 					}, time.Now())
 				if !ran {
 					continue
 				}
 				if err != nil {
 					// Partial failures are joined; res is still meaningful.
-					slog.WarnContext(sweepCtx, "sweeping SLA breaches failed", "error", err,
-						"evaluated", res.Evaluated, "stamped", res.Stamped)
+					slog.WarnContext(sweepCtx, "sweeping SLA crossings failed", "error", err,
+						"evaluated", res.Evaluated, "stamped", res.Stamped,
+						"announced", res.Announced, "stale", res.Stale)
 				}
-				if res.Stamped > 0 {
-					slog.InfoContext(sweepCtx, "stamped SLA breaches",
-						"evaluated", res.Evaluated, "stamped", res.Stamped)
-				}
+				logSLASweep(sweepCtx, slog.Default(), res)
 			}
 		}
 	}()

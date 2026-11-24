@@ -238,6 +238,29 @@ export function InsecureConfigBanner({ isAdmin }: InsecureConfigBannerProps) {
       ),
     })
   }
+  // #616: roles that must use a passkey while passkeys are unavailable. The
+  // requirement is paused rather than locking anyone out, so this says so: it
+  // is a security control that is not being applied.
+  const suspendedRoles = passkeysOff ? (passkeys.suspended_roles ?? []) : []
+  if (suspendedRoles.length > 0) {
+    const names = suspendedRoles.join(', ')
+    notices.push({
+      id: 'passkey-suspended',
+      severity: 'config',
+      signature: names,
+      title: 'Passkey requirement suspended',
+      body: (
+        <>
+          <p className="font-semibold">Passkey requirement suspended</p>
+          <p className="mt-1">
+            Passkeys are required for {names}, but they are unavailable on this server, so the requirement is
+            not being enforced: those users can sign in with an authenticator app code until{' '}
+            <code className={CODE}>BASE_URL</code> is fixed.
+          </p>
+        </>
+      ),
+    })
+  }
   if (emailOff) {
     notices.push({
       id: 'email-off',

@@ -8,7 +8,7 @@ Open-source, self-hosted help desk system inspired by HESK, with local, SAML and
 
 | Version | Scope |
 |---------|-------|
-| **v1** | Core ticketing (linked tickets, follow-ups from Closed tickets, auto-assignment, optional SLA tracking), local + SAML + OIDC auth, self-service signup, guest submission, MFA (TOTP or passkey), custom fields, CTI-linked group management, canned responses, full-text search (Postgres FTS), attachments with malware scanning and hash-reputation lookup, admin audit view with retention, REST API, MCP interface, email + webhook notifications delivered through a database outbox (with Slack/Teams/Discord/JIRA payload formats and per-hook ticket filters), Docker deployment |
+| **v1** | Core ticketing (linked tickets, follow-ups from Closed tickets, auto-assignment, optional SLA tracking with breach and at-risk alerts), local + SAML + OIDC auth, self-service signup, guest submission, MFA (TOTP or passkey), custom fields, CTI-linked group management, canned responses, full-text search (Postgres FTS), attachments with malware scanning and hash-reputation lookup, admin audit view with retention, REST API, MCP interface, email + webhook notifications delivered through a database outbox (with Slack/Teams/Discord/JIRA payload formats and per-hook ticket filters), Docker deployment |
 | **v1.4** | ITSM ticket types (Incident/SR/Problem/Change), Impact × Urgency priority matrix, default ticket type per CTI (#135); incident management (#408); monitoring events (#411); operational reporting (#131); asset reference (#415); continual improvement (#405); suppliers (#406); relationship management (#407) |
 | **v2** | Plugin system (1st/3rd-party, sandboxed, admin UI install); plugin runtime (#416); Snipe-IT reference plugin (#403) |
 | **v3** | Knowledge base, custom admin-defined roles |
@@ -790,7 +790,7 @@ An administrator can have the server check for newer releases. It is **off unles
 
 An install upgraded from an earlier release has never been asked about the choices 1.3.0 added. The first administrator who signs in lands on the dashboard and is sent to `/after-upgrade`, a short wizard with one step per question and **Back**, **Next** and **Skip** on each. A step shows today's setting, says what changed in 1.3.0 and lets the administrator change it.
 
-- **Steps, in order:** the weekly update check (unchecked); staff email notifications (migration 000052 turned the three overrides off); staff API keys (`staff_can_create_api_keys` and the default lifetime slider); the old-password reset window (`password_rehash_grace_days`, with how many accounts are still on an old hash and whether email is set up). Guest file uploads (#536) is a fifth step, shown only while guest submission is on: it says that 1.2 let guests upload through the API and 1.3.0 switches that off, and offers `guest_attachments_enabled`, the size slider (`guest_attachment_max_mb`, running to the per-file limit `attachment_max_mb`, #673) and the per-ticket and per-hour limits, reusing the Settings controls. With guest submission off the step is not part of the wizard and the final step says guest uploads stay off because they need guest submission. Skipping it leaves uploads off.
+- **Steps, in order:** the weekly update check (unchecked); staff email notifications (migration 000052 turned the three overrides off, and 000067 the fourth, SLA alerts); staff API keys (`staff_can_create_api_keys` and the default lifetime slider); the old-password reset window (`password_rehash_grace_days`, with how many accounts are still on an old hash and whether email is set up). Guest file uploads (#536) is a fifth step, shown only while guest submission is on: it says that 1.2 let guests upload through the API and 1.3.0 switches that off, and offers `guest_attachments_enabled`, the size slider (`guest_attachment_max_mb`, running to the per-file limit `attachment_max_mb`, #673) and the per-ticket and per-hour limits, reusing the Settings controls. With guest submission off the step is not part of the wizard and the final step says guest uploads stay off because they need guest submission. Skipping it leaves uploads off.
 - **Saving.** Next sends what the step changed through `PATCH /admin/settings`, so every server-side validation and every session-only rule applies unchanged. Skip sends nothing and drops that step's edits, so the setting keeps its safe default. A refusal is shown on the step and the administrator stays on it.
 - **Upgraded, not guessed.** The wizard is shown while `post_upgrade_130_seen` is not true. Setup writes it `true` on a fresh install (setup asks the update question itself), so a fresh install never sees the wizard; an install that upgraded to 1.3.0 never ran that setup and has no value. The wizard writes it, in the same request as the last step, when it is finished or skipped, and it never shows again. This needs no migration and no version comparison. An administrator who closes the tab part-way sees it again next time, with the steps already saved showing their new values.
 - **Who.** Administrators only. A staff member or requester is never redirected and the route turns them away; `/after-upgrade` redirects to the dashboard once the flag is set. Only the dashboard redirects, so a deep link after sign-in is not interrupted, and a failure to read the settings lets the administrator straight through.
@@ -806,7 +806,7 @@ An install upgraded from an earlier release has never been asked about the choic
 - Username/password with bcrypt hashing at **cost 12** (`user.ProductionBcryptCost`, #453). Releases up to 1.2 hashed at cost 10; a hash made at a lower cost is replaced at that account's next successful password sign-in, with a write conditional on the old hash so a password changed in between is never overwritten. The upgrade is best effort: a failure is logged and the sign-in still succeeds. While accounts are still on a lower cost, a wrong password for such an account spends the extra comparisons needed to cost as much as one at cost 12, so it takes as long to refuse as an address with no account. An account with no password (one that signs in only through SSO) or with a hash bcrypt cannot read is refused after the same comparison an unknown address gets, so a wrong password does not say which addresses belong to SSO-only accounts (#476). A hash at a higher cost than this one still takes longer to refuse; none is ever written. A password is 8 to 72 **bytes**, the same rule wherever one is set: first-run setup, admin create, admin reset, the account page and signup verification (`user.ValidatePassword`, #368). The upper bound is bcrypt's: it reads only the first 72 bytes and refuses to hash more. It counts bytes, not characters, so accented letters take 2 bytes each and most other non-Latin characters 3 or 4, and a 25-character passphrase in Chinese is already too long. A password over the limit is refused with a 400 that names it (`bad_request`, or `password_too_long` at signup verification). Sign-in applies no maximum, so a hash made elsewhere by a bcrypt that silently truncated still accepts its owner's full password: only the first 72 bytes are compared, as bcrypt always has. A missing or wrong **current** password on `PATCH /me/password` is `400 invalid_current_password`, not 401 (#555): the session is good, and the web client reads every 401 as an expired session and signs the person out. Wrong guesses are throttled per user with a budget the size of sign-in's, counted separately (key `change-password:<user id>`, failures only, same `AUTH_THROTTLE_DELAY` tarpit: the right password always works).
 - **Old hashes stop working after N days (#453).** Rehash at sign-in only reaches accounts that sign in, so a hash made below cost 12 is refused too once the grace period ends. `admin.KeyPasswordRehashStartedAt` (`password_rehash_started_at`) holds the moment 1.3.0 first ran against the database, written once by migration 000044 (`ON CONFLICT DO NOTHING`; a fresh install has no old hashes, so its date changes nothing). It is a settings row rather than an `instance_secrets` row: that table is for secrets (a name allowlist and at least 32 bytes), and a date is not one. It is a known key only because the migration test requires every seeded key to be one; `PATCH /admin/settings` refuses it with `readonly_setting`, it is auth-critical, and the settings dump leaves it out, so nobody can restart the clock. N is `password_rehash_grace_days` (Authentication tab, default **30**, 1 to 365 enforced when saved; an unreadable or out-of-range stored value reads as 30). Sign-in only: `user.Service.VerifyPasswordForSignIn` returns `ErrPasswordResetRequired` for a **correct** password on a hash below the current cost once `started_at + N days` has passed, and the handler answers 403 `password_reset_required` (the reset link is sent, or the message says what to do instead; see below). A wrong password still answers 401 `invalid_credentials`, so a guesser learns nothing about the hash. The refusal spends the same bcrypt work as a wrong password on that hash (it burns the cost difference instead of the rehash), pinned by a work-counting test next to #475's. `VerifyPassword` (confirming the current password while changing it) never refuses, since changing the password is the cure. No deadline recorded, or one that cannot be read, means no refusal. **Every administrator is exempt** (rehashed at sign-in as before): administrators are who reset everyone else, setup does not reopen, and email may be off. An earlier version exempted only the last active administrator, which still locked out the others; Erik widened it. Staff and requesters are refused. The SAML restriction (`saml_required`, password sign-in limited to administrators) is checked first, so a non-administrator under SAML gets that refusal rather than a reset instruction. When the server can send email (`passwordResetAvailable()`), the refusal also sends the reset link, through the same code path as "Forgot password" (`requestPasswordReset`, see below), and the message says to check email; Erik's ruling of 2026-10-19, replacing "refuse and point at Forgot password". It is sent only after the password was verified and after the SAML check, so a wrong password or a SAML refusal sends nothing. It spends the same per-address budget as `POST /auth/forgot-password` (`forgotPasswordKey`), and the per-account limit applies when the worker sends. Over the budget, or if the queue insert fails, nothing is queued and the message says "We could not send a reset link just now. Try again in a minute, or ask an administrator." rather than claiming a mail was sent; the code stays `password_reset_required`. The work added to the request is one outbox insert; the mail is sent by the worker. When email is off nothing is sent and the message points at an administrator. The sign-in page shows the "Forgot password?" link in the email-on case (#451).
 - Available for all roles by default. With `saml_enabled` on, only administrators keep it (see SAML below).
-- **MFA** (optional toggle `mfa_enabled` in admin settings): a second factor is **either** a TOTP authenticator app (Google Authenticator, Authy, etc., enrolled by QR code) **or** a registered passkey (below). Admin can enforce MFA for specific roles (`mfa_enforced_roles`) or all users; an enforced user with no factor is sent to enrolment at sign-in, and right after verifying a self-service signup.
+- **MFA** (optional toggle `mfa_enabled` in admin settings): a second factor is **either** a TOTP authenticator app (Google Authenticator, Authy, etc., enrolled by QR code) **or** a registered passkey (below). Admin can enforce MFA for specific roles (`mfa_enforced_roles`) or all users, and can require a passkey, instead of TOTP being enough, for specific roles (`passkey_required_roles`, an auth-critical setting; see "Passkey required for roles (#616 part c)"; a listed role is MFA-enforced as well, and the settings page shows its MFA box checked and disabled); an enforced user with no factor is sent to enrolment at sign-in, and right after verifying a self-service signup.
 - **A half-signed-in session expires** (#452). After the password is accepted but before the second factor is done, the session is good for **5 minutes** when a code from an existing factor is owed (TOTP or passkey) and **15 minutes** for first-time enrolment, which takes longer (installing an app, scanning a code). The limit is chosen when the session is created (`auth.PendingDeadline`) and stored as `SessionData.PendingUntil`; saving a staged enrolment secret does not extend it. Past it, `SessionAuth` deletes the session row and the request carries no actor, so the route answers its usual 401 and the person signs in with their password again; a refused code is never checked, so it does not use up an MFA attempt. The cookie and row are also given that lifetime so an abandoned sign-in clears itself. A pending session with no `PendingUntil` (saved before this existed) counts as expired, so anyone mid-sign-in at upgrade signs in once more. A fully signed-in session is not affected. Enrolment stays outside `RequireMFA`, so the password is still a way in: the sole administrator can always sign in again and recover (`TestSoleAdministrator_CanSelfRecoverWithNoSecondFactor`).
 
 ### Forgot password (#451)
@@ -979,7 +979,9 @@ separate session fact, `FactorVerified`, set only by:
   `http://schemas.microsoft.com/claims/multipleauthn`. Entra ID sends neither by
   default: add the `amr` optional claim to the app registration (for SAML, with
   `include_granular_amr`). Without it SSO sign-in still works, but a user who
-  also has a local factor must enter it before changing factors.
+  also has a local factor must enter it before changing factors;
+- an SSO sign-in whose assertion is passkey-grade (below), which also counts as
+  having proved a factor.
 
 Without this, a password-only session on an account where MFA was optional could
 replace the owner's factor at any time after they enrolled. A session written
@@ -1036,10 +1038,18 @@ assertion they re-issue the session with `MFAPassed` and `FactorVerified` true.
 The gate downstream is `Actor.MFAPassed`, already enforced by `RequireMFA`, so
 no route learned a new idea.
 
-**The password step answers with three booleans:** `mfa_needed` (a TOTP
+**The password step answers with four booleans:** `mfa_needed` (a TOTP
 enrolment exists; TOTP wins when the account has both), `passkey_needed` (a
 passkey is registered and no TOTP) and `mfa_enrollment_needed` (neither, and the
-role is enforced). All false means no factor is owed. Each is also conditional
+role is enforced), and, for a role in `passkey_required_roles` only (#616c),
+`passkey_enrollment_needed` (register a passkey). For such a role the first
+three change meaning: `passkey_needed` is sent whenever a key is registered,
+TOTP or not; `mfa_needed` together with `passkey_enrollment_needed` means verify
+the authenticator code, **then** register a key (the TOTP verify still answers
+204); and `mfa_enrollment_needed` is never sent, because enrolling TOTP would
+not satisfy the gate. `POST /auth/verify-email` carries `passkey_enrollment_needed`
+too. For every role not in the list the first three keep their meanings and the
+fourth is false. All false means no factor is owed. Each is also conditional
 on the instance setting `mfa_enabled`: with it off, an account that holds TOTP or
 passkeys owes nothing at login, and the descriptions above apply with it on. Two booleans keyed off
 `u.MFAEnabled`, which is the TOTP column and not "this account has a second
@@ -1158,8 +1168,11 @@ It refuses an OAuth client's service account (#490), which has no password to un
 `users.must_change_password` (migration 000045). While the flag is set the
 session a correct password opens may do exactly one thing, change the password
 (`PATCH /me/password`, which asks for the current password as ever); the
-login answer carries `password_change_required` and the login page shows the
-change step first. Every other route answers `403 password_change_required`:
+login answer carries `password_change_required`. The login page shows the
+change step first for an account that holds no factor, and the factor step first
+(`mfa_needed` or `passkey_needed` in the same answer, since the server refuses
+the change with `403 mfa_required` until a code or key is proved) for one that
+does, with the change after it. Every other route answers `403 password_change_required`:
 `RequireMFA` refuses it for all the routes behind it, and `RequirePasswordCurrent`
 for the enrolment routes outside it, the way the MFA-pending gate holds a
 half-signed-in session. Changing the password (`SetUserPasswordHash`) clears the
@@ -1253,6 +1266,10 @@ unavailable: ...` with the reason) and carries on with no passkey service, and:
   then signs in and enrols TOTP as usual. An account with a passkey **and**
   TOTP uses TOTP as always. `passkey_needed` is never sent while passkeys are
   off.
+- **A passkey requirement for a role is suspended while passkeys are off**
+  (#616c, "Passkey required for roles" below): TOTP passes again, and
+  `GET /admin/security-warnings` gains `passkeys.suspended_roles` (the listed
+  roles, while `mfa_enabled` is on) so the banner can say so.
 - **There is no exception for the last administrator.** They are refused too,
   and `alreadyProtected` still counts passkeys, so a password alone cannot
   enrol TOTP on any passkey-only account. Recovery is on the server:
@@ -1262,42 +1279,147 @@ unavailable: ...` with the reason) and carries on with no passkey service, and:
   they were registered on.
 
 **Not built**, written down so it is not rediscovered as a gap: passwordless
-sign-in; attestation verification against a metadata service; a per-role
-"passkey required, TOTP no longer sufficient" policy; and any route by which a
-machine credential could register or use a passkey (`DenyMachineCredentials`
-refuses that and will keep refusing it). The two of those that
-[#616](https://github.com/PubliciaLLC/go-help-desk/issues/616) raised are limits
-of 1.3.0 and are described next.
+sign-in; attestation verification against a metadata service (below); and any
+route by which a machine credential could register or use a passkey
+(`DenyMachineCredentials` refuses that and will keep refusing it). The per-role
+"passkey required, TOTP no longer sufficient" policy that
+[#616](https://github.com/PubliciaLLC/go-help-desk/issues/616) raised was
+first listed here and is now built (part c, below).
 
-**Two limits of the passkey check in 1.3.0** ([#616](https://github.com/PubliciaLLC/go-help-desk/issues/616),
-parts a and c). Both were decided to be documented now and built in 1.3.x, not
-before the tag.
+**Attestation is deliberately not built** (#616 part a). Registration asks for
+no attestation, so browsers send `fmt: none`, and the library checks a present
+statement's signature but not its trust chain. Nothing here knows what kind of
+authenticator a key is. Enforcing attestation (the FIDO Metadata Service, a
+request for `direct` attestation, a refusal of `none`, a cache and a refresh, an
+answer for installs with no outbound access) would also very likely mean
+**hardware keys only**, because synced passkeys (iCloud Keychain, Google
+Password Manager) generally send none; that contradicts accepting synced
+passkeys, which this section does on purpose. The AAGUID is stored but is
+self-reported, so an allow-list on it would not be a control. What the property
+above does claim, phishing-resistance, holds for every credential this accepts;
+what an operator cannot do is require a particular kind of authenticator. The
+`backup_eligible` flag is how to tell a synced credential from a hardware key
+afterwards. The signature counter check (part b) shipped in 1.3.0 (#645).
 
-- **Attestation is not verified: any authenticator is accepted.** Registration
-  asks for no attestation, so browsers send `fmt: none`, and the library checks a
-  present statement's signature but not its trust chain. Nothing here knows what
-  kind of authenticator a key is. The AAGUID is stored but is self-reported, so
-  an allow-list on it would not be a control. Enforcing attestation (the FIDO
-  Metadata Service, a request for `direct` attestation, a refusal of `none`, a
-  cache and a refresh, an answer for installs with no outbound access) would
-  also very likely mean **hardware keys only**, because synced passkeys (iCloud
-  Keychain, Google Password Manager) generally send none; that would contradict
-  accepting synced passkeys, which this section does on purpose. That is a
-  product decision before it is a code change. What the property above does
-  claim, phishing-resistance, holds for every credential this accepts; what an
-  operator cannot do is require a particular kind of authenticator. The
-  `backup_eligible` flag is how to tell a synced credential from a hardware key
-  afterwards.
-- **There is no "passkey required" policy.** `MFARequiredFor(role)` is satisfied
-  by a TOTP enrolment **or** a passkey, so an operator who enforces MFA for a
-  role cannot also require that role to use a passkey rather than TOTP, and a
-  role's members with TOTP are not nudged to move to a key. Building it means a
-  new setting, a login state in which TOTP proves a factor but does not pass
-  the gate (so the person can only enrol a key), TOTP enrolment that stops
-  satisfying the gate for those roles, a rule for what happens while passkeys
-  are off (#494) and an exemption for SSO sign-ins, and it touches the login
-  state machine, which has had many fixes. An operator who needs this today
-  has no setting for it.
+### Passkey required for roles (#616 part c)
+
+`passkey_required_roles` (a JSON array of `admin`, `staff` and `user`, seeded
+`[]`, auth-critical so machine credentials cannot change it) lists roles whose
+members must finish **every sign-in with a passkey**. For them a TOTP code still
+proves a factor, but it does not pass MFA. With the list empty, which is how an
+upgrade leaves it (migration 000066), every path behaves as before.
+
+- **A listed role is MFA-enforced, computed when read.** `MFARequiredFor(role)`
+  is `mfa_enabled` and the role is in `mfa_enforced_roles` **or**
+  `passkey_required_roles`. Nothing writes `mfa_enforced_roles` for the
+  operator: untick the passkey requirement and the role is exactly as enforced
+  as it was before. The settings page shows the role's "Require MFA" box checked
+  and disabled while it is listed, with the stored value untouched; the server
+  enforces the implication regardless of the page. Like `mfa_enforced_roles`
+  the list has no effect while `mfa_enabled` is off (`PasskeyRequiredFor`).
+  `PATCH /admin/settings` refuses an element that is not one of the three roles
+  (`400 bad_request`).
+- **The decision is one pure function**, `auth.SecondStep` (table-tested), called
+  by the password login, signup verification, SAML and OIDC. Its output is what
+  the wire carries, plus the stranded refusal. For a role not in the list it is
+  the old logic unchanged. For a listed role: a passkey **registered** means the
+  passkey is owed (`passkey_needed`), even when the account also holds TOTP; TOTP
+  only: verify it, then register a key (`mfa_needed` and
+  `passkey_enrollment_needed` both true); nothing: register a key
+  (`passkey_enrollment_needed`), **never** TOTP enrolment, because that would not
+  satisfy the gate.
+- **The session fact is `PasskeyOwed`,** set only when a sign-in creates the
+  session (password login, signup verification, SAML, OIDC), from the role's
+  policy at that moment. Existing sessions are untouched: a policy change applies
+  at the next sign-in and ends nobody's session, as `mfa_enforced_roles` behaves.
+  A session saved before the field existed decodes it false. TOTP verification
+  and TOTP enrolment confirm leave `MFAPassed` as it was (`MFAPassed = !PasskeyOwed`)
+  and set `FactorVerified`, which is what lets a key be registered (#333, #617),
+  and they keep the pending deadline rather than extending it (#452). A password
+  change carries the flag, or a session that must change its password could then
+  enrol TOTP and pass. It is cleared by the only things that satisfy it: a
+  passkey sign-in and a passkey registration (`markPasskeyRegistrationSatisfiesMFA`).
+  A second fact, **`PasskeyHeld`**, is set with it when the sign-in owed a key the
+  account **already had** (`Owed.PasskeyHeld`: password login, signup, SSO), carried
+  with it and cleared with it. While it is set the session may neither register a
+  passkey nor delete one (`403 passkey_required`, `requirePasskeyNotHeld`, on
+  register start and finish and on `DELETE /me/passkeys/{id}`), whatever else it
+  has proved: otherwise a TOTP code, or an IdP that asserted MFA but not a passkey,
+  would let the caller register an authenticator of their own and pass, never
+  using the owner's key, or delete the keys first and become the "no key yet"
+  case. Recorded at sign-in, so deleting keys mid-session cannot change it. Not set
+  for the onboarding sign-ins (TOTP only, or nothing), which keep their route to a
+  first key.
+  A forced password change (`must_change_password`) on a session that has proved a
+  factor and is owed a first key goes **before** the key: `RequireMFAOrPasswordChange`
+  admits `PasskeyOwed && FactorVerified && !PasskeyHeld && MustChangePassword`,
+  since registering waits behind `RequirePasswordCurrent` and `MFAPassed` cannot
+  come until a key exists. The route is open to such a session only while the
+  change is actually owed (a session with no forced change gets `403
+  mfa_required` from it), and the change **keeps the pending deadline the
+  sign-in gave** rather than minting a fresh one, as TOTP verification does
+  (#452): otherwise repeated calls would push the deadline back indefinitely
+  (`TestPasskeyRequired_PasswordChangeDoesNotExtendThePendingDeadline`).
+  A session owed a held key signs in with it first.
+  The Account-page step-up (#336) on a fully signed-in session is unaffected,
+  since that session never owed a passkey.
+- **Suspended while passkeys are unavailable (#494).** With no passkey service the
+  requirement could not be met by anyone, so it is not applied
+  (`passkeyRequiredFor` is availability and the setting): TOTP passes again, a
+  role with no factor still enrols TOTP because the role is still MFA-enforced,
+  and a passkey-only account is still refused (`403 passkey_unavailable`). The
+  policy itself locks nobody out, but a passkey-only account, which the policy
+  creates when it sends a no-factor account to register a key, is stranded (an
+  accepted, documented consequence) while
+  passkeys are unavailable (a bad `BASE_URL`), until passkeys work again or an
+  administrator resets the account's factors (reset-factors). `GET /admin/security-warnings` gains
+  `passkeys.suspended_roles` (always an array; non-empty only when passkeys are
+  unavailable, `mfa_enabled` is on and the list is non-empty) and the banner shows
+  "Passkey requirement suspended", saying TOTP is accepted for those roles until
+  `BASE_URL` is fixed.
+- **Recovery.** A person who lost the key is helped by an administrator removing
+  it or resetting MFA, as in Losing a key above; there is no self-service route,
+  because a held key is exactly what the policy requires (`PasskeyHeld`). A TOTP
+  holder with **no** key verifies the authenticator and registers a first one. The
+  sole administrator in a listed role with no factor signs in, registers a key and
+  is in. A sole administrator in a listed role who holds TOTP and has lost the key
+  needs `reset-factors` on the server; the guard below does not prevent that, since
+  a lost key still counts as held.
+- **Self-lockout guard (owner ruling).** An administrator does not require a
+  passkey of their own role before they have shown they can hold one: someone who
+  cannot create a passkey on their device or browser would be stuck at the
+  registration step at their next sign-in. `PATCH /admin/settings` therefore
+  refuses (`400 bad_request`, the status and code of #300's
+  `ErrWouldOrphanInstance`, whose shape this follows) a `passkey_required_roles`
+  that **newly lists the saving user's own role** unless that user has at least one
+  registered passkey (`refusePasskeySelfLockout`; the message says to register a
+  passkey first, and names `BASE_URL` only when passkeys are unavailable, in which
+  case someone with no key cannot register one now). Only a newly listed own role is judged:
+  when the stored list already names the saver's role, or the new list does not,
+  nothing about their own exposure changes, so any other edit (another role added
+  or removed, an unchanged list) is never refused. A refused
+  save writes nothing. It applies whether or not `mfa_enabled` is on, because
+  switching it on later would otherwise activate the policy under the saver. A
+  machine credential cannot reach the key at all (`AuthCriticalKeys`; `a machine
+  credential is refused` in `TestPatchSettings_PasskeyRequiredRoles`), so the saver
+  is always a signed-in person. Server-side only: the settings page shows the
+  refusal through its existing error display. The same narrow race as #300 is
+  accepted (the last key deleted between the check and the write), and so are two
+  more: a key bound to an old relying-party ID (`BASE_URL` moved), which counts as
+  held but cannot sign in, and another administrator unticking the role between the
+  check and the write (the stored list is read when validating and written
+  afterwards, with no transaction), which lets a keyless saver re-add their own role.
+  The settings page sends the whole form, so a keyless administrator whose page
+  still shows their role ticked after someone else unticked it is refused on any
+  save until they reload.
+
+Decided by the owner, as built: an SSO user in a listed role with no passkey is
+sent to register one after the SSO; the policy is inert while `mfa_enabled` is
+off; and a passkey-only account stranded while passkeys are unavailable is
+accepted, as described under the suspension above.
+
+SSO is covered under SAML and OIDC below: a listed role is let in by an IdP only
+on a passkey-grade assertion, otherwise a passkey step follows the SSO.
 
 ### SAML (Optional, Off by Default)
 
@@ -1318,7 +1440,7 @@ before the tag.
 - **Reloads are serialised (#619).** Reading the stored settings, building from them (a network fetch of up to 15 seconds) and committing are done under one lock per provider (`samlReloadMu`, `oidcReloadMu`), held by startup, the hourly refresh, the `PATCH /admin/settings` reload, and the `PUT /admin/saml` and `PUT /admin/oidc` saves. An older reload therefore cannot commit after a newer one and put the old configuration back live (pinned by `TestReloadSAML_ANewerReloadIsNotOverwrittenByAnOlderSlowOne` and `TestReloadOIDC_ANewerReloadIsNotOverwrittenByAnOlderSlowOne`). The hourly refresh holds the SAML lock across its metadata fetch, so a SAML save or a settings PATCH that reloads can wait up to 15 seconds, about once an hour; the lock is deliberately not narrowed to the commit.
 - **`saml_enabled`** (the "Enable SAML login" toggle) is a separate, stricter posture an operator opts into: it removes password login for non-administrators (`user.IsLocalAuthAllowed`; refused with `403 saml_required`), and `GET /auth/providers` says so with `local_admin_only` (true exactly when `saml_enabled` is on; `local` stays true, since the password form is still offered). `GET /auth/providers` is JSON, and its `saml` and `oidc` entries mean *loaded and able to sign someone in now*, not *switched on*: an identity provider that did not answer no longer gets a button that leads to a 503 (#421).
 - **Admin failsafe**: administrators can still sign in with a local password.
-- **First sign-in provisioning.** A known SAML subject signs in and has its email and display name refreshed from the assertion (the domain allowlist is not applied again). An unknown subject creates a `User`-role account, provided the email's domain passes `allowed_email_domains` (an empty list is unrestricted for this path). It never adopts an existing local account by email: an address already held by another account is refused (`/login?error=email_taken`). The email comes from `email`, `mail`, the LDAP `mail` OID or Entra ID's `…/claims/emailaddress`, falling back to the NameID. The name comes from `displayName`, Entra ID's `…/identity/claims/displayname`, `cn` or `name`, then the given name (`givenName`, `firstName` or `…/claims/givenname`) and surname (`sn`, `lastName` or `…/claims/surname`), either alone if only one is sent, then Entra ID's `…/claims/name` (ranked last because Entra fills it with the user principal name), falling back to the email (#461; `TestSAMLIdentity`). A blank value counts as absent. Each sign-in of a known subject rewrites the stored name, and the email when it is valid, from these, so an IdP that starts sending a name, or a release that starts reading one, changes the display name at the next sign-in. Other refusals redirect to `/login?error=` with `domain_not_allowed`, `account_disabled`, `account_link_refused`, `invalid_assertion`, `email_not_verified`, `sso_session_used` or `invalid_email` (an address that needs quotation marks, see Guest Submission). The login page shows a fixed message for each of these codes and a generic one for any other; it never displays text from the query string. An SSO sign-in counts as having passed MFA; whether it also counts as having proved a factor is under Passkeys above.
+- **First sign-in provisioning.** A known SAML subject signs in and has its email and display name refreshed from the assertion (the domain allowlist is not applied again). An unknown subject creates a `User`-role account, provided the email's domain passes `allowed_email_domains` (an empty list is unrestricted for this path). It never adopts an existing local account by email: an address already held by another account is refused (`/login?error=email_taken`). The email comes from `email`, `mail`, the LDAP `mail` OID or Entra ID's `…/claims/emailaddress`, falling back to the NameID. The name comes from `displayName`, Entra ID's `…/identity/claims/displayname`, `cn` or `name`, then the given name (`givenName`, `firstName` or `…/claims/givenname`) and surname (`sn`, `lastName` or `…/claims/surname`), either alone if only one is sent, then Entra ID's `…/claims/name` (ranked last because Entra fills it with the user principal name), falling back to the email (#461; `TestSAMLIdentity`). A blank value counts as absent. Each sign-in of a known subject rewrites the stored name, and the email when it is valid, from these, so an IdP that starts sending a name, or a release that starts reading one, changes the display name at the next sign-in. Other refusals redirect to `/login?error=` with `domain_not_allowed`, `account_disabled`, `account_link_refused`, `invalid_assertion`, `email_not_verified`, `sso_session_used` or `invalid_email` (an address that needs quotation marks, see Guest Submission). The login page shows a fixed message for each of these codes and a generic one for any other; it never displays text from the query string. An SSO sign-in counts as having passed MFA, **except for a role in `passkey_required_roles`** (#616c): that role is let in only when the assertion is passkey-grade, namely `authnmethodsreferences` (under its `Name` or `FriendlyName`) containing `fido` or `hwk` **together with** `http://schemas.microsoft.com/claims/multipleauthn`. Otherwise the session is pending (`MFAPassed` false, `PasskeyOwed` true) and the browser is redirected to `/login?sso_step=<code>` instead of `/`, where `<code>` is `passkey` (the account has a key: use it), `passkey_enroll` (register one) or `verify_then_passkey_enroll` (an authenticator code, then register one). The login page reads the code through an allowlist and ignores an unknown value; it only chooses the screen, and the server enforces the step whatever the URL says. With no live pending session behind it (a bookmark, or the 5 or 15 minute window ran out) that step cannot succeed, so it carries a **Start over** button: it signs out any partial session, removes `sso_step` from the URL and shows the ordinary credentials form. With passkeys unavailable (#494) the requirement is suspended and the redirect is to `/`. **The accepted values are documented for Microsoft Entra ID only.** Okta and Google Workspace values are unverified and none is invented, so those providers fall through to the local passkey step. All accepted values, and the check for whether MFA was asserted, live in one file, `backend/internal/domain/auth/ssofactor.go`. Whether an SSO sign-in counts as having proved a factor is under Passkeys above.
 
 **Supported IdPs:** Okta, Azure AD / Entra ID, Google Workspace (whose metadata is a download: paste or upload it; standard SAML 2.0; additional IdPs should work via metadata import).
 
@@ -1381,7 +1503,7 @@ The request-tracking cookie is `SameSite=None; Secure` when the base URL is http
 - **Only a verified email counts.** An address the provider has not marked `email_verified` is dropped: it cannot be used to adopt an account or provision one. A subject already bound to an account still signs in; a first-time login with no verified email is refused (`email_not_verified`), and one whose address needs quotation marks with `invalid_email` (see Guest Submission).
 - **`allowed_email_domains` applies to every OIDC sign-in** that carries an email (`domain_not_allowed`), unlike SAML where it gates provisioning only; an empty list is unrestricted.
 - **Provisioning and linking.** The `sub` claim is the primary key. A known subject has its email and name refreshed. An unknown subject whose verified email matches an existing local account **adopts** it (matched on the parsed address, so `<a@x>` or `"a"@x` from the provider finds `a@x`), but only when that account is active, is not an administrator, is not already federated through SAML and is not bound to a different OIDC subject (otherwise `account_link_refused`; the write statement asks the rule again, so an account promoted in between is not adopted). An unknown subject with no matching account creates a `User`-role account. A disabled account is refused (`account_disabled`), an address held by another account is `email_taken` and a missing subject is `invalid_id_token`. The name comes from `name`, `preferred_username`, given plus family name, then the email.
-- An OIDC sign-in counts as having passed MFA (the identity provider's job); `FactorVerified` is set only when the ID token's `amr` contains `mfa` (Passkeys above).
+- An OIDC sign-in counts as having passed MFA (the identity provider's job); `FactorVerified` is set when the ID token's `amr` contains `mfa`, or contains `fido` or `hwk`, for every role including one not in `passkey_required_roles` (Passkeys above). The exception is a role in `passkey_required_roles` (#616c): it is let in only when `amr` contains `fido` or `hwk` (documented for Entra ID; other providers' values are unverified and not accepted, see SAML above), which also sets `FactorVerified`. Without one the callback redirects to `/login?sso_step=<code>` (`passkey`, `passkey_enroll` or `verify_then_passkey_enroll`) with a pending session, exactly as the SAML sign-in does. The accepted values are in `backend/internal/domain/auth/ssofactor.go`.
 
 ### Self-Service Signup (Optional, Off by Default)
 
@@ -1391,7 +1513,7 @@ A visitor creates a `User`-role account for themselves and proves they own the a
 - `GET /api/v1/auth/signup/status` (public) returns `{enabled, open_registration, restricted_by_domain_list, saml_enabled}`; the login page offers "Create one" from it. `open_registration` is what is in force: the setting **and** no domain list, because a non-empty list overrides open registration. `restricted_by_domain_list` is true when such a list limits signup, which is why `open_registration` can be false while its setting is on (#421). Who may sign up is unchanged.
 - `POST /api/v1/auth/signup` takes `{email}` and answers `403 signup_disabled` when off. The signup form takes only the address: no password (#360) and no display name (#374), and either one sent by an older client is ignored. The address must be a single valid email (`400`), and not one whose local part needs quotation marks (#389, see Guest Submission). Attempts are counted per source address (`AUTH_RATE_LIMIT_PER_MINUTE`, `429`). It stores a **pending registration** (address and a 24-hour token; one pending row per address, and a repeat only re-issues the token, since no name or password is stored) and queues one event naming only that registration's id; the verification mail, a link to `{BASE_URL}/verify-email?token=…`, is sent from the notification outbox, not on the request (see the signup bullet under Notifications). Nothing is sent if SMTP is not configured, so signup cannot complete on an instance without email; turning `self_signup_enabled` on in that state is refused (`400 email_required`, see Notifications), and an instance that already has it on is warned in the admin security warnings.
 - **Same answer whether or not the address already has an account.** The response is `202` with the same body either way (deleted accounts still own their address), and a new and a taken address do the same work on the request: the address is checked, the pending row written and one event queued. Whether a mail goes out is decided when it would be sent, off the request: the send re-reads the row and mails nothing if the row is gone or expired or the address has an account, so a taken address gets a pending row that is never mailed and expires unused. Because neither case dials the mail server on the request, the timing does not tell them apart either. That is the request only: the timing of the send is a separate signal, recorded under Guest Submission. Anything that distinguished them would make signup a way to find out who has an account here; the person who forgot they have one reaches for the login page.
-- **The display name and password are chosen at verification** (#360, #374). The link opens the `/verify-email` page, which asks for both, neither pre-filled. `POST /api/v1/auth/verify-email` takes `{token, display_name, password}`: `422 token_invalid` for an unknown, used or malformed token, `422 token_expired` past 24 hours, `400 display_name_required` for a blank name, `400 password_too_short` for a password under 8 characters and `400 password_too_long` for one over 72 bytes; all three are refused without using up the link. An address that has gained an account since the link was mailed is also `422 token_invalid`. Anything that is not a verdict on the link, such as a database fault, is `500 internal_error` on the POST and on the lookup below, and the page keeps the form for it (#373). On success it creates the account with that name and password, deletes the pending row and signs the person in. When MFA is on and enforced for the `user` role (`mfa_enforced_roles`) the response says `mfa_enrollment_needed`, the session does not count as having passed MFA yet, and the page shows the same enrolment form a password login does before it goes to the dashboard (#369). The page first looks the link up with `GET /api/v1/auth/verify-email?token=` (#370), which answers `{email}` and nothing else and refuses an unknown, used, malformed or expired link the same way the POST does (`422 token_invalid` or `token_expired`), and so an address that has gained an account since the link was mailed (`422 token_invalid`, #421; before that the lookup answered 200 and only the POST refused). This reopens nothing from #348: `POST /auth/signup` is untouched, and a token for a taken address was never mailed, so its only holder is the inbox owner who received the link before the account existed. A link can still fail at the POST if the account appears between the two calls. That lets it show which address the account is for, hand a password manager the address, and say a dead link is dead before anything is typed. It never returns a display name, because none is stored before verification. Choosing the name and password there means only whoever holds the link, that is the owner of the mailbox, sets them: when signup carried them, anyone who knew an address could sign up after its owner and have the owner's newest link create an account with the other person's password, and later with their name (an attacker's words, on this site, in front of the inbox's owner).
+- **The display name and password are chosen at verification** (#360, #374). The link opens the `/verify-email` page, which asks for both, neither pre-filled. `POST /api/v1/auth/verify-email` takes `{token, display_name, password}`: `422 token_invalid` for an unknown, used or malformed token, `422 token_expired` past 24 hours, `400 display_name_required` for a blank name, `400 password_too_short` for a password under 8 characters and `400 password_too_long` for one over 72 bytes; all three are refused without using up the link. An address that has gained an account since the link was mailed is also `422 token_invalid`. Anything that is not a verdict on the link, such as a database fault, is `500 internal_error` on the POST and on the lookup below, and the page keeps the form for it (#373). On success it creates the account with that name and password, deletes the pending row and signs the person in. When MFA is on and enforced for the `user` role (`mfa_enforced_roles`) the response says `mfa_enrollment_needed`, the session does not count as having passed MFA yet, and the page shows the same enrolment form a password login does before it goes to the dashboard (#369). When `user` is in `passkey_required_roles` instead (#616c) the response says `passkey_enrollment_needed` (and `mfa_enrollment_needed` false) and the page asks for a passkey rather than an authenticator. The page first looks the link up with `GET /api/v1/auth/verify-email?token=` (#370), which answers `{email}` and nothing else and refuses an unknown, used, malformed or expired link the same way the POST does (`422 token_invalid` or `token_expired`), and so an address that has gained an account since the link was mailed (`422 token_invalid`, #421; before that the lookup answered 200 and only the POST refused). This reopens nothing from #348: `POST /auth/signup` is untouched, and a token for a taken address was never mailed, so its only holder is the inbox owner who received the link before the account existed. A link can still fail at the POST if the account appears between the two calls. That lets it show which address the account is for, hand a password manager the address, and say a dead link is dead before anything is typed. It never returns a display name, because none is stored before verification. Choosing the name and password there means only whoever holds the link, that is the owner of the mailbox, sets them: when signup carried them, anyone who knew an address could sign up after its owner and have the owner's newest link create an account with the other person's password, and later with their name (an attacker's words, on this site, in front of the inbox's owner).
 
 ### Identity provider lockout guard (#300)
 
@@ -3984,9 +4106,11 @@ on the existing webhook feature instead of as plugins.
   account holder, a guest, or a staff member replying on a ticket they filed
   themselves; any other staff reply, or an internal note, is not one). A third,
   a **reopen** ([#464](https://github.com/PubliciaLLC/go-help-desk/issues/464)),
-  is described below.
+  is described below. A fourth, **SLA alerts** (a target breached or at risk,
+  [#670](https://github.com/PubliciaLLC/go-help-desk/issues/670)), is
+  described under SLA Tracking → Breach and at-risk notifications.
 
-  Three per-user switches, all **on by default** (columns on `users`, set
+  Four per-user switches, all **on by default** (columns on `users`, set
   from **Your account → Email about tickets**, `PATCH /me/email-preferences`):
 
   | Switch | Mailed when |
@@ -3994,6 +4118,7 @@ on the existing webhook feature instead of as plugins.
   | Tickets assigned to me | a ticket is assigned to me |
   | Activity on tickets I'm assigned to or follow | a requester replies on a ticket assigned to me, a ticket assigned to me is **reopened**, and a ticket I **follow** is assigned, gets a requester's reply or is reopened |
   | My groups' tickets | a ticket is assigned to a group I belong to, a requester replies on a group ticket that **nobody personally holds**, and a ticket in my group that nobody personally holds is **reopened** |
+  | SLA alerts (`email_notify_sla`) | a ticket assigned to me, a ticket in my group that **nobody personally holds**, or a ticket I **follow** has just **breached** an SLA target or is **at risk** of it (80%). For these two events this switch alone decides: the Activity and Group switches do not apply to them |
 
   A requester's reply on a ticket that has both an assignee and a group goes
   to the assignee only: the group's members would otherwise get mail for every
@@ -4035,7 +4160,8 @@ on the existing webhook feature instead of as plugins.
 
   An administrator can **override each switch for everyone**
   (**Admin → Settings → Email**; the settings `staff_email_assigned_override`,
-  `staff_email_activity_override`, `staff_email_group_override`): `user`
+  `staff_email_activity_override`, `staff_email_group_override`,
+  `staff_email_sla_override`): `user`
   leaves it to each person (the default), `on` and `off` ignore what people
   chose. An unrecognised stored value reads as `user`, never as a forced one.
   `GET /me` reports, for each switch, whether it applies to the person and
@@ -4050,7 +4176,24 @@ on the existing webhook feature instead of as plugins.
   override already stored is kept (`ON CONFLICT DO NOTHING`). The down step is a
   no-op: it cannot tell its rows from an administrator's own `off`, and deleting
   them would turn mail back on. The administrator turns staff email on under
-  **Admin → Settings → Email**.
+  **Admin → Settings → Email**. Migration `000067` does the same for the fourth
+  override, `staff_email_sla_override`, on the same condition, with the same
+  no-op down step for that row, so an upgraded install, including a 1.3 beta
+  whose administrator already turned the first three back on, gets no SLA mail
+  until the administrator chooses it. That is apart from `sla_alerts_enabled`
+  (stored off on upgrade by the same migration), which gates the events
+  themselves: an administrator can send SLA alerts to a webhook without mailing
+  staff. Per person, `email_notify_sla` is `NOT NULL DEFAULT TRUE` like the
+  other three.
+
+  Staff mail for the two SLA events uses the reply rule's recipients under the
+  fourth switch, and never shares a change with an assignment, a reply or a
+  reopen (the sweep raises it in a transaction of its own), so the "first reason
+  whose switch is on" order is unaffected. In code the switch that decides is
+  carried on the candidate apart from the reason (`StaffCandidate.Switch`, the
+  reason when empty): the reason (assignee, group, follower) still picks the
+  template variant and the send-time check, and the switch picks the person's
+  preference.
 
   The rules that hold whatever the switches say:
   - **Nobody is mailed about their own action.** The person who made the
@@ -4094,7 +4237,7 @@ on the existing webhook feature instead of as plugins.
   **Guest tickets** carry a per-ticket link instead of a ticket id, so a
   recipient with no account reaches their own thread and nothing else.
 - **Editable email templates** ([#158](https://github.com/PubliciaLLC/go-help-desk/issues/158)).
-  An administrator edits the wording of all 18 emails under **Admin → Email
+  An administrator edits the wording of all 24 emails under **Admin → Email
   Templates** (`/admin/email-templates`), and a shared **header** and **footer**
   that wrap every mail. Each can also have an optional HTML part (see *The HTML
   part* below); without one, mail is plain text.
@@ -4110,7 +4253,8 @@ on the existing webhook feature instead of as plugins.
   | Template | Variables | Must print (outside any `if`) |
   | --- | --- | --- |
   | the seven requester mails (created, follow-up created, replied, status changed, resolved, reopened, guest link) | `TrackingNumber`, `TicketURL` | `TicketURL` |
-  | the nine staff mails | `TrackingNumber`, `TicketURL` | `TicketURL` |
+  | the nine staff mails (assigned, requester replied, reopened, each to the assignee, the group and a follower) | `TrackingNumber`, `TicketURL` | `TicketURL` |
+  | the six SLA staff mails (SLA breached and SLA at risk, each to the assignee, the group and a follower) | `TrackingNumber`, `TicketURL`, `SLAStatus` | `TicketURL` |
   | email verification | `VerifyURL` | `VerifyURL` |
   | password reset | `ResetURL` | `ResetURL` |
   | header, footer | `SiteName` (the name in Settings) | nothing |
@@ -4295,7 +4439,11 @@ on the existing webhook feature instead of as plugins.
   staff-only note), `ticket.resolved`, `ticket.closed`, `ticket.reopened` (every reopen: a requester's reply, a status change out of Resolved or Closed, and `POST /reopen`) and
   `ticket.linked`, `ticket.priority_changed` (a priority change),
   `ticket.classified` (a category, type or item change), `ticket.unlinked` (a
-  link removed), `ticket.attachment_added` (a file uploaded), and the two
+  link removed), `ticket.attachment_added` (a file uploaded), `sla.breached`
+  and `sla.at_risk` (the SLA sweep has just stamped a breach, or a target at
+  80%, and `sla_alerts_enabled` is on; a pass that does both on one ticket is
+  one `sla.breached` that also names the at-risk target; SLA Tracking → Breach
+  and at-risk notifications), and the two
   **opt-in** events `ticket.followed` and `ticket.unfollowed`. A hook matches a
   change when any of the change's kinds is in its list, and fires once. The raw
   body keeps its shape. See Ticket Events: One Change, One Event.
@@ -4319,7 +4467,11 @@ on the existing webhook feature instead of as plugins.
   `target_id` and `link_type` (the same two tickets can be linked in more than
   one way, so the id alone does not say which link went); `ticket.replied` and
   `ticket.note_added` have `reply_id`; `ticket.attachment_added` has
-  `attachment_id`; `ticket.followed` and `ticket.unfollowed` have `user_id`.
+  `attachment_id`; `ticket.followed` and `ticket.unfollowed` have `user_id`;
+  `sla.breached` and `sla.at_risk` have `targets` (a list of `response` and/or
+  `resolution`, enums), `policy_id` and `record_id`, with `ActorID` null, and
+  `sla.breached` also has `at_risk_targets` (the same enums: targets that
+  reached 80% in the same pass and have not breached; omitted when none).
   Every other event has no payload, except that a hook which lists
   `ticket.unfollowed` also gets `user_id` on a delivery under whatever name it
   is told (for example `ticket.assigned`) when the change dropped a follow; a
@@ -4742,6 +4894,7 @@ raises into the transaction's collector; none dispatches after the commit.
 | `Follow`, `Unfollow` (REST `PUT` and `DELETE /follow`) | `ticket.followed` or `ticket.unfollowed`, only when it changed something, in the transaction that writes the follower row and its audit entry. **Opt-in by name.** | `user_id` (the person's id, not their name). No mail. |
 | `UnassignForUser` (an administrator deletes a user) | `ticket.assigned` per open ticket the user held, the assignee cleared, with the deleting administrator as the actor; plus `ticket.unfollowed` when the user followed it (the follow goes with the assignment). **Staff mail is suppressed.** | `user_id` only when an unfollow rides along. `Changes` has `assignee_user_id`. |
 | `DeleteGroup` (an administrator deletes a group) | `ticket.assigned` per ticket the group held, open or not, the group cleared, with the deleting administrator as the actor. **Staff mail is suppressed.** | `Changes` has `assignee_group_id`. |
+| `sla.Service.SweepBreaches` (the SLA sweep, every minute; `domain/sla`) | At most one per ticket per pass, in one transaction through `ticket.Atomic` that stamps every crossing the pass found on that ticket, so the stamps and the event commit together: `sla.breached` when a fresh breach was newly stamped (naming any fresh at-risk of the other target too), else `sla.at_risk` when a fresh at-risk was, else nothing. Only while `sla_alerts_enabled` is on. Never merged with a ticket kind. | `targets`, `policy_id`, `record_id`, and on `sla.breached` `at_risk_targets` when any; no actor; `Ticket` read in the transaction; the typed `SLA` field for mail. Staff mail under the SLA alerts switch (SLA Tracking → Breach and at-risk notifications) |
 | `RequestGuestLink` (guest "resend my link") | `guest.link_resent` through `OutboxDispatcher` | what the guest typed; no ticket id |
 | `registration.Service.Signup` | `registration.verify` through `OutboxDispatcher` | `pending_id` only |
 
@@ -4762,7 +4915,7 @@ production caller, so there is no removal to announce.
 | Consumer | Reads | Decides by |
 | --- | --- | --- |
 | Requester email (`EmailDispatcher`, `notify/email.go`) | the requester's `email` row, made by `ChangeSplitter` | `Type` → template: created, reopened, resolved, replied, status_changed, guest_link. Needs a `Recipient` or a guest link. Status, resolve and reopen mail go to guests only. |
-| Staff email (`ChangeSplitter`, then `StaffMailDispatcher` + `StillEntitled` at send) | the change's `email` row, then the `staff.*` rows | `Kinds` → candidates (assigned, requester replied, reopened); none at all for a change flagged `SuppressStaffMail`. Then switches, overrides, actor skip, one mail per person. At send: account still mailable, still holds, still in group, or still follows and can see the ticket. |
+| Staff email (`ChangeSplitter`, then `StaffMailDispatcher` + `StillEntitled` at send) | the change's `email` row, then the `staff.*` rows | `Kinds` → candidates (assigned, requester replied, reopened, and the reply rule under the SLA alerts switch for `sla.breached` and `sla.at_risk`); none at all for a change flagged `SuppressStaffMail`. Then switches, overrides, actor skip, one mail per person. At send: account still mailable, still holds, still in group, or still follows and can see the ticket. |
 | Guest link (`GuestLinkDispatcher`) | `email` row with the guest-link flag | issues and rotates the token at send time |
 | Verification (`VerificationDispatcher`) | `verification` row | `Type`: `registration.verify` is sent by `pending_id` (the address and token are read from the pending row); `password.reset_requested` carries the typed address as its recipient and no `pending_id`, and is handed to the password-reset send step, which looks the account up and makes the token at send time (#451) |
 | Webhooks (`WebhookDispatcher`) | `webhook` row | `subscribedKinds(hook, event)`: any kind of the change in the hook's list, or `*`, or an empty list, except that `ticket.followed` and `ticket.unfollowed` match only a hook that lists them by name. Then the ticket filter on `Ticket`. Again at every retry and at Redeliver. |
@@ -4777,7 +4930,9 @@ under: `new_status_id` for `ticket.status_changed`, `target_id` for
 `ticket.linked`, `target_id` and `link_type` for `ticket.unlinked`, `reply_id`
 for `ticket.replied` and `ticket.note_added`, `attachment_id` for
 `ticket.attachment_added`, `user_id` for `ticket.followed` and
-`ticket.unfollowed`, nothing for any other name (`rawKeysFor`,
+`ticket.unfollowed`, `targets`, `at_risk_targets`, `policy_id` and `record_id`
+for `sla.breached`, `targets`, `policy_id` and `record_id` for `sla.at_risk`
+(ids and enums only), nothing for any other name (`rawKeysFor`,
 `notify/webhook_body.go`) with one exception: a hook that opted into
 `ticket.unfollowed` also gets `user_id` on a delivery under whatever name it is
 told (for example `ticket.assigned`) when the change dropped a follow, and a
@@ -4789,7 +4944,8 @@ Slack, Teams, Discord or JIRA hook's queued row holds the whole payload until it
 is sent or finally fails and is scrubbed. Headers: `X-GHD-Delivery` and `X-GHD-Event` (the same
 name as `Type`), plus the signature. `*` does not include `ticket.followed` and
 `ticket.unfollowed`: a hook gets those only by listing them. The OpenAPI
-`WebhookEvent` enum lists `*` and the fifteen names. The raw body already changed during the 1.3 betas
+`WebhookEvent` enum lists `*` and the seventeen names (`sla.breached` and
+`sla.at_risk` are the two added by #670, and `*` includes them). The raw body already changed during the 1.3 betas
 (#448), and `docs/upgrade-notes-1.3.0.md` describes both changes to
 1.2.x users.
 
@@ -4817,6 +4973,8 @@ name as `Type`), plus the signature. `*` does not include `ticket.followed` and
 | Follow or unfollow | `followed` or `unfollowed` | 0: only a hook that lists it by name |
 | Reassign a ticket away from a follower | `assigned` + `unfollowed` | 1 (a `*` hook is told `assigned`; the unfollow is for hooks that list it) |
 | Delete a user, or a group (per ticket held) | `assigned` (cleared) | 1 per ticket, **no staff mail** |
+| (no user action) The SLA sweep newly stamps a fresh breach of one or both targets, with or without a fresh at-risk of the other | `sla.breached` (with `at_risk_targets` when the other target went at risk) | 1 per ticket per pass; 0 while `sla_alerts_enabled` is off or every crossing is stale |
+| (no user action) The SLA sweep newly stamps a fresh at-risk of one or both targets and no fresh breach | `sla.at_risk` | 1 per ticket per pass; 0 while `sla_alerts_enabled` is off or the crossing is stale |
 
 The same status change has the same names whichever button made it. A hook
 subscribed to `ticket.resolved` sees a resolve done with `PATCH`, and a hook
@@ -4853,10 +5011,16 @@ order (`notification.KindOrder`) is the order of importance:
 `ticket.status_changed`, `ticket.assigned`, `ticket.priority_changed`,
 `ticket.classified`, `ticket.replied`, `ticket.note_added`, `ticket.linked`,
 `ticket.unlinked`, `ticket.attachment_added`, `ticket.followed`,
-`ticket.unfollowed`. Two kinds are new: `ticket.priority_changed` and
+`ticket.unfollowed`, `sla.breached`, `sla.at_risk`. Two kinds are new: `ticket.priority_changed` and
 `ticket.classified` (category, type or item). Both can be subscribed to. Four
 more came with #630: `ticket.unlinked`, `ticket.attachment_added`,
-`ticket.followed` and `ticket.unfollowed`, the last two opt-in by name.
+`ticket.followed` and `ticket.unfollowed`, the last two opt-in by name. Two
+more came with #670: `sla.breached` and `sla.at_risk`, last because the sweep
+raises them in a transaction of its own, so neither ever shares an event with
+a ticket kind. The two never share an event with each other either: the sweep
+raises exactly one of them per ticket per transaction, and an at-risk crossing
+in the same pass as a breach rides on the `sla.breached` event as
+`at_risk_targets`, not as a second kind.
 
 **Status kinds are the same for every door** (`statusKinds`,
 `internal/domain/ticket/events.go`). Every status move carries
@@ -5064,7 +5228,10 @@ headline comes from the hook's `Type`, as before. The headline for
 name. `ticket.unlinked` is "Unlinked from <ticket id> (<link type>)",
 `ticket.attachment_added` is "Attachment added" (no file name), and
 `ticket.followed` and `ticket.unfollowed` are "Ticket followed" and "Ticket
-unfollowed": the person is an id, and a chat message does not look one up. Jira has no headline and keeps the event name in its `event` key. Under
+unfollowed": the person is an id, and a chat message does not look one up.
+`sla.breached` and `sla.at_risk` are "SLA breached" and "SLA at risk", naming no
+target and no policy; an `sla.breached` with `at_risk_targets` is "SLA
+breached; another target at risk". Jira has no headline and keeps the event name in its `event` key. Under
 the headline:
 
 - **The "Also" line (ruling 10).** One line names the change's other kinds, such
@@ -5119,7 +5286,8 @@ Notifications still holds:
   made inside a create (`RoutedAssignment`): the creator did not choose it, and
   1.2.x mailed them, so they still get that one mail (ruling 11);
 - only active staff with an address; never a service account or a requester;
-- the three switches and the administrator's overrides;
+- the switches and the administrator's overrides (the fourth, SLA alerts, for
+  the two SLA events only);
 - the follower exclusions (the assignee never gets follower mail; group members
   are excluded from follower mail when the group is mailed for that kind);
 - the send-time re-check (account, holding, group, follow and scope).
@@ -6048,6 +6216,294 @@ Timer mechanics were tracked as
 as [#182](https://github.com/PubliciaLLC/go-help-desk/issues/182), and the
 queue indicator below as
 [#183](https://github.com/PubliciaLLC/go-help-desk/issues/183).
+
+The sweep also stamps when a target first reaches 80%, and announces what it
+newly stamps: see *Breach and at-risk notifications*, next.
+
+### Breach and at-risk notifications
+
+([#670](https://github.com/PubliciaLLC/go-help-desk/issues/670), 1.3.x.) A
+breach used to tell nobody: the sweep stamped it and stopped. Now the sweep
+announces each crossing it stamps, by email to staff and to webhooks, once,
+in at most one notification per ticket per pass.
+Escalation tiers and a group lead are not part of this; they stay with incident
+management (#408, v1.4).
+
+**Two events.** `sla.breached`: the sweep has just stamped a breach of one or
+both targets, and, when the other target reached 80% in the same pass, says
+that too (see *One notification per ticket per pass*). `sla.at_risk`: the
+sweep has just stamped that one or both targets reached 80% while still
+outstanding and not breached, and stamped no breach. Both are raised
+**only by the sweep**. A late first response or resolution that stamps its own
+breach (`SetSLAFirstResponse`, `SetSLAResolved`, `SetSLAResolvedAndFirstResponse`)
+sends nothing: somebody has just acted on the ticket, and the target it stamps
+is met, so the sweep never evaluates it again. Each event carries in `Payload`
+`targets` (a list of `response` and/or `resolution`, in that order: the
+targets that breached, for `sla.breached`, or reached 80%, for `sla.at_risk`),
+`policy_id` and `record_id` (the record the stamp was written on);
+`sla.breached` also carries `at_risk_targets` (same enums, same order) when a
+target that has not breached was announced at risk in the same pass, and
+omits the key when none was; `ActorID` is
+null, because the system acts; `Ticket` is the ticket as read inside the
+stamp's transaction, so per-hook filters and staff mail work as for any change.
+
+**At-risk stamps are stored.** `sla_records.response_at_risk_at` and
+`resolution_at_risk_at` (migration `000067`) record when the sweep first saw a
+target at or past 80%. "Tell once" needs a fact to compare against, and the
+live colour cannot say whether anyone was told. Like the breach stamps they
+are write-once, set only while the column is NULL, and never cleared. Only the
+sweep writes them. The threshold is the indicator's own rule, `elapsed*5 >=
+target*4` (one Go function shared by `colorFor` and the sweep's decision; in
+SQL, `target_min * 48` seconds, which is exact).
+
+**An at-risk stamp is written only below 100%.** A target the sweep first sees
+at or past its full length gets the breach stamp and **never** an at-risk one,
+and an at-risk stamp is never written once that target is breached. So at-risk
+never alerts once the same target has breached, by construction rather than by
+a check, and a target that jumps past both thresholds between ticks (a target
+of a minute or two, a downtime) gets one alert, the breach. A pass that finds
+one target breached and the other at risk stamps both, in one transaction,
+and announces both in one `sla.breached`.
+
+**Only fresh crossings are announced.** A crossing is announced only when the
+sweep stamps it within **15 minutes** of the threshold, measured on the SLA
+clock as of the sweep's reading: for a breach, `elapsed − target ≤ 15 min`;
+for at-risk, `elapsed − 80% of target ≤ 15 min`. Anything older is stamped
+silently (it still shows breached, and still counts for the restart badge),
+and the pass logs one count of how many it stamped that way (`stale`), not one
+line per ticket. The window is the domain constant `sla.AlertFreshness`, not a
+setting: it guards against a flood, it is not a preference, and it is the same
+kind of number as the one-minute sweep interval, which is not a setting either.
+What it stops: a policy tightened in place, or a staff change that re-matches
+to a shorter target, putting a whole queue past its target at once; a server
+that was down; SLA tracking switched back on after a while off (the sweep does
+not run while it is off); a staff change that attaches a record whose resumed
+clock is already over (`attached`); and the first sweep after upgrading, which
+finds open tickets already past 80%. Because it is measured on the SLA clock,
+pause time never makes a crossing stale: a ticket that leaves Pending and
+crosses 80% a minute later is announced.
+
+Freshness is decided **per target and per crossing**, including inside one
+notification: each crossing the pass newly stamps is announced only if its own
+crossing is fresh. An at-risk target alongside a breach is named in
+`at_risk_targets` only if its own 80% crossing is fresh; otherwise its stamp
+is still set, silently, in the same transaction, it is left out of the event
+and counted as stale. The same holds the other way: a stale breach with a
+fresh at-risk of the other target is stamped silently and the pass raises
+`sla.at_risk` for the fresh one. There is no special case: the pass announces
+the fresh crossings it newly stamped, and which event that is follows from
+them (next).
+
+**One notification per ticket per pass.** Whatever the pass found on a
+ticket, it is written in **one transaction** and announced by **at most one
+event**, chosen from the fresh crossings that transaction newly stamped:
+
+| Fresh, newly stamped in this pass | Event | `targets` | `at_risk_targets` |
+| --- | --- | --- | --- |
+| one or both breaches, no at-risk | `sla.breached` | the breached targets | omitted |
+| one breach and an at-risk of the other target | `sla.breached` | the breached target | the at-risk target |
+| one or both at-risk, no breach | `sla.at_risk` | the at-risk targets | not a key of this event |
+| nothing fresh (or `sla_alerts_enabled` off) | none | | |
+
+Both targets breached in the same pass are one `sla.breached` with
+`targets: ["response", "resolution"]`; the same for at-risk. A target cannot be
+in both lists: an at-risk stamp is never written for a target that breaches in
+the same pass (written only below 100%, above). Because the at-risk stamp of a
+target named in `at_risk_targets` is set in that same transaction, it is
+never announced at risk again; when that target later breaches, a later pass
+stamps the breach and raises `sla.breached` with `targets` naming it, as for
+any breach. This is the shape #506 asks for: one transaction is one event per
+ticket, and the collector merges everything raised for a ticket in one
+transaction into one event, so two SLA raises in one transaction would have
+merged into one event with one `targets` key overwriting the other. Raising
+exactly one event per transaction means nothing is merged. An SLA event never
+shares an event with a ticket kind either (the sweep's transaction changes
+nothing else), so the chat "Also" line never names one. The event's `Kinds`
+is its own name only: a mixed pass is `sla.breached`, so a hook that lists
+`sla.at_risk` and not `sla.breached` is not told of it, and since the at-risk
+stamp is set, it is not told later either. A hook that wants to hear of
+breaches lists `sla.breached` (or `*`).
+
+**The stamps and their event commit together.** Each ticket's crossings in a
+pass are written through `ticket.Atomic`, the same runner the ticket service
+uses: one stamp statement for all of them, then at most one raise, and the
+outbox rows (one per channel, as for any change) are written inside that
+transaction before it commits (Ticket Events: One Change, One Event). An
+announcement committed apart from the stamps it describes is not reliable,
+for the same reason an audit entry committed apart from its change is not an
+audit trail. A rollback leaves neither the stamps nor a row, and the next pass
+finds the record unstamped and announces what is still fresh; once committed,
+the stamps are there and the record never announces those crossings again.
+The sweep's stamp is not audited, as it was not before.
+
+**The stamp statement says what it newly set.** `StampSLACrossings` replaces
+`StampSLABreaches` on the sweep's path. It locks the current record
+(`FOR UPDATE`, addressed by record id with `superseded_at IS NULL`, as since
+#623), sets each of the four stamp columns it is given only where that column
+is still NULL **and** its target is still outstanding (`first_response_at` /
+`resolved_at` NULL; an at-risk column also needs that target's breach column
+NULL), and returns, per column, whether **this** statement set it (NULL before,
+set after). Only a column this statement set, and whose crossing the Go
+decision found fresh, is announced; the event is chosen from those after the
+statement, inside the same transaction. `StampSLABreaches`
+reported rows affected, which is 1 even when every column was already set, so
+its caller could not tell what it had stamped. It is kept, deprecated, with no
+production caller. No record row means the record was superseded: nothing is
+written and nothing is raised, and the next pass evaluates its replacement.
+
+- **Two sweeps at once** (every replica runs one): both may decide the same
+  crossing. The row lock puts one after the other; the second finds the column
+  set, sets nothing and announces nothing. If the second, reading later, also
+  finds a crossing the first did not (the at-risk target has since breached),
+  it sets only that column and announces only that.
+- **A late reply racing the sweep.** The reply's statement and the stamp lock
+  the same row. Reply first: the target is met, the stamp sets nothing and
+  nothing is sent. Sweep first: the breach was true at the sweep's reading, so
+  it is announced; the reply then records its response and keeps the stamp.
+- **The record-time writers send nothing** and never touch the at-risk columns.
+
+**Through the record's life.**
+
+- **Superseded** records are history: never evaluated, never announced; their
+  stamps stay.
+- **A staff re-match** (priority or category) copies the at-risk stamps onto
+  the new record exactly as it copies the breach stamps, so a crossing already
+  announced is not announced again. A consequence, accepted with the breach
+  stamp's own: a re-match to a longer target keeps the at-risk stamp, and that
+  record gets no second at-risk alert at the new 80%.
+- **A reopen** restarts clean: the new record has no stamps, so it can be at
+  risk and breach, and be announced, again.
+- **`attached`** resumes the old clock with no facts: its crossings are
+  announced if fresh and stamped silently if not.
+- **Pause** freezes elapsed, so nothing crosses while Pending.
+- **Closed** tickets are not candidates; neither is a met target.
+
+**The candidate query is the only mirror.** The decision is made in Go from
+`Record.Elapsed` and the shared 80% rule, so the elapsed-time formula is not
+copied again. `ListSLABreachCandidates` gains an at-risk branch per target
+(outstanding, not breached, not at-risk-stamped, elapsed at or past 80%) and
+stays a superset of what the Go decision stamps; its superset test covers the
+new branches. It is still the second of the three copies (Go, this query,
+`ListTicketsFiltered`), which change together as before.
+
+**The indicator does not change.** The at-risk stamps are never read by the
+indicator, the list's `sla=at_risk` filter or its sort (all still a live read
+of the clock), the restart badge, or the API; a test pins `StatusFor` ignoring
+them as it ignores the breach stamps. A ticket whose at-risk stamp a re-match to
+a longer target carried over shows green.
+
+**The off switch: `sla_alerts_enabled`.** One setting gates both events, for
+email and for webhooks (**Admin → Settings → Features**, under SLA tracking).
+Off, the sweep still runs and still stamps, breach and at-risk alike; it raises
+nothing. A crossing stamped while it is off is never announced later. It is read
+on every tick; a failed read skips the tick, as a failed read of `sla_enabled`
+does, so a crossing is not stamped silently because a read failed.
+
+- **Upgraded installs start with it off.** Migration `000067` stores `false`
+  when the users table already holds a person (a service account does not
+  count), as `000052` does for staff email. On upgrade, `*` hooks would
+  otherwise start receiving two names they have never seen, and an instance
+  already running SLA would start announcing on first boot.
+- **A fresh install starts with it on.** The same migration stores `true` on a
+  database with no people. A fresh install has SLA tracking off, no policies
+  and no hooks, so nothing is announced until an administrator sets those up,
+  and one who does expects a breach to be announced.
+- An existing value wins (`ON CONFLICT DO NOTHING`). The setting is not
+  session-only: it widens nothing anyone can see.
+
+**Email.** Staff mail for both events is decided by the worker like all staff
+mail (`notify.StaffFanout`), under the **fourth switch, SLA alerts**
+(`users.email_notify_sla`, override `staff_email_sla_override`; Notifications,
+Staff email). The recipients follow the reply rule: the **assignee**; the
+**assigned group's members only while nobody personally holds the ticket**;
+and **followers**, except the assignee and, when the group is mailed, its
+members. All of them answer to the SLA switch, not to Activity or Group: those
+three switches do not apply to these two events. Nobody is skipped as the
+actor, since there is none. Each event has three templates, own, group and
+follow: `staff_sla_breached`, `staff_sla_breached_group`,
+`staff_sla_breached_follow`, `staff_sla_at_risk`, `staff_sla_at_risk_group`,
+`staff_sla_at_risk_follow`, admin-editable like the rest. A person gets one
+mail per notification, so a mixed pass is one mail, from the breached
+templates, that says both. The send-time checks are those of every staff mail.
+
+*Which targets.* The mail names the targets through a third variable,
+`SLAStatus`, besides `TrackingNumber` and `TicketURL` (`TicketURL` is still
+the one that must be printed). Email still never reads `Payload`: the sweep
+also sets a typed field on the event, `SLA` (`notification.SLAAlert`, the
+breached and the at-risk targets as the same enums as `targets` and
+`at_risk_targets`, excluded from JSON, stored by the outbox codec like
+`FollowUp`, carried onto the `staff.*` rows by the fan-out). `SLAStatus` is
+made from it by one function, and is one of exactly these eight, never text
+anyone typed:
+
+| Breached | At risk | `SLAStatus` |
+| --- | --- | --- |
+| response | | Response breached |
+| resolution | | Resolution breached |
+| response, resolution | | Response and resolution breached |
+| response | resolution | Response breached; resolution at risk |
+| resolution | response | Resolution breached; response at risk |
+| | response | Response at risk |
+| | resolution | Resolution at risk |
+| | response, resolution | Response and resolution at risk |
+
+*Default wording.* The subjects end on the tracking number in brackets, left
+out when there is none (as the follow-up mail's does). For the mixed case on
+`GHD-2026-000007`:
+
+| Template | Subject |
+| --- | --- |
+| `staff_sla_breached` | SLA alert on a ticket assigned to you: Response breached; resolution at risk [GHD-2026-000007] |
+| `staff_sla_breached_group` | SLA alert on a ticket assigned to your group: Response breached; resolution at risk [GHD-2026-000007] |
+| `staff_sla_breached_follow` | SLA alert on a ticket you follow: Response breached; resolution at risk [GHD-2026-000007] |
+
+that is, `SLA alert on a ticket assigned to you: {{.SLAStatus}}{{if
+.TrackingNumber}} [{{.TrackingNumber}}]{{end}}`, with "assigned to your
+group" and "you follow" in the other two. The three at-risk templates use the
+same three subjects (their `SLAStatus` says "at risk"). The bodies, with the
+same closing lines as the other staff mails:
+
+```
+An SLA target on a ticket assigned to you has been breached.
+
+Response breached; resolution at risk.
+
+Ticket: GHD-2026-000007
+
+Read it here:
+<TicketURL>
+
+You can choose which of these emails you get under your profile.
+```
+
+The first line is, for `staff_sla_breached_group`, "An SLA target on a ticket
+assigned to a group you belong to, which nobody has picked up, has been
+breached."; for `staff_sla_breached_follow`, "An SLA target on a ticket you
+follow has been breached."; for the at-risk three, the same with "is at risk:
+80% of its time has been used." in place of "has been breached." The second
+line is `{{.SLAStatus}}.`
+
+**Webhooks.** Both names are in `WebhookEvents` and are not opt-in, so a `*`
+hook receives them. The raw body carries `targets`, `policy_id` and
+`record_id`, and for `sla.breached` also `at_risk_targets` when the pass
+announced an at-risk target with the breach (the key is absent otherwise, not
+an empty list). The chat headlines are "SLA breached", "SLA breached; another
+target at risk" and "SLA at risk", with no target named; Jira keeps the name in
+its `event` key. Redeliver keeps the same keys.
+
+**Known limits.**
+
+- Detection is at most a minute late, like the stamp.
+- If the outbox write keeps failing for longer than the 15 minutes, the
+  crossing is then stamped silently: a lost alert, not a flood.
+- A reply recorded after the sweep stamped, whose own time was before the
+  target (the gap between a reply's commit and the recording of its first
+  response, under Re-matching when priority changes), leaves the breach stamp
+  as before and has now also announced it. The window is the time between the
+  two writes.
+- A hook that lists `sla.at_risk` but not `sla.breached` never hears of an
+  at-risk crossing that came in the same pass as a breach of the other target
+  (it rides on `sla.breached`, and its stamp is set).
 
 ### SLA Indicators
 

@@ -101,6 +101,13 @@ const (
 	KeyStaffEmailAssignedOverride = "staff_email_assigned_override"
 	KeyStaffEmailActivityOverride = "staff_email_activity_override"
 	KeyStaffEmailGroupOverride    = "staff_email_group_override"
+	// The fourth switch, SLA alerts (#670), with the same values and reader.
+	KeyStaffEmailSLAOverride = "staff_email_sla_override"
+
+	// Whether the SLA sweep announces what it stamps: sla.breached and
+	// sla.at_risk, mail and webhooks alike (#670). Off, the sweep still stamps
+	// and raises nothing.
+	KeySLAAlertsEnabled = "sla_alerts_enabled"
 
 	// Deprecated: replaced by the per-provider settings below, and read by
 	// nothing.
@@ -466,6 +473,12 @@ func ValidMismatchHandling(v string) bool {
 	return v == MismatchHandlingRefuse || v == MismatchHandlingWrap
 }
 
+// KeyPasskeyRequiredRoles lists the roles whose members must finish every
+// sign-in with a passkey (#616c): a JSON array of role names, seeded []. Its own
+// list; nothing writes mfa_enforced_roles on its behalf. That a listed role is
+// thereby MFA-enforced is computed when read (Service.MFARequiredFor).
+const KeyPasskeyRequiredRoles = "passkey_required_roles"
+
 // Store is the persistence interface for the key/value settings table.
 type Store interface {
 	Get(ctx context.Context, key string) ([]byte, error) // returns raw JSON value
@@ -485,7 +498,7 @@ func KnownKeys() []string {
 		KeyGuestSubmissionEnabled, KeyGuestAttachmentsEnabled, KeyGuestAttachmentMaxMB,
 		KeyGuestAttachmentMaxPerTicket, KeyGuestAttachmentUploadsPerHour,
 		KeyAttachmentMaxMB,
-		KeySLAEnabled, KeyMFAEnabled, KeyMFAEnforcedRoles,
+		KeySLAEnabled, KeySLAAlertsEnabled, KeyMFAEnabled, KeyMFAEnforcedRoles, KeyPasskeyRequiredRoles,
 		KeyReopenWindowDays, KeyReopenTargetStatusName,
 		KeyAttachmentScanPolicy, KeyAttachmentScanAddress,
 		KeySiteName, KeySiteLogoURL,
@@ -503,6 +516,7 @@ func KnownKeys() []string {
 		KeyStaffCanViewTicketChangeHistory, KeyAuditRetentionDays, KeyStaffCanViewFollowAudit,
 		KeyStaffCanCreateAPIKeys, KeyAPIKeyMaxLifetimeYears,
 		KeyStaffEmailAssignedOverride, KeyStaffEmailActivityOverride, KeyStaffEmailGroupOverride,
+		KeyStaffEmailSLAOverride,
 		KeyPasswordRehashGraceDays, KeyPasswordRehashStartedAt,
 		KeyUpdateCheckEnabled, KeyUpdateCheckResult, KeyPostUpgrade130Seen,
 	}
@@ -525,7 +539,7 @@ func AuthCriticalKeys() []string {
 		KeySAMLEnabled, KeySAMLMetadataURL, KeySAMLMetadataXML, KeySAMLCertPEM, KeySAMLKeyPEM,
 		KeyOIDCEnabled, KeyOIDCIssuerURL, KeyOIDCClientID, KeyOIDCClientSecret,
 		KeyOIDCRedirectURL,
-		KeyMFAEnabled, KeyMFAEnforcedRoles,
+		KeyMFAEnabled, KeyMFAEnforcedRoles, KeyPasskeyRequiredRoles,
 		KeyAllowedEmailDomains, KeySelfSignupEnabled, KeyOpenRegistrationEnabled,
 		// Who may force-reopen a closed ticket (#349). Widening it is a
 		// permission change, not configuration: a leaked API key must not be

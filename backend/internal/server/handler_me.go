@@ -6,7 +6,6 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
-	"time"
 
 	qrcode "github.com/skip2/go-qrcode"
 
@@ -84,6 +83,7 @@ type emailNotifications struct {
 	Assigned switchState `json:"assigned"`
 	Activity switchState `json:"activity"`
 	Group    switchState `json:"group"`
+	SLA      switchState `json:"sla"`
 }
 
 // meView adds the effective email state (#441). A requester is never sent
@@ -104,7 +104,7 @@ func (s *Server) meView(ctx context.Context, u user.User) meUser {
 		v.SLAEnabled = &on
 	}
 	ov := s.adminSvc.StaffEmailOverrides(ctx)
-	prefs := notification.StaffPrefs{Assigned: u.EmailNotifyAssigned, Activity: u.EmailNotifyActivity, Group: u.EmailNotifyGroup}
+	prefs := notification.StaffPrefs{Assigned: u.EmailNotifyAssigned, Activity: u.EmailNotifyActivity, Group: u.EmailNotifyGroup, SLA: u.EmailNotifySLA}
 	state := func(sw notification.StaffSwitch) switchState {
 		return switchState{Enabled: ov.Allows(sw, prefs), Forced: ov.Forced(sw)}
 	}
@@ -112,14 +112,15 @@ func (s *Server) meView(ctx context.Context, u user.User) meUser {
 		Assigned: state(notification.SwitchAssigned),
 		Activity: state(notification.SwitchActivity),
 		Group:    state(notification.SwitchGroup),
+		SLA:      state(notification.SwitchSLA),
 	}
 	return v
 }
 
 // PATCH /api/v1/me/email-preferences
 //
-// The caller's own staff-email switches (#441). Each is optional; only the ones
-// sent change. An administrator's override can still force a switch on or off
+// The caller's own staff-email switches (#441, and SLA alerts, #670). Each is
+// optional; only the ones sent change. An administrator's override can still force a switch on or off
 // for everyone, whatever is saved here.
 func (s *Server) handleUpdateEmailPreferences(w http.ResponseWriter, r *http.Request) {
 	a := authmw.GetActor(r)
@@ -127,13 +128,14 @@ func (s *Server) handleUpdateEmailPreferences(w http.ResponseWriter, r *http.Req
 		Assigned *bool `json:"email_notify_assigned"`
 		Activity *bool `json:"email_notify_activity"`
 		Group    *bool `json:"email_notify_group"`
+		SLA      *bool `json:"email_notify_sla"`
 	}
 	if err := DecodeJSON(r, &body); err != nil {
 		Error(w, http.StatusBadRequest, "bad_request", "the email switches must be true or false")
 		return
 	}
 	if err := s.users.SetEmailPreferences(r.Context(), a.UserID, user.EmailPreferencesPatch{
-		Assigned: body.Assigned, Activity: body.Activity, Group: body.Group,
+		Assigned: body.Assigned, Activity: body.Activity, Group: body.Group, SLA: body.SLA,
 	}); err != nil {
 		handleError(w, err)
 		return
@@ -205,6 +207,11 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Read before the sessions are deleted below.
+	current, _ := s.sessions.Get(r, auth.SessionName)
+	prev, _ := current.Values[auth.SessionDataKey].(auth.SessionData)
+	owedPasskey, heldPasskey := prev.PasskeyOwed, prev.PasskeyHeld
+
 	if err := s.users.SetPassword(r.Context(), a.UserID, next); err != nil {
 		handleError(w, err)
 		return
@@ -224,12 +231,18 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 		Role:           a.Role,
 		MFAPassed:      a.MFAPassed,
 		FactorVerified: a.FactorVerified,
+		// Carried, or a session that owes a passkey could change its password
+		// and then pass MFA with a TOTP code (#616c).
+		PasskeyOwed: owedPasskey,
+		PasskeyHeld: heldPasskey,
 	}
 	// Only a session that owed the change can get here without having passed
-	// MFA (RequireMFAOrPasswordChange), and it still owes the enrolment, so
-	// it gets the enrolment window rather than an already-expired one.
+	// MFA (RequireMFAOrPasswordChange), and it still owes the enrolment or the
+	// key. It keeps the deadline its sign-in gave, as afterTOTP does (#452): a
+	// change that minted a fresh one would be a way to hold a pending session
+	// open indefinitely.
 	if !sd.MFAPassed {
-		sd.PendingUntil = auth.PendingDeadline(time.Now(), true)
+		sd.PendingUntil = prev.PendingUntil
 	}
 	if err := s.writeSession(w, r, sd); err != nil {
 		handleError(w, err)
@@ -364,12 +377,10 @@ func (s *Server) handleMFAEnrollConfirm(w http.ResponseWriter, r *http.Request) 
 	// Successful enrollment satisfies this login's MFA challenge — flip the
 	// session so forced-enrollment users aren't locked out until they log out.
 	// Every other session ends: see writeSessionAfterNewFactor.
-	if err := s.writeSessionAfterNewFactor(w, r, auth.SessionData{
-		UserID:         a.UserID,
-		Role:           a.Role,
-		MFAPassed:      true,
-		FactorVerified: true,
-	}); err != nil {
+	//
+	// Unless the sign-in owes a passkey (#616c): an authenticator proves a
+	// factor there, which lets a key be registered, but only the key passes.
+	if err := s.writeSessionAfterNewFactor(w, r, afterTOTP(sd, a)); err != nil {
 		handleError(w, err)
 		return
 	}

@@ -48,7 +48,8 @@ describe('the email switches on the account page', () => {
     signedInAs(role)
     renderWithQuery(<AccountPage />)
     expect(await screen.findByRole('heading', { name: 'Email about tickets' })).toBeTruthy()
-    expect(screen.getAllByRole('checkbox')).toHaveLength(3)
+    expect(screen.getAllByRole('checkbox')).toHaveLength(4)
+    expect(screen.getByRole('checkbox', { name: /sla alerts/i })).toBeTruthy()
   })
 
   it('are not shown to a requester', async () => {
