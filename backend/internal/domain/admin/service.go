@@ -324,6 +324,29 @@ func (s *Service) TicketScopeEnforced(ctx context.Context) bool {
 	return v
 }
 
+// AvailableQueueRoles returns the roles listed in available_queue_roles. A
+// missing or damaged row reads as none.
+func (s *Service) AvailableQueueRoles(ctx context.Context) []string {
+	raw, err := s.store.Get(ctx, KeyAvailableQueueRoles)
+	if err != nil {
+		return nil
+	}
+	var roles []string
+	if err := json.Unmarshal(raw, &roles); err != nil {
+		return nil
+	}
+	return roles
+}
+
+// AvailableQueueAllowed reports whether role may open the Available view. An
+// administrator always may; staff may only when the setting lists them.
+func (s *Service) AvailableQueueAllowed(ctx context.Context, role string) bool {
+	if role == "admin" {
+		return true
+	}
+	return role == "staff" && slices.Contains(s.AvailableQueueRoles(ctx), "staff")
+}
+
 // StaffCanViewTicketChangeHistory returns whether staff may see the
 // field-level before/after diff on an audit entry, on top of the
 // action/actor/timestamp every staff member already sees. Off by default.

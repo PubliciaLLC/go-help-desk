@@ -2,12 +2,14 @@ package server_test
 
 import (
 	"context"
+	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
 	"regexp"
 	"runtime"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -86,35 +88,57 @@ func TestUpdateSettings_KnownKeysStillWrite(t *testing.T) {
 	require.Equal(t, "Renamed", v)
 }
 
-// repoFile reads a file relative to the repository root.
-func repoFile(t *testing.T, rel string) string {
+// settingsPageSources reads every non-test source under
+// frontend/src/pages/admin/settings (the pages and their sections) and returns
+// them as one string.
+func settingsPageSources(t *testing.T) string {
 	t.Helper()
 	_, here, _, ok := runtime.Caller(0)
 	require.True(t, ok)
 	// backend/internal/server/<this file> -> repository root
-	root := filepath.Join(filepath.Dir(here), "..", "..", "..")
-	b, err := os.ReadFile(filepath.Join(root, rel))
-	require.NoError(t, err, "this test reads %s from the checkout", rel)
-	return string(b)
+	root := filepath.Join(filepath.Dir(here), "..", "..", "..", "frontend", "src", "pages", "admin", "settings")
+	var sb strings.Builder
+	n := 0
+	err := filepath.WalkDir(root, func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		name := d.Name()
+		if d.IsDir() || strings.Contains(name, ".test.") || !(strings.HasSuffix(name, ".ts") || strings.HasSuffix(name, ".tsx")) {
+			return nil
+		}
+		b, err := os.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		sb.Write(b)
+		sb.WriteByte('\n')
+		n++
+		return nil
+	})
+	require.NoError(t, err, "this test reads the settings pages from the checkout")
+	require.NotZero(t, n, "no settings page sources under %s", root)
+	return sb.String()
 }
 
-// The admin Settings page is the one client that PATCHes this route. Every
-// key it can send must be known, or saving a field on that page would 400.
-// Read from the page's source: a vitest would only see the keys of the test
-// that happens to run.
+// The admin settings pages are the one client that PATCHes this route. Every
+// key they can send must be known, or saving a field on a page would 400.
+// Read from the pages' source (pages and sections): a vitest would only see
+// the keys of the test that happens to run.
 func TestUpdateSettings_EveryKeyTheSettingsPageSendsIsKnown(t *testing.T) {
-	src := repoFile(t, "frontend/src/pages/admin/SettingsPage.tsx")
-	// bool('k'), setStr('k', ...), has('k'), toggleStrArr('k', ...) and the
-	// enabledSetting / keySetting entries of the reputation table.
-	accessor := regexp.MustCompile(`\b(?:setBool|setNum|setStr|setStrArr|toggleStrArr|bool|num|str|strArr|has)\(\s*'([a-z][a-z0-9_]*)'`)
-	table := regexp.MustCompile(`\b(?:enabledSetting|keySetting):\s*'([a-z][a-z0-9_]*)'`)
+	src := settingsPageSources(t)
+	// draft.bool('k'), setStr('k', ...), has('k'), toggleStrArr('k', ...),
+	// secret('k'); the enabledSetting / keySetting entries of the reputation
+	// table; and the key: entries of the staff email override table.
+	accessor := regexp.MustCompile(`\b(?:setBool|setNum|setStr|setStrArr|toggleStrArr|bool|num|str|strArr|has|secret|setSecret|secretCleared|setSecretCleared)\(\s*'([a-z][a-z0-9_]*)'`)
+	table := regexp.MustCompile(`\b(?:enabledSetting|keySetting|key):\s*'([a-z][a-z0-9_]*)'`)
 	keys := map[string]bool{}
 	for _, re := range []*regexp.Regexp{accessor, table} {
 		for _, m := range re.FindAllStringSubmatch(src, -1) {
 			keys[m[1]] = true
 		}
 	}
-	require.Greater(t, len(keys), 15, "the page's keys were not found; has the page been restructured?")
+	require.Greater(t, len(keys), 15, "the pages' keys were not found; have the pages been restructured?")
 	var unknown []string
 	for k := range keys {
 		if !admin.IsKnownKey(k) {

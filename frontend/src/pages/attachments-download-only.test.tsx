@@ -93,7 +93,8 @@ describe('attachments are never rendered inline', () => {
   // guarding. A count still fails on a new renderer, and survives the file
   // being reordered.
   //
-  // BrandLogo.tsx and SettingsPage.tsx are the instance logo: an
+  // BrandLogo.tsx and the Identity settings section are the instance logo (the
+  // section moved out of SettingsPage.tsx in #674, same renderer): an
   // admin-uploaded image served from its own route under a policy that blocks
   // scripts (see logoCSP in security_headers.go). MFAEnrollForm.tsx is the
   // TOTP enrolment QR code, a data: URL the server generates during MFA
@@ -115,13 +116,14 @@ describe('attachments are never rendered inline', () => {
     'src/components/BrandLogo.tsx': 1,
     'src/components/MFAEnrollForm.tsx': 1,
     'src/pages/AccountPage.tsx': 1,
-    'src/pages/admin/SettingsPage.tsx': 1,
-    // #158: the email template editor's HTML preview. Not an attachment: it is
+    'src/pages/admin/settings/sections/IdentitySection.tsx': 1,
+    // #158, moved from EmailTemplatesPage.tsx by #674: the email template
+    // editor's HTML preview. Not an attachment: it is
     // markup an administrator typed, returned by the preview endpoint, shown in
     // an <iframe sandbox=""> (no scripts, opaque origin) under a CSP meta that
-    // allows no remote loads. EmailTemplatesPage.preview-safety.test.ts pins
+    // allows no remote loads. EmailTemplatesTab.preview-safety.test.ts pins
     // that it is the only frame and that the sandbox stays empty.
-    'src/pages/admin/EmailTemplatesPage.tsx': 1,
+    'src/pages/admin/settings/EmailTemplatesTab.tsx': 1,
     // #443: not a renderer. This is the `new URL(value)` that parses a link's
     // target in safeUrl, which the regex above reads as a CSS url(). Markdown
     // images are never loaded: the pipeline turns each into a link (see
@@ -171,7 +173,11 @@ describe('attachments are never rendered inline', () => {
     // concatenation, a plain string, with or without the trailing slash —
     // because how the URL is written is not the point. The trailing slash
     // used to be required, which let ['…/attachments', id].join('/') past.
-    const spelled = files.filter(({ source }) => /['"`][^'"`]*\/attachments\b/.test(source))
+    // /admin/settings/attachments (#674) is the File Attachments settings page,
+    // an address in the router and the sidebar, not an attachment URL.
+    const spelled = files.filter(({ source }) =>
+      /['"`][^'"`]*(?<!\/admin\/settings)\/attachments\b/.test(source),
+    )
     const builders = spelled.map(({ path }) => path).filter((p) => p !== 'src/api/guest.ts')
     expect(builders).toEqual(['src/api/tickets.ts'])
 

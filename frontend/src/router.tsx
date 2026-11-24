@@ -9,6 +9,7 @@ import { LoginPage } from '@/pages/LoginPage'
 import { SetupPage } from '@/pages/SetupPage'
 import { AccountPage } from '@/pages/AccountPage'
 import { DashboardPage } from '@/pages/DashboardPage'
+import { ReportsPage } from '@/pages/ReportsPage'
 import { TicketListPage } from '@/pages/TicketListPage'
 import { NewTicketPage } from '@/pages/NewTicketPage'
 import { TicketDetailPage } from '@/pages/TicketDetailPage'
@@ -18,7 +19,15 @@ import { GroupsPage } from '@/pages/admin/GroupsPage'
 import { CategoriesPage } from '@/pages/admin/CategoriesPage'
 import { StatusesPage } from '@/pages/admin/StatusesPage'
 import { RolesPage } from '@/pages/admin/RolesPage'
-import { SettingsPage } from '@/pages/admin/SettingsPage'
+import { GeneralSettingsPage } from '@/pages/admin/settings/GeneralSettingsPage'
+import { FeaturesSettingsPage } from '@/pages/admin/settings/FeaturesSettingsPage'
+import { BrandingSettingsPage } from '@/pages/admin/settings/BrandingSettingsPage'
+import { EmailSettingsPage } from '@/pages/admin/settings/EmailSettingsPage'
+import { EmailTemplatesSettingsPage } from '@/pages/admin/settings/EmailTemplatesSettingsPage'
+import { AttachmentSettingsPage } from '@/pages/admin/settings/AttachmentSettingsPage'
+import { GuestAccessSettingsPage } from '@/pages/admin/settings/GuestAccessSettingsPage'
+import { AuthenticationSettingsPage } from '@/pages/admin/settings/AuthenticationSettingsPage'
+import { PrivacySettingsPage } from '@/pages/admin/settings/PrivacySettingsPage'
 import { TagsPage } from '@/pages/admin/TagsPage'
 import { CannedResponsesPage } from '@/pages/admin/CannedResponsesPage'
 import { CustomFieldsPage } from '@/pages/admin/CustomFieldsPage'
@@ -26,7 +35,6 @@ import { APIKeysPage } from '@/pages/admin/APIKeysPage'
 import { AdminAuditPage } from '@/pages/admin/AdminAuditPage'
 import { OAuthClientsPage } from '@/pages/admin/OAuthClientsPage'
 import { WebhooksPage } from '@/pages/admin/WebhooksPage'
-import { EmailTemplatesPage } from '@/pages/admin/EmailTemplatesPage'
 import { RoutingPage } from '@/pages/admin/RoutingPage'
 import { GuestTicketPage } from '@/pages/GuestTicketPage'
 import { GuestTicketViewPage } from '@/pages/GuestTicketViewPage'
@@ -36,6 +44,7 @@ import { VerifyEmailPage } from '@/pages/VerifyEmailPage'
 import { ForgotPasswordPage } from '@/pages/ForgotPasswordPage'
 import { ResetPasswordPage } from '@/pages/ResetPasswordPage'
 import { parseTicketSearch } from '@/lib/ticketSearch'
+import { kpiSearchFromRecord, kpiSearchToRecord } from '@/lib/kpi'
 
 async function requireAuth() {
   const { user, setUser } = useAuthStore.getState()
@@ -52,6 +61,13 @@ async function requireAdmin() {
   await requireAuth()
   const { user } = useAuthStore.getState()
   if (user?.role !== 'admin') throw redirect({ to: '/dashboard' })
+}
+
+// Staff and administrators: Reports reads GET /reports/kpi, which answers a
+// requester 403. The nav item is hidden for them; this is the guard.
+async function requireStaff() {
+  await requireAuth()
+  if (useAuthStore.getState().user?.role === 'user') throw redirect({ to: '/dashboard' })
 }
 
 // ── Root ──────────────────────────────────────────────────────────────────────
@@ -110,6 +126,16 @@ const afterUpgradeRoute = createRoute({
     if (!needsAfterUpgrade(await getSettings())) throw redirect({ to: '/dashboard' })
   },
   component: AfterUpgradePage,
+})
+
+// #131: the address holds the whole state of the page (range, dates, filters),
+// so a refresh or a shared link shows the same board.
+const reportsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/reports',
+  beforeLoad: requireStaff,
+  validateSearch: (search: Record<string, unknown>) => kpiSearchToRecord(kpiSearchFromRecord(search)),
+  component: ReportsPage,
 })
 
 const ticketsRoute = createRoute({
@@ -187,11 +213,72 @@ const adminStatusesRoute = createRoute({
   component: StatusesPage,
 })
 
+// System -> settings pages (#674). One flat route per page, like every other
+// admin route: no layout route and no Outlet, so a page is one component.
+const adminSettingsGeneralRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/admin/settings/general',
+  beforeLoad: requireAdmin,
+  component: GeneralSettingsPage,
+})
+const adminSettingsFeaturesRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/admin/settings/features',
+  beforeLoad: requireAdmin,
+  component: FeaturesSettingsPage,
+})
+const adminSettingsBrandingRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/admin/settings/branding',
+  beforeLoad: requireAdmin,
+  component: BrandingSettingsPage,
+})
+const adminSettingsEmailRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/admin/settings/email',
+  beforeLoad: requireAdmin,
+  component: EmailSettingsPage,
+})
+const adminSettingsEmailTemplatesRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/admin/settings/email/templates',
+  beforeLoad: requireAdmin,
+  component: EmailTemplatesSettingsPage,
+})
+const adminSettingsAttachmentRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/admin/settings/attachments',
+  beforeLoad: requireAdmin,
+  component: AttachmentSettingsPage,
+})
+const adminSettingsGuestAccessRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/admin/settings/guest-access',
+  beforeLoad: requireAdmin,
+  component: GuestAccessSettingsPage,
+})
+const adminSettingsAuthenticationRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/admin/settings/authentication',
+  beforeLoad: requireAdmin,
+  component: AuthenticationSettingsPage,
+})
+const adminSettingsPrivacyRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/admin/settings/privacy',
+  beforeLoad: requireAdmin,
+  component: PrivacySettingsPage,
+})
+
+// The settings used to be one page with six tabs. The tabs had no address, so
+// the old address opens General, which is the tab it always opened. The
+// redirect does not check the user: the page it lands on does.
 const adminSettingsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/admin/settings',
-  beforeLoad: requireAdmin,
-  component: SettingsPage,
+  beforeLoad: () => {
+    throw redirect({ to: '/admin/settings/general', replace: true })
+  },
 })
 
 // #129: administrators only, as GET /admin/audit is. Staff read the history on
@@ -248,11 +335,14 @@ const adminWebhooksRoute = createRoute({
   component: WebhooksPage,
 })
 
+// Email Templates is now the Templates tab of System -> Email (#674). The
+// query is kept, so a link to a template (?t=) still opens it.
 const adminEmailTemplatesRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/admin/email-templates',
-  beforeLoad: requireAdmin,
-  component: EmailTemplatesPage,
+  beforeLoad: ({ search }) => {
+    throw redirect({ to: '/admin/settings/email/templates', search, replace: true })
+  },
 })
 
 const adminRoutingRoute = createRoute({
@@ -329,6 +419,7 @@ export const router = createRouter({
     resetPasswordRoute,
     dashboardRoute,
     afterUpgradeRoute,
+    reportsRoute,
     submitRoute,
     guestViewRoute,
     guestTrackRoute,
@@ -351,6 +442,15 @@ export const router = createRouter({
   adminEmailTemplatesRoute,
   adminRoutingRoute,
     adminSettingsRoute,
+    adminSettingsGeneralRoute,
+    adminSettingsFeaturesRoute,
+    adminSettingsBrandingRoute,
+    adminSettingsEmailRoute,
+    adminSettingsEmailTemplatesRoute,
+    adminSettingsAttachmentRoute,
+    adminSettingsGuestAccessRoute,
+    adminSettingsAuthenticationRoute,
+    adminSettingsPrivacyRoute,
     adminAuditRoute,
   ]),
 })

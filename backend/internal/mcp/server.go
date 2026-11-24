@@ -325,6 +325,9 @@ type CategoryLister interface {
 type Authorizer interface {
 	CanViewTicket(ctx context.Context, a *authmw.Actor, t ticket.Ticket) (bool, error)
 	TicketVisibility(ctx context.Context, a *authmw.Actor) (ticket.Visibility, error)
+	// AvailableQueueAllowed is whether the actor may open the Available queue
+	// (scope=unassigned): the one answer REST and /me give (#676).
+	AvailableQueueAllowed(ctx context.Context, a *authmw.Actor) bool
 }
 
 // deniedAuthorizer is the fallback when no Authorizer is supplied. Closed, not
@@ -338,6 +341,10 @@ func (deniedAuthorizer) CanViewTicket(context.Context, *authmw.Actor, ticket.Tic
 
 func (deniedAuthorizer) TicketVisibility(context.Context, *authmw.Actor) (ticket.Visibility, error) {
 	return ticket.VisibilityReporter, nil
+}
+
+func (deniedAuthorizer) AvailableQueueAllowed(context.Context, *authmw.Actor) bool {
+	return false
 }
 
 func New(
@@ -646,7 +653,7 @@ func (s *Server) registerTools() {
 	s.mcp.AddTool(mcpgo.NewTool(
 		"list_tickets",
 		mcpgo.WithDescription("List tickets the caller may see, with optional filters. Filters combine with AND and can only narrow what the caller may already see; "+
-			"the values of one list-valued filter are ORed. An argument of the wrong type, an unknown value, or an unknown sort or order is refused, not ignored. "+
+			"the values of one list-valued filter are ORed. scope picks a queue (default visible, every ticket the caller may see) and held_by who holds the ticket. An argument of the wrong type, an unknown value, or an unknown sort or order is refused, not ignored. "+
 			"A requester may use only the filters marked as open to them, and is refused the others. "+
 			"Without sort, a search with q is ranked by relevance and everything else is newest first."),
 		mcpgo.WithString("assignee_user_id", mcpgo.Description("Only tickets assigned to this user UUID (staff and administrators)")),
@@ -654,6 +661,7 @@ func (s *Server) registerTools() {
 		mcpgo.WithString("status_id", mcpgo.Description("Only tickets in this status UUID (see list_statuses). Kept for existing callers; status_ids takes several")),
 		mcpgo.WithArray("status_ids", mcpgo.WithStringItems(), mcpgo.MaxItems(ticket.MaxRepeated), mcpgo.Description("Only tickets in any of these status UUIDs, at most 20 (see list_statuses). May be combined with status_id")),
 		mcpgo.WithBoolean("include_closed", mcpgo.Description("false leaves out the Closed status. Ignored when a status is named (default true)")),
+		mcpgo.WithBoolean("awaiting_reply", mcpgo.Description("true: only tickets that are not Resolved or Closed and whose newest public message is from the requester's side (the requester, a guest, or a follower who is a requester), so they are waiting for the help desk. Internal notes are not counted. false is the same as leaving it out. Staff and administrators only: a requester sending true is refused")),
 		mcpgo.WithAny("priority", mcpgo.Description("Only tickets at this priority, or at any of these in a JSON array (at most 20): critical|high|medium|low"), stringOrStringArray(ticket.MaxRepeated)),
 		mcpgo.WithString("category_id", mcpgo.Description("Only tickets in this category UUID, including every type and item under it (see list_categories)")),
 		mcpgo.WithString("type_id", mcpgo.Description("Only tickets of this type UUID")),
@@ -665,6 +673,8 @@ func (s *Server) registerTools() {
 		mcpgo.WithString("updated_after", mcpgo.Description("Only tickets updated at or after this RFC 3339 time (staff and administrators)")),
 		mcpgo.WithString("updated_before", mcpgo.Description("Only tickets updated before this RFC 3339 time (staff and administrators)")),
 		mcpgo.WithArray("source_channel", mcpgo.WithStringEnumItems([]string{"web", "api", "mcp", "guest", "phone"}), mcpgo.MaxItems(ticket.MaxRepeated), mcpgo.Description("Only tickets opened through any of these channels (staff and administrators)")),
+		mcpgo.WithString("scope", mcpgo.Description("Which queue to list; absent means visible, which is what this tool listed before scope existed. visible is every ticket the caller may see; mine is tickets assigned to the caller or to one of their groups; assigned_to_me is tickets whose assignee is the caller; my_groups is tickets assigned to one of the caller's groups; unassigned is tickets with no assignee user or group (the Available queue), for administrators and for staff while the instance allows it; all is every ticket, for administrators only. An unknown value is refused. A requester has no queues and always gets their own tickets. reporter_id, requester and assignee_group_id name which tickets, so with them mine, unassigned, all and visible are not applied; assigned_to_me and my_groups always are"), mcpgo.Enum("mine", "assigned_to_me", "my_groups", "unassigned", "all", "visible")),
+		mcpgo.WithString("held_by", mcpgo.Description("Who personally holds the ticket, relative to the caller: nobody (no assignee user), me (the caller is the assignee) or others (an assignee who is not the caller). Applies on every scope (staff and administrators)"), mcpgo.Enum("nobody", "me", "others")),
 		mcpgo.WithString("sla", mcpgo.Description("breached|at_risk: only tickets the SLA indicator shows in that state (staff and administrators). Refused while SLA tracking is off"), mcpgo.Enum("breached", "at_risk")),
 		mcpgo.WithString("sort", mcpgo.Description("Order by number|subject|status|priority|sla|created|updated. A requester may sort by number, subject, status, priority and created. Ties keep a stable order. Refused for sla while SLA tracking is off"), mcpgo.Enum("number", "subject", "status", "priority", "sla", "created", "updated")),
 		mcpgo.WithString("order", mcpgo.Description("asc|desc. Without it a sort uses its natural order: created and updated newest first, the rest first to last (priority and sla most urgent first). Has no effect without sort"), mcpgo.Enum("asc", "desc")),
@@ -1205,11 +1215,31 @@ var listFilterParams = []string{
 	"q", "reporter_id", "requester", "category_id", "type_id", "item_id",
 	"assignee_user_id", "assignee_group_id",
 	"created_after", "created_before", "updated_after", "updated_before",
-	"sla", "sort", "order",
+	"sla", "held_by", "sort", "order",
 }
 
 func badListArg(key string) error {
 	return fmt.Errorf("%w: invalid %s", ticket.ErrValidation, key)
+}
+
+// listScope reads the `scope` argument. Absent or JSON null is visible, which is
+// what this tool listed before scope existed, so an existing caller's answer is
+// unchanged. REST reads an unknown scope as mine; this tool never skips an
+// argument, so an unknown value, an empty string or any other type is refused.
+func listScope(args map[string]any) (ticket.Scope, error) {
+	v, ok := args["scope"]
+	if !ok || v == nil {
+		return ticket.ScopeVisible, nil
+	}
+	s, ok := v.(string)
+	if !ok {
+		return "", badListArg("scope")
+	}
+	sc, ok := ticket.ParseScope(s)
+	if !ok {
+		return "", badListArg("scope")
+	}
+	return sc, nil
 }
 
 // listArgString reads an argument that must be a string. Absent and JSON null
@@ -1280,7 +1310,7 @@ func listQuery(args map[string]any) (url.Values, error) {
 			q.Set(key, v)
 		}
 	}
-	for _, key := range []string{"search_replies", "include_closed"} {
+	for _, key := range []string{"search_replies", "include_closed", "awaiting_reply"} {
 		v, err := listArgBool(args, key)
 		if err != nil {
 			return nil, err
@@ -1400,14 +1430,26 @@ func canSearchRequesters(a *authmw.Actor) bool {
 
 // listFilterFor is everything list_tickets decides before it touches the store:
 // the arguments parsed by the domain, the filter checked against who is asking
-// (the same Filter.AllowedFor REST uses), and the one field that comes from the
-// caller's role. Pure so the refusals can be tested without a database.
-func listFilterFor(a *authmw.Actor, vis ticket.Visibility, args map[string]any) (ticket.Filter, error) {
+// (the same Filter.AllowedFor REST uses), the queue the scope names, and the one
+// field that comes from the caller's role. availableOK is whether the caller may
+// open the Available queue (Authorizer.AvailableQueueAllowed). Pure so the refusals can be tested without a database.
+func listFilterFor(a *authmw.Actor, vis ticket.Visibility, availableOK bool, args map[string]any) (ticket.Filter, error) {
 	f, err := buildListFilter(args, vis, a.UserID)
 	if err != nil {
 		return ticket.Filter{}, err
 	}
 	if err := f.AllowedFor(a.Role, canSearchRequesters(a)); err != nil {
+		return ticket.Filter{}, err
+	}
+	// The queue, by the rule GET /tickets uses (ticket.ResolveQueue), so the same
+	// callers are refused in the same words. Not checked against the caller's
+	// groups: assignee_group_id is not refused to a staff member outside the
+	// group, because it can only narrow what their scope already admits.
+	scope, err := listScope(args)
+	if err != nil {
+		return ticket.Filter{}, err
+	}
+	if f.Queue, err = ticket.ResolveQueue(scope, f, a.Role, availableOK); err != nil {
 		return ticket.Filter{}, err
 	}
 	// From the role and nothing else, for the match and for the snippet alike. A
@@ -1437,7 +1479,7 @@ func (s *Server) handleListTickets(ctx context.Context, req mcpgo.CallToolReques
 	if err != nil {
 		return storeErr(ctx, "list tickets", err)
 	}
-	f, err := listFilterFor(caller, vis, req.GetArguments())
+	f, err := listFilterFor(caller, vis, s.authz.AvailableQueueAllowed(ctx, caller), req.GetArguments())
 	if err != nil {
 		return storeErr(ctx, "list tickets", err)
 	}

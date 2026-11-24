@@ -3,7 +3,7 @@ import * as Dialog from '@radix-ui/react-dialog'
 import { XIcon } from 'lucide-react'
 import type { Status } from '@/api/types'
 import { Button } from '@/components/ui/button'
-import { clearAll, type TicketSearch } from '@/lib/ticketSearch'
+import { clearAll, type FilterKey, type TicketSearch } from '@/lib/ticketSearch'
 import { TicketFilters } from './TicketFilters'
 
 // The phone's version of the filter panel: a full-screen sheet whose changes
@@ -23,6 +23,7 @@ function DialogBody({
   staff: boolean
   slaOn: boolean
   statuses: Status[]
+  offered?: readonly FilterKey[]
 }) {
   const [draft, setDraft] = useState(initial)
   const patch = (p: Partial<TicketSearch>) => setDraft(d => ({ ...d, ...p }))
@@ -50,7 +51,7 @@ function DialogBody({
       </div>
 
       <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-4 py-4">
-        <TicketFilters value={draft} onChange={patch} layout="dialog" staff={rest.staff} slaOn={rest.slaOn} statuses={rest.statuses} />
+        <TicketFilters value={draft} onChange={patch} layout="dialog" staff={rest.staff} slaOn={rest.slaOn} statuses={rest.statuses} offered={rest.offered} />
       </div>
 
       <div className="flex gap-3 border-t border-gray-200 px-4 py-3">
@@ -74,6 +75,7 @@ export function FilterDialog({
   staff,
   slaOn,
   statuses,
+  offered,
 }: {
   open: boolean
   onOpenChange: (open: boolean) => void
@@ -83,6 +85,8 @@ export function FilterDialog({
   staff: boolean
   slaOn: boolean
   statuses: Status[]
+  // The filters the view offers (VIEW_FILTERS); all of them when absent.
+  offered?: readonly FilterKey[]
 }) {
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
@@ -98,6 +102,7 @@ export function FilterDialog({
           staff={staff}
           slaOn={slaOn}
           statuses={statuses}
+          offered={offered}
         />
       </Dialog.Portal>
     </Dialog.Root>

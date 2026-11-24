@@ -44,6 +44,7 @@ describe('the reopen target warning', () => {
     expect(text).toMatch(/inactive/i)
     expect(text).toMatch(/New/)
     expect(text).toMatch(/active status/i)
+    expect(text).toContain('System → General → Ticket lifecycle → Reopen target status')
   })
 
   it('says nothing when the target is active', async () => {

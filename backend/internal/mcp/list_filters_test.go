@@ -79,6 +79,18 @@ func TestBuildListFilter_IncludeClosedFalseLeavesOutClosed(t *testing.T) {
 	require.False(t, f.ExcludeClosed, "closed tickets are listed unless asked otherwise, as before")
 }
 
+func TestBuildListFilter_AwaitingReply(t *testing.T) {
+	f, err := buildListFilter(map[string]any{"awaiting_reply": true}, ticket.VisibilityAll, uuid.New())
+	require.NoError(t, err)
+	require.True(t, f.AwaitingReply)
+
+	for _, args := range []map[string]any{{}, {"awaiting_reply": false}, {"awaiting_reply": nil}} {
+		f, err = buildListFilter(args, ticket.VisibilityAll, uuid.New())
+		require.NoError(t, err)
+		require.False(t, f.AwaitingReply, "%v", args)
+	}
+}
+
 // status_id (one) predates status_ids and keeps working, alone and beside it.
 func TestBuildListFilter_StatusIDStillWorksBesideStatusIDs(t *testing.T) {
 	one, two := uuid.New(), uuid.New()
@@ -139,6 +151,9 @@ func TestBuildListFilter_RejectsWhatTheParserRejects(t *testing.T) {
 		{"a number in a list of ids", map[string]any{"status_ids": []any{5.0}}, "invalid status_id"},
 		{"a string for a bool", map[string]any{"search_replies": "yes"}, "invalid search_replies"},
 		{"a string for include_closed", map[string]any{"include_closed": "no"}, "invalid include_closed"},
+		{"a string for awaiting_reply", map[string]any{"awaiting_reply": "true"}, "invalid awaiting_reply"},
+		{"a number for awaiting_reply", map[string]any{"awaiting_reply": 1.0}, "invalid awaiting_reply"},
+		{"an object for awaiting_reply", map[string]any{"awaiting_reply": map[string]any{}}, "invalid awaiting_reply"},
 		{"a number for sort", map[string]any{"sort": 3.0}, "invalid sort"},
 		{"a string for limit", map[string]any{"limit": "100"}, "invalid limit"},
 		{"a bool for limit", map[string]any{"limit": true}, "invalid limit"},
@@ -177,7 +192,7 @@ func TestListFilterFor_RequesterCannotUseStaffOnlyFilters(t *testing.T) {
 	for _, role := range []user.Role{user.RoleUser, user.Role("somebody-new")} {
 		for name, args := range staffOnly {
 			t.Run(string(role)+"/"+name, func(t *testing.T) {
-				_, err := listFilterFor(actorWith(role, false), ticket.VisibilityReporter, args)
+				_, err := listFilterFor(actorWith(role, false), ticket.VisibilityReporter, false, args)
 				var fe *ticket.FilterError
 				require.ErrorAs(t, err, &fe)
 				require.Equal(t, ticket.FilterForbidden, fe.Kind)
@@ -187,7 +202,7 @@ func TestListFilterFor_RequesterCannotUseStaffOnlyFilters(t *testing.T) {
 	}
 
 	t.Run("what a requester may use still works", func(t *testing.T) {
-		_, err := listFilterFor(actorWith(user.RoleUser, false), ticket.VisibilityReporter, map[string]any{
+		_, err := listFilterFor(actorWith(user.RoleUser, false), ticket.VisibilityReporter, false, map[string]any{
 			"status_ids": []any{uuid.NewString()}, "priority": []any{"high"}, "category_id": uuid.NewString(),
 			"type_id": uuid.NewString(), "item_id": uuid.NewString(), "include_closed": false,
 			"created_after": "2026-03-01T00:00:00Z", "sort": "number", "order": "asc", "q": "printer",
@@ -205,7 +220,7 @@ func TestListFilterFor_RequesterTextNeedsTheScopeOnAMachineCredential(t *testing
 
 	for _, role := range []user.Role{user.RoleStaff, user.RoleAdmin} {
 		t.Run(string(role), func(t *testing.T) {
-			_, err := listFilterFor(actorWith(role, true, "tickets:read"), ticket.VisibilityAll, args)
+			_, err := listFilterFor(actorWith(role, true, "tickets:read"), ticket.VisibilityAll, false, args)
 			var fe *ticket.FilterError
 			require.ErrorAs(t, err, &fe)
 			require.Equal(t, ticket.FilterMissingScope, fe.Kind)
@@ -214,23 +229,23 @@ func TestListFilterFor_RequesterTextNeedsTheScopeOnAMachineCredential(t *testing
 			// tickets:write implies tickets:read and users:read exists; neither
 			// is the search scope.
 			for _, other := range []string{"tickets:write", "users:read"} {
-				_, err = listFilterFor(actorWith(role, true, other), ticket.VisibilityAll, args)
+				_, err = listFilterFor(actorWith(role, true, other), ticket.VisibilityAll, false, args)
 				require.ErrorAs(t, err, &fe, other)
 				require.Equal(t, ticket.FilterMissingScope, fe.Kind, other)
 			}
 
-			f, err := listFilterFor(actorWith(role, true, "tickets:read", "requester_search:read"), ticket.VisibilityAll, args)
+			f, err := listFilterFor(actorWith(role, true, "tickets:read", "requester_search:read"), ticket.VisibilityAll, false, args)
 			require.NoError(t, err)
 			require.Equal(t, "whitfield", f.Requester)
 
-			f, err = listFilterFor(actorWith(role, false), ticket.VisibilityAll, args)
+			f, err = listFilterFor(actorWith(role, false), ticket.VisibilityAll, false, args)
 			require.NoError(t, err, "a session is the person, and scopes only narrow a machine credential")
 			require.Equal(t, "whitfield", f.Requester)
 		})
 	}
 
 	t.Run("reporter_id by id needs no search scope", func(t *testing.T) {
-		_, err := listFilterFor(actorWith(user.RoleStaff, true, "tickets:read"), ticket.VisibilityAll,
+		_, err := listFilterFor(actorWith(user.RoleStaff, true, "tickets:read"), ticket.VisibilityAll, false,
 			map[string]any{"reporter_id": uuid.NewString()})
 		require.NoError(t, err)
 	})
@@ -251,13 +266,13 @@ func TestListFilterFor_IncludeInternalComesFromTheRole(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(string(tc.role), func(t *testing.T) {
-			f, err := listFilterFor(actorWith(tc.role, false), ticket.VisibilityAll,
+			f, err := listFilterFor(actorWith(tc.role, false), ticket.VisibilityAll, false,
 				map[string]any{"q": "printer", "search_replies": true})
 			require.NoError(t, err)
 			require.Equal(t, tc.want, f.IncludeInternal)
 
 			// An argument cannot turn it on.
-			f, err = listFilterFor(actorWith(tc.role, false), ticket.VisibilityAll,
+			f, err = listFilterFor(actorWith(tc.role, false), ticket.VisibilityAll, false,
 				map[string]any{"q": "printer", "search_replies": true, "include_internal": true})
 			require.NoError(t, err)
 			require.Equal(t, tc.want, f.IncludeInternal)
@@ -267,7 +282,7 @@ func TestListFilterFor_IncludeInternalComesFromTheRole(t *testing.T) {
 
 func TestListFilterFor_KeepsServerFieldsAndTheLimit(t *testing.T) {
 	a := actorWith(user.RoleStaff, false)
-	f, err := listFilterFor(a, ticket.VisibilityScoped, map[string]any{"limit": 500.0, "offset": 40.0})
+	f, err := listFilterFor(a, ticket.VisibilityScoped, false, map[string]any{"limit": 500.0, "offset": 40.0})
 	require.NoError(t, err)
 	require.Equal(t, a.UserID, f.ActorID)
 	require.Equal(t, ticket.VisibilityScoped, f.Visibility)
@@ -275,7 +290,7 @@ func TestListFilterFor_KeepsServerFieldsAndTheLimit(t *testing.T) {
 	require.Equal(t, maxListLimit, f.Limit)
 	require.Equal(t, 40, f.Offset)
 
-	f, err = listFilterFor(a, ticket.VisibilityAll, map[string]any{})
+	f, err = listFilterFor(a, ticket.VisibilityAll, false, map[string]any{})
 	require.NoError(t, err)
 	require.Equal(t, 20, f.Limit)
 }
@@ -286,7 +301,7 @@ func TestListFilterFor_UnknownSortOrOrderIsRefused(t *testing.T) {
 		for _, args := range []map[string]any{
 			{"sort": "bogus"}, {"sort": "relevance"}, {"sort": "number", "order": "sideways"}, {"order": "sideways"},
 		} {
-			_, err := listFilterFor(actorWith(role, false), ticket.VisibilityAll, args)
+			_, err := listFilterFor(actorWith(role, false), ticket.VisibilityAll, false, args)
 			require.ErrorIs(t, err, ticket.ErrValidation, "%s %v", role, args)
 		}
 	}
@@ -366,9 +381,13 @@ func TestToolSchema_ListTicketsAdvertisesTheFilters(t *testing.T) {
 		"assignee_user_id", "status_id", "priority", "category_id", "q", "search_replies", "limit", "offset", // as before
 		"status_ids", "reporter_id", "requester", "created_after", "created_before", "updated_after", "updated_before",
 		"type_id", "item_id", "assignee_group_id", "include_closed", "source_channel", "sla", "sort", "order",
+		"awaiting_reply",
 	} {
 		require.Contains(t, props, name)
 	}
+	aw, ok := props["awaiting_reply"].(map[string]any)
+	require.True(t, ok)
+	require.Equal(t, "boolean", aw["type"], "awaiting_reply is a JSON boolean, like include_closed")
 	require.NotContains(t, props, "include_internal", "it is not an argument")
 
 	for _, name := range []string{"status_ids", "source_channel"} {

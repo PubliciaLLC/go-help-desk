@@ -1,8 +1,8 @@
 -- SLA breach and at-risk notifications (#670).
 --
--- Numbering: 000066 is reserved by the #616 branch. If #616 lands under a
--- different number, or this lands after it, renumber this file and its down
--- step at merge; nothing else in this migration depends on the number.
+-- Numbering: 000066 is the #616 passkey policy and 000068 the #675 index; this
+-- one sits between them. Land them in that order, because the runner never
+-- applies a version below the one a database is already at.
 --
 -- At-risk stamps (the sweep's "tell once" fact). The sweep writes these the
 -- first time it sees a target at or past 80% while outstanding and below 100%,

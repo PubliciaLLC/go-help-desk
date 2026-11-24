@@ -111,6 +111,17 @@ func (s *Server) TicketVisibility(ctx context.Context, a *authmw.Actor) (ticket.
 	return ticket.VisibilityScoped, nil
 }
 
+// AvailableQueueAllowed reports whether the actor may open the Available queue
+// (scope=unassigned): administrators always, staff while available_queue_roles
+// lists staff, nobody else. A nil actor is refused. It is the one answer REST
+// and /me give (#676).
+func (s *Server) AvailableQueueAllowed(ctx context.Context, a *authmw.Actor) bool {
+	if a == nil {
+		return false
+	}
+	return s.adminSvc.AvailableQueueAllowed(ctx, string(a.Role))
+}
+
 // StillEntitled is the send-time check on staff email (#441): whether u should
 // still hear about the ticket now, however long ago the mail was queued. It
 // implements notify.StaffAccess.

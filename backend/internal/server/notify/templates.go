@@ -105,7 +105,7 @@ var (
 	varTicket   = Variable{"TicketURL", "The link to the ticket. For a guest it is their own link, and it replaces any earlier one."}
 	varVerify   = Variable{"VerifyURL", "The link that verifies the address and activates the account."}
 	varReset    = Variable{"ResetURL", "The link that lets the person choose a new password."}
-	varSite     = Variable{"SiteName", "The help desk's name from Settings."}
+	varSite     = Variable{"SiteName", "The help desk's name from System → Branding."}
 	// varSLAStatus is one of eight fixed phrases the server builds from which
 	// targets breached and which are at risk (slaStatus), never ticket text.
 	varSLAStatus = Variable{"SLAStatus", "Which SLA targets breached or are at risk, in words, such as: Response breached; resolution at risk."}

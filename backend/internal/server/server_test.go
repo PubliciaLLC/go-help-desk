@@ -46,6 +46,7 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/passwordreset"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/plugin"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/registration"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/report"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/sla"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/tag"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
@@ -418,6 +419,7 @@ func newHarnessOn(t *testing.T, openDB func(*testing.T) (*testutil.DB, func()), 
 		authSt,
 		registrationSvc,
 		cannedResponseSvc,
+		report.NewService(tStore),
 		srvOpts...,
 	)
 
@@ -1948,6 +1950,7 @@ func newBareHarness(t *testing.T) (*harness, func()) {
 		authSt,
 		nil, // registration service not needed in integration tests
 		cannedResponseSvc,
+		report.NewService(tStore),
 		server.WithAuditStore(auStore),
 	)
 

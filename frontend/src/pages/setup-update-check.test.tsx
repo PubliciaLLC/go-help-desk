@@ -33,6 +33,11 @@ describe('the update check question in setup', () => {
     expect(box.checked, 'opt-in: off until the administrator chooses').toBe(false)
   })
 
+  it('names where the choice is changed later', () => {
+    renderWithQuery(<SetupPage />)
+    expect(screen.getByText(/You can change it later under System → General\./)).toBeTruthy()
+  })
+
   it('sends nothing about it when left unchecked', async () => {
     const user = userEvent.setup()
     renderWithQuery(<SetupPage />)

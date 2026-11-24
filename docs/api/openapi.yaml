@@ -2062,6 +2062,82 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Error'}
+  /api/v1/dashboard:
+    get:
+      operationId: getDashboard
+      summary: Read the dashboard's queue counts, needs-attention list and 30-day trend.
+      description: |
+        The numbers and rows behind the dashboard's blocks (#675). Every count and
+        every row is computed by the same path as GET /tickets: the caller's
+        visibility, the queue, and the list query's own filter, so a number here
+        is the length of the list it links to. With ticket scope enforcement on, a
+        staff member's numbers count only what their scope admits.
+        - queues: the queue strip. A reporting user gets one cell, my_tickets. Staff
+          and administrators get five: assigned_to_me, my_groups, awaiting_my_reply
+          and, while SLA tracking is on, sla_breached and sla_at_risk. The two SLA
+          cells count what is assigned to the caller; they are left out while SLA
+          tracking is off, and a failure to read that setting is treated as off.
+          A count is a plain number, 0 included.
+        - attention: up to five open tickets that want someone, for staff and
+          administrators; null for a reporting user. Each row names one reason and
+          the instant its age is measured from, and carries the ticket exactly as
+          GET /tickets returns it to this caller. The reasons, in order: breached and
+          at_risk (SLA tracking on, oldest first), unassigned (the Available queue
+          rule: administrators, and staff while Staff is ticked under Available),
+          and reopened (reopened in the last 7 days, most recently updated first). A ticket is
+          listed once, under its first reason. since is created_at for the first
+          three reasons and the time it was last reopened for reopened. An empty
+          list means nothing needs attention.
+        - volume: tickets created and resolved per day for the last 30 days, today
+          included, oldest first, counted in the time zone given by tz over every
+          ticket the caller can see; null for a reporting user. A day with nothing
+          is present with zeros. Resolved is resolved_at, or closed_at when the
+          ticket was closed without being resolved.
+        Nothing is cached on the server. A store failure answers 500 for the whole
+        response.
+      tags: ['Tickets']
+      x-ghd-handler: handleGetDashboard
+      security:
+        - sessionCookie: []
+        - apiKey: ['tickets:read']
+        - oauthClient: ['tickets:read']
+      x-ghd-roles: [admin, staff, user]
+      x-ghd-mfa: true
+      parameters:
+        - name: tz
+          in: query
+          required: false
+          description: >-
+            The IANA time zone the trend's days are counted in, for example Europe/London. Absent or empty is
+            UTC. At most 64 bytes of A-Z, a-z, 0-9, _, +, - and /. Any other value is 400 bad_request,
+            "invalid tz"; a name the database does not know is 400 bad_request, "unknown time zone", but only for
+            staff and administrators, the callers who get a trend: a requester runs no trend, so their zone is
+            checked for form only.
+          schema:
+            type: string
+            maxLength: 64
+            pattern: '^[A-Za-z0-9_+/-]*$'
+      responses:
+        '200':
+          description: The dashboard's blocks. attention and volume are null for a reporting user.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Dashboard'
+        '400':
+          description: '`bad_request` with the message "invalid tz" or "unknown time zone" (see the tz parameter).'
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          description: A store failure (`internal_error`) fails the whole response.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
   /api/v1/groups:
     get:
       operationId: listGroupsForAssignment
@@ -2429,12 +2505,12 @@ paths:
       x-ghd-mfa: true
       responses:
         '200':
-          description: The caller's account, or the identity of an OAuth client.
+          description: The caller's account (MeUser), or the identity of an OAuth client.
           content:
             application/json:
               schema:
                 oneOf:
-                  - {$ref: '#/components/schemas/User'}
+                  - {$ref: '#/components/schemas/MeUser'}
                   - type: object
                     required: [machine, role, scopes]
                     properties:
@@ -2676,10 +2752,10 @@ paths:
                 email_notify_sla: {type: boolean}
       responses:
         '200':
-          description: The caller's account, with the switches as saved.
+          description: The caller's account (MeUser), with the switches as saved.
           content:
             application/json:
-              schema: {$ref: '#/components/schemas/User'}
+              schema: {$ref: '#/components/schemas/MeUser'}
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
@@ -3053,6 +3129,117 @@ paths:
           $ref: '#/components/responses/TooManyRequests'
         '404':
           $ref: '#/components/responses/NotFound'
+  /api/v1/reports/kpi:
+    get:
+      operationId: getKpiReport
+      summary: Read the KPI report for a period, with its comparison to the period before.
+      description: |
+        Staff and administrators only (second factor required). A requester gets 403.
+        The numbers behind the Reports page (#131), computed live on the server over the tickets the caller can
+        see (the same visibility as GET /tickets: with ticket scope enforcement on, a staff member's numbers
+        count only what their scope admits; an administrator sees every ticket).
+        - period: the days counted, from and to inclusive, in the time zone tz; previous is the period of the
+          same length that ends the day before it begins. With no from and to it is the 30 days ending today in tz.
+        - measures.current and measures.previous: tickets created, tickets resolved, time to resolve (median and
+          90th percentile, in seconds, less time spent Pending), time to first response (median, seconds), SLA
+          attainment and reopens. A median or percentile is null when its count is 0; a rate is a fraction
+          between 0 and 1 rounded to four places, null when its denominator is 0.
+        - measures.change: the period-over-period change of the nine compared measures, always all nine.
+          kind is relative for counts and durations and points for rates; state says which rule applied and
+          value is null unless state is change.
+        - volume: created and resolved per day over the period, oldest first, and the tickets created in
+          the period by category and by priority (always the four priorities, in order).
+        - backlog and workload: the tickets open as of as_of, by age and by the person and the group holding
+          them. They do not depend on from and to. A row with a null id and name is the tickets with no person,
+          or no group, and is last.
+        The filters narrow every figure, the snapshots included. sla_enabled is whether SLA tracking is on
+        now (false when the setting cannot be read); the SLA figures are computed either way from the records
+        that exist. Nothing is cached on the server. A store failure answers 500 for the whole response.
+        The checks run in a fixed order and the first failure answers: tz, then from and to together, from, to,
+        category_id, priority and assignee_group_id, then whether the zone exists, then the length of the range.
+      tags: ['Tickets']
+      x-ghd-handler: handleGetKPI
+      security:
+        - sessionCookie: []
+        - apiKey: ['tickets:read']
+        - oauthClient: ['tickets:read']
+      x-ghd-roles: [admin, staff]
+      x-ghd-mfa: true
+      parameters:
+        - name: tz
+          in: query
+          required: false
+          description: >-
+            The IANA time zone the period's days are counted in, for example Europe/London. Absent or empty is
+            UTC. At most 64 bytes of A-Z, a-z, 0-9, _, +, - and /. Any other value is 400 bad_request,
+            "invalid tz"; a name the database does not know is 400 bad_request, "unknown time zone".
+          schema:
+            type: string
+            maxLength: 64
+            pattern: '^[A-Za-z0-9_+/-]*$'
+        - name: from
+          in: query
+          required: false
+          description: >-
+            First day of the period, YYYY-MM-DD, a date in tz. Goes with to: one without the other is 400
+            "from and to go together"; a malformed date is "invalid from". Both absent is the last 30 days
+            ending today in tz.
+          schema: {type: string, format: date}
+        - name: to
+          in: query
+          required: false
+          description: >-
+            Last day of the period, inclusive, YYYY-MM-DD. A malformed date is 400 "invalid to"; a to before
+            from is "from must not be after to"; a from before 1970-01-01 is "from is too early"; a range of more than 366 days is "the range is longer than
+            366 days". A to after today is allowed; its days count zero.
+          schema: {type: string, format: date}
+        - name: category_id
+          in: query
+          required: false
+          description: Only tickets in this category. Not a UUID is 400 "invalid category_id".
+          schema: {$ref: '#/components/schemas/Uuid'}
+        - name: priority
+          in: query
+          required: false
+          style: form
+          explode: true
+          description: >-
+            Only tickets at these priorities; repeat the parameter for several. A value that is not a
+            priority is 400 "invalid priority"; more than four values is "too many priority values".
+          schema:
+            type: array
+            maxItems: 4
+            items: {$ref: '#/components/schemas/Priority'}
+        - name: assignee_group_id
+          in: query
+          required: false
+          description: Only tickets assigned to this group. Not a UUID is 400 "invalid assignee_group_id".
+          schema: {$ref: '#/components/schemas/Uuid'}
+      responses:
+        '200':
+          description: The report.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KpiReport'
+        '400':
+          description: >-
+            `bad_request` with the message of the first failed check: "invalid tz", "from and to go together",
+            "invalid from", "invalid to", "invalid category_id", "invalid priority", "too many priority values",
+            "invalid assignee_group_id", "unknown time zone", "from must not be after to" or "the range is
+            longer than 366 days".
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          description: A store failure (`internal_error`) fails the whole response.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
   /api/v1/staff:
     get:
       operationId: listAssignableStaff
@@ -3295,12 +3482,15 @@ paths:
         and an id that names nothing gives an empty list. Repeatable parameters
         (status_id, priority, source_channel) are sent as repeated keys, at most 20
         values each; values of one key are ORed.
-        scope picks the queue and is ANDed with the filters: mine (the default),
-        unassigned and all (admin only), visible (every ticket the caller can see).
-        Any other value is mine. When reporter_id, requester or assignee_group_id
-        is present the queue is "any" and scope is not consulted, so those
-        parameters combine with each other and with every other filter (reporter_id
-        and assignee_group_id together used to drop the group).
+        scope picks the queue and is ANDed with the filters; see the scope
+        parameter for the six values and who may use each (mine is the default;
+        all is administrators only; unassigned is administrators, and staff while
+        available_queue_roles lists staff). Any other value is mine. When
+        reporter_id, requester or assignee_group_id is present, mine, unassigned,
+        all and visible are not consulted and the queue is "any", so those
+        parameters combine with each other and with every other filter
+        (reporter_id and assignee_group_id together used to drop the group);
+        assigned_to_me and my_groups are always applied and narrowed by them.
         q searches by tracking number prefix, subject and description (full-text
         search). With q the results are ordered by relevance first and then newest
         first, on every queue; before 1.3.0 the default listing of an administrator,
@@ -3327,9 +3517,22 @@ paths:
         - name: scope
           in: query
           required: false
-          description: "mine (the default), unassigned, all or visible. unassigned and all are admin only. visible is every ticket the caller can see: every ticket for an admin, or for staff while ticket scope enforcement is off, and the staff scope with it on; a reporting user still gets only their own tickets. Other values are ignored and behave as mine."
+          description: >-
+            The queue. Who may use each:
+            mine (the default): the tickets assigned to the caller or to one of their groups. With ticket scope enforcement on, staff get everything their scope admits instead. Staff and administrators.
+            assigned_to_me: the tickets whose assignee user is the caller, whatever group they are in. Staff and administrators.
+            my_groups: the tickets whose assignee group is one of the caller's groups, whoever holds them. Staff and administrators; held_by splits it three ways.
+            unassigned (the Available queue): the tickets with no assignee group and no assignee user. Administrators always, and staff while available_queue_roles lists staff. Anyone else is refused 403 forbidden, "only admins can use this scope".
+            all: every ticket. Administrators only; anyone else is refused 403 forbidden, "only admins can use this scope".
+            visible (the Search view): every ticket the caller can see. Staff and administrators.
+            A reporting user has no queues: for mine, assigned_to_me, my_groups and visible they get only their own tickets, and for unassigned and all they are refused as above.
+            Yield rule: when reporter_id, requester or assignee_group_id is present, mine, unassigned, all and visible do not apply and do not refuse; the queue is "any". assigned_to_me and my_groups are always applied and narrowed by those filters like any other.
+            Any other value is read as mine; that tolerance is not part of the contract, so send one of these six.
           schema:
             type: string
+            # No enum: the server answers an unknown value as mine, and a client
+            # generated from a closed enum would refuse values the server accepts.
+            # The six values are listed in the description above.
         - name: reporter_id
           in: query
           required: false
@@ -3417,6 +3620,29 @@ paths:
           description: Only tickets assigned to this group. Staff and administrators (403 for a reporting user). Staff must belong to the group when ticket scope enforcement is on.
           schema:
             $ref: '#/components/schemas/Uuid'
+        - name: held_by
+          in: query
+          required: false
+          description: >-
+            Who personally holds the ticket, relative to the caller: nobody (no assignee user), me (the caller
+            is the assignee user) or others (an assignee user who is not the caller). One value; any other value
+            is 400 bad_request, "invalid held_by". Applies on every queue and is ANDed with it; the My Group's
+            Tickets view sends it. Staff and administrators (403 for a reporting user, "held_by is not available
+            to requesters").
+          schema:
+            type: string
+            enum: [nobody, me, others]
+        - name: awaiting_reply
+          in: query
+          required: false
+          description: >-
+            true or false (absent and false are the same). true keeps the tickets that are not Resolved or
+            Closed and whose newest public message is the requester's side (no reply yet, a guest, or an
+            author who is not staff or an administrator), so they wait for the help desk. Internal notes are
+            not read. Any other value is 400 bad_request, "invalid awaiting_reply". Staff and administrators
+            (403 for a reporting user sending true, "awaiting_reply is not available to requesters").
+          schema:
+            type: boolean
         - name: status_id
           in: query
           required: false
@@ -5749,6 +5975,8 @@ paths:
           their own role before showing they can hold one; any other edit is
           never refused by this check (another role added or removed, the caller's own role
           removed, an unchanged list), and mfa_enabled does not matter;
+          available_queue_roles an array of admin and staff only (an empty array is
+          accepted; user or any other value is 400 bad_request);
           reopen_target_status_name a string; site_logo_url a string that is
           empty, an http(s) URL, or a path on this site (starting with a single "/").
           null or any other type is refused (bad_request) and nothing is written.
@@ -5782,7 +6010,7 @@ paths:
         attachment_infected_handling, attachment_mismatch_handling,
         audit_retention_days, staff_can_view_ticket_change_history,
         staff_can_view_follow_audit, staff_can_create_api_keys,
-        api_key_max_lifetime_years, ticket_scope_enforced, auto_assign_group_id,
+        api_key_max_lifetime_years, ticket_scope_enforced, available_queue_roles, auto_assign_group_id,
         auto_assign_user_ids, password_rehash_grace_days, password_rehash_started_at,
         update_check_enabled,
         attachment_vt_lookup, attachment_vt_api_key, attachment_reputation_provider,
@@ -11347,6 +11575,64 @@ components:
     Priority:
       type: string
       enum: [critical, high, medium, low]
+    MeUser:
+      description: >-
+        The account GET /me and PATCH /me/email-preferences return for a person: a session, or an API key,
+        which answers with its owner's account. It is User plus the fields only these two answers carry. An
+        OAuth client is not a person and gets the machine object instead, which has none of them.
+      allOf:
+        - {$ref: '#/components/schemas/User'}
+        - type: object
+          required: [can_use_available_queue]
+          properties:
+            api_key_max_lifetime_years:
+              type: integer
+              enum: [1, 2, 3, 4, 5, -1]
+              description: >-
+                The longest a new API key may live, in years, or -1 for no limit (the
+                api_key_max_lifetime_years setting). Present on GET /me and PATCH
+                /me/email-preferences, beside can_create_api_keys.
+            can_create_api_keys:
+              type: boolean
+              description: >-
+                Whether this account may create its own API keys: always for an
+                administrator, for staff only while staff_can_create_api_keys is on,
+                never for a requester. Present on GET /me and PATCH /me/email-preferences.
+            sla_enabled:
+              type: boolean
+              description: >-
+                Whether SLA tracking is on. Present on GET /me and PATCH /me/email-preferences, only for
+                staff and administrators, and only when the setting could be read: absent means unknown, not off.
+                A requester never gets it, and it is not on the public GET /site. The ticket list offers the sla
+                filter and sort only while it is true; both answer 400 while it is false.
+            email_notifications:
+              type: object
+              description: |
+                What the four email switches amount to for this person, which is not always what they chose: an
+                administrator can force a switch on or off for everyone (the staff_email_*_override settings).
+                enabled is whether they get that mail; forced is true when the administrator decided it, so their
+                own email_notify_* value is not what applies. Present only on GET /me and PATCH /me/email-preferences,
+                and only for staff and administrators. sla is the SLA alerts switch; it says nothing about whether
+                SLA alerts are sent at all, which is the sla_alerts_enabled setting.
+              required: [assigned, activity, group, sla]
+              properties:
+                assigned: {$ref: '#/components/schemas/EmailSwitchState'}
+                activity: {$ref: '#/components/schemas/EmailSwitchState'}
+                group: {$ref: '#/components/schemas/EmailSwitchState'}
+                sla: {$ref: '#/components/schemas/EmailSwitchState'}
+            attachment_max_bytes:
+              type: integer
+              format: int64
+              description: >-
+                The largest file any upload may be, in bytes (attachment_max_mb, #673), so
+                the browser can refuse one before sending it. Always present on GET /me. The login
+                response's user does not carry it; read it from GET /me.
+            can_use_available_queue:
+              type: boolean
+              description: >-
+                Whether this account may open the Available view (scope=unassigned): true for an administrator,
+                true for staff while available_queue_roles lists staff, false for a requester. Always present on
+                GET /me and PATCH /me/email-preferences, so a client never has to read the setting to know.
     User:
       description: An account. The password hash, the TOTP secret, single sign-on subjects and the deletion time are never returned. mfa_enabled is the TOTP flag only.
       type: object
@@ -11365,51 +11651,6 @@ components:
         email_notify_activity: {type: boolean, description: 'Email me when a requester replies on a ticket assigned to me, or it is reopened. On by default.'}
         email_notify_group: {type: boolean, description: "Email me about my groups' tickets. On by default."}
         email_notify_sla: {type: boolean, description: "Email me when an SLA target on a ticket assigned to me, on a group ticket nobody has taken, or on a ticket I follow has breached or is at risk. Staff email switch, on by default; the other three switches do not apply to it."}
-        api_key_max_lifetime_years:
-          type: integer
-          enum: [1, 2, 3, 4, 5, -1]
-          description: >-
-            The longest a new API key may live, in years, or -1 for no limit (the
-            api_key_max_lifetime_years setting). Present only on GET /me and PATCH
-            /me/email-preferences, beside can_create_api_keys.
-        can_create_api_keys:
-          type: boolean
-          description: >-
-            Whether this account may create its own API keys: always for an
-            administrator, for staff only while staff_can_create_api_keys is on,
-            never for a requester. Present only on GET /me and PATCH
-            /me/email-preferences.
-        sla_enabled:
-          type: boolean
-          description: >-
-            Whether SLA tracking is on. Present only on GET /me and PATCH /me/email-preferences, only for
-            staff and administrators, and only when the setting could be read: absent means unknown, not off.
-            A requester never gets it, and it is not on the public GET /site. The ticket list offers the sla
-            filter and sort only while it is true; both answer 400 while it is false.
-        attachment_max_bytes:
-          type: integer
-          format: int64
-          description: >-
-            The largest file any upload may be, in bytes (attachment_max_mb, #673), so
-            the browser can refuse one before sending it. Always present on GET /me for
-            a signed-in person and for an API key (its /me answers as its owner's account), and
-            absent from an OAuth client's /me. The login
-            response's user does not carry it; read it from GET /me.
-        email_notifications:
-          type: object
-          description: |
-            What the four email switches amount to for this person, which is not always what they chose: an
-            administrator can force a switch on or off for everyone (the staff_email_*_override settings).
-            enabled is whether they get that mail; forced is true when the administrator decided it, so their
-            own email_notify_* value is not what applies. Present only on GET /me and PATCH /me/email-preferences,
-            and only for staff and administrators. sla is the SLA alerts switch; it says nothing about whether
-            SLA alerts are sent at all, which is the sla_alerts_enabled setting.
-          required: [assigned, activity, group, sla]
-          properties:
-            assigned: {$ref: '#/components/schemas/EmailSwitchState'}
-            activity: {$ref: '#/components/schemas/EmailSwitchState'}
-            group: {$ref: '#/components/schemas/EmailSwitchState'}
-            sla: {$ref: '#/components/schemas/EmailSwitchState'}
     EmailSwitchState:
       type: object
       required: [enabled, forced]
@@ -11661,6 +11902,301 @@ components:
                   $ref: '#/components/schemas/Uuid'
                 tracking_number:
                   type: string
+    Dashboard:
+      description: |
+        What GET /api/v1/dashboard returns. queues is the strip, in the order it is shown.
+        attention and volume are null when the block is not part of the caller's dashboard (a reporting
+        user has no attention list and no trend); [] and zero counts are a real answer, "nothing to show".
+      type: object
+      required: [queues, attention, volume]
+      properties:
+        queues:
+          type: array
+          items: {$ref: '#/components/schemas/DashboardQueue'}
+        attention:
+          type: [array, 'null']
+          items: {$ref: '#/components/schemas/DashboardAttention'}
+        volume:
+          anyOf:
+            - $ref: '#/components/schemas/DashboardVolume'
+            - type: 'null'
+    DashboardQueue:
+      type: object
+      required: [key, count]
+      properties:
+        key:
+          type: string
+          description: |
+            A queue cell. assigned_to_me, my_groups and awaiting_my_reply, and sla_breached and sla_at_risk
+            while SLA tracking is on, are staff and administrator cells; my_tickets is the requester's one cell.
+            Each key appears at most once in a response, and a consumer ignores a key it does not know.
+          enum: [assigned_to_me, my_groups, sla_breached, sla_at_risk, awaiting_my_reply, my_tickets]
+        count:
+          type: integer
+          format: int64
+          minimum: 0
+          description: The number of tickets the link for this cell lists (the GET /tickets call with the cell's parameters).
+    DashboardAttention:
+      type: object
+      required: [reason, since, ticket]
+      properties:
+        reason:
+          type: string
+          description: |
+            Why the ticket needs attention: breached and at_risk (SLA), unassigned (no group and no person,
+            the Available queue) or reopened (reopened in the last 7 days). A ticket is listed once, under its
+            first reason in that order.
+          enum: [breached, at_risk, unassigned, reopened]
+        since:
+          type: string
+          format: date-time
+          description: The instant the row's age is measured from, in UTC. The ticket's created_at for breached, at_risk and unassigned; the time it was last reopened for reopened.
+        ticket:
+          description: The ticket as GET /api/v1/tickets returns it to this caller, with its SLA status and can_reopen.
+          $ref: '#/components/schemas/TicketView'
+    DashboardVolume:
+      type: object
+      required: [tz, days]
+      properties:
+        tz:
+          type: string
+          description: The time zone the days are counted in, as sent (UTC when tz was absent).
+        days:
+          type: array
+          description: Thirty entries, oldest first; the last is today in tz. Every day is present, zeros included.
+          minItems: 30
+          maxItems: 30
+          items: {$ref: '#/components/schemas/DashboardVolumeDay'}
+    DashboardVolumeDay:
+      type: object
+      required: [date, created, resolved]
+      properties:
+        date:
+          type: string
+          format: date
+          description: A calendar date in tz.
+        created:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Tickets the caller can see whose created_at falls on this day in tz.
+        resolved:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Tickets the caller can see whose resolved_at, or closed_at when it is null, falls on this day in tz.
+    KpiReport:
+      description: What GET /api/v1/reports/kpi returns.
+      type: object
+      required: [tz, period, previous, filters, sla_enabled, measures, volume, backlog, workload]
+      properties:
+        tz:
+          type: string
+          description: The time zone the days are counted in, as sent (UTC when tz was absent).
+        period: {$ref: '#/components/schemas/KpiPeriod'}
+        previous: {$ref: '#/components/schemas/KpiPeriod'}
+        filters:
+          type: object
+          description: The filters that were applied, echoed. priority is in the fixed order, critical first.
+          required: [category_id, priority, assignee_group_id]
+          properties:
+            category_id:
+              anyOf:
+                - $ref: '#/components/schemas/Uuid'
+                - type: 'null'
+            priority:
+              type: array
+              items: {$ref: '#/components/schemas/Priority'}
+            assignee_group_id:
+              anyOf:
+                - $ref: '#/components/schemas/Uuid'
+                - type: 'null'
+        sla_enabled:
+          type: boolean
+          description: Whether SLA tracking is on now. The SLA figures are computed either way.
+        measures:
+          type: object
+          required: [current, previous, change]
+          properties:
+            current: {$ref: '#/components/schemas/KpiMeasures'}
+            previous: {$ref: '#/components/schemas/KpiMeasures'}
+            change:
+              type: object
+              description: The change of each compared measure from previous to current. All nine keys are always present.
+              required:
+                - created
+                - resolved
+                - time_to_resolve_median
+                - time_to_resolve_p90
+                - first_response_median
+                - sla_met_rate
+                - sla_response_met_rate
+                - sla_resolution_met_rate
+                - reopen_rate
+              properties:
+                created: {$ref: '#/components/schemas/KpiChange'}
+                resolved: {$ref: '#/components/schemas/KpiChange'}
+                time_to_resolve_median: {$ref: '#/components/schemas/KpiChange'}
+                time_to_resolve_p90: {$ref: '#/components/schemas/KpiChange'}
+                first_response_median: {$ref: '#/components/schemas/KpiChange'}
+                sla_met_rate: {$ref: '#/components/schemas/KpiChange'}
+                sla_response_met_rate: {$ref: '#/components/schemas/KpiChange'}
+                sla_resolution_met_rate: {$ref: '#/components/schemas/KpiChange'}
+                reopen_rate: {$ref: '#/components/schemas/KpiChange'}
+              additionalProperties: false
+        volume:
+          type: object
+          required: [days, by_category, by_priority]
+          properties:
+            days:
+              type: array
+              description: One entry for each day of the period, oldest first, zeros included.
+              items: {$ref: '#/components/schemas/DashboardVolumeDay'}
+            by_category:
+              type: array
+              description: Tickets created in the period by category, as named now. Rows above zero only, largest first, then by name.
+              items:
+                type: object
+                required: [id, name, count]
+                properties:
+                  id: {$ref: '#/components/schemas/Uuid'}
+                  name: {type: string}
+                  count: {type: integer, format: int64, minimum: 1}
+            by_priority:
+              type: array
+              description: Tickets created in the period by priority. Always the four, critical first, zeros included.
+              minItems: 4
+              maxItems: 4
+              items:
+                type: object
+                required: [priority, count]
+                properties:
+                  priority: {$ref: '#/components/schemas/Priority'}
+                  count: {type: integer, format: int64, minimum: 0}
+        backlog:
+          type: object
+          required: [as_of, total, buckets]
+          properties:
+            as_of:
+              type: string
+              format: date-time
+              description: The instant the open tickets were counted at, in UTC.
+            total: {type: integer, format: int64, minimum: 0}
+            buckets:
+              type: array
+              description: Open tickets by age in days. Always the four, in order.
+              minItems: 4
+              maxItems: 4
+              items:
+                type: object
+                required: [key, min_days, max_days, count]
+                properties:
+                  key:
+                    type: string
+                    enum: ['0_2', '3_7', '8_30', over_30]
+                  min_days: {type: integer, minimum: 0}
+                  max_days:
+                    type: [integer, 'null']
+                    description: Null for the open-ended band.
+                  count: {type: integer, format: int64, minimum: 0}
+        workload:
+          type: object
+          required: [as_of, total, by_assignee, by_group]
+          properties:
+            as_of:
+              type: string
+              format: date-time
+              description: The instant the open tickets were counted at, in UTC.
+            total: {type: integer, format: int64, minimum: 0}
+            by_assignee:
+              type: array
+              description: Open tickets by the person holding them, largest first, then by name; the row with a null id and name, tickets with no person, is last.
+              items: {$ref: '#/components/schemas/KpiHolder'}
+            by_group:
+              type: array
+              description: Open tickets by the group holding them, as by_assignee.
+              items: {$ref: '#/components/schemas/KpiHolder'}
+    KpiPeriod:
+      type: object
+      required: [from, to, days]
+      properties:
+        from: {type: string, format: date}
+        to: {type: string, format: date, description: Inclusive.}
+        days: {type: integer, minimum: 1, maximum: 366}
+    KpiMeasures:
+      type: object
+      required: [created, resolved, time_to_resolve, first_response, sla, reopen]
+      properties:
+        created:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Tickets created in the period.
+        resolved:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Tickets finished in the period (resolved, or closed without being resolved).
+        time_to_resolve:
+          type: object
+          required: [count, median_seconds, p90_seconds]
+          properties:
+            count: {type: integer, format: int64, minimum: 0}
+            median_seconds: {type: [integer, 'null'], format: int64, description: Null when count is 0.}
+            p90_seconds: {type: [integer, 'null'], format: int64, description: Null when count is 0.}
+        first_response:
+          type: object
+          required: [count, median_seconds]
+          properties:
+            count: {type: integer, format: int64, minimum: 0}
+            median_seconds: {type: [integer, 'null'], format: int64, description: Null when count is 0.}
+        sla:
+          type: object
+          required: [tracked, met, response_met, resolution_met, met_rate, response_met_rate, resolution_met_rate]
+          properties:
+            tracked: {type: integer, format: int64, minimum: 0}
+            met: {type: integer, format: int64, minimum: 0}
+            response_met: {type: integer, format: int64, minimum: 0}
+            resolution_met: {type: integer, format: int64, minimum: 0}
+            met_rate: {type: [number, 'null'], minimum: 0, maximum: 1, description: Null when tracked is 0.}
+            response_met_rate: {type: [number, 'null'], minimum: 0, maximum: 1, description: Null when tracked is 0.}
+            resolution_met_rate: {type: [number, 'null'], minimum: 0, maximum: 1, description: Null when tracked is 0.}
+        reopen:
+          type: object
+          required: [reopened, rate]
+          properties:
+            reopened: {type: integer, format: int64, minimum: 0}
+            rate: {type: [number, 'null'], minimum: 0, maximum: 1, description: Null when no ticket was resolved.}
+    KpiChange:
+      type: object
+      required: [kind, state, value]
+      properties:
+        kind:
+          type: string
+          enum: [relative, points]
+          description: relative is (current - previous) / previous, for counts and durations; points is current - previous, for rates (both fractions).
+        state:
+          type: string
+          enum: [change, from_zero, no_previous, no_current]
+          description: |
+            Which rule applied, the first that holds. no_current: the current value is null. no_previous: the
+            previous value is null. change: a number, 0 when the two are equal. from_zero: a relative change from 0,
+            which has no value.
+        value:
+          type: [number, 'null']
+          description: A number, rounded to four places, only when state is change; otherwise null.
+    KpiHolder:
+      type: object
+      required: [id, name, count]
+      properties:
+        id:
+          anyOf:
+            - $ref: '#/components/schemas/Uuid'
+            - type: 'null'
+        name:
+          type: [string, 'null']
+          description: The current name, of a deleted or disabled person too. Null with a null id.
+        count: {type: integer, format: int64, minimum: 1}
     SlaStatus:
       description: |
         A ticket's live SLA status. Computed fresh on every read from the
@@ -12364,6 +12900,15 @@ components:
         ticket_scope_enforced:
           type: boolean
           description: Whether staff visibility is limited to the tickets their groups cover.
+        available_queue_roles:
+          type: array
+          items:
+            type: string
+            enum: [admin, staff]
+          description: >-
+            Roles that may open the Available view (scope=unassigned), from admin and staff. An administrator
+            is always allowed whether or not admin is listed. Absent, unreadable or [] means administrators only.
+            A requester is never allowed. Session only.
         auto_assign_group_id:
           type: string
           description: UUID of the group that new tickets are assigned to. Must name an existing group; empty or null turns it off.

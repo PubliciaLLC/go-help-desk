@@ -72,7 +72,9 @@ function cardOf(page, title) {
 
 function sectionOf(page, title) {
   // Settings Section: <div><h2>title</h2><div class="rounded-lg border">…</div></div>
-  return page.getByRole('heading', { name: title, exact: true }).locator('xpath=..')
+  // Level 2 only: the page's own h1 can carry the same words (the Privacy page's
+  // h1 "Privacy" and its Privacy section), which would make the locator match twice.
+  return page.getByRole('heading', { level: 2, name: title, exact: true }).locator('xpath=..')
 }
 
 // Data waits throw on timeout: a missing row is a FAIL, never a silent capture.
@@ -169,7 +171,7 @@ const SHOTS = [
     },
   },
   {
-    file: '08-admin-settings.png', phase: 'main', role: 'admin', path: '/admin/settings', vp: DESK,
+    file: '08-admin-settings.png', phase: 'main', role: 'admin', path: '/admin/settings/general', vp: DESK,
     async prepare(page) {
       await waitVisible(page.getByRole('heading', { name: 'Tickets', exact: true }))
     },
@@ -222,10 +224,9 @@ const SHOTS = [
   {
     // Full width (sidebar and tab bar included), cap 2600 CSS px: Uploads,
     // Malware scanning and the top of Reputation lookup (admin-guide.html:791).
-    file: '14-admin-settings-attachments.png', phase: 'main', role: 'admin', path: '/admin/settings', vp: DESK,
+    file: '14-admin-settings-attachments.png', phase: 'main', role: 'admin', path: '/admin/settings/attachments', vp: DESK,
     target: { tall: 2600, exact: true },
     async prepare(page) {
-      await page.getByRole('button', { name: 'Attachments', exact: true }).click()
       await waitVisible(page.getByRole('heading', { name: 'Reputation lookup', exact: true }))
     },
   },
@@ -275,9 +276,11 @@ const SHOTS = [
     },
   },
   {
-    file: '19-admin-settings-privacy.png', phase: 'main', role: 'admin', path: '/admin/settings', vp: DESK,
+    file: '19-admin-settings-privacy.png', phase: 'main', role: 'admin', path: '/admin/settings/privacy', vp: DESK,
     target: {
-      union: (page) => [sectionOf(page, 'Ticket visibility'), sectionOf(page, 'Audit log'), sectionOf(page, 'Privacy')],
+      union: (page) => [
+        sectionOf(page, 'Ticket visibility'), sectionOf(page, 'Available queue'), sectionOf(page, 'Audit log'), sectionOf(page, 'Privacy'),
+      ],
     },
     async prepare(page) {
       await waitVisible(page.getByRole('heading', { name: 'Privacy', exact: true }))
@@ -417,7 +420,7 @@ const SHOTS = [
     // https://help.example.com. That is the editor's own <pre>, not the sandboxed
     // frame, which has no script and shows the link only as a button's href, never
     // as text. The shot throws if "localhost" is still on the page.
-    file: '31-email-template-html.png', phase: 'extras', role: 'admin', path: '/admin/email-templates?t=ticket_created', vp: DESK,
+    file: '31-email-template-html.png', phase: 'extras', role: 'admin', path: '/admin/settings/email/templates?t=ticket_created', vp: DESK,
     target: { element: (page) => page.getByRole('form', { name: /^Edit / }) },
     async prepare(page) {
       await page.getByLabel('HTML', { exact: true }).fill(TEMPLATE_HTML)
@@ -435,7 +438,7 @@ const SHOTS = [
     // A draft the server refuses: {{.Description}} is not a variable a template
     // may use (ticket text stays out of mail by design). The editor checks every
     // change, shows the error under the field and keeps Save off.
-    file: '32-email-template-refused.png', phase: 'extras', role: 'admin', path: '/admin/email-templates?t=ticket_created', vp: DESK,
+    file: '32-email-template-refused.png', phase: 'extras', role: 'admin', path: '/admin/settings/email/templates?t=ticket_created', vp: DESK,
     target: { element: (page) => page.getByRole('form', { name: /^Edit / }) },
     async prepare(page) {
       await page.getByLabel('HTML', { exact: true }).fill(TEMPLATE_HTML.replace('</div>', '<p>{{.Description}}</p>\n</div>'))

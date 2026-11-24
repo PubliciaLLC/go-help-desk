@@ -70,7 +70,16 @@ func TestParseListFilter_Valid(t *testing.T) {
 			return slices.Equal(f.SourceChannels, []SourceChannel{ChannelWeb, ChannelPhone})
 		}},
 		{"sla", "sla=at_risk", func(f Filter) bool { return f.SLA == SLAAtRisk }},
-		{"empty values are absent", "q=&reporter_id=&status_id=&priority=&sla=&sort=&order=&created_after=", func(f Filter) bool {
+		{"held_by nobody", "held_by=nobody", func(f Filter) bool { return f.HeldBy == HeldNobody }},
+		{"held_by me", "held_by=me", func(f Filter) bool { return f.HeldBy == HeldMe }},
+		{"held_by others", "held_by=others", func(f Filter) bool { return f.HeldBy == HeldOthers }},
+		{"held_by empty is absent", "held_by=", func(f Filter) bool { return f.HeldBy == "" }},
+		{"held_by sent twice uses the first", "held_by=others&held_by=me", func(f Filter) bool { return f.HeldBy == HeldOthers }},
+		{"awaiting_reply true", "awaiting_reply=true", func(f Filter) bool { return f.AwaitingReply }},
+		{"awaiting_reply false is off", "awaiting_reply=false", func(f Filter) bool { return !f.AwaitingReply }},
+		{"awaiting_reply empty is off", "awaiting_reply=", func(f Filter) bool { return !f.AwaitingReply }},
+		{"awaiting_reply absent is off", "q=x", func(f Filter) bool { return !f.AwaitingReply }},
+		{"empty values are absent", "q=&reporter_id=&status_id=&priority=&sla=&held_by=&sort=&order=&created_after=", func(f Filter) bool {
 			return reflect.DeepEqual(f, Filter{})
 		}},
 		{"unknown parameters are ignored", "colour=red&scope=mine&limit=5", func(f Filter) bool { return reflect.DeepEqual(f, Filter{}) }},
@@ -99,11 +108,16 @@ func TestParseListFilter_Invalid(t *testing.T) {
 		{"priority", "priority=urgent", "invalid priority"},
 		{"source_channel", "source_channel=fax", "invalid source_channel"},
 		{"sla", "sla=ok", "invalid sla"},
+		{"held_by unknown", "held_by=everyone", "invalid held_by"},
+		{"held_by is case sensitive", "held_by=Me", "invalid held_by"},
 		{"created_after", "created_after=yesterday", "invalid created_after"},
 		{"date only is not RFC 3339", "created_before=2026-11-01", "invalid created_before"},
 		{"updated_after", "updated_after=x", "invalid updated_after"},
 		{"updated_before", "updated_before=x", "invalid updated_before"},
 		{"search_replies", "search_replies=maybe", "invalid search_replies"},
+		{"awaiting_reply yes", "awaiting_reply=yes", "invalid awaiting_reply"},
+		{"awaiting_reply is case sensitive", "awaiting_reply=True", "invalid awaiting_reply"},
+		{"awaiting_reply 1", "awaiting_reply=1", "invalid awaiting_reply"},
 		{"include_closed", "include_closed=1", "invalid include_closed"},
 		{"include_closed checked even when status_id wins", "include_closed=x&status_id=" + id, "invalid include_closed"},
 		{"sort", "sort=relevance", "invalid sort"},
@@ -263,6 +277,8 @@ var filterRaw = map[string]string{
 	"ExcludeClosed":   "include_closed=false",
 	"SourceChannels":  "source_channel=web",
 	"SLA":             "sla=breached",
+	"HeldBy":          "held_by=me",
+	"AwaitingReply":   "awaiting_reply=true",
 }
 
 // Fields of Filter that a request never sets. Listing them here is how a new
@@ -272,6 +288,7 @@ var serverSetFields = []string{
 	"ActorID", "Visibility", "Queue", "IncludeInternal", "Limit", "Offset",
 	"StatusID", "Priority", // deprecated singulars, still read by MCP and the store
 	"Sort", "Order", // covered by the sort tests
+	"ReopenedAfter", // the dashboard's "recently reopened" window; never a parameter
 }
 
 func TestFilter_EveryFieldIsClassified(t *testing.T) {
@@ -311,7 +328,8 @@ func TestRequesterRules_OnlyAllowedListKeys(t *testing.T) {
 func TestAllowedFor_FilterByRole(t *testing.T) {
 	staffOnly := map[string]bool{
 		"ReporterID": true, "Requester": true, "UpdatedAfter": true, "UpdatedBefore": true,
-		"AssigneeUserID": true, "AssigneeGroupID": true, "SourceChannels": true, "SLA": true,
+		"AssigneeUserID": true, "AssigneeGroupID": true, "SourceChannels": true, "SLA": true, "HeldBy": true,
+		"AwaitingReply": true, // reads the current role of a reply's author, which a requester is never sent
 	}
 	for field, raw := range filterRaw {
 		for _, r := range allRoles {
@@ -475,4 +493,38 @@ func TestFilterError_IsErrValidationOnlyWhenInvalid(t *testing.T) {
 	require.False(t, errors.Is(Filter{Requester: "dana"}.AllowedFor(user.RoleStaff, false), ErrValidation))
 	require.False(t, errors.Is(Filter{Sort: SortUpdated}.AllowedFor(user.RoleUser, false), ErrValidation))
 	require.True(t, errors.Is(Filter{Sort: "colour"}.AllowedFor(user.RoleStaff, false), ErrValidation))
+}
+
+// awaiting_reply=false sets nothing, so a requester sending it is not refused,
+// as with include_closed; true is refused in the words every staff-only filter
+// uses, and nothing about roles reaches them.
+func TestAllowedFor_AwaitingReply(t *testing.T) {
+	for _, r := range allRoles {
+		t.Run(r.name, func(t *testing.T) {
+			require.NoError(t, mustParse(t, "awaiting_reply=false").AllowedFor(r.role, true))
+			require.NoError(t, mustParse(t, "").AllowedFor(r.role, true))
+			err := mustParse(t, "awaiting_reply=true").AllowedFor(r.role, true)
+			if !r.requester {
+				require.NoError(t, err)
+				return
+			}
+			var fe *FilterError
+			require.ErrorAs(t, err, &fe)
+			require.Equal(t, FilterForbidden, fe.Kind)
+			require.Equal(t, "awaiting_reply is not available to requesters", fe.Error())
+		})
+	}
+}
+
+// The row's ticketKey names what the clause reads, which is not a field of the
+// ticket object, so it can never be on the requester allowed list.
+func TestRequesterRules_AwaitingReplyIsStaffOnly(t *testing.T) {
+	for _, r := range requesterRules {
+		if r.field == "AwaitingReply" {
+			require.False(t, r.requesterOK)
+			require.NotContains(t, RequesterTicketKeys(), r.ticketKey)
+			return
+		}
+	}
+	t.Fatal("no requesterRules row for AwaitingReply")
 }

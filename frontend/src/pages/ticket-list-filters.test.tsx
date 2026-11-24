@@ -163,8 +163,10 @@ describe('the address is the search', () => {
 
     await waitFor(() => expect(ticketCalls().length).toBeGreaterThan(0))
     expect(lastCall()).toMatchObject({ status_id: ['00000000-0000-4000-8000-0000000000a1'], reporter_id: DANA.id })
-    // The account names a set of tickets of its own, so no queue is sent.
-    expect(lastCall().scope).toBeUndefined()
+    // A filter link made before #676 is the Search view (its scope is visible), and
+    // the scope is sent even with an account named: without it the server would
+    // read mine and widen the list.
+    expect(lastCall().scope).toBe('visible')
 
     const chips = screen.getByRole('group', { name: 'Active filters' })
     expect(await within(chips).findByText('Dana Whitfield')).toBeTruthy()
@@ -189,10 +191,10 @@ describe('the address is the search', () => {
     renderWithQuery(<TicketListPage />)
 
     fireEvent.click(await screen.findByRole('button', { name: 'Remove Priority filter' }))
-    expect(router.search).toEqual({ status: ['00000000-0000-4000-8000-0000000000a1'] })
+    expect(router.search).toEqual({ view: 'search', status: ['00000000-0000-4000-8000-0000000000a1'] })
 
     fireEvent.click(screen.getByRole('button', { name: 'Clear all' }))
-    expect(router.search).toEqual({})
+    expect(router.search).toEqual({ view: 'search' })
     expect(screen.queryByRole('group', { name: 'Active filters' })).toBeNull()
   })
 
@@ -218,7 +220,7 @@ describe('the Filters panel', () => {
 
     fireEvent.click(within(panel).getByLabelText('High'))
     await waitFor(() => expect(lastCall()).toMatchObject({ priority: ['high'] }))
-    expect(router.search).toEqual({ priority: ['high'] })
+    expect(router.search).toEqual({ view: 'me', priority: ['high'] })
 
     // The count on the button, and a chip.
     expect(screen.getByRole('button', { name: /^Filters/ }).textContent).toContain('1')
@@ -231,7 +233,7 @@ describe('the Filters panel', () => {
     renderWithQuery(<TicketListPage />)
     fireEvent.click(await screen.findByRole('button', { name: /^Filters/ }))
     fireEvent.click(within(screen.getByRole('region', { name: 'Filters' })).getByLabelText('Low'))
-    expect(router.search).toEqual({ priority: ['low'] })
+    expect(router.search).toEqual({ view: 'me', priority: ['low'] })
   })
 
   it('a type needs a category, and picking another category drops it', async () => {
@@ -243,7 +245,7 @@ describe('the Filters panel', () => {
 
     await within(panel).findByRole('option', { name: 'Printers' })
     fireEvent.change(within(panel).getByLabelText('Category'), { target: { value: '00000000-0000-4000-8000-0000000000c2' } })
-    expect(router.search).toEqual({ category: '00000000-0000-4000-8000-0000000000c2' })
+    expect(router.search).toEqual({ view: 'search', category: '00000000-0000-4000-8000-0000000000c2' })
   })
 
   it('offers the SLA filter when /me says SLA tracking is on', async () => {
@@ -400,7 +402,7 @@ describe('the requester field', () => {
     fireEvent.change(within(panel).getByLabelText('Requester'), { target: { value: 'whit' } })
 
     fireEvent.click(await within(panel).findByRole('button', { name: /Dana Whitfield/ }))
-    expect(router.search).toEqual({ reporter: DANA.id })
+    expect(router.search).toEqual({ view: 'me', reporter: DANA.id })
     await waitFor(() => expect(lastCall()).toMatchObject({ reporter_id: DANA.id }))
     expect(await within(screen.getByRole('group', { name: 'Active filters' })).findByText('Dana Whitfield')).toBeTruthy()
   })
@@ -410,7 +412,7 @@ describe('the requester field', () => {
     fireEvent.change(within(panel).getByLabelText('Requester'), { target: { value: 'whit' } })
 
     fireEvent.click(await within(panel).findByRole('button', { name: 'Any requester matching “whit”' }))
-    expect(router.search).toEqual({ requester: 'whit' })
+    expect(router.search).toEqual({ view: 'me', requester: 'whit' })
     await waitFor(() => expect(lastCall()).toMatchObject({ requester: 'whit' }))
     expect(screen.getByRole('group', { name: 'Active filters' }).textContent).toContain('Requester contains')
   })
@@ -545,7 +547,7 @@ describe('sort', () => {
     renderWithQuery(<TicketListPage />)
 
     fireEvent.click(await screen.findByRole('button', { name: 'Sort by best match' }))
-    expect(router.search).toEqual({ q: 'printer' })
+    expect(router.search).toEqual({ q: 'printer', view: 'search' })
     await screen.findByText('Sorted by best match.')
   })
 })
@@ -566,7 +568,7 @@ describe('Search replies', () => {
     go({ q: 'fuser' })
     renderWithQuery(<TicketListPage />)
     fireEvent.click(await screen.findByLabelText('Search replies'))
-    expect(router.search).toEqual({ q: 'fuser', replies: false })
+    expect(router.search).toEqual({ q: 'fuser', replies: false, view: 'search' })
     await waitFor(() => expect(lastCall().search_replies).toBeUndefined())
   })
 
@@ -705,11 +707,11 @@ describe('on a phone', () => {
     const dialog = await screen.findByRole('dialog', { name: 'Filters' })
     fireEvent.click(within(dialog).getByLabelText('High'))
     fireEvent.click(within(dialog).getByLabelText('New'))
-    // Nothing yet.
-    expect(router.search).toEqual({})
+    // Nothing yet: the address holds only the view it was translated to.
+    expect(router.search).toEqual({ view: 'me' })
 
     fireEvent.click(within(dialog).getByRole('button', { name: 'Show results' }))
-    expect(router.search).toEqual({ priority: ['high'], status: ['00000000-0000-4000-8000-0000000000a1'] })
+    expect(router.search).toEqual({ view: 'me', priority: ['high'], status: ['00000000-0000-4000-8000-0000000000a1'] })
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
     await waitFor(() => expect(lastCall()).toMatchObject({ priority: ['high'], status_id: ['00000000-0000-4000-8000-0000000000a1'] }))
   })
@@ -721,7 +723,7 @@ describe('on a phone', () => {
     fireEvent.click(within(dialog).getByLabelText('High'))
     fireEvent.click(within(dialog).getByRole('button', { name: 'Close filters' }))
     await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
-    expect(router.search).toEqual({})
+    expect(router.search).toEqual({ view: 'me' })
   })
 
   it.each([
@@ -746,23 +748,22 @@ describe('on a phone', () => {
     expect((within(dialog).getByLabelText('High') as HTMLInputElement).checked).toBe(true)
     fireEvent.click(within(dialog).getByRole('button', { name: 'Clear all' }))
     fireEvent.click(within(dialog).getByRole('button', { name: 'Show results' }))
-    expect(router.search).toEqual({})
+    expect(router.search).toEqual({ view: 'search' })
   })
 
-  it('keeps the rare fields under More filters, and the queue switch stays on the toolbar', async () => {
+  it('keeps the rare fields under More filters', async () => {
     setRole('admin')
+    // Assignee is not offered on Assigned to Me (it is always me), so a view
+    // that does offer it.
+    go({ view: 'groups' })
     renderWithQuery(<TicketListPage />)
-    // The existing phone layout test (#414) has the queue switch on the toolbar
-    // at this width, so it is not duplicated in the dialog.
-    expect(await screen.findByRole('button', { name: 'unassigned' })).toBeTruthy()
 
-    fireEvent.click(screen.getByRole('button', { name: /^Filters/ }))
+    fireEvent.click(await screen.findByRole('button', { name: /^Filters/ }))
     const dialog = await screen.findByRole('dialog', { name: 'Filters' })
-    expect(within(dialog).queryByRole('button', { name: 'unassigned' })).toBeNull()
     expect(within(dialog).queryByLabelText('Assignee')).toBeNull()
     fireEvent.click(within(dialog).getByRole('button', { name: /^More filters/ }))
     fireEvent.change(await within(dialog).findByLabelText('Assignee'), { target: { value: '00000000-0000-4000-8000-0000000000b2' } })
     fireEvent.click(within(dialog).getByRole('button', { name: 'Show results' }))
-    expect(router.search).toEqual({ assignee: '00000000-0000-4000-8000-0000000000b2' })
+    expect(router.search).toEqual({ view: 'groups', assignee: '00000000-0000-4000-8000-0000000000b2' })
   })
 })

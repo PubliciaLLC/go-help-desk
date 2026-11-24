@@ -3,7 +3,7 @@ import { useAuthStore } from '@/store/auth'
 import { router } from '@/router'
 import type { User } from '@/api/types'
 
-// #158: /admin/email-templates is administrator-only: it edits the mail this
+// #158: /admin/settings/email/templates is administrator-only: it edits the mail this
 // server sends from the operator's domain. The nav entry is hidden from
 // everyone else, but hiding a link is not a guard: the route itself has to
 // turn a staff member or a plain user away.
@@ -31,17 +31,17 @@ async function runGuard(path: string) {
   return route.options.beforeLoad!({} as never)
 }
 
-describe('the /admin/email-templates route', () => {
+describe('the /admin/settings/email/templates route', () => {
   beforeEach(() => useAuthStore.setState({ user: null }))
 
   it('lets an administrator in', async () => {
     signInAs('admin')
-    await expect(runGuard('/admin/email-templates')).resolves.toBeUndefined()
+    await expect(runGuard('/admin/settings/email/templates')).resolves.toBeUndefined()
   })
 
   it.each(['staff', 'user'] as const)('turns a %s back to the dashboard', async (role) => {
     signInAs(role)
-    await expect(runGuard('/admin/email-templates')).rejects.toMatchObject({
+    await expect(runGuard('/admin/settings/email/templates')).rejects.toMatchObject({
       options: { to: '/dashboard' },
     })
   })

@@ -98,13 +98,19 @@ test.describe('shell + pages fit at 390 CSS pixels', () => {
 })
 
 test.describe('the sidebar is reachable, not just absent', () => {
+  // The shell's own navigation, which has no accessible name. The dashboard has
+  // navigation landmarks of its own (the queue strip, #675), each named.
+  // By role, so a drawer that is in the DOM but hidden is not counted, and
+  // intersected with "no aria-label" to leave out the named landmarks.
+  const sidebar = (page: Page) => page.getByRole('navigation').and(page.locator('nav:not([aria-label])'))
+
   test('a drawer trigger opens the navigation, and it closes again', async ({ page }) => {
     await mockApi(page)
     await page.goto('/dashboard')
 
     // The desktop sidebar's own nav must not be sitting in the page,
     // consuming width, at this viewport.
-    const nav = page.getByRole('navigation')
+    const nav = sidebar(page)
     await expect(nav).toBeHidden()
 
     const trigger = page.getByRole('button', { name: /menu|navigation/i })
@@ -116,10 +122,10 @@ test.describe('the sidebar is reachable, not just absent', () => {
     // Scoped to the nav landmark, not the whole page: DashboardPage has its
     // own cards linking to /tickets, so an unscoped name query is ambiguous.
     await trigger.click()
-    await expect(page.getByRole('navigation').getByRole('link', { name: 'Tickets', exact: true })).toBeVisible()
+    await expect(sidebar(page).getByRole('link', { name: 'Assigned to Me', exact: true })).toBeVisible()
 
     await page.keyboard.press('Escape')
-    await expect(page.getByRole('navigation')).toBeHidden()
+    await expect(sidebar(page)).toBeHidden()
   })
 
   test('resizing past md closes an open drawer instead of leaving it trapped behind the sidebar', async ({ page }) => {
@@ -127,20 +133,20 @@ test.describe('the sidebar is reachable, not just absent', () => {
     await page.goto('/dashboard')
 
     await page.getByRole('button', { name: /menu|navigation/i }).click()
-    await expect(page.getByRole('navigation').getByRole('link', { name: 'Tickets', exact: true })).toBeVisible()
+    await expect(sidebar(page).getByRole('link', { name: 'Assigned to Me', exact: true })).toBeVisible()
 
     // Widening past md (768px) is what a phone rotating to landscape, or a
     // window being resized, looks like. Without a listener for this, the
     // drawer stays open and its focus trap and overlay keep covering the now
     // otherwise-usable desktop layout underneath.
     await page.setViewportSize({ width: 1024, height: 800 })
-    await expect(page.getByRole('navigation')).toBeVisible()
+    await expect(sidebar(page)).toBeVisible()
 
     // Back below md: the drawer must not have silently reopened — the
     // permanent sidebar is what took its place, and only its own trigger
     // reopens the drawer again.
     await page.setViewportSize({ width: 390, height: 844 })
-    await expect(page.getByRole('navigation')).toBeHidden()
+    await expect(sidebar(page)).toBeHidden()
   })
 })
 
@@ -244,7 +250,7 @@ test.describe('#414: the ticket list toolbar stacks instead of squeezing the sea
   const cases = [
     { name: 'reporter', me: ME_REPORTER, below: ['Include closed'] },
     { name: 'staff', me: ME_STAFF, below: ['Include closed', 'Jump to ticket'] },
-    { name: 'admin', me: ME_ADMIN, below: ['mine', 'Include closed', 'Jump to ticket'] },
+    { name: 'admin', me: ME_ADMIN, below: ['Include closed', 'Jump to ticket'] },
   ]
   for (const c of cases) {
     test(`${c.name}: search has its own row, the other controls wrap below it`, async ({ page }) => {
@@ -998,7 +1004,7 @@ async function openCustomField(page: Page) {
 const ATTACHMENTS_GUEST_LINE = { attachment_max_mb: 10, guest_attachment_max_mb: 20, attachment_scan_policy: 'required' }
 const ATTACHMENTS_SCANNER_HINT = { attachment_max_mb: 100, guest_attachment_max_mb: 5, attachment_scan_policy: 'required' }
 
-const ADMIN_PAGES: { name: string; path: string; ready: string | RegExp; short?: boolean; tab?: string; settings?: Record<string, unknown>; shows?: RegExp; act?: (page: Page) => Promise<void> }[] = [
+const ADMIN_PAGES: { name: string; path: string; ready: string | RegExp; short?: boolean; settings?: Record<string, unknown>; shows?: RegExp; act?: (page: Page) => Promise<void> }[] = [
   { name: 'users', path: '/admin/users', ready: 'Users' },
   { name: 'users (short data)', path: '/admin/users', ready: 'Users', short: true },
   { name: 'user detail', path: `/admin/users/${LONG_USER.id}`, ready: 'NNNNNNNN' },
@@ -1041,17 +1047,20 @@ const ADMIN_PAGES: { name: string; path: string; ready: string | RegExp; short?:
   { name: 'categories: tree expanded', path: '/admin/categories', ready: 'Categories', act: expandTree },
   { name: 'webhooks: edit form', path: '/admin/webhooks', ready: /Webhooks/, act: (p) => p.getByRole('button', { name: 'Edit' }).first().click() },
   { name: 'webhooks: history open', path: '/admin/webhooks', ready: /Webhooks/, act: (p) => p.getByRole('button', { name: 'History' }).first().click() },
-  { name: 'settings: general', path: '/admin/settings', ready: 'Settings' },
-  { name: 'settings: branding', path: '/admin/settings', ready: 'Settings', tab: 'Branding' },
-  { name: 'settings: authentication', path: '/admin/settings', ready: 'Settings', tab: 'Authentication' },
-  { name: 'settings: features (SLA)', path: '/admin/settings', ready: 'Settings', tab: 'Features' },
-  { name: 'settings: email', path: '/admin/settings', ready: 'Settings', tab: 'Email' },
+  { name: 'settings: general', path: '/admin/settings/general', ready: 'General' },
+  { name: 'settings: features', path: '/admin/settings/features', ready: 'Features' },
+  { name: 'settings: branding', path: '/admin/settings/branding', ready: 'Branding' },
+  { name: 'settings: email', path: '/admin/settings/email', ready: 'Email' },
+  { name: 'settings: email templates', path: '/admin/settings/email/templates', ready: 'Email' },
   {
-    name: 'settings: attachments', path: '/admin/settings', ready: 'Settings', tab: 'Attachments',
+    name: 'settings: attachments', path: '/admin/settings/attachments', ready: 'File Attachments',
     settings: ATTACHMENTS_GUEST_LINE, shows: /Their own limit is 20 MB; this one is lower, so it applies\./,
   },
+  { name: 'settings: guest access', path: '/admin/settings/guest-access', ready: 'Guest Access' },
+  { name: 'settings: authentication', path: '/admin/settings/authentication', ready: 'Authentication' },
+  { name: 'settings: privacy', path: '/admin/settings/privacy', ready: 'Privacy' },
   {
-    name: 'settings: attachments (limit above 25, scanner hint)', path: '/admin/settings', ready: 'Settings', tab: 'Attachments',
+    name: 'settings: attachments (limit above 25, scanner hint)', path: '/admin/settings/attachments', ready: 'File Attachments',
     settings: ATTACHMENTS_SCANNER_HINT, shows: /Your virus scanner must accept files this large/,
   },
 ]
@@ -1064,7 +1073,6 @@ test.describe('#522: admin pages fit a phone', () => {
         await page.setViewportSize({ width, height: 844 })
         await page.goto(p.path)
         await expect(page.getByRole('heading', { level: 1 }).filter({ hasText: p.ready })).toBeVisible()
-        if (p.tab) await page.getByRole('button', { name: p.tab, exact: true }).click()
         // Let the queries settle so the long data is on screen before measuring.
         await page.waitForLoadState('networkidle')
         // The case exists to measure this text, so fail if it is not on screen.
@@ -1083,8 +1091,7 @@ test.describe('#522: admin pages fit a phone', () => {
 test.describe('#522: the truncated SAML certificate line carries its full text', () => {
   test('title holds the whole PEM', async ({ page }) => {
     await mockAdminApi(page)
-    await page.goto('/admin/settings')
-    await page.getByRole('button', { name: 'Authentication', exact: true }).click()
+    await page.goto('/admin/settings/authentication')
     const line = page.getByText('-----BEGIN CERTIFICATE-----…', { exact: true })
     await expect(line).toBeVisible()
     await expect(line).toHaveAttribute('title', SAML_CERT)
@@ -1092,8 +1099,7 @@ test.describe('#522: the truncated SAML certificate line carries its full text',
 
   test('the private key line has no title', async ({ page }) => {
     await mockAdminApi(page)
-    await page.goto('/admin/settings')
-    await page.getByRole('button', { name: 'Authentication', exact: true }).click()
+    await page.goto('/admin/settings/authentication')
     await page.locator('input[type="file"][accept=".pem,.key"]').setInputFiles({
       name: 'sp.key',
       mimeType: 'application/x-pem-file',

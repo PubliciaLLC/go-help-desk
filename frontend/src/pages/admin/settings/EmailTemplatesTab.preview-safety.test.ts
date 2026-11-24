@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import source from './EmailTemplatesPage.tsx?raw'
+import source from './EmailTemplatesTab.tsx?raw'
 
 // The HTML preview shows markup an administrator wrote, on the origin staff
 // sessions live on. The rules that keep it from being a stored XSS are
@@ -8,7 +8,7 @@ import source from './EmailTemplatesPage.tsx?raw'
 // it reaches a browser. (The behaviour, a script in the frame not running, is
 // measured in a real browser by e2e/email-template-preview.spec.ts.)
 
-describe('EmailTemplatesPage never interprets markup in its own document', () => {
+describe('EmailTemplatesTab (moved from EmailTemplatesPage, #674) never interprets markup in its own document', () => {
   it.each([
     // Spelled in two pieces: the lint rule that bans the name bans it in tests too.
     ['danger', 'ouslySetInnerHTML'].join(''),

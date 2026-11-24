@@ -16,7 +16,9 @@ const router = vi.hoisted(() => ({ pathname: '/dashboard' }))
 vi.mock('@tanstack/react-router', () => ({
   useRouterState: () => ({ location: { pathname: router.pathname } }),
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  Link: ({ to, children, ...rest }: any) => <a href={to} {...rest}>{children}</a>,
+  Link: ({ to, search, children, ...rest }: any) => (
+    <a href={search ? `${to}?${new URLSearchParams(search).toString()}` : to} {...rest}>{children}</a>
+  ),
 }))
 
 import { Layout } from './Layout'
@@ -34,12 +36,18 @@ const SECTIONS = [
   },
   {
     name: 'Integrations',
+    links: [['API Keys', '/admin/api-keys'], ['OAuth Clients', '/admin/oauth-clients'], ['Webhooks', '/admin/webhooks']],
+  },
+  {
+    name: 'System',
     links: [
-      ['API Keys', '/admin/api-keys'], ['OAuth Clients', '/admin/oauth-clients'],
-      ['Webhooks', '/admin/webhooks'], ['Email Templates', '/admin/email-templates'],
+      ['General', '/admin/settings/general'], ['Features', '/admin/settings/features'],
+      ['Branding', '/admin/settings/branding'], ['Email', '/admin/settings/email'],
+      ['File Attachments', '/admin/settings/attachments'], ['Guest Access', '/admin/settings/guest-access'],
+      ['Authentication', '/admin/settings/authentication'], ['Privacy', '/admin/settings/privacy'],
+      ['Audit Log', '/admin/audit'],
     ],
   },
-  { name: 'System', links: [['Settings', '/admin/settings'], ['Audit Log', '/admin/audit']] },
 ] as const
 
 function signInAs(role: User['role']) {
@@ -110,18 +118,20 @@ describe('structure', () => {
     }
   })
 
-  it('puts Admin after Dashboard and Tickets, and keeps no Audit Log entry outside it', () => {
+  it('puts Admin after Dashboard, Tickets and Reports, and keeps no Audit Log entry outside it', () => {
     renderAt('/dashboard')
     const nav = document.querySelector('nav') as HTMLElement
     const outside = Array.from(nav.querySelectorAll('a')).filter((a) => !panelOf('Admin').contains(a))
-    expect(outside.map((a) => a.textContent)).toEqual(['Dashboard', 'Tickets'])
+    expect(outside.map((a) => a.textContent)).toEqual([
+      'Dashboard', 'Assigned to Me', "My Group's Tickets", 'Available', 'Search', 'Reports',
+    ])
   })
 
-  // The 14 admin pages plus Audit Log, which used to sit above them.
-  it('keeps all 15 admin pages at the same URLs', () => {
+  // Email Templates left Integrations for the Email settings page (#674).
+  it('keeps every admin page at the same URL, once each', () => {
     renderAt('/dashboard')
     const all = SECTIONS.flatMap((s) => linksIn(panelOf(s.name)))
-    expect(all).toHaveLength(15)
+    expect(all).toHaveLength(21)
     expect(all.map(([, href]) => href).sort()).toEqual(
       SECTIONS.flatMap((s) => s.links.map(([, href]) => href)).sort(),
     )
@@ -167,6 +177,32 @@ describe('what is open', () => {
       expect(openSections()).toEqual([section])
     },
   )
+
+  it('marks Email as the current link on the Templates address, and System stays open', () => {
+    renderAt('/admin/settings/email/templates')
+    expect(openSections()).toEqual(['System'])
+    expect(screen.getByRole('link', { name: 'Email' }).className).toContain('text-blue-700')
+    expect(screen.getByRole('link', { name: 'General' }).className).not.toContain('text-blue-700')
+  })
+
+  // The System section has nine links and can be taller than a 768px screen
+  // allows, so its current link must be brought into view on navigation.
+  it('brings the current link into view when navigation moves to it', () => {
+    const scroll = vi.fn()
+    Object.defineProperty(Element.prototype, 'scrollIntoView', { value: scroll, configurable: true, writable: true })
+    try {
+      const { rerender } = renderAt('/dashboard')
+      scroll.mockClear()
+
+      router.pathname = '/admin/settings/privacy'
+      rerender(<Layout>content</Layout>)
+      expect(scroll).toHaveBeenCalledTimes(1)
+      expect((scroll.mock.contexts[0] as unknown as HTMLElement).textContent).toBe('Privacy')
+      expect(scroll).toHaveBeenCalledWith({ block: 'nearest' })
+    } finally {
+      delete (Element.prototype as Partial<Element>).scrollIntoView
+    }
+  })
 
   it('follows a sub-page of an admin page', () => {
     renderAt('/admin/users/u-123')
@@ -307,7 +343,7 @@ describe('keyboard', () => {
 describe('visibility by role', () => {
   const linkNames = () => screen.queryAllByRole('link').map((a) => a.textContent)
 
-  it('admin: all 15 admin pages are reachable through Admin, Audit Log among them, under System', async () => {
+  it('admin: all 21 admin links are reachable through Admin, Audit Log among them, under System', async () => {
     const user = userEvent.setup()
     renderAt('/dashboard')
     await user.click(heading('Admin'))
@@ -316,28 +352,36 @@ describe('visibility by role', () => {
     for (const s of SECTIONS) {
       await user.click(heading(s.name))
       const names = linkNames()
-      expect(names.slice(0, 2)).toEqual(['Dashboard', 'Tickets'])
+      expect(names.slice(0, 5)).toEqual(['Dashboard', 'Assigned to Me', "My Group's Tickets", 'Available', 'Search'])
       for (const [label, href] of s.links) {
         expect(names.filter((n) => n === label), label).toHaveLength(1)
         expect(within(panelOf(s.name)).getByRole('link', { name: label }).getAttribute('href')).toBe(href)
         reached.push(label)
       }
     }
-    expect(reached).toHaveLength(15)
+    expect(reached).toHaveLength(21)
     expect(reached).toContain('Audit Log')
   })
 
   // Audit Log is administrators only. Staff have the history on each ticket.
-  it.each(['staff', 'user'] as const)('%s: Dashboard and Tickets, no Admin, no Audit Log', (role) => {
+  it.each(['staff', 'user'] as const)('%s: Dashboard and Tickets (and Reports for staff), no Admin, no Audit Log', (role) => {
     renderAt('/dashboard', role)
 
+    // Staff see the Tickets views (#676); a requester keeps the one link.
+    const tickets = role === 'staff'
+      ? [['Assigned to Me', '/tickets?view=me'], ["My Group's Tickets", '/tickets?view=groups'], ['Search', '/tickets?view=search']]
+      : [['Tickets', '/tickets']]
+    // Reports (#131) is for staff and administrators.
+    const reports = role === 'staff' ? [['Reports', '/reports']] : []
     expect(screen.queryAllByRole('link', { hidden: true }).map((a) => [a.textContent, a.getAttribute('href')])).toEqual([
       ['Dashboard', '/dashboard'],
-      ['Tickets', '/tickets'],
+      ...tickets,
+      ...reports,
       ['Your account', '/account'],
     ])
     expect(document.querySelectorAll('[aria-controls]')).toHaveLength(0)
     expect(screen.queryByRole('button', { name: 'Admin', hidden: true })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'System', hidden: true })).toBeNull()
     expect(screen.queryByRole('link', { name: 'Audit Log', hidden: true })).toBeNull()
   })
 

@@ -126,6 +126,319 @@ func (q *Queries) CountGuestAttachments(ctx context.Context, ticketID uuid.UUID)
 	return count, err
 }
 
+const countTicketsFiltered = `-- name: CountTicketsFiltered :one
+WITH reply_hits AS (
+  SELECT DISTINCT m.ticket_id FROM (
+    SELECT r.ticket_id
+    FROM ticket_replies r
+    JOIN tickets rt ON rt.id = r.ticket_id
+    WHERE $34::bool
+      AND $33::text <> ''
+      AND r.body_tsv @@ to_tsquery('english', $33::text)
+      AND ($35::bool OR NOT r.internal)
+      AND (
+        $4::bool
+        OR ($5::bool AND rt.reporter_user_id = $6::uuid)
+        OR (
+          NOT $4::bool
+          AND NOT $5::bool
+          AND (
+            rt.reporter_user_id = $6::uuid
+            OR rt.assignee_user_id = $6::uuid
+            -- The same arrays as the main query's scope below, for the same reason
+            -- given there, and the same rule.
+            OR rt.assignee_group_id = ANY($7::uuid[])
+            OR rt.category_id = ANY($8::uuid[])
+            OR (rt.type_id = ANY($9::uuid[])
+                AND (rt.category_id, rt.type_id) IN (SELECT c.id, ty.id
+                    FROM unnest($10::uuid[]) WITH ORDINALITY AS c(id, n)
+                    JOIN unnest($9::uuid[]) WITH ORDINALITY AS ty(id, n) ON ty.n = c.n))
+          )
+        )
+      )
+    ORDER BY r.created_at DESC, r.id
+    LIMIT $36
+  ) m
+)
+SELECT count(*)
+FROM tickets t
+LEFT JOIN LATERAL (
+  SELECT CASE
+           WHEN e.response   >= make_interval(mins => p.response_target_min)
+             OR e.resolution >= make_interval(mins => p.resolution_target_min) THEN 0
+           WHEN e.response   >= make_interval(secs => (p.response_target_min::bigint   * 48)::double precision)
+             OR e.resolution >= make_interval(secs => (p.resolution_target_min::bigint * 48)::double precision) THEN 1
+           ELSE 2
+         END AS bucket
+  FROM sla_records r
+  JOIN sla_policies p ON p.id = r.policy_id
+  CROSS JOIN LATERAL (
+    SELECT
+      CASE WHEN r.first_response_at IS NOT NULL AND r.response_elapsed_at_met_seconds IS NOT NULL
+           THEN make_interval(secs => r.response_elapsed_at_met_seconds::double precision)
+           ELSE LEAST(COALESCE(t.pending_since, COALESCE(r.first_response_at, $1::timestamptz)),
+                      COALESCE(r.first_response_at, $1::timestamptz))
+                - (COALESCE(r.started_at, t.created_at)
+                   + make_interval(secs => (t.sla_paused_seconds - r.paused_seconds_at_start)::double precision))
+      END AS response,
+      CASE WHEN r.resolved_at IS NOT NULL AND r.resolution_elapsed_at_met_seconds IS NOT NULL
+           THEN make_interval(secs => r.resolution_elapsed_at_met_seconds::double precision)
+           ELSE LEAST(COALESCE(t.pending_since, COALESCE(r.resolved_at, $1::timestamptz)),
+                      COALESCE(r.resolved_at, $1::timestamptz))
+                - (COALESCE(r.started_at, t.created_at)
+                   + make_interval(secs => (t.sla_paused_seconds - r.paused_seconds_at_start)::double precision))
+      END AS resolution
+  ) e
+  WHERE ($2::text <> '' OR $3::text = 'sla')
+    AND r.ticket_id = t.id
+    AND r.superseded_at IS NULL
+) sb ON TRUE
+WHERE
+  -- visibility: begin
+  (
+    $4::bool
+    OR (
+      $5::bool
+      AND t.reporter_user_id = $6::uuid
+    )
+    OR (
+      NOT $4::bool
+      AND NOT $5::bool
+      AND (
+        t.reporter_user_id = $6::uuid
+        OR t.assignee_user_id = $6::uuid
+        -- The caller's groups and the categories and types those groups cover
+        -- arrive as plain arrays, read by the store just before this runs, for
+        -- the reason given at mine_group_ids below. As subqueries the planner
+        -- could not tell a staff member in no group from one in every group,
+        -- assumed most tickets match, and walked the whole of tickets_created_at_idx
+        -- discarding every row that did not: 1M tickets read 205k buffers and took
+        -- 0.9 s for a staff member with 10 assignments, and the cost grew with the
+        -- table. As arrays an empty set folds away and each arm that remains can
+        -- use an index (reporter, assignee, group, category).
+        -- TestListFiltered_ScopedVisibility holds the rule to a hand-derived answer
+        -- over every kind of scope.
+        OR t.assignee_group_id = ANY($7::uuid[])
+        OR t.category_id = ANY($8::uuid[])
+        -- One type of a category: the type conjunct is what lets an index
+        -- (tickets_type_id_idx) serve the arm, and the pair test is the rule.
+        -- The conjunct is implied by the pair, so it never changes the answer.
+        -- A ticket with no type never matches the row comparison, as it never
+        -- matched gs.type_id = t.type_id.
+        OR (t.type_id = ANY($9::uuid[])
+            AND (t.category_id, t.type_id) IN (SELECT c.id, ty.id
+                FROM unnest($10::uuid[]) WITH ORDINALITY AS c(id, n)
+                JOIN unnest($9::uuid[]) WITH ORDINALITY AS ty(id, n) ON ty.n = c.n))
+      )
+    )
+  )
+  -- visibility: end
+  -- queue: 'any' | 'mine' | 'assigned_to_me' | 'my_groups' | 'unassigned'. Set by
+  -- the handler, never the caller. (#676: assigned_to_me and my_groups are the two
+  -- halves of mine; held_by below splits my_groups three ways.)
+  AND (
+    $11::text = 'any'
+    OR ($11::text = 'unassigned'
+        AND t.assignee_user_id IS NULL AND t.assignee_group_id IS NULL)
+    OR ($11::text = 'assigned_to_me'
+        AND t.assignee_user_id = $6::uuid)
+    OR ($11::text = 'my_groups'
+        AND t.assignee_group_id = ANY($12::uuid[]))
+    -- mine_group_ids is the caller's groups, read by the store just before this
+    -- runs and passed as a plain array. That is deliberate: the planner cannot
+    -- know how many groups a subquery will return, assumes a lot, and then walks
+    -- the whole created_at index looking for rows a user with few or no
+    -- assignments does not have (83-95 ms at 200k tickets for an administrator).
+    -- Given the array itself it sees an empty or two-element list, and drives the
+    -- queue from the two assignee indexes instead (0.8 ms).
+    OR ($11::text = 'mine' AND (
+        t.assignee_user_id = $6::uuid
+        OR t.assignee_group_id = ANY($12::uuid[])))
+  )
+  AND (cardinality($13::uuid[]) = 0 OR t.status_id = ANY($13::uuid[]))
+  -- IS DISTINCT FROM, not <>: if the Closed status were ever missing the
+  -- subquery is NULL, and <> would then exclude every ticket.
+  AND (NOT $14::bool
+       OR t.status_id IS DISTINCT FROM (SELECT s.id FROM statuses s WHERE s.name = 'Closed' AND s.kind = 'system'))
+  AND (cardinality($15::text[]) = 0 OR t.priority = ANY($15::text[]))
+  AND ($16::uuid IS NULL OR t.category_id = $16::uuid)
+  AND ($17::uuid IS NULL OR t.type_id = $17::uuid)
+  AND ($18::uuid IS NULL OR t.item_id = $18::uuid)
+  AND ($19::uuid IS NULL OR t.assignee_user_id = $19::uuid)
+  AND ($20::uuid IS NULL OR t.assignee_group_id = $20::uuid)
+  -- held_by (#676): who personally holds the ticket, relative to the caller.
+  -- '' is no restriction. Only the assignee user is read, never the group.
+  AND ($21::text = ''
+       OR ($21::text = 'nobody' AND t.assignee_user_id IS NULL)
+       OR ($21::text = 'me' AND t.assignee_user_id = $6::uuid)
+       OR ($21::text = 'others' AND t.assignee_user_id IS NOT NULL
+           AND t.assignee_user_id <> $6::uuid))
+  -- awaiting_reply (#675): not Resolved or Closed, and the newest public reply
+  -- is not the help desk's (no reply, a guest reply with no author, or an
+  -- author who is a requester, all wait for staff). The author's role is read
+  -- whether or not the account is soft-deleted, on purpose: no deleted_at test.
+  -- Internal notes are never read. Staff and administrators only: the gate is
+  -- Filter.AllowedFor, not this clause.
+  AND (NOT $22::bool OR (
+    t.status_id IS DISTINCT FROM (SELECT s.id FROM statuses s WHERE s.name = 'Closed'   AND s.kind = 'system')
+    AND t.status_id IS DISTINCT FROM (SELECT s.id FROM statuses s WHERE s.name = 'Resolved' AND s.kind = 'system')
+    AND NOT COALESCE((SELECT u.role IN ('admin', 'staff')
+                      FROM ticket_replies r LEFT JOIN users u ON u.id = r.author_id
+                      WHERE r.ticket_id = t.id AND NOT r.internal
+                      ORDER BY r.created_at DESC, r.id DESC LIMIT 1), false)))
+  -- reopened_after (#675): server-set, the dashboard's recently reopened
+  -- window. NULL is not filtered, and a never-reopened ticket has no instant.
+  AND ($23::timestamptz IS NULL OR t.last_reopened_at >= $23::timestamptz)
+  AND ($24::uuid IS NULL OR t.reporter_user_id = $24::uuid)
+  -- requester_pattern is '%' || LIKE-escaped text || '%', built in the store.
+  -- It matches the ticket's guest fields and the reporting account's name and
+  -- email. Deleted and disabled accounts are included on purpose: their tickets
+  -- still exist and the ticket page still names them.
+  AND ($25::text IS NULL
+       OR t.guest_name ILIKE $25::text
+       OR t.guest_email ILIKE $25::text
+       -- ARRAY(subquery), not IN (subquery), so all three arms can be indexes
+       -- feeding one BitmapOr (see the queue arm above for the same reason).
+       OR t.reporter_user_id = ANY(ARRAY(SELECT u.id FROM users u
+                                         WHERE u.display_name ILIKE $25::text
+                                            OR u.email ILIKE $25::text)))
+  AND ($26::timestamptz IS NULL OR t.created_at >= $26::timestamptz)
+  AND ($27::timestamptz IS NULL OR t.created_at < $27::timestamptz)
+  AND ($28::timestamptz IS NULL OR t.updated_at >= $28::timestamptz)
+  AND ($29::timestamptz IS NULL OR t.updated_at < $29::timestamptz)
+  AND (cardinality($30::text[]) = 0 OR t.source_channel = ANY($30::text[]))
+  AND ($2::text = ''
+       OR ($2::text = 'breached' AND sb.bucket = 0)
+       OR ($2::text = 'at_risk' AND sb.bucket = 1))
+  -- ` + "`" + `searching` + "`" + ` says whether the caller asked for a search at all, which is
+  -- NOT the same as search_query being empty. A term like "???" contains no
+  -- indexable tokens, so buildSearchTSQuery yields "" — and keying off that
+  -- alone made the whole clause vanish and returned every visible ticket as
+  -- though each one matched. A search that tokenises to nothing must match on
+  -- the tracking number or not at all.
+  AND (
+    NOT $31::bool
+    OR t.tracking_number ILIKE $32::text
+    OR (
+      $33::text <> ''
+      AND t.search_vector @@ to_tsquery('english', $33::text)
+    )
+    OR t.id IN (SELECT ticket_id FROM reply_hits)
+  )
+`
+
+type CountTicketsFilteredParams struct {
+	Now                  time.Time      `json:"now"`
+	Sla                  string         `json:"sla"`
+	SortKey              string         `json:"sort_key"`
+	Unrestricted         bool           `json:"unrestricted"`
+	ReporterOnly         bool           `json:"reporter_only"`
+	ActorID              uuid.UUID      `json:"actor_id"`
+	ScopeGroupIds        []uuid.UUID    `json:"scope_group_ids"`
+	ScopeCategoryIds     []uuid.UUID    `json:"scope_category_ids"`
+	ScopeTypeIds         []uuid.UUID    `json:"scope_type_ids"`
+	ScopeTypeCategoryIds []uuid.UUID    `json:"scope_type_category_ids"`
+	Queue                string         `json:"queue"`
+	MineGroupIds         []uuid.UUID    `json:"mine_group_ids"`
+	StatusIds            []uuid.UUID    `json:"status_ids"`
+	ExcludeClosed        bool           `json:"exclude_closed"`
+	Priorities           []string       `json:"priorities"`
+	CategoryID           uuid.NullUUID  `json:"category_id"`
+	TypeID               uuid.NullUUID  `json:"type_id"`
+	ItemID               uuid.NullUUID  `json:"item_id"`
+	AssigneeUserID       uuid.NullUUID  `json:"assignee_user_id"`
+	AssigneeGroupID      uuid.NullUUID  `json:"assignee_group_id"`
+	HeldBy               string         `json:"held_by"`
+	AwaitingReply        bool           `json:"awaiting_reply"`
+	ReopenedAfter        sql.NullTime   `json:"reopened_after"`
+	ReporterID           uuid.NullUUID  `json:"reporter_id"`
+	RequesterPattern     sql.NullString `json:"requester_pattern"`
+	CreatedAfter         sql.NullTime   `json:"created_after"`
+	CreatedBefore        sql.NullTime   `json:"created_before"`
+	UpdatedAfter         sql.NullTime   `json:"updated_after"`
+	UpdatedBefore        sql.NullTime   `json:"updated_before"`
+	SourceChannels       []string       `json:"source_channels"`
+	Searching            bool           `json:"searching"`
+	TrackingPattern      string         `json:"tracking_pattern"`
+	SearchQuery          string         `json:"search_query"`
+	SearchReplies        bool           `json:"search_replies"`
+	IncludeInternal      bool           `json:"include_internal"`
+	ReplyCap             int32          `json:"reply_cap"`
+}
+
+// How many tickets ListTicketsFiltered would return for the same parameters,
+// without paging: the dashboard's counts (#675). It is that query with the select
+// list replaced by count(*) and everything from ORDER BY to the end removed,
+// the same reply_hits CTE, SLA lateral and WHERE, so the store fills both from
+// one function. The two are held equal by TestSQL_DashboardQueriesShareTheListRule
+// (comments and whitespace aside): change one, copy the change to the other.
+// Single values are NULL-means-absent and arrays are cardinality(...) = 0, so
+// one prepared statement serves every combination. The store always passes a
+// non-nil array.
+//
+// The SLA bucket joins the CURRENT record only and is computed only when the
+// filter or the sort asks for it (the first condition in the lateral is a
+// parameter-only test, so the planner evaluates it once, not per ticket). It is
+// a lateral join and not a correlated subquery because the planner can hash
+// join it: as a subquery, sorting by SLA took 1 s at 200k instead of 0.25 s. It
+// reproduces sla.StatusFor, the live read the list indicator shows, NOT the
+// breach stamps: StatusFor never reads them, and a target met on time keeps
+// its frozen reading. Per target, with elapsed as sla.ElapsedFrom has it
+// (the clock stops at pending_since or at the instant the target was met):
+//
+//	a met target with a frozen reading  -> that reading
+//	anything else                       -> LEAST(COALESCE(pending_since, at), at)
+//	                                       - start - pause, with at = the met
+//	                                       instant, or now while outstanding
+//
+// 0 = a target at or past 100% (red), 1 = otherwise one at or past 80%
+// (amber, exactly target_min * 48 seconds), 2 = everything else. This is the
+// third copy of the formula, after sla.ElapsedFrom and ListSLABreachCandidates;
+// TestListFiltered_SLAAgreesWithStatusFor holds it to the first.
+func (q *Queries) CountTicketsFiltered(ctx context.Context, arg CountTicketsFilteredParams) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countTicketsFiltered,
+		arg.Now,
+		arg.Sla,
+		arg.SortKey,
+		arg.Unrestricted,
+		arg.ReporterOnly,
+		arg.ActorID,
+		pq.Array(arg.ScopeGroupIds),
+		pq.Array(arg.ScopeCategoryIds),
+		pq.Array(arg.ScopeTypeIds),
+		pq.Array(arg.ScopeTypeCategoryIds),
+		arg.Queue,
+		pq.Array(arg.MineGroupIds),
+		pq.Array(arg.StatusIds),
+		arg.ExcludeClosed,
+		pq.Array(arg.Priorities),
+		arg.CategoryID,
+		arg.TypeID,
+		arg.ItemID,
+		arg.AssigneeUserID,
+		arg.AssigneeGroupID,
+		arg.HeldBy,
+		arg.AwaitingReply,
+		arg.ReopenedAfter,
+		arg.ReporterID,
+		arg.RequesterPattern,
+		arg.CreatedAfter,
+		arg.CreatedBefore,
+		arg.UpdatedAfter,
+		arg.UpdatedBefore,
+		pq.Array(arg.SourceChannels),
+		arg.Searching,
+		arg.TrackingPattern,
+		arg.SearchQuery,
+		arg.SearchReplies,
+		arg.IncludeInternal,
+		arg.ReplyCap,
+	)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const createAttachment = `-- name: CreateAttachment :exec
 INSERT INTO attachments (id, ticket_id, filename, mime_type, size_bytes, storage_path, created_at,
                          detected_mime, sha256, virus_name, content_mismatch, uploaded_by_guest)
@@ -599,6 +912,662 @@ func (q *Queries) IsAssignableUser(ctx context.Context, id uuid.UUID) (uuid.UUID
 	return id_2, err
 }
 
+const kPICreatedByCategory = `-- name: KPICreatedByCategory :many
+WITH w AS (
+  -- since_at is the instant from_day begins in tz, until_at the instant the day
+  -- after to_day begins: every range test is >= since_at AND < until_at.
+  SELECT ($12::date)::timestamp AT TIME ZONE $11::text AS since_at,
+         (($13::date + 1)::timestamp) AT TIME ZONE $11::text AS until_at
+)
+SELECT t.category_id, c.name, count(*)::bigint AS n
+FROM tickets t
+CROSS JOIN w
+JOIN categories c ON c.id = t.category_id
+WHERE
+  -- visibility: begin
+  (
+    $1::bool
+    OR (
+      $2::bool
+      AND t.reporter_user_id = $3::uuid
+    )
+    OR (
+      NOT $1::bool
+      AND NOT $2::bool
+      AND (
+        t.reporter_user_id = $3::uuid
+        OR t.assignee_user_id = $3::uuid
+        OR t.assignee_group_id = ANY($4::uuid[])
+        OR t.category_id = ANY($5::uuid[])
+        OR (t.type_id = ANY($6::uuid[])
+            AND (t.category_id, t.type_id) IN (SELECT c.id, ty.id
+                FROM unnest($7::uuid[]) WITH ORDINALITY AS c(id, n)
+                JOIN unnest($6::uuid[]) WITH ORDINALITY AS ty(id, n) ON ty.n = c.n))
+      )
+    )
+  )
+  -- visibility: end
+  AND ($8::uuid IS NULL OR t.category_id = $8::uuid)
+  AND (cardinality($9::text[]) = 0 OR t.priority = ANY($9::text[]))
+  AND ($10::uuid IS NULL OR t.assignee_group_id = $10::uuid)
+  AND t.created_at >= w.since_at AND t.created_at < w.until_at
+GROUP BY t.category_id, c.name
+ORDER BY n DESC, c.name, t.category_id
+`
+
+type KPICreatedByCategoryParams struct {
+	Unrestricted         bool          `json:"unrestricted"`
+	ReporterOnly         bool          `json:"reporter_only"`
+	ActorID              uuid.UUID     `json:"actor_id"`
+	ScopeGroupIds        []uuid.UUID   `json:"scope_group_ids"`
+	ScopeCategoryIds     []uuid.UUID   `json:"scope_category_ids"`
+	ScopeTypeIds         []uuid.UUID   `json:"scope_type_ids"`
+	ScopeTypeCategoryIds []uuid.UUID   `json:"scope_type_category_ids"`
+	CategoryID           uuid.NullUUID `json:"category_id"`
+	Priorities           []string      `json:"priorities"`
+	AssigneeGroupID      uuid.NullUUID `json:"assignee_group_id"`
+	Tz                   string        `json:"tz"`
+	FromDay              time.Time     `json:"from_day"`
+	ToDay                time.Time     `json:"to_day"`
+}
+
+type KPICreatedByCategoryRow struct {
+	CategoryID uuid.UUID `json:"category_id"`
+	Name       string    `json:"name"`
+	N          int64     `json:"n"`
+}
+
+// The tickets created in the period, by category, named as the category is now
+// (archived ones too: their tickets still exist). Largest first, then by name.
+// The visibility block and filters are KPIPeriod's.
+func (q *Queries) KPICreatedByCategory(ctx context.Context, arg KPICreatedByCategoryParams) ([]KPICreatedByCategoryRow, error) {
+	rows, err := q.db.QueryContext(ctx, kPICreatedByCategory,
+		arg.Unrestricted,
+		arg.ReporterOnly,
+		arg.ActorID,
+		pq.Array(arg.ScopeGroupIds),
+		pq.Array(arg.ScopeCategoryIds),
+		pq.Array(arg.ScopeTypeIds),
+		pq.Array(arg.ScopeTypeCategoryIds),
+		arg.CategoryID,
+		pq.Array(arg.Priorities),
+		arg.AssigneeGroupID,
+		arg.Tz,
+		arg.FromDay,
+		arg.ToDay,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []KPICreatedByCategoryRow
+	for rows.Next() {
+		var i KPICreatedByCategoryRow
+		if err := rows.Scan(&i.CategoryID, &i.Name, &i.N); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const kPICreatedByPriority = `-- name: KPICreatedByPriority :many
+WITH w AS (
+  -- since_at is the instant from_day begins in tz, until_at the instant the day
+  -- after to_day begins: every range test is >= since_at AND < until_at.
+  SELECT ($12::date)::timestamp AT TIME ZONE $11::text AS since_at,
+         (($13::date + 1)::timestamp) AT TIME ZONE $11::text AS until_at
+)
+SELECT t.priority, count(*)::bigint AS n
+FROM tickets t, w
+WHERE
+  -- visibility: begin
+  (
+    $1::bool
+    OR (
+      $2::bool
+      AND t.reporter_user_id = $3::uuid
+    )
+    OR (
+      NOT $1::bool
+      AND NOT $2::bool
+      AND (
+        t.reporter_user_id = $3::uuid
+        OR t.assignee_user_id = $3::uuid
+        OR t.assignee_group_id = ANY($4::uuid[])
+        OR t.category_id = ANY($5::uuid[])
+        OR (t.type_id = ANY($6::uuid[])
+            AND (t.category_id, t.type_id) IN (SELECT c.id, ty.id
+                FROM unnest($7::uuid[]) WITH ORDINALITY AS c(id, n)
+                JOIN unnest($6::uuid[]) WITH ORDINALITY AS ty(id, n) ON ty.n = c.n))
+      )
+    )
+  )
+  -- visibility: end
+  AND ($8::uuid IS NULL OR t.category_id = $8::uuid)
+  AND (cardinality($9::text[]) = 0 OR t.priority = ANY($9::text[]))
+  AND ($10::uuid IS NULL OR t.assignee_group_id = $10::uuid)
+  AND t.created_at >= w.since_at AND t.created_at < w.until_at
+GROUP BY t.priority
+ORDER BY n DESC, t.priority
+`
+
+type KPICreatedByPriorityParams struct {
+	Unrestricted         bool          `json:"unrestricted"`
+	ReporterOnly         bool          `json:"reporter_only"`
+	ActorID              uuid.UUID     `json:"actor_id"`
+	ScopeGroupIds        []uuid.UUID   `json:"scope_group_ids"`
+	ScopeCategoryIds     []uuid.UUID   `json:"scope_category_ids"`
+	ScopeTypeIds         []uuid.UUID   `json:"scope_type_ids"`
+	ScopeTypeCategoryIds []uuid.UUID   `json:"scope_type_category_ids"`
+	CategoryID           uuid.NullUUID `json:"category_id"`
+	Priorities           []string      `json:"priorities"`
+	AssigneeGroupID      uuid.NullUUID `json:"assignee_group_id"`
+	Tz                   string        `json:"tz"`
+	FromDay              time.Time     `json:"from_day"`
+	ToDay                time.Time     `json:"to_day"`
+}
+
+type KPICreatedByPriorityRow struct {
+	Priority string `json:"priority"`
+	N        int64  `json:"n"`
+}
+
+// The tickets created in the period, by priority: only the priorities that have
+// tickets are rows; Go puts the four in their fixed order with zeros. The
+// visibility block and filters are KPIPeriod's.
+func (q *Queries) KPICreatedByPriority(ctx context.Context, arg KPICreatedByPriorityParams) ([]KPICreatedByPriorityRow, error) {
+	rows, err := q.db.QueryContext(ctx, kPICreatedByPriority,
+		arg.Unrestricted,
+		arg.ReporterOnly,
+		arg.ActorID,
+		pq.Array(arg.ScopeGroupIds),
+		pq.Array(arg.ScopeCategoryIds),
+		pq.Array(arg.ScopeTypeIds),
+		pq.Array(arg.ScopeTypeCategoryIds),
+		arg.CategoryID,
+		pq.Array(arg.Priorities),
+		arg.AssigneeGroupID,
+		arg.Tz,
+		arg.FromDay,
+		arg.ToDay,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []KPICreatedByPriorityRow
+	for rows.Next() {
+		var i KPICreatedByPriorityRow
+		if err := rows.Scan(&i.Priority, &i.N); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const kPIOpenByAge = `-- name: KPIOpenByAge :many
+SELECT LEAST(floor(EXTRACT(EPOCH FROM $1::timestamptz - t.created_at) / 86400), 31)::int AS age_days,
+       count(*)::bigint AS n
+FROM tickets t
+WHERE
+  -- visibility: begin
+  (
+    $2::bool
+    OR (
+      $3::bool
+      AND t.reporter_user_id = $4::uuid
+    )
+    OR (
+      NOT $2::bool
+      AND NOT $3::bool
+      AND (
+        t.reporter_user_id = $4::uuid
+        OR t.assignee_user_id = $4::uuid
+        OR t.assignee_group_id = ANY($5::uuid[])
+        OR t.category_id = ANY($6::uuid[])
+        OR (t.type_id = ANY($7::uuid[])
+            AND (t.category_id, t.type_id) IN (SELECT c.id, ty.id
+                FROM unnest($8::uuid[]) WITH ORDINALITY AS c(id, n)
+                JOIN unnest($7::uuid[]) WITH ORDINALITY AS ty(id, n) ON ty.n = c.n))
+      )
+    )
+  )
+  -- visibility: end
+  AND ($9::uuid IS NULL OR t.category_id = $9::uuid)
+  AND (cardinality($10::text[]) = 0 OR t.priority = ANY($10::text[]))
+  AND ($11::uuid IS NULL OR t.assignee_group_id = $11::uuid)
+  AND COALESCE(t.resolved_at, t.closed_at) IS NULL
+GROUP BY 1
+ORDER BY 1
+`
+
+type KPIOpenByAgeParams struct {
+	Now                  time.Time     `json:"now"`
+	Unrestricted         bool          `json:"unrestricted"`
+	ReporterOnly         bool          `json:"reporter_only"`
+	ActorID              uuid.UUID     `json:"actor_id"`
+	ScopeGroupIds        []uuid.UUID   `json:"scope_group_ids"`
+	ScopeCategoryIds     []uuid.UUID   `json:"scope_category_ids"`
+	ScopeTypeIds         []uuid.UUID   `json:"scope_type_ids"`
+	ScopeTypeCategoryIds []uuid.UUID   `json:"scope_type_category_ids"`
+	CategoryID           uuid.NullUUID `json:"category_id"`
+	Priorities           []string      `json:"priorities"`
+	AssigneeGroupID      uuid.NullUUID `json:"assignee_group_id"`
+}
+
+type KPIOpenByAgeRow struct {
+	AgeDays int32 `json:"age_days"`
+	N       int64 `json:"n"`
+}
+
+// The open tickets now (no finish instant: by the invariant migration 000028
+// repaired, exactly the tickets not in a Resolved or Closed system status) by
+// whole days of age, capped at 31, so at most 32 rows; report.BacklogBuckets
+// are applied to them in Go. Visibility block and filters are KPIPeriod's.
+func (q *Queries) KPIOpenByAge(ctx context.Context, arg KPIOpenByAgeParams) ([]KPIOpenByAgeRow, error) {
+	rows, err := q.db.QueryContext(ctx, kPIOpenByAge,
+		arg.Now,
+		arg.Unrestricted,
+		arg.ReporterOnly,
+		arg.ActorID,
+		pq.Array(arg.ScopeGroupIds),
+		pq.Array(arg.ScopeCategoryIds),
+		pq.Array(arg.ScopeTypeIds),
+		pq.Array(arg.ScopeTypeCategoryIds),
+		arg.CategoryID,
+		pq.Array(arg.Priorities),
+		arg.AssigneeGroupID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []KPIOpenByAgeRow
+	for rows.Next() {
+		var i KPIOpenByAgeRow
+		if err := rows.Scan(&i.AgeDays, &i.N); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const kPIOpenByAssignee = `-- name: KPIOpenByAssignee :many
+SELECT t.assignee_user_id, u.display_name, count(*)::bigint AS n
+FROM tickets t
+LEFT JOIN users u ON u.id = t.assignee_user_id
+WHERE
+  -- visibility: begin
+  (
+    $1::bool
+    OR (
+      $2::bool
+      AND t.reporter_user_id = $3::uuid
+    )
+    OR (
+      NOT $1::bool
+      AND NOT $2::bool
+      AND (
+        t.reporter_user_id = $3::uuid
+        OR t.assignee_user_id = $3::uuid
+        OR t.assignee_group_id = ANY($4::uuid[])
+        OR t.category_id = ANY($5::uuid[])
+        OR (t.type_id = ANY($6::uuid[])
+            AND (t.category_id, t.type_id) IN (SELECT c.id, ty.id
+                FROM unnest($7::uuid[]) WITH ORDINALITY AS c(id, n)
+                JOIN unnest($6::uuid[]) WITH ORDINALITY AS ty(id, n) ON ty.n = c.n))
+      )
+    )
+  )
+  -- visibility: end
+  AND ($8::uuid IS NULL OR t.category_id = $8::uuid)
+  AND (cardinality($9::text[]) = 0 OR t.priority = ANY($9::text[]))
+  AND ($10::uuid IS NULL OR t.assignee_group_id = $10::uuid)
+  AND COALESCE(t.resolved_at, t.closed_at) IS NULL
+GROUP BY t.assignee_user_id, u.display_name
+`
+
+type KPIOpenByAssigneeParams struct {
+	Unrestricted         bool          `json:"unrestricted"`
+	ReporterOnly         bool          `json:"reporter_only"`
+	ActorID              uuid.UUID     `json:"actor_id"`
+	ScopeGroupIds        []uuid.UUID   `json:"scope_group_ids"`
+	ScopeCategoryIds     []uuid.UUID   `json:"scope_category_ids"`
+	ScopeTypeIds         []uuid.UUID   `json:"scope_type_ids"`
+	ScopeTypeCategoryIds []uuid.UUID   `json:"scope_type_category_ids"`
+	CategoryID           uuid.NullUUID `json:"category_id"`
+	Priorities           []string      `json:"priorities"`
+	AssigneeGroupID      uuid.NullUUID `json:"assignee_group_id"`
+}
+
+type KPIOpenByAssigneeRow struct {
+	AssigneeUserID uuid.NullUUID  `json:"assignee_user_id"`
+	DisplayName    sql.NullString `json:"display_name"`
+	N              int64          `json:"n"`
+}
+
+// The open tickets now by the person holding them, named as they are now
+// (deleted and disabled people too). The row with no person has a NULL key.
+// Visibility block and filters are KPIPeriod's.
+func (q *Queries) KPIOpenByAssignee(ctx context.Context, arg KPIOpenByAssigneeParams) ([]KPIOpenByAssigneeRow, error) {
+	rows, err := q.db.QueryContext(ctx, kPIOpenByAssignee,
+		arg.Unrestricted,
+		arg.ReporterOnly,
+		arg.ActorID,
+		pq.Array(arg.ScopeGroupIds),
+		pq.Array(arg.ScopeCategoryIds),
+		pq.Array(arg.ScopeTypeIds),
+		pq.Array(arg.ScopeTypeCategoryIds),
+		arg.CategoryID,
+		pq.Array(arg.Priorities),
+		arg.AssigneeGroupID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []KPIOpenByAssigneeRow
+	for rows.Next() {
+		var i KPIOpenByAssigneeRow
+		if err := rows.Scan(&i.AssigneeUserID, &i.DisplayName, &i.N); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const kPIOpenByGroup = `-- name: KPIOpenByGroup :many
+SELECT t.assignee_group_id, g.name, count(*)::bigint AS n
+FROM tickets t
+LEFT JOIN groups g ON g.id = t.assignee_group_id
+WHERE
+  -- visibility: begin
+  (
+    $1::bool
+    OR (
+      $2::bool
+      AND t.reporter_user_id = $3::uuid
+    )
+    OR (
+      NOT $1::bool
+      AND NOT $2::bool
+      AND (
+        t.reporter_user_id = $3::uuid
+        OR t.assignee_user_id = $3::uuid
+        OR t.assignee_group_id = ANY($4::uuid[])
+        OR t.category_id = ANY($5::uuid[])
+        OR (t.type_id = ANY($6::uuid[])
+            AND (t.category_id, t.type_id) IN (SELECT c.id, ty.id
+                FROM unnest($7::uuid[]) WITH ORDINALITY AS c(id, n)
+                JOIN unnest($6::uuid[]) WITH ORDINALITY AS ty(id, n) ON ty.n = c.n))
+      )
+    )
+  )
+  -- visibility: end
+  AND ($8::uuid IS NULL OR t.category_id = $8::uuid)
+  AND (cardinality($9::text[]) = 0 OR t.priority = ANY($9::text[]))
+  AND ($10::uuid IS NULL OR t.assignee_group_id = $10::uuid)
+  AND COALESCE(t.resolved_at, t.closed_at) IS NULL
+GROUP BY t.assignee_group_id, g.name
+`
+
+type KPIOpenByGroupParams struct {
+	Unrestricted         bool          `json:"unrestricted"`
+	ReporterOnly         bool          `json:"reporter_only"`
+	ActorID              uuid.UUID     `json:"actor_id"`
+	ScopeGroupIds        []uuid.UUID   `json:"scope_group_ids"`
+	ScopeCategoryIds     []uuid.UUID   `json:"scope_category_ids"`
+	ScopeTypeIds         []uuid.UUID   `json:"scope_type_ids"`
+	ScopeTypeCategoryIds []uuid.UUID   `json:"scope_type_category_ids"`
+	CategoryID           uuid.NullUUID `json:"category_id"`
+	Priorities           []string      `json:"priorities"`
+	AssigneeGroupID      uuid.NullUUID `json:"assignee_group_id"`
+}
+
+type KPIOpenByGroupRow struct {
+	AssigneeGroupID uuid.NullUUID  `json:"assignee_group_id"`
+	Name            sql.NullString `json:"name"`
+	N               int64          `json:"n"`
+}
+
+// The open tickets now by the group holding them. The row with no group has a
+// NULL key. Visibility block and filters are KPIPeriod's.
+func (q *Queries) KPIOpenByGroup(ctx context.Context, arg KPIOpenByGroupParams) ([]KPIOpenByGroupRow, error) {
+	rows, err := q.db.QueryContext(ctx, kPIOpenByGroup,
+		arg.Unrestricted,
+		arg.ReporterOnly,
+		arg.ActorID,
+		pq.Array(arg.ScopeGroupIds),
+		pq.Array(arg.ScopeCategoryIds),
+		pq.Array(arg.ScopeTypeIds),
+		pq.Array(arg.ScopeTypeCategoryIds),
+		arg.CategoryID,
+		pq.Array(arg.Priorities),
+		arg.AssigneeGroupID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []KPIOpenByGroupRow
+	for rows.Next() {
+		var i KPIOpenByGroupRow
+		if err := rows.Scan(&i.AssigneeGroupID, &i.Name, &i.N); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const kPIPeriod = `-- name: KPIPeriod :one
+WITH w AS (
+  -- since_at is the instant from_day begins in tz, until_at the instant the day
+  -- after to_day begins: every range test is >= since_at AND < until_at.
+  SELECT ($2::date)::timestamp AT TIME ZONE $1::text AS since_at,
+         (($3::date + 1)::timestamp) AT TIME ZONE $1::text AS until_at
+), created AS (
+  SELECT count(*) AS n
+  FROM tickets t, w
+  WHERE
+  -- visibility: begin
+  (
+    $4::bool
+    OR (
+      $5::bool
+      AND t.reporter_user_id = $6::uuid
+    )
+    OR (
+      NOT $4::bool
+      AND NOT $5::bool
+      AND (
+        t.reporter_user_id = $6::uuid
+        OR t.assignee_user_id = $6::uuid
+        OR t.assignee_group_id = ANY($7::uuid[])
+        OR t.category_id = ANY($8::uuid[])
+        OR (t.type_id = ANY($9::uuid[])
+            AND (t.category_id, t.type_id) IN (SELECT c.id, ty.id
+                FROM unnest($10::uuid[]) WITH ORDINALITY AS c(id, n)
+                JOIN unnest($9::uuid[]) WITH ORDINALITY AS ty(id, n) ON ty.n = c.n))
+      )
+    )
+  )
+  -- visibility: end
+  AND ($11::uuid IS NULL OR t.category_id = $11::uuid)
+  AND (cardinality($12::text[]) = 0 OR t.priority = ANY($12::text[]))
+  AND ($13::uuid IS NULL OR t.assignee_group_id = $13::uuid)
+  AND t.created_at >= w.since_at AND t.created_at < w.until_at
+), done AS (
+  SELECT GREATEST(0, EXTRACT(EPOCH FROM COALESCE(t.resolved_at, t.closed_at) - t.created_at)::bigint
+                     - t.sla_paused_seconds) AS resolve_s,
+         t.reopen_count > 0 AS reopened,
+         s.tracked, s.response_breached, s.resolution_breached, s.first_response_s
+  FROM tickets t
+  CROSS JOIN w
+  CROSS JOIN LATERAL (
+    SELECT count(*) FILTER (WHERE r.superseded_at IS NULL) > 0 AS tracked,
+           COALESCE(bool_or(r.response_breached_at IS NOT NULL), false) AS response_breached,
+           COALESCE(bool_or(r.resolution_breached_at IS NOT NULL), false) AS resolution_breached,
+           (array_agg(r.response_elapsed_at_met_seconds ORDER BY r.first_response_at, r.id)
+              FILTER (WHERE r.started_at IS NULL AND r.first_response_at IS NOT NULL
+                        AND r.response_elapsed_at_met_seconds IS NOT NULL))[1] AS first_response_s
+    FROM sla_records r
+    WHERE r.ticket_id = t.id
+  ) s
+  WHERE
+  -- visibility: begin
+  (
+    $4::bool
+    OR (
+      $5::bool
+      AND t.reporter_user_id = $6::uuid
+    )
+    OR (
+      NOT $4::bool
+      AND NOT $5::bool
+      AND (
+        t.reporter_user_id = $6::uuid
+        OR t.assignee_user_id = $6::uuid
+        OR t.assignee_group_id = ANY($7::uuid[])
+        OR t.category_id = ANY($8::uuid[])
+        OR (t.type_id = ANY($9::uuid[])
+            AND (t.category_id, t.type_id) IN (SELECT c.id, ty.id
+                FROM unnest($10::uuid[]) WITH ORDINALITY AS c(id, n)
+                JOIN unnest($9::uuid[]) WITH ORDINALITY AS ty(id, n) ON ty.n = c.n))
+      )
+    )
+  )
+  -- visibility: end
+  AND ($11::uuid IS NULL OR t.category_id = $11::uuid)
+  AND (cardinality($12::text[]) = 0 OR t.priority = ANY($12::text[]))
+  AND ($13::uuid IS NULL OR t.assignee_group_id = $13::uuid)
+  AND COALESCE(t.resolved_at, t.closed_at) >= w.since_at
+  AND COALESCE(t.resolved_at, t.closed_at) < w.until_at
+)
+SELECT (SELECT n FROM created)::bigint AS created,
+       count(*)::bigint AS resolved,
+       COALESCE(round(percentile_cont(0.5) WITHIN GROUP (ORDER BY resolve_s)), 0)::bigint AS resolve_median,
+       COALESCE(round(percentile_cont(0.9) WITHIN GROUP (ORDER BY resolve_s)), 0)::bigint AS resolve_p90,
+       count(first_response_s)::bigint AS first_response_count,
+       COALESCE(round(percentile_cont(0.5) WITHIN GROUP (ORDER BY first_response_s)), 0)::bigint AS first_response_median,
+       count(*) FILTER (WHERE tracked)::bigint AS sla_tracked,
+       count(*) FILTER (WHERE tracked AND NOT response_breached AND NOT resolution_breached)::bigint AS sla_met,
+       count(*) FILTER (WHERE tracked AND NOT response_breached)::bigint AS sla_response_met,
+       count(*) FILTER (WHERE tracked AND NOT resolution_breached)::bigint AS sla_resolution_met,
+       count(*) FILTER (WHERE reopened)::bigint AS reopened
+FROM done
+`
+
+type KPIPeriodParams struct {
+	Tz                   string        `json:"tz"`
+	FromDay              time.Time     `json:"from_day"`
+	ToDay                time.Time     `json:"to_day"`
+	Unrestricted         bool          `json:"unrestricted"`
+	ReporterOnly         bool          `json:"reporter_only"`
+	ActorID              uuid.UUID     `json:"actor_id"`
+	ScopeGroupIds        []uuid.UUID   `json:"scope_group_ids"`
+	ScopeCategoryIds     []uuid.UUID   `json:"scope_category_ids"`
+	ScopeTypeIds         []uuid.UUID   `json:"scope_type_ids"`
+	ScopeTypeCategoryIds []uuid.UUID   `json:"scope_type_category_ids"`
+	CategoryID           uuid.NullUUID `json:"category_id"`
+	Priorities           []string      `json:"priorities"`
+	AssigneeGroupID      uuid.NullUUID `json:"assignee_group_id"`
+}
+
+type KPIPeriodRow struct {
+	Created             int64 `json:"created"`
+	Resolved            int64 `json:"resolved"`
+	ResolveMedian       int64 `json:"resolve_median"`
+	ResolveP90          int64 `json:"resolve_p90"`
+	FirstResponseCount  int64 `json:"first_response_count"`
+	FirstResponseMedian int64 `json:"first_response_median"`
+	SlaTracked          int64 `json:"sla_tracked"`
+	SlaMet              int64 `json:"sla_met"`
+	SlaResponseMet      int64 `json:"sla_response_met"`
+	SlaResolutionMet    int64 `json:"sla_resolution_met"`
+	Reopened            int64 `json:"reopened"`
+}
+
+// The period measures of one period, current or previous (#131, DESIGN.md "KPI
+// reports", SQL): the tickets created in it, and every measure of the tickets
+// that finished in it, in one statement. The created arm is served by
+// tickets_created_at_idx, the finished arm by tickets_done_at_idx (000068); the
+// lateral is one sla_records_ticket_idx lookup per finished ticket. A ticket is
+// tracked when one of its records is current, but the breach flags read every
+// record of it, superseded ones included, so a reopen's clean clock cannot hide
+// an earlier breach. Percentiles ignore NULLs and are NULL over no rows; sqlc
+// cannot type a nullable aggregate, so they come back as 0 there and the store
+// reads "no rows" from the count beside each (resolved, first_response_count). The
+// visibility block is the list's, pinned to it by
+// TestSQL_DashboardQueriesShareTheListRule; the three filters are the list's,
+// on the ticket's current values.
+func (q *Queries) KPIPeriod(ctx context.Context, arg KPIPeriodParams) (KPIPeriodRow, error) {
+	row := q.db.QueryRowContext(ctx, kPIPeriod,
+		arg.Tz,
+		arg.FromDay,
+		arg.ToDay,
+		arg.Unrestricted,
+		arg.ReporterOnly,
+		arg.ActorID,
+		pq.Array(arg.ScopeGroupIds),
+		pq.Array(arg.ScopeCategoryIds),
+		pq.Array(arg.ScopeTypeIds),
+		pq.Array(arg.ScopeTypeCategoryIds),
+		arg.CategoryID,
+		pq.Array(arg.Priorities),
+		arg.AssigneeGroupID,
+	)
+	var i KPIPeriodRow
+	err := row.Scan(
+		&i.Created,
+		&i.Resolved,
+		&i.ResolveMedian,
+		&i.ResolveP90,
+		&i.FirstResponseCount,
+		&i.FirstResponseMedian,
+		&i.SlaTracked,
+		&i.SlaMet,
+		&i.SlaResponseMet,
+		&i.SlaResolutionMet,
+		&i.Reopened,
+	)
+	return i, err
+}
+
 const listAttachments = `-- name: ListAttachments :many
 SELECT id, ticket_id, filename, mime_type, size_bytes, storage_path, created_at, detected_mime, sha256, virus_name, content_mismatch, uploaded_by_guest FROM attachments WHERE ticket_id = $1 ORDER BY created_at ASC
 `
@@ -911,10 +1880,10 @@ WITH reply_hits AS (
     SELECT r.ticket_id
     FROM ticket_replies r
     JOIN tickets rt ON rt.id = r.ticket_id
-    WHERE $34::bool
-      AND $30::text <> ''
-      AND r.body_tsv @@ to_tsquery('english', $30::text)
-      AND ($35::bool OR NOT r.internal)
+    WHERE $37::bool
+      AND $33::text <> ''
+      AND r.body_tsv @@ to_tsquery('english', $33::text)
+      AND ($38::bool OR NOT r.internal)
       AND (
         $4::bool
         OR ($5::bool AND rt.reporter_user_id = $6::uuid)
@@ -936,7 +1905,7 @@ WITH reply_hits AS (
         )
       )
     ORDER BY r.created_at DESC, r.id
-    LIMIT $36
+    LIMIT $39
   ) m
 )
 SELECT t.id, t.tracking_number, t.subject, t.description, t.category_id, t.type_id, t.item_id, t.priority, t.status_id, t.assignee_user_id, t.assignee_group_id, t.reporter_user_id, t.guest_email, t.resolution_notes, t.resolved_at, t.closed_at, t.created_at, t.updated_at, t.guest_name, t.guest_phone, t.pending_since, t.sla_paused_seconds, t.reopen_count, t.last_reopened_at, t.paused_seconds_at_last_reopen, t.description_format, t.source_channel
@@ -973,6 +1942,7 @@ LEFT JOIN LATERAL (
     AND r.superseded_at IS NULL
 ) sb ON TRUE
 WHERE
+  -- visibility: begin
   (
     $4::bool
     OR (
@@ -1010,11 +1980,18 @@ WHERE
       )
     )
   )
-  -- queue: 'any' | 'mine' | 'unassigned'. Set by the handler, never the caller.
+  -- visibility: end
+  -- queue: 'any' | 'mine' | 'assigned_to_me' | 'my_groups' | 'unassigned'. Set by
+  -- the handler, never the caller. (#676: assigned_to_me and my_groups are the two
+  -- halves of mine; held_by below splits my_groups three ways.)
   AND (
     $11::text = 'any'
     OR ($11::text = 'unassigned'
         AND t.assignee_user_id IS NULL AND t.assignee_group_id IS NULL)
+    OR ($11::text = 'assigned_to_me'
+        AND t.assignee_user_id = $6::uuid)
+    OR ($11::text = 'my_groups'
+        AND t.assignee_group_id = ANY($12::uuid[]))
     -- mine_group_ids is the caller's groups, read by the store just before this
     -- runs and passed as a plain array. That is deliberate: the planner cannot
     -- know how many groups a subquery will return, assumes a lot, and then walks
@@ -1037,24 +2014,47 @@ WHERE
   AND ($18::uuid IS NULL OR t.item_id = $18::uuid)
   AND ($19::uuid IS NULL OR t.assignee_user_id = $19::uuid)
   AND ($20::uuid IS NULL OR t.assignee_group_id = $20::uuid)
-  AND ($21::uuid IS NULL OR t.reporter_user_id = $21::uuid)
+  -- held_by (#676): who personally holds the ticket, relative to the caller.
+  -- '' is no restriction. Only the assignee user is read, never the group.
+  AND ($21::text = ''
+       OR ($21::text = 'nobody' AND t.assignee_user_id IS NULL)
+       OR ($21::text = 'me' AND t.assignee_user_id = $6::uuid)
+       OR ($21::text = 'others' AND t.assignee_user_id IS NOT NULL
+           AND t.assignee_user_id <> $6::uuid))
+  -- awaiting_reply (#675): not Resolved or Closed, and the newest public reply
+  -- is not the help desk's (no reply, a guest reply with no author, or an
+  -- author who is a requester, all wait for staff). The author's role is read
+  -- whether or not the account is soft-deleted, on purpose: no deleted_at test.
+  -- Internal notes are never read. Staff and administrators only: the gate is
+  -- Filter.AllowedFor, not this clause.
+  AND (NOT $22::bool OR (
+    t.status_id IS DISTINCT FROM (SELECT s.id FROM statuses s WHERE s.name = 'Closed'   AND s.kind = 'system')
+    AND t.status_id IS DISTINCT FROM (SELECT s.id FROM statuses s WHERE s.name = 'Resolved' AND s.kind = 'system')
+    AND NOT COALESCE((SELECT u.role IN ('admin', 'staff')
+                      FROM ticket_replies r LEFT JOIN users u ON u.id = r.author_id
+                      WHERE r.ticket_id = t.id AND NOT r.internal
+                      ORDER BY r.created_at DESC, r.id DESC LIMIT 1), false)))
+  -- reopened_after (#675): server-set, the dashboard's recently reopened
+  -- window. NULL is not filtered, and a never-reopened ticket has no instant.
+  AND ($23::timestamptz IS NULL OR t.last_reopened_at >= $23::timestamptz)
+  AND ($24::uuid IS NULL OR t.reporter_user_id = $24::uuid)
   -- requester_pattern is '%' || LIKE-escaped text || '%', built in the store.
   -- It matches the ticket's guest fields and the reporting account's name and
   -- email. Deleted and disabled accounts are included on purpose: their tickets
   -- still exist and the ticket page still names them.
-  AND ($22::text IS NULL
-       OR t.guest_name ILIKE $22::text
-       OR t.guest_email ILIKE $22::text
+  AND ($25::text IS NULL
+       OR t.guest_name ILIKE $25::text
+       OR t.guest_email ILIKE $25::text
        -- ARRAY(subquery), not IN (subquery), so all three arms can be indexes
        -- feeding one BitmapOr (see the queue arm above for the same reason).
        OR t.reporter_user_id = ANY(ARRAY(SELECT u.id FROM users u
-                                         WHERE u.display_name ILIKE $22::text
-                                            OR u.email ILIKE $22::text)))
-  AND ($23::timestamptz IS NULL OR t.created_at >= $23::timestamptz)
-  AND ($24::timestamptz IS NULL OR t.created_at < $24::timestamptz)
-  AND ($25::timestamptz IS NULL OR t.updated_at >= $25::timestamptz)
-  AND ($26::timestamptz IS NULL OR t.updated_at < $26::timestamptz)
-  AND (cardinality($27::text[]) = 0 OR t.source_channel = ANY($27::text[]))
+                                         WHERE u.display_name ILIKE $25::text
+                                            OR u.email ILIKE $25::text)))
+  AND ($26::timestamptz IS NULL OR t.created_at >= $26::timestamptz)
+  AND ($27::timestamptz IS NULL OR t.created_at < $27::timestamptz)
+  AND ($28::timestamptz IS NULL OR t.updated_at >= $28::timestamptz)
+  AND ($29::timestamptz IS NULL OR t.updated_at < $29::timestamptz)
+  AND (cardinality($30::text[]) = 0 OR t.source_channel = ANY($30::text[]))
   AND ($2::text = ''
        OR ($2::text = 'breached' AND sb.bucket = 0)
        OR ($2::text = 'at_risk' AND sb.bucket = 1))
@@ -1065,39 +2065,39 @@ WHERE
   -- though each one matched. A search that tokenises to nothing must match on
   -- the tracking number or not at all.
   AND (
-    NOT $28::bool
-    OR t.tracking_number ILIKE $29::text
+    NOT $31::bool
+    OR t.tracking_number ILIKE $32::text
     OR (
-      $30::text <> ''
-      AND t.search_vector @@ to_tsquery('english', $30::text)
+      $33::text <> ''
+      AND t.search_vector @@ to_tsquery('english', $33::text)
     )
     OR t.id IN (SELECT ticket_id FROM reply_hits)
   )
 ORDER BY
-  CASE WHEN $3::text = 'relevance' AND $30::text <> ''
-       THEN ts_rank(t.search_vector, to_tsquery('english', $30::text)) END DESC,
-  CASE WHEN $3::text = 'number' AND $31::text = 'asc' THEN t.tracking_number END ASC,
-  CASE WHEN $3::text = 'number' AND $31::text = 'desc' THEN t.tracking_number END DESC,
-  CASE WHEN $3::text = 'subject' AND $31::text = 'asc' THEN lower(t.subject) END ASC,
-  CASE WHEN $3::text = 'subject' AND $31::text = 'desc' THEN lower(t.subject) END DESC,
+  CASE WHEN $3::text = 'relevance' AND $33::text <> ''
+       THEN ts_rank(t.search_vector, to_tsquery('english', $33::text)) END DESC,
+  CASE WHEN $3::text = 'number' AND $34::text = 'asc' THEN t.tracking_number END ASC,
+  CASE WHEN $3::text = 'number' AND $34::text = 'desc' THEN t.tracking_number END DESC,
+  CASE WHEN $3::text = 'subject' AND $34::text = 'asc' THEN lower(t.subject) END ASC,
+  CASE WHEN $3::text = 'subject' AND $34::text = 'desc' THEN lower(t.subject) END DESC,
   -- Status order is each status's place in (sort_order, name), looked up in an
   -- array built once per query. A join or a subquery per ticket cost 85 to
   -- 684 ms at 200k when sorting by status, and a join cost every other list too.
   CASE WHEN $3::text = 'status'
        THEN array_position((SELECT array_agg(s.id ORDER BY s.sort_order, s.name) FROM statuses s), t.status_id)
-            * CASE WHEN $31::text = 'asc' THEN 1 ELSE -1 END END ASC,
+            * CASE WHEN $34::text = 'asc' THEN 1 ELSE -1 END END ASC,
   CASE WHEN $3::text = 'priority'
        THEN (CASE t.priority WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 ELSE 3 END)
-            * CASE WHEN $31::text = 'asc' THEN 1 ELSE -1 END END ASC,
+            * CASE WHEN $34::text = 'asc' THEN 1 ELSE -1 END END ASC,
   CASE WHEN $3::text = 'sla'
-       THEN COALESCE(sb.bucket, 2) * CASE WHEN $31::text = 'asc' THEN 1 ELSE -1 END END ASC,
-  CASE WHEN $3::text = 'created' AND $31::text = 'asc' THEN t.created_at END ASC,
-  CASE WHEN $3::text = 'created' AND $31::text = 'desc' THEN t.created_at END DESC,
-  CASE WHEN $3::text = 'updated' AND $31::text = 'asc' THEN t.updated_at END ASC,
-  CASE WHEN $3::text = 'updated' AND $31::text = 'desc' THEN t.updated_at END DESC,
+       THEN COALESCE(sb.bucket, 2) * CASE WHEN $34::text = 'asc' THEN 1 ELSE -1 END END ASC,
+  CASE WHEN $3::text = 'created' AND $34::text = 'asc' THEN t.created_at END ASC,
+  CASE WHEN $3::text = 'created' AND $34::text = 'desc' THEN t.created_at END DESC,
+  CASE WHEN $3::text = 'updated' AND $34::text = 'asc' THEN t.updated_at END ASC,
+  CASE WHEN $3::text = 'updated' AND $34::text = 'desc' THEN t.updated_at END DESC,
   t.created_at DESC,
   t.id
-LIMIT $33 OFFSET $32
+LIMIT $36 OFFSET $35
 `
 
 type ListTicketsFilteredParams struct {
@@ -1121,6 +2121,9 @@ type ListTicketsFilteredParams struct {
 	ItemID               uuid.NullUUID  `json:"item_id"`
 	AssigneeUserID       uuid.NullUUID  `json:"assignee_user_id"`
 	AssigneeGroupID      uuid.NullUUID  `json:"assignee_group_id"`
+	HeldBy               string         `json:"held_by"`
+	AwaitingReply        bool           `json:"awaiting_reply"`
+	ReopenedAfter        sql.NullTime   `json:"reopened_after"`
 	ReporterID           uuid.NullUUID  `json:"reporter_id"`
 	RequesterPattern     sql.NullString `json:"requester_pattern"`
 	CreatedAfter         sql.NullTime   `json:"created_after"`
@@ -1262,6 +2265,9 @@ func (q *Queries) ListTicketsFiltered(ctx context.Context, arg ListTicketsFilter
 		arg.ItemID,
 		arg.AssigneeUserID,
 		arg.AssigneeGroupID,
+		arg.HeldBy,
+		arg.AwaitingReply,
+		arg.ReopenedAfter,
 		arg.ReporterID,
 		arg.RequesterPattern,
 		arg.CreatedAfter,
@@ -1328,6 +2334,27 @@ func (q *Queries) ListTicketsFiltered(ctx context.Context, arg ListTicketsFilter
 	return items, nil
 }
 
+const localToday = `-- name: LocalToday :one
+
+SELECT ($2::timestamptz AT TIME ZONE $1::text)::date
+`
+
+type LocalTodayParams struct {
+	Tz  string    `json:"tz"`
+	Now time.Time `json:"now"`
+}
+
+// KPI reports (#131)
+// The local date of now in tz. Run before any other KPI query so that an
+// unknown zone (SQLSTATE 22023) fails here, and the store maps it to
+// ErrUnknownTimeZone. tz is only ever a parameter of AT TIME ZONE.
+func (q *Queries) LocalToday(ctx context.Context, arg LocalTodayParams) (time.Time, error) {
+	row := q.db.QueryRowContext(ctx, localToday, arg.Tz, arg.Now)
+	var column_1 time.Time
+	err := row.Scan(&column_1)
+	return column_1, err
+}
+
 const lockGroup = `-- name: LockGroup :one
 SELECT id FROM groups WHERE id = $1 FOR UPDATE
 `
@@ -1353,6 +2380,152 @@ func (q *Queries) NextTicketSeq(ctx context.Context) (int64, error) {
 	var column_1 int64
 	err := row.Scan(&column_1)
 	return column_1, err
+}
+
+const ticketVolumeByDay = `-- name: TicketVolumeByDay :many
+WITH w AS (
+  -- since_at is the instant from_day begins in tz, until_at the instant the day
+  -- after to_day begins: every range test is >= since_at AND < until_at.
+  SELECT $1::date AS from_day,
+         $2::date AS to_day,
+         ($1::date)::timestamp AT TIME ZONE $3::text AS since_at,
+         (($2::date + 1)::timestamp) AT TIME ZONE $3::text AS until_at
+), events AS (
+  SELECT (t.created_at AT TIME ZONE $3::text)::date AS day, 1 AS created, 0 AS resolved
+  FROM tickets t, w
+  WHERE
+  -- visibility: begin
+  (
+    $4::bool
+    OR (
+      $5::bool
+      AND t.reporter_user_id = $6::uuid
+    )
+    OR (
+      NOT $4::bool
+      AND NOT $5::bool
+      AND (
+        t.reporter_user_id = $6::uuid
+        OR t.assignee_user_id = $6::uuid
+        OR t.assignee_group_id = ANY($7::uuid[])
+        OR t.category_id = ANY($8::uuid[])
+        OR (t.type_id = ANY($9::uuid[])
+            AND (t.category_id, t.type_id) IN (SELECT c.id, ty.id
+                FROM unnest($10::uuid[]) WITH ORDINALITY AS c(id, n)
+                JOIN unnest($9::uuid[]) WITH ORDINALITY AS ty(id, n) ON ty.n = c.n))
+      )
+    )
+  )
+  -- visibility: end
+  AND ($11::uuid IS NULL OR t.category_id = $11::uuid)
+  AND (cardinality($12::text[]) = 0 OR t.priority = ANY($12::text[]))
+  AND ($13::uuid IS NULL OR t.assignee_group_id = $13::uuid)
+  AND t.created_at >= w.since_at AND t.created_at < w.until_at
+  UNION ALL
+  SELECT (COALESCE(t.resolved_at, t.closed_at) AT TIME ZONE $3::text)::date, 0, 1
+  FROM tickets t, w
+  WHERE
+  -- visibility: begin
+  (
+    $4::bool
+    OR (
+      $5::bool
+      AND t.reporter_user_id = $6::uuid
+    )
+    OR (
+      NOT $4::bool
+      AND NOT $5::bool
+      AND (
+        t.reporter_user_id = $6::uuid
+        OR t.assignee_user_id = $6::uuid
+        OR t.assignee_group_id = ANY($7::uuid[])
+        OR t.category_id = ANY($8::uuid[])
+        OR (t.type_id = ANY($9::uuid[])
+            AND (t.category_id, t.type_id) IN (SELECT c.id, ty.id
+                FROM unnest($10::uuid[]) WITH ORDINALITY AS c(id, n)
+                JOIN unnest($9::uuid[]) WITH ORDINALITY AS ty(id, n) ON ty.n = c.n))
+      )
+    )
+  )
+  -- visibility: end
+  AND ($11::uuid IS NULL OR t.category_id = $11::uuid)
+  AND (cardinality($12::text[]) = 0 OR t.priority = ANY($12::text[]))
+  AND ($13::uuid IS NULL OR t.assignee_group_id = $13::uuid)
+  AND COALESCE(t.resolved_at, t.closed_at) >= w.since_at AND COALESCE(t.resolved_at, t.closed_at) < w.until_at
+)
+SELECT d::date AS day, COALESCE(sum(e.created), 0)::bigint AS created, COALESCE(sum(e.resolved), 0)::bigint AS resolved
+FROM w, generate_series(w.from_day::timestamp, w.to_day::timestamp, interval '1 day') AS d
+LEFT JOIN events e ON e.day = d::date
+GROUP BY d ORDER BY d
+`
+
+type TicketVolumeByDayParams struct {
+	FromDay              time.Time     `json:"from_day"`
+	ToDay                time.Time     `json:"to_day"`
+	Tz                   string        `json:"tz"`
+	Unrestricted         bool          `json:"unrestricted"`
+	ReporterOnly         bool          `json:"reporter_only"`
+	ActorID              uuid.UUID     `json:"actor_id"`
+	ScopeGroupIds        []uuid.UUID   `json:"scope_group_ids"`
+	ScopeCategoryIds     []uuid.UUID   `json:"scope_category_ids"`
+	ScopeTypeIds         []uuid.UUID   `json:"scope_type_ids"`
+	ScopeTypeCategoryIds []uuid.UUID   `json:"scope_type_category_ids"`
+	CategoryID           uuid.NullUUID `json:"category_id"`
+	Priorities           []string      `json:"priorities"`
+	AssigneeGroupID      uuid.NullUUID `json:"assignee_group_id"`
+}
+
+type TicketVolumeByDayRow struct {
+	Day      time.Time `json:"day"`
+	Created  int64     `json:"created"`
+	Resolved int64     `json:"resolved"`
+}
+
+// Per local day in tz from from_day to to_day, both included, the tickets
+// created and the tickets resolved (the dashboard's trend, #675, and the KPI
+// volume card, #131, DESIGN.md "Volume trend" and "KPI reports"). One row per
+// day, zeros included, oldest first. The visibility block is the list's, copied
+// into both arms and pinned to it by TestSQL_DashboardQueriesShareTheListRule;
+// the three filters are the list's, on the ticket's current values, and an
+// empty priorities array means no filter. The resolved arm is served by
+// tickets_done_at_idx (000068), the created arm by tickets_created_at_idx. tz
+// is only ever a parameter of AT TIME ZONE; a name Postgres does not know fails
+// with SQLSTATE 22023, which localToday has normally reported already.
+func (q *Queries) TicketVolumeByDay(ctx context.Context, arg TicketVolumeByDayParams) ([]TicketVolumeByDayRow, error) {
+	rows, err := q.db.QueryContext(ctx, ticketVolumeByDay,
+		arg.FromDay,
+		arg.ToDay,
+		arg.Tz,
+		arg.Unrestricted,
+		arg.ReporterOnly,
+		arg.ActorID,
+		pq.Array(arg.ScopeGroupIds),
+		pq.Array(arg.ScopeCategoryIds),
+		pq.Array(arg.ScopeTypeIds),
+		pq.Array(arg.ScopeTypeCategoryIds),
+		arg.CategoryID,
+		pq.Array(arg.Priorities),
+		arg.AssigneeGroupID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []TicketVolumeByDayRow
+	for rows.Next() {
+		var i TicketVolumeByDayRow
+		if err := rows.Scan(&i.Day, &i.Created, &i.Resolved); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const unassignTicketsForGroup = `-- name: UnassignTicketsForGroup :many

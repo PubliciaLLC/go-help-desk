@@ -76,8 +76,8 @@ describe('the broken email template notice', () => {
     const region = await openNotices()
     const links = within(region).getAllByRole('link', { name: 'Edit' })
     expect(links.map((l) => l.getAttribute('href'))).toEqual([
-      '/admin/email-templates?t=password_reset',
-      '/admin/email-templates?t=_header',
+      '/admin/settings/email/templates?t=password_reset',
+      '/admin/settings/email/templates?t=_header',
     ])
   })
 

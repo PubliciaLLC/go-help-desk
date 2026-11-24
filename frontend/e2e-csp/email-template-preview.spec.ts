@@ -38,7 +38,7 @@ test('the sandboxed preview is not blocked by the page policy, and runs nothing'
       await route.fulfill({ json: DETAIL })
     }
   })
-  await page.goto('/admin/email-templates?t=ticket_created')
+  await page.goto('/admin/settings/email/templates?t=ticket_created')
 
   const frame = page.locator('iframe[title="HTML preview"]')
   await expect(frame).toHaveAttribute('sandbox', '')

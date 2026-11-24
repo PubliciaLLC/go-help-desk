@@ -27,15 +27,18 @@ const LABEL: Record<FilterKey, string> = {
   updated: 'Updated',
   channel: 'Came in by',
   sla: 'SLA',
+  // A staff chip. A requester is never shown it (STAFF_ONLY), so the requester's
+  // name for the filter is not written here.
+  awaiting: 'Awaiting my reply',
 }
 
 // In the order the panel lists them. type and item are part of the category
 // chip: a type means nothing without the category above it.
-const ORDER: FilterKey[] = ['status', 'priority', 'requester', 'category', 'assignee', 'group', 'created', 'updated', 'channel', 'sla']
+const ORDER: FilterKey[] = ['awaiting', 'status', 'priority', 'requester', 'category', 'assignee', 'group', 'created', 'updated', 'channel', 'sla']
 
 // The filters a requester is sent. The page drops the rest from the request, so
 // a chip for one would claim a filter that is not applied.
-const STAFF_ONLY: FilterKey[] = ['requester', 'assignee', 'group', 'updated', 'channel', 'sla']
+const STAFF_ONLY: FilterKey[] = ['awaiting', 'requester', 'assignee', 'group', 'updated', 'channel', 'sla']
 
 const CHANNEL_LABEL: Record<string, string> = { web: 'Web', guest: 'Email / guest', phone: 'Phone', api: 'API', mcp: 'MCP' }
 const SLA_LABEL = { breached: 'Breached', at_risk: 'At risk' }
@@ -66,16 +69,20 @@ export function FilterChips({
   search,
   names,
   staff,
+  offered = ORDER,
   onClear,
   onClearAll,
 }: {
   search: TicketSearch
   names: ChipNames
   staff: boolean
+  // The filters the view offers (VIEW_FILTERS). One it leaves out is not
+  // applied, so a chip for it would claim a filter that is not.
+  offered?: readonly FilterKey[]
   onClear: (key: FilterKey) => void
   onClearAll: () => void
 }) {
-  const shown = ORDER.filter(k => isFilterActive(search, k) && (staff || !STAFF_ONLY.includes(k)))
+  const shown = ORDER.filter(k => offered.includes(k) && isFilterActive(search, k) && (staff || !STAFF_ONLY.includes(k)))
   if (shown.length === 0) return null
 
   const value = (k: FilterKey): ReactNode => {
@@ -122,10 +129,16 @@ export function FilterChips({
             className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-gray-300 bg-gray-100 py-0.5 pl-2.5 pr-1.5 text-xs font-medium text-gray-700 pointer-coarse:min-h-11"
           >
             <span className="min-w-0 wrap-anywhere">
-              <span className="font-normal text-gray-500">
-                {k === 'requester' && !search.reporter ? 'Requester contains:' : `${LABEL[k]}:`}
-              </span>{' '}
-              {value(k)}
+              {k === 'awaiting' ? (
+                LABEL[k]
+              ) : (
+                <>
+                  <span className="font-normal text-gray-500">
+                    {k === 'requester' && !search.reporter ? 'Requester contains:' : `${LABEL[k]}:`}
+                  </span>{' '}
+                  {value(k)}
+                </>
+              )}
             </span>
             <button
               type="button"

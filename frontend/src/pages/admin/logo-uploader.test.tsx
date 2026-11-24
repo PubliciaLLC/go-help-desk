@@ -1,6 +1,5 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
-import { fireEvent, screen } from '@testing-library/react'
-import userEvent from '@testing-library/user-event'
+import { fireEvent, screen, waitFor } from '@testing-library/react'
 import { renderWithQuery } from '@/test/render'
 import { api } from '@/api/client'
 import { useAuthStore } from '@/store/auth'
@@ -18,6 +17,7 @@ import { useAuthStore } from '@/store/auth'
 
 vi.mock('@tanstack/react-router', () => ({
   useRouterState: () => ({ location: { pathname: '/admin/settings' } }),
+  useBlocker: () => ({ status: 'idle' }),
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   Link: ({ to, children, ...rest }: any) => (
     <a href={to} {...rest}>
@@ -26,7 +26,7 @@ vi.mock('@tanstack/react-router', () => ({
   ),
 }))
 
-import { SettingsPage } from './SettingsPage'
+import { BrandingSettingsPage } from './settings/BrandingSettingsPage'
 
 const LOGO_URL = '/api/v1/site/logo'
 
@@ -56,9 +56,9 @@ function mockApi(site: Record<string, unknown>) {
 
 async function renderBranding(site: Record<string, unknown> = {}) {
   mockApi(site)
-  renderWithQuery(<SettingsPage />)
-  await screen.findByRole('heading', { name: 'Settings' })
-  await userEvent.click(screen.getByRole('button', { name: 'Branding' }))
+  renderWithQuery(<BrandingSettingsPage />)
+  await screen.findByRole('heading', { name: 'Branding' })
+  await waitFor(() => expect(screen.queryByRole('status', { name: 'Loading' })).toBeNull())
   await screen.findByText(/target size/i)
 }
 

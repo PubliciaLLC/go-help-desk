@@ -18,7 +18,6 @@ import type {
   EmailTemplateSummary,
 } from '@/api/admin'
 import { extractError } from '@/api/client'
-import { Layout } from '@/components/Layout'
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { Input } from '@/components/ui/input'
@@ -58,7 +57,7 @@ function setAddress(name: string | null) {
   window.history.replaceState(null, '', url)
 }
 
-export function EmailTemplatesPage() {
+export function EmailTemplatesTab() {
   const [selected, setSelected] = useState<string | null>(selectedFromAddress)
   const choose = (name: string | null) => {
     setSelected(name)
@@ -66,23 +65,21 @@ export function EmailTemplatesPage() {
   }
 
   return (
-    <Layout>
-      <div className="space-y-6">
-        <div>
-          <h1 className="text-2xl font-bold text-gray-900">Email templates</h1>
-          <p className="mt-1 text-sm text-gray-500">
-            The wording of the mail this help desk sends. Templates cannot include ticket text, by design: mail leaves
-            from your domain, and whoever files a ticket chooses its subject and replies, so a template only gets the
-            tracking number, links this server builds and, for SLA alerts, a status phrase from a fixed list (see{' '}
-            <a className="underline" href={ADVISORY} target="_blank" rel="noopener noreferrer">
-              GHSA-p2wx-wvfr-7h3p
-            </a>
-            ). The header and footer are added to every mail.
-          </p>
-        </div>
-        {selected ? <Editor name={selected} onBack={() => choose(null)} /> : <TemplateList onOpen={choose} />}
+    <div className="space-y-6">
+      <div>
+        <h2 className="text-lg font-semibold text-gray-900">Email templates</h2>
+        <p className="mt-1 text-sm text-gray-500">
+          The wording of the mail this help desk sends. Templates cannot include ticket text, by design: mail leaves
+          from your domain, and whoever files a ticket chooses its subject and replies, so a template only gets the
+          tracking number, links this server builds and, for SLA alerts, a status phrase from a fixed list (see{' '}
+          <a className="underline" href={ADVISORY} target="_blank" rel="noopener noreferrer">
+            GHSA-p2wx-wvfr-7h3p
+          </a>
+          ). The header and footer are added to every mail.
+        </p>
       </div>
-    </Layout>
+      {selected ? <Editor name={selected} onBack={() => choose(null)} /> : <TemplateList onOpen={choose} />}
+    </div>
   )
 }
 

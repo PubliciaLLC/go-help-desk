@@ -12,7 +12,7 @@ import {
 // It takes only what it shows, and reads no query and no page state, so moving
 // it to another page is moving one line of JSX. `value` is the stored
 // attachment_max_mb, absent when unset; `guestMB` is the guest's own limit as
-// the page shows it (see SettingsPage for the unsaved-draft rule).
+// the page shows it (see sections/attachmentLimits.ts for the unsaved-draft rule).
 
 export function AttachmentSizeLimitSection({ value, onChange, scanning, guestMB }: {
   value?: number
@@ -38,7 +38,7 @@ export function AttachmentSizeLimitSection({ value, onChange, scanning, guestMB 
           <span className="pb-6 text-sm text-gray-500">MB</span>
         </div>
         <p className="text-sm text-gray-500">
-          Applies to every upload: staff, requesters and guests. Guests are held to the lower of this and their own limit.
+          Applies to every upload: staff, requesters and guests. Guests are held to the lower of this and their own limit, set under System → Guest Access.
         </p>
         <p data-testid="guest-limit-line" className="text-sm text-gray-500">
           Guests: up to {guestHeld} MB.

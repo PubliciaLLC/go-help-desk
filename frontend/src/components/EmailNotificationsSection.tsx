@@ -11,13 +11,17 @@ import { useAuthStore } from '@/store/auth'
 // cannot undo each other.
 //
 // An administrator can force any switch on or off for everyone from
-// Settings -> Email. The server reports each switch's effective value and
+// System -> Email. The server reports each switch's effective value and
 // whether it is forced (email_notifications); a forced switch is shown as it
 // applies, locked, and says who decided.
 
 type Key = keyof EmailPreferencesPatch
 
-const SWITCHES: { key: Key; state: 'assigned' | 'activity' | 'group' | 'sla'; label: string; help: string }[] = [
+// Exported so the administrator's override rows can be pinned to these names and
+// order (#674, staff-email-mirror.test.ts). Fast refresh is not affected in practice:
+// nothing here is edited while the page is open.
+// eslint-disable-next-line react-refresh/only-export-components
+export const EMAIL_SWITCHES:{ key: Key; state: 'assigned' | 'activity' | 'group' | 'sla'; label: string; help: string }[] = [
   {
     key: 'email_notify_assigned',
     state: 'assigned',
@@ -77,7 +81,7 @@ export function EmailNotificationsSection() {
         </div>
       </div>
       <ul className="divide-y">
-        {SWITCHES.map(({ key, state, label, help }) => {
+        {EMAIL_SWITCHES.map(({ key, state, label, help }) => {
           const id = `${baseId}-${key}`
           // A profile from before the switches existed has none of them set,
           // and the server's default for each is on.

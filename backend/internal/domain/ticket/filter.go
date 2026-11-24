@@ -42,7 +42,29 @@ const (
 	QueueMine
 	// QueueUnassigned is tickets with neither an assignee nor a group.
 	QueueUnassigned
+	// QueueAssignedToMe is tickets whose assignee user is ActorID (#676).
+	QueueAssignedToMe
+	// QueueMyGroups is tickets whose assignee group is one of ActorID's
+	// groups, whoever personally holds them (#676).
+	QueueMyGroups
 )
+
+// HeldBy says who personally holds a ticket, relative to the caller: the
+// `held_by` filter (#676). It tests only the assignee user, so it needs no
+// account id and a page can send it without knowing its own. "" is not
+// filtered.
+type HeldBy string
+
+const (
+	// HeldNobody is no assignee user.
+	HeldNobody HeldBy = "nobody"
+	// HeldMe is the caller as assignee user.
+	HeldMe HeldBy = "me"
+	// HeldOthers is an assignee user who is not the caller.
+	HeldOthers HeldBy = "others"
+)
+
+func (h HeldBy) valid() bool { return h == HeldNobody || h == HeldMe || h == HeldOthers }
 
 // SLAState is the SLA filter: the buckets the ticket list's indicator shows
 // in red and amber. A ticket that is neither is simply not matched.
@@ -172,6 +194,18 @@ type Filter struct {
 	StatusIDs       []uuid.UUID     // `status_id`, repeatable
 	SourceChannels  []SourceChannel // `source_channel`, repeatable
 	SLA             SLAState        // `sla`; "" is not filtered
+	HeldBy          HeldBy          // `held_by`; "" is not filtered
+
+	// AwaitingReply is `awaiting_reply=true` (#675): the ticket is not
+	// Resolved or Closed and the newest public message is the requester's
+	// side, so it waits for the help desk. Staff and administrators only: the
+	// clause reads the current role of the newest public reply's author, which
+	// a requester is never sent.
+	AwaitingReply bool
+
+	// ReopenedAfter keeps tickets whose last_reopened_at is at or after it.
+	// server: the dashboard's "recently reopened" window; never a parameter.
+	ReopenedAfter *time.Time
 
 	// ExcludeClosed is `include_closed=false` and no `status_id`: leave out
 	// the Closed system status. It is a bool that defaults to false so that
@@ -298,6 +332,9 @@ func ParseListFilter(q url.Values) (Filter, error) {
 	if err != nil {
 		return Filter{}, err
 	}
+	if f.AwaitingReply, err = parseBool(q, "awaiting_reply", false); err != nil {
+		return Filter{}, err
+	}
 
 	for _, p := range []struct {
 		key string
@@ -357,6 +394,13 @@ func ParseListFilter(q url.Values) (Filter, error) {
 			return Filter{}, invalid("invalid sla")
 		}
 		f.SLA = s
+	}
+
+	if h := HeldBy(q.Get("held_by")); h != "" {
+		if !h.valid() {
+			return Filter{}, invalid("invalid held_by")
+		}
+		f.HeldBy = h
 	}
 
 	// An explicit status wins over the toggle: asking for Closed by name and
@@ -481,6 +525,11 @@ var requesterRules = []struct {
 	{"ExcludeClosed", "include_closed", "status_id", true, func(f Filter) bool { return f.ExcludeClosed }},
 	{"SourceChannels", "source_channel", "source_channel", false, func(f Filter) bool { return len(f.SourceChannels) > 0 }},
 	{"SLA", "sla", "pending_since", false, func(f Filter) bool { return f.SLA != "" }}, // the SLA is null for a requester; pending_since is what it derives from
+	{"HeldBy", "held_by", "assignee_user_id", false, func(f Filter) bool { return f.HeldBy != "" }},
+	// The clause reads the current role of the newest public reply's author, a
+	// fact a requester is never sent. reply_author_role is not a key of the
+	// ticket object, so no requester allowed list can hold it.
+	{"AwaitingReply", "awaiting_reply", "reply_author_role", false, func(f Filter) bool { return f.AwaitingReply }},
 }
 
 // AllowedFor checks the filter against who is asking. role is the caller's role

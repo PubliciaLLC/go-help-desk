@@ -108,7 +108,7 @@ function StaffEmailStep({ settings, draft, set, unset }: StepProps) {
       </p>
       <p className="text-sm text-gray-700">
         The fourth, SLA alerts, is mail about an SLA target that has breached or is at risk of breaching. It follows the
-        same choice; the SLA alerts setting under Features decides whether those alerts are sent at all.
+        same choice; the SLA alerts setting under System → Email decides whether those alerts are sent at all.
       </p>
       <p className="text-sm text-gray-700">
         Currently: {same ? OVERRIDE_TEXT[stored[0]] ?? stored[0] : 'a mix of settings'}.
@@ -237,7 +237,7 @@ function GuestUploadsStep({ settings, get, set }: StepProps) {
       </div>
       <p className="text-sm text-gray-500">
         The largest file a guest may attach. It can never exceed the per-file limit for every upload, {limitMB} MB, set
-        under Attachments.
+        under System → File Attachments.
       </p>
       <GuestSizeSlider
         value={num('guest_attachment_max_mb', undefined)}
@@ -367,8 +367,8 @@ export function AfterUpgradePage() {
           />
           {last && guestStepHidden && (
             <p className="text-sm text-gray-500">
-              Guest file uploads stay off. They need guest submission, which is off; turn it on under Settings, General,
-              Submissions, and the upload switch and limits appear there.
+              Guest file uploads stay off. They need guest submission, which is off; turn it on under System, Guest Access,
+              and the upload switch and limits appear there.
             </p>
           )}
           {error && <p role="alert" className="break-words text-sm text-red-600">{error}</p>}

@@ -17,12 +17,14 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/database"
 	"github.com/publiciallc/go-help-desk/backend/internal/dbgen"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/group"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/report"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 )
 
 // Store implements ticket.Store and ticket.StatusStore.
 type Store struct {
 	q            *dbgen.Queries
+	db           *sql.DB // nil: KPI reads on q as it is (see NewWithDB)
 	replyCap     int
 	replyTimeout time.Duration
 }
@@ -68,6 +70,16 @@ func pageInt32(n int) int32 {
 
 func New(q *dbgen.Queries) *Store {
 	return &Store{q: q, replyCap: DefaultReplyCap, replyTimeout: DefaultReplyTimeout}
+}
+
+// NewWithDB is New with the handle KPI opens its read-only snapshot transaction
+// on. Without it (New, which the integration harness uses because it wraps each
+// test in a transaction over the Queries it gives every store) KPI runs on q as
+// it is, in whatever transaction q is bound to; see database.InSnapshot.
+func NewWithDB(q *dbgen.Queries, db *sql.DB) *Store {
+	s := New(q)
+	s.db = db
+	return s
 }
 
 // WithReplyLimits returns a Store with a different reply cap and time limit, for
@@ -884,6 +896,153 @@ func isTimeout(err error) bool {
 
 // listFilteredAt runs ListTicketsFiltered for f exactly as it stands.
 func (s *Store) listFilteredAt(ctx context.Context, f ticket.Filter, now time.Time) (ticket.ListResult, error) {
+	p, err := s.filterParams(ctx, f, now)
+	if err != nil {
+		return ticket.ListResult{}, err
+	}
+	rows, err := s.q.ListTicketsFiltered(ctx, p)
+	if err != nil {
+		return ticket.ListResult{}, fmt.Errorf("listing filtered tickets: %w", err)
+	}
+	out := make([]ticket.Ticket, len(rows))
+	for i, r := range rows {
+		out[i] = fromRow(ticketRow(r))
+	}
+	return ticket.ListResult{Tickets: out}, nil
+}
+
+// CountFiltered is how many tickets ListFiltered would return for f, ignoring
+// Sort, Limit and Offset (#675). It never searches replies: no dashboard cell
+// searches text, and the reply arm is the expensive one.
+func (s *Store) CountFiltered(ctx context.Context, f ticket.Filter) (int64, error) {
+	return s.CountFilteredAt(ctx, f, time.Now())
+}
+
+// CountFilteredAt is CountFiltered with the instant the SLA filter judges
+// outstanding targets by, as ListFilteredAt is to ListFiltered.
+func (s *Store) CountFilteredAt(ctx context.Context, f ticket.Filter, now time.Time) (int64, error) {
+	f.SearchReplies = false
+	p, err := s.filterParams(ctx, f, now)
+	if err != nil {
+		return 0, err
+	}
+	n, err := s.q.CountTicketsFiltered(ctx, countParams(p))
+	if err != nil {
+		return 0, fmt.Errorf("counting filtered tickets: %w", err)
+	}
+	return n, nil
+}
+
+// localToday is the local date of now in tz (LocalToday). A name Postgres does
+// not know (SQLSTATE 22023, invalid_parameter_value) is ticket.ErrUnknownTimeZone.
+// It is the one place that mapping is made: the dashboard's trend and the KPI
+// reports both run it before any query that uses the zone.
+func localToday(ctx context.Context, q *dbgen.Queries, tz string, now time.Time) (report.Day, error) {
+	d, err := q.LocalToday(ctx, dbgen.LocalTodayParams{Now: now, Tz: tz})
+	if err != nil {
+		var pg *pgconn.PgError
+		if errors.As(err, &pg) && pg.Code == "22023" {
+			return report.Day{}, fmt.Errorf("local date in %q: %w", tz, ticket.ErrUnknownTimeZone)
+		}
+		return report.Day{}, fmt.Errorf("reading the local date: %w", err)
+	}
+	// The date comes back as a time at 00:00 UTC, which is what a Day is.
+	return report.Day(d), nil
+}
+
+var _ report.Store = (*Store)(nil)
+
+// Today is the local date of now in tz. It implements report.Store.
+func (s *Store) Today(ctx context.Context, tz string, now time.Time) (report.Day, error) {
+	return localToday(ctx, s.q, tz, now)
+}
+
+// VolumeByDay is the dashboard's trend (#675): for each of the 30 local days in
+// tz ending with the one that contains now, oldest first, the tickets created
+// and the tickets resolved over what f's actor may see. Only f's visibility and
+// actor are used; the visibility parameters come from filterParams, as the
+// list's and the count's do, and the SQL carries the list's own visibility
+// block. It is the KPI reports' volume query over the 30 days ending today with
+// no filters. An unknown zone is ticket.ErrUnknownTimeZone.
+func (s *Store) VolumeByDay(ctx context.Context, f ticket.Filter, tz string, now time.Time) ([]ticket.DayVolume, error) {
+	p, err := s.filterParams(ctx, f, now)
+	if err != nil {
+		return nil, err
+	}
+	today, err := localToday(ctx, s.q, tz, now)
+	if err != nil {
+		return nil, fmt.Errorf("volume by day: %w", err)
+	}
+	rows, err := s.q.TicketVolumeByDay(ctx, dbgen.TicketVolumeByDayParams{
+		Tz:                   tz,
+		FromDay:              today.Add(-29).Time(),
+		ToDay:                today.Time(),
+		Priorities:           []string{},
+		Unrestricted:         p.Unrestricted,
+		ReporterOnly:         p.ReporterOnly,
+		ActorID:              p.ActorID,
+		ScopeGroupIds:        p.ScopeGroupIds,
+		ScopeCategoryIds:     p.ScopeCategoryIds,
+		ScopeTypeIds:         p.ScopeTypeIds,
+		ScopeTypeCategoryIds: p.ScopeTypeCategoryIds,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("counting ticket volume by day: %w", err)
+	}
+	out := make([]ticket.DayVolume, len(rows))
+	for i, r := range rows {
+		out[i] = ticket.DayVolume{Day: r.Day.Format("2006-01-02"), Created: r.Created, Resolved: r.Resolved}
+	}
+	return out, nil
+}
+
+// countParams is p for CountTicketsFiltered: every field the two queries share,
+// which is all of them but the sort direction, limit and offset.
+func countParams(p dbgen.ListTicketsFilteredParams) dbgen.CountTicketsFilteredParams {
+	return dbgen.CountTicketsFilteredParams{
+		Now:                  p.Now,
+		Sla:                  p.Sla,
+		SortKey:              p.SortKey,
+		Unrestricted:         p.Unrestricted,
+		ReporterOnly:         p.ReporterOnly,
+		ActorID:              p.ActorID,
+		ScopeGroupIds:        p.ScopeGroupIds,
+		ScopeCategoryIds:     p.ScopeCategoryIds,
+		ScopeTypeIds:         p.ScopeTypeIds,
+		ScopeTypeCategoryIds: p.ScopeTypeCategoryIds,
+		Queue:                p.Queue,
+		MineGroupIds:         p.MineGroupIds,
+		StatusIds:            p.StatusIds,
+		ExcludeClosed:        p.ExcludeClosed,
+		Priorities:           p.Priorities,
+		CategoryID:           p.CategoryID,
+		TypeID:               p.TypeID,
+		ItemID:               p.ItemID,
+		AssigneeUserID:       p.AssigneeUserID,
+		AssigneeGroupID:      p.AssigneeGroupID,
+		HeldBy:               p.HeldBy,
+		AwaitingReply:        p.AwaitingReply,
+		ReopenedAfter:        p.ReopenedAfter,
+		ReporterID:           p.ReporterID,
+		RequesterPattern:     p.RequesterPattern,
+		CreatedAfter:         p.CreatedAfter,
+		CreatedBefore:        p.CreatedBefore,
+		UpdatedAfter:         p.UpdatedAfter,
+		UpdatedBefore:        p.UpdatedBefore,
+		SourceChannels:       p.SourceChannels,
+		Searching:            p.Searching,
+		TrackingPattern:      p.TrackingPattern,
+		SearchQuery:          p.SearchQuery,
+		SearchReplies:        p.SearchReplies,
+		IncludeInternal:      p.IncludeInternal,
+		ReplyCap:             p.ReplyCap,
+	}
+}
+
+// filterParams is f as the parameters ListTicketsFiltered takes, including the
+// caller's groups and what they cover, which it reads. The count query takes
+// the same through countParams, so the two are filled from one place.
+func (s *Store) filterParams(ctx context.Context, f ticket.Filter, now time.Time) (dbgen.ListTicketsFilteredParams, error) {
 	sortKey, sortDir := f.ResolvedSort()
 	p := dbgen.ListTicketsFilteredParams{
 		Now:           now,
@@ -894,7 +1053,10 @@ func (s *Store) listFilteredAt(ctx context.Context, f ticket.Filter, now time.Ti
 		ReporterOnly:  f.Visibility == ticket.VisibilityReporter,
 		ActorID:       f.ActorID,
 		Queue:         queueName(f.Queue),
+		HeldBy:        string(f.HeldBy),
 		ExcludeClosed: f.ExcludeClosed,
+		AwaitingReply: f.AwaitingReply,
+		ReopenedAfter: database.NullTime(f.ReopenedAfter),
 		// Arrays are never nil: the SQL guard is cardinality(), and an absent
 		// filter is an empty array, not a NULL one.
 		StatusIds:      f.AllStatusIDs(),
@@ -929,21 +1091,22 @@ func (s *Store) listFilteredAt(ctx context.Context, f ticket.Filter, now time.Ti
 	// The caller's groups, and what those groups cover, go in as plain arrays and
 	// not as subqueries: see mine_group_ids and the scoped arms in the query for
 	// why the planner needs to be handed them. Never nil, like the other arrays.
-	// Read only for the cases that use them: the queue "mine", and staff under
+	// Read only for the cases that use them: the queues "mine" and "my_groups", and staff under
 	// scope enforcement.
+	mineGroups := f.Queue == ticket.QueueMine || f.Queue == ticket.QueueMyGroups
 	p.MineGroupIds = []uuid.UUID{}
 	p.ScopeGroupIds = []uuid.UUID{}
 	p.ScopeCategoryIds = []uuid.UUID{}
 	p.ScopeTypeCategoryIds = []uuid.UUID{}
 	p.ScopeTypeIds = []uuid.UUID{}
 	scoped := f.Visibility == ticket.VisibilityScoped
-	if f.Queue == ticket.QueueMine || scoped {
+	if mineGroups || scoped {
 		groups, err := s.q.ListGroupsForUser(ctx, f.ActorID)
 		if err != nil {
-			return ticket.ListResult{}, fmt.Errorf("listing the caller's groups: %w", err)
+			return p, fmt.Errorf("listing the caller's groups: %w", err)
 		}
 		for _, g := range groups {
-			if f.Queue == ticket.QueueMine {
+			if mineGroups {
 				p.MineGroupIds = append(p.MineGroupIds, g.ID)
 			}
 			if scoped {
@@ -954,7 +1117,7 @@ func (s *Store) listFilteredAt(ctx context.Context, f ticket.Filter, now time.Ti
 	if scoped {
 		rows, err := s.q.ListStaffScopeRows(ctx, f.ActorID)
 		if err != nil {
-			return ticket.ListResult{}, fmt.Errorf("listing the caller's group scopes: %w", err)
+			return p, fmt.Errorf("listing the caller's group scopes: %w", err)
 		}
 		for _, r := range rows {
 			if r.TypeID.Valid {
@@ -968,16 +1131,7 @@ func (s *Store) listFilteredAt(ctx context.Context, f ticket.Filter, now time.Ti
 	if r := strings.TrimSpace(f.Requester); r != "" {
 		p.RequesterPattern = sql.NullString{String: "%" + likeEscaper.Replace(r) + "%", Valid: true}
 	}
-
-	rows, err := s.q.ListTicketsFiltered(ctx, p)
-	if err != nil {
-		return ticket.ListResult{}, fmt.Errorf("listing filtered tickets: %w", err)
-	}
-	out := make([]ticket.Ticket, len(rows))
-	for i, r := range rows {
-		out[i] = fromRow(ticketRow(r))
-	}
-	return ticket.ListResult{Tickets: out}, nil
+	return p, nil
 }
 
 // ReplyMatches reads, for the tickets of one page, the newest reply each matched
@@ -1039,6 +1193,10 @@ func queueName(q ticket.Queue) string {
 		return "mine"
 	case ticket.QueueUnassigned:
 		return "unassigned"
+	case ticket.QueueAssignedToMe:
+		return "assigned_to_me"
+	case ticket.QueueMyGroups:
+		return "my_groups"
 	}
 	return "any"
 }

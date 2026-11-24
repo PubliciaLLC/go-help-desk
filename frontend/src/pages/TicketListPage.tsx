@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo, useRef } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Link, useNavigate, useSearch } from '@tanstack/react-router'
-import { getTicket, searchTickets, updateTicket, type TicketScope } from '@/api/tickets'
+import { getTicket, searchTickets, updateTicket } from '@/api/tickets'
 import { listStatuses } from '@/api/admin'
 import { getMe } from '@/api/auth'
 import { useAuthStore } from '@/store/auth'
@@ -31,35 +31,47 @@ import {
   clearFilter,
   effectiveSort,
   FILTER_FIELD_NAMES,
-  hasNarrowing,
-  namesASet,
+  HELD_BY,
+  HELD_BY_LABEL,
   nextSort,
   parseTicketSearch,
+  resolveView,
   toApiParams,
   toUrlSearch,
+  translateAddress,
+  VIEW_FILTERS,
+  VIEW_NAME,
   type FilterKey,
-  type Queue,
+  type HeldBy,
   type SortKey,
   type TicketSearch,
+  type View,
 } from '@/lib/ticketSearch'
 import { useFilterLookups } from '@/lib/useFilterLookups'
 import { useMediaQuery } from '@/lib/useMediaQuery'
 
-function emptyMessageFor(scope: TicketScope) {
-  switch (scope) {
-    case 'unassigned':
-      return 'No unassigned tickets.'
-    case 'all':
-      return 'No tickets in the system.'
+// What an empty list says when the box and the filters are empty (DESIGN.md,
+// Ticket list views). A requester has no views and keeps the words they had.
+const EMPTY_BY_HELD: Record<HeldBy | 'all', string> = {
+  all: 'No tickets are assigned to your groups.',
+  nobody: 'No group tickets are waiting for someone to take them.',
+  me: "None of your groups' tickets are assigned to you.",
+  others: "None of your groups' tickets are held by a teammate.",
+}
+
+function emptyMessageFor(view: View | undefined, heldBy: HeldBy | undefined) {
+  switch (view) {
+    case 'me':
+      return 'No tickets are assigned to you.'
+    case 'groups':
+      return EMPTY_BY_HELD[heldBy ?? 'all']
+    case 'available':
+      return 'No tickets are waiting without a group or a person.'
+    case 'search':
+      return 'No tickets yet.'
     default:
       return 'No tickets are currently assigned to you or your groups.'
   }
-}
-
-// What the "Only <queue>" chip calls each queue.
-const QUEUE_NAMES: Partial<Record<TicketScope, string>> = {
-  mine: 'my tickets',
-  unassigned: 'unassigned',
 }
 
 // "3 Nov", with the year once it is not this one: the table is tight and the
@@ -157,15 +169,6 @@ export function TicketListPage() {
       setDebouncedQuery(search.q ?? '')
     }
   }
-  const [scope, setScope] = useState<Queue>(search.scope ?? 'mine')
-  const [seenScope, setSeenScope] = useState(search.scope)
-  if (search.scope !== seenScope) {
-    setSeenScope(search.scope)
-    setScope(search.scope ?? 'mine')
-  }
-  // The "Only <queue>" chip (#444). Off by default: a search covers everything
-  // the viewer can see until they narrow it.
-  const [onlyQueue, setOnlyQueue] = useState(false)
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set())
   const [bulkStatusId, setBulkStatusId] = useState('')
   const [bulkError, setBulkError] = useState('')
@@ -188,6 +191,49 @@ export function TicketListPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [query, search.q])
 
+  const { data: statuses = [] } = useQuery({
+    queryKey: ['statuses'],
+    queryFn: listStatuses,
+  })
+
+  // Whether SLA tracking is on, and whether the Available view may be opened,
+  // are what GET /me says, for staff and administrators. The sign-in response's
+  // user does not carry them and the store is not refreshed after that, so the
+  // page asks /me itself; Settings makes this query stale when it saves. Absent
+  // is unknown, and unknown hides it rather than guessing from the rows: the SLA
+  // filter and sort are refused with 400 while tracking is off. Until /me has
+  // answered the store's copy stands in, and the list waits for the answer so
+  // its first request is right.
+  const { data: me, isFetched: meSettled } = useQuery({
+    queryKey: ['me'],
+    queryFn: getMe,
+    enabled: isStaffOrAdmin,
+    retry: false,
+  })
+  const slaOn = (me?.sla_enabled ?? user?.sla_enabled) === true
+
+  // The view this address means (DESIGN.md, Ticket list views). Until /me has
+  // answered an address that names Available is believed, so the heading does
+  // not flash; nothing is requested or written before then.
+  const canUseAvailable = isAdmin || (meSettled ? me?.can_use_available_queue === true : search.view === 'available')
+  const viewer = { staff: isStaffOrAdmin, admin: isAdmin, canUseAvailable, slaOn }
+  const view = resolveView(search, viewer)
+  const heldBy = view === 'groups' ? search.held_by : undefined
+  // The filters this view offers: the rest are neither shown nor sent.
+  const offered = view ? VIEW_FILTERS[view] : undefined
+
+  // An address made before #676 (no view, or a scope), or one this viewer may
+  // not use as it stands, is replaced once /me has answered. Replaced, not
+  // added, so Back does not return to the address that was translated.
+  const rewrite =
+    (!isStaffOrAdmin || meSettled) &&
+    (search.scope !== undefined || search.view !== view || search.held_by !== heldBy)
+  useEffect(() => {
+    if (rewrite) update(s => translateAddress(s, viewer), true)
+    // `update` and `viewer` are new every render; the address is what decides.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rewrite])
+
   // What is being asked for now. A search that differs from the address (typed,
   // not yet written) starts at the first page: otherwise a narrower search
   // lands on an offset past its own results and shows an empty list, which was
@@ -196,40 +242,16 @@ export function TicketListPage() {
   const effective: TicketSearch = {
     ...search,
     q: typed || undefined,
-    scope: isAdmin ? scope : undefined,
+    view,
+    held_by: heldBy,
+    scope: undefined,
     page: typed !== (search.q ?? '') ? undefined : search.page,
   }
-  // Every new search starts wide: clearing the box and every filter resets the
-  // chip. Adjusted during render rather than in an effect, which would run a
-  // render late. The live box, not the debounced one, so it resets at once.
-  if (onlyQueue && !hasNarrowing({ ...effective, q: query.trim() || undefined })) setOnlyQueue(false)
 
-  const { data: statuses = [] } = useQuery({
-    queryKey: ['statuses'],
-    queryFn: listStatuses,
-  })
-
-  // Whether SLA tracking is on is what GET /me says, for staff and
-  // administrators. The sign-in response's user does not carry it and the store
-  // is not refreshed after that, so the page asks /me itself; Settings makes
-  // this query stale when it saves. Absent is unknown, and unknown hides it
-  // rather than guessing from the rows: the SLA filter and sort are refused
-  // with 400 while tracking is off. Until /me has answered the store's copy
-  // stands in, and the list waits for the answer so its first request is right.
-  const { data: me, isFetched: meSettled } = useQuery({
-    queryKey: ['me'],
-    queryFn: getMe,
-    enabled: isStaffOrAdmin,
-    retry: false,
-  })
-  const slaOn = (me?.sla_enabled ?? user?.sla_enabled) === true
   // A saved link that names SLA, opened while tracking is off or unknown.
   const slaLinkDropped = isStaffOrAdmin && meSettled && !slaOn && Boolean(search.sla || search.sort === 'sla')
 
-  const viewer = { staff: isStaffOrAdmin, admin: isAdmin, onlyQueue, slaOn }
   const params = toApiParams(effective, viewer)
-  // Non-admins are always on "mine": the backend rejects other queues.
-  const effectiveScope: TicketScope = isAdmin ? scope : 'mine'
   const page = (effective.page ?? 1) - 1
 
   const { data: result, isFetching, error: listError } = useQuery({
@@ -266,17 +288,12 @@ export function TicketListPage() {
     group: id => lookups.groups.find(g => g.id === id)?.name,
   }
 
-  const filterCount = activeFilterCount(search, isStaffOrAdmin)
-  const named = namesASet(effective, isStaffOrAdmin)
-  // Staff and admin searches that narrow cover everything they can see (S7),
-  // except where a set of tickets is named, which has no queue.
-  const searching = isStaffOrAdmin && hasNarrowing(effective) && !named
+  // Only the filters this view offers count, show as chips and are sent.
+  const filterCount = activeFilterCount(search, isStaffOrAdmin, offered)
 
-  function chooseScope(s: Queue) {
-    setScope(s)
-    setOnlyQueue(false)
-    update(cur => ({ ...cur, scope: s === 'mine' ? undefined : s, page: undefined }), true)
-  }
+  // The Search view is the one that covers everything the viewer can see; a
+  // queue view stays in its queue however much is typed (#676).
+  const searching = view === 'search'
 
   function patchFilters(p: Partial<TicketSearch>) {
     update(s => ({ ...s, ...p, page: undefined }), true)
@@ -285,7 +302,7 @@ export function TicketListPage() {
   // Show results in the phone dialog: what was in it replaces the filters.
   function applyDraft(draft: TicketSearch) {
     update(s => {
-      const next: TicketSearch = { ...clearAll(s), scope: s.scope, page: undefined }
+      const next: TicketSearch = { ...clearAll(s), page: undefined }
       for (const f of FILTER_FIELD_NAMES) {
         if (draft[f] !== undefined) (next as Record<string, unknown>)[f] = draft[f]
       }
@@ -384,7 +401,7 @@ export function TicketListPage() {
     <Layout>
       <div className="space-y-6">
         <div className="flex items-center justify-between">
-          <h1 className="text-2xl font-bold text-gray-900">Tickets</h1>
+          <h1 className="text-2xl font-bold text-gray-900">{view ? VIEW_NAME[view] : 'Tickets'}</h1>
           <Link to="/tickets/new">
             <Button>
               <PlusIcon className="mr-2 h-4 w-4" />
@@ -405,25 +422,6 @@ export function TicketListPage() {
               onChange={e => setQuery(e.target.value)}
             />
           </div>
-          {isAdmin && (
-            <div className="inline-flex rounded-md border border-gray-200 overflow-hidden text-sm">
-              {(['mine', 'unassigned', 'all'] as const).map(s => (
-                <button
-                  key={s}
-                  type="button"
-                  onClick={() => chooseScope(s)}
-                  className={
-                    'px-3 py-1.5 capitalize transition-colors ' +
-                    (scope === s
-                      ? 'bg-gray-900 text-white'
-                      : 'bg-white text-gray-700 hover:bg-gray-50')
-                  }
-                >
-                  {s}
-                </button>
-              ))}
-            </div>
-          )}
           <Button
             ref={filtersButton}
             type="button"
@@ -497,6 +495,28 @@ export function TicketListPage() {
           </div>
         </div>
 
+        {/* My Group's Tickets, split by who personally holds the ticket. */}
+        {view === 'groups' && (
+          <div role="group" aria-label="Who holds the ticket" className="flex flex-wrap gap-2">
+            {([undefined, ...HELD_BY] as const).map(h => (
+              <button
+                key={h ?? 'all'}
+                type="button"
+                aria-pressed={heldBy === h}
+                onClick={() => update(s => ({ ...s, held_by: h, page: undefined }), true)}
+                className={
+                  'rounded-md border px-3 py-1.5 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 pointer-coarse:min-h-11 ' +
+                  (heldBy === h
+                    ? 'border-gray-900 bg-gray-900 text-white'
+                    : 'border-gray-200 bg-white text-gray-700 hover:bg-gray-50')
+                }
+              >
+                {HELD_BY_LABEL[h ?? 'all']}
+              </button>
+            ))}
+          </div>
+        )}
+
         {jumpError && (
           <p role="alert" className="text-sm text-red-600">{jumpError}</p>
         )}
@@ -511,6 +531,7 @@ export function TicketListPage() {
               staff={isStaffOrAdmin}
               slaOn={slaOn}
               statuses={statuses}
+              offered={offered}
             />
             <div className="mt-4 flex items-center justify-end gap-3 border-t border-gray-100 pt-3">
               <button
@@ -536,6 +557,7 @@ export function TicketListPage() {
             staff={isStaffOrAdmin}
             slaOn={slaOn}
             statuses={statuses}
+            offered={offered}
           />
         )}
 
@@ -545,35 +567,19 @@ export function TicketListPage() {
           search={search}
           names={chipNames}
           staff={isStaffOrAdmin}
+          offered={offered}
           onClear={k => update(s => clearFilter(s, k as FilterKey), true)}
           onClearAll={() => update(s => clearAll(s), true)}
         />
 
-        {/* Search reach (#444). Label while the box has text; the chip too, except on
-            the admin "all" queue, which is already everything. */}
+        {/* What the Search view covers (#444, #676). Always in the page, only its
+            text changes: a live region added together with its text is often
+            not announced. */}
         {isStaffOrAdmin && (
           <div className={searching ? 'flex items-center gap-2 text-sm' : 'sr-only'}>
-            {/* Always in the page, only its text changes: a live region added
-                together with its text is often not announced. */}
             <span aria-live="polite" className="text-gray-500">
-              {searching && !onlyQueue ? 'Searching all tickets you can see' : ''}
+              {searching ? 'Searching all tickets you can see' : ''}
             </span>
-            {searching && QUEUE_NAMES[effectiveScope] && (
-              <button
-                type="button"
-                aria-pressed={onlyQueue}
-                onClick={() => setOnlyQueue(v => !v)}
-                className={
-                  'inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs font-medium ' +
-                  (onlyQueue
-                    ? 'border-gray-900 bg-gray-900 text-white'
-                    : 'border-gray-300 bg-gray-100 text-gray-700 hover:bg-gray-200')
-                }
-              >
-                Only {QUEUE_NAMES[effectiveScope]}
-                {onlyQueue && <span aria-hidden="true">×</span>}
-              </button>
-            )}
           </div>
         )}
 
@@ -659,7 +665,7 @@ export function TicketListPage() {
                 </button>
               </>
             ) : (
-              <p>{query.trim() ? 'No tickets match your search.' : emptyMessageFor(effectiveScope)}</p>
+              <p>{query.trim() ? 'No tickets match your search.' : emptyMessageFor(view, heldBy)}</p>
             )}
           </div>
         ) : (

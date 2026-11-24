@@ -201,6 +201,34 @@ type Querier interface {
 	// A ticket that holds an item also holds that item's type, so this covers
 	// the type's items too.
 	CountTicketsByType(ctx context.Context, typeID uuid.NullUUID) (int64, error)
+	// How many tickets ListTicketsFiltered would return for the same parameters,
+	// without paging: the dashboard's counts (#675). It is that query with the select
+	// list replaced by count(*) and everything from ORDER BY to the end removed,
+	// the same reply_hits CTE, SLA lateral and WHERE, so the store fills both from
+	// one function. The two are held equal by TestSQL_DashboardQueriesShareTheListRule
+	// (comments and whitespace aside): change one, copy the change to the other.
+	// Single values are NULL-means-absent and arrays are cardinality(...) = 0, so
+	// one prepared statement serves every combination. The store always passes a
+	// non-nil array.
+	//
+	// The SLA bucket joins the CURRENT record only and is computed only when the
+	// filter or the sort asks for it (the first condition in the lateral is a
+	// parameter-only test, so the planner evaluates it once, not per ticket). It is
+	// a lateral join and not a correlated subquery because the planner can hash
+	// join it: as a subquery, sorting by SLA took 1 s at 200k instead of 0.25 s. It
+	// reproduces sla.StatusFor, the live read the list indicator shows, NOT the
+	// breach stamps: StatusFor never reads them, and a target met on time keeps
+	// its frozen reading. Per target, with elapsed as sla.ElapsedFrom has it
+	// (the clock stops at pending_since or at the instant the target was met):
+	//   a met target with a frozen reading  -> that reading
+	//   anything else                       -> LEAST(COALESCE(pending_since, at), at)
+	//                                          - start - pause, with at = the met
+	//                                          instant, or now while outstanding
+	// 0 = a target at or past 100% (red), 1 = otherwise one at or past 80%
+	// (amber, exactly target_min * 48 seconds), 2 = everything else. This is the
+	// third copy of the formula, after sla.ElapsedFrom and ListSLABreachCandidates;
+	// TestListFiltered_SLAAgreesWithStatusFor holds it to the first.
+	CountTicketsFiltered(ctx context.Context, arg CountTicketsFilteredParams) (int64, error)
 	CountUsers(ctx context.Context) (int64, error)
 	// Accounts that would have to reset their password once the grace period
 	// ends (#453): enabled, not an administrator (every administrator is exempt),
@@ -676,6 +704,40 @@ type Querier interface {
 	// database from clock_timestamp(), for the reason UpsertSession spells out: one
 	// clock decides the lifetime, and now() would be the start of the transaction.
 	IssuePasswordResetToken(ctx context.Context, arg IssuePasswordResetTokenParams) error
+	// The tickets created in the period, by category, named as the category is now
+	// (archived ones too: their tickets still exist). Largest first, then by name.
+	// The visibility block and filters are KPIPeriod's.
+	KPICreatedByCategory(ctx context.Context, arg KPICreatedByCategoryParams) ([]KPICreatedByCategoryRow, error)
+	// The tickets created in the period, by priority: only the priorities that have
+	// tickets are rows; Go puts the four in their fixed order with zeros. The
+	// visibility block and filters are KPIPeriod's.
+	KPICreatedByPriority(ctx context.Context, arg KPICreatedByPriorityParams) ([]KPICreatedByPriorityRow, error)
+	// The open tickets now (no finish instant: by the invariant migration 000028
+	// repaired, exactly the tickets not in a Resolved or Closed system status) by
+	// whole days of age, capped at 31, so at most 32 rows; report.BacklogBuckets
+	// are applied to them in Go. Visibility block and filters are KPIPeriod's.
+	KPIOpenByAge(ctx context.Context, arg KPIOpenByAgeParams) ([]KPIOpenByAgeRow, error)
+	// The open tickets now by the person holding them, named as they are now
+	// (deleted and disabled people too). The row with no person has a NULL key.
+	// Visibility block and filters are KPIPeriod's.
+	KPIOpenByAssignee(ctx context.Context, arg KPIOpenByAssigneeParams) ([]KPIOpenByAssigneeRow, error)
+	// The open tickets now by the group holding them. The row with no group has a
+	// NULL key. Visibility block and filters are KPIPeriod's.
+	KPIOpenByGroup(ctx context.Context, arg KPIOpenByGroupParams) ([]KPIOpenByGroupRow, error)
+	// The period measures of one period, current or previous (#131, DESIGN.md "KPI
+	// reports", SQL): the tickets created in it, and every measure of the tickets
+	// that finished in it, in one statement. The created arm is served by
+	// tickets_created_at_idx, the finished arm by tickets_done_at_idx (000068); the
+	// lateral is one sla_records_ticket_idx lookup per finished ticket. A ticket is
+	// tracked when one of its records is current, but the breach flags read every
+	// record of it, superseded ones included, so a reopen's clean clock cannot hide
+	// an earlier breach. Percentiles ignore NULLs and are NULL over no rows; sqlc
+	// cannot type a nullable aggregate, so they come back as 0 there and the store
+	// reads "no rows" from the count beside each (resolved, first_response_count). The
+	// visibility block is the list's, pinned to it by
+	// TestSQL_DashboardQueriesShareTheListRule; the three filters are the list's,
+	// on the ticket's current values.
+	KPIPeriod(ctx context.Context, arg KPIPeriodParams) (KPIPeriodRow, error)
 	ListAPIKeysByUser(ctx context.Context, userID uuid.UUID) ([]ApiKey, error)
 	// key_id NULL lists every key; a value lists that one key. The owner comes
 	// from the same row set so the admin page can show whose each key is.
@@ -928,6 +990,11 @@ type Querier interface {
 	ListWebhookConfigs(ctx context.Context) ([]WebhookConfig, error)
 	// No event column: the history shows outcomes, never content.
 	ListWebhookDeliveries(ctx context.Context, webhookID uuid.UUID) ([]ListWebhookDeliveriesRow, error)
+	// KPI reports (#131)
+	// The local date of now in tz. Run before any other KPI query so that an
+	// unknown zone (SQLSTATE 22023) fails here, and the store maps it to
+	// ErrUnknownTimeZone. tz is only ever a parameter of AT TIME ZONE.
+	LocalToday(ctx context.Context, arg LocalTodayParams) (time.Time, error)
 	// Every definition, locked, in id order (the order LockCustomFieldDefsForShare
 	// takes them in). Reordering rewrites all the numbers, so it holds them all.
 	LockAllCustomFieldDefsForUpdate(ctx context.Context) ([]CustomFieldDef, error)
@@ -1338,6 +1405,17 @@ type Querier interface {
 	// clock; replicas whose clocks differ by a second differ by a second in when a
 	// window ends, which no limit here is sensitive to.
 	TakeRateLimit(ctx context.Context, arg TakeRateLimitParams) (TakeRateLimitRow, error)
+	// Per local day in tz from from_day to to_day, both included, the tickets
+	// created and the tickets resolved (the dashboard's trend, #675, and the KPI
+	// volume card, #131, DESIGN.md "Volume trend" and "KPI reports"). One row per
+	// day, zeros included, oldest first. The visibility block is the list's, copied
+	// into both arms and pinned to it by TestSQL_DashboardQueriesShareTheListRule;
+	// the three filters are the list's, on the ticket's current values, and an
+	// empty priorities array means no filter. The resolved arm is served by
+	// tickets_done_at_idx (000068), the created arm by tickets_created_at_idx. tz
+	// is only ever a parameter of AT TIME ZONE; a name Postgres does not know fails
+	// with SQLSTATE 22023, which localToday has normally reported already.
+	TicketVolumeByDay(ctx context.Context, arg TicketVolumeByDayParams) ([]TicketVolumeByDayRow, error)
 	// First use stamps the row. Separate from the lookup so a read of the ticket
 	// is not also a write on the hot path when the column is already set.
 	TouchGuestAccessToken(ctx context.Context, tokenHash string) error

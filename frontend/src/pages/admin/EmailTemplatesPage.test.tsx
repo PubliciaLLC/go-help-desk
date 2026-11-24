@@ -22,7 +22,7 @@ vi.mock('@tanstack/react-router', () => ({
   ),
 }))
 
-import { EmailTemplatesPage } from './EmailTemplatesPage'
+import { EmailTemplatesSettingsPage } from './settings/EmailTemplatesSettingsPage'
 
 const LIST = [
   { name: 'ticket_created', label: 'Ticket received', group: 'requester', shell: false, customised: false, broken: false, updated_at: null, updated_by_name: '' },
@@ -119,7 +119,7 @@ function wire(w: Wiring = {}) {
 
 async function openEditor(name: string) {
   window.history.replaceState(null, '', `/admin/email-templates?t=${name}`)
-  renderWithQuery(<EmailTemplatesPage />)
+  renderWithQuery(<EmailTemplatesSettingsPage />)
   return await screen.findByLabelText('Body')
 }
 
@@ -135,8 +135,8 @@ function type(el: HTMLElement, value: string) {
 describe('the template list', () => {
   it('groups the templates and marks the edited and the broken ones', async () => {
     wire()
-    renderWithQuery(<EmailTemplatesPage />)
-    await screen.findByRole('heading', { level: 1, name: 'Email templates' })
+    renderWithQuery(<EmailTemplatesSettingsPage />)
+    await screen.findByRole('heading', { level: 1, name: 'Email' })
 
     for (const g of ['Mail to requesters', 'Mail to staff', 'Account mail', 'Header and footer']) {
       expect(await screen.findByRole('heading', { name: g })).toBeTruthy()
@@ -150,8 +150,8 @@ describe('the template list', () => {
 
   it('says templates cannot include ticket text, and why', async () => {
     wire()
-    renderWithQuery(<EmailTemplatesPage />)
-    await screen.findByRole('heading', { level: 1, name: 'Email templates' })
+    renderWithQuery(<EmailTemplatesSettingsPage />)
+    await screen.findByRole('heading', { level: 1, name: 'Email' })
     expect(screen.getByText(/cannot include ticket text, by design/i)).toBeTruthy()
     const link = screen.getByRole('link', { name: /GHSA-p2wx-wvfr-7h3p/ })
     expect((link).getAttribute('href')).toContain('GHSA-p2wx-wvfr-7h3p')
@@ -159,7 +159,7 @@ describe('the template list', () => {
 
   it('opens a template in the editor', async () => {
     wire()
-    renderWithQuery(<EmailTemplatesPage />)
+    renderWithQuery(<EmailTemplatesSettingsPage />)
     await userEvent.click(await screen.findByRole('button', { name: /Ticket received/ }))
     expect(((await screen.findByLabelText('Body')) as HTMLTextAreaElement).value).toBe(DETAIL.body)
     expect((screen.getByLabelText('Subject') as HTMLInputElement).value).toBe(DETAIL.subject)
@@ -463,7 +463,7 @@ describe('the HTML part', () => {
   it('marks the templates that have HTML in the list', async () => {
     vi.spyOn(api, 'get').mockImplementation(((url: string) =>
       Promise.resolve({ data: url === '/admin/email-templates' ? LIST.map((t) => ({ ...t, has_html: t.name === 'guest_link' })) : [] })) as never)
-    renderWithQuery(<EmailTemplatesPage />)
+    renderWithQuery(<EmailTemplatesSettingsPage />)
     const guest = await screen.findByRole('button', { name: /New guest link/ })
     expect(within(guest).getByText('HTML')).toBeTruthy()
     expect(within(screen.getByRole('button', { name: /Ticket received/ })).queryByText('HTML')).toBeNull()

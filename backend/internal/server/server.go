@@ -33,6 +33,7 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/passwordreset"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/plugin"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/registration"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/report"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/sla"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/tag"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
@@ -303,6 +304,9 @@ type Server struct {
 	slaPolicies     *sla.Service
 	plugins         plugin.Registry
 	cannedResponses *cannedresponse.Service
+	// reports computes the KPI reports (#131). It reads through the ticket
+	// store; the handler reaches Today and KPI only through it.
+	reports *report.Service
 
 	apiKeyLookup     authmw.APIKeyAuthFunc
 	oauthClientStore OAuthClientLookup
@@ -477,6 +481,7 @@ func New(
 	authStore AuthStoreIface,
 	registrationSvc *registration.Service,
 	cannedResponses *cannedresponse.Service,
+	reports *report.Service,
 	opts ...Option,
 ) *Server {
 	s := &Server{
@@ -498,6 +503,7 @@ func New(
 		oauthClientStore: oauthClients,
 		authStore:        authStore,
 		cannedResponses:  cannedResponses,
+		reports:          reports,
 		// One Budget for the life of the process, always — even when no
 		// lookup is wired, so that nothing has to check for nil later. A
 		// Budget built per request is a fresh allowance per request, which is
@@ -722,6 +728,19 @@ func (s *Server) buildRouter() *chi.Mux {
 		// Statuses are needed by all authenticated users for display (ticket list, detail, dashboard).
 		r.With(authmw.RequireRole(user.RoleAdmin, user.RoleStaff, user.RoleUser), authmw.RequireMFA).
 			With(authmw.RequireResource(auth.ResourceTickets)).Get("/statuses", s.handleListStatuses)
+
+		// The dashboard's queue strip, needs-attention list and trend (#675),
+		// behind the same middleware as the ticket router: an API key or OAuth
+		// client needs tickets:read, as for GET /tickets.
+		r.With(authmw.RequireRole(user.RoleAdmin, user.RoleStaff, user.RoleUser), authmw.RequireMFA).
+			With(authmw.RequireResource(auth.ResourceTickets)).Get("/dashboard", s.handleGetDashboard)
+
+		// The KPI reports (#131): staff and administrators, numbers counted
+		// over what the caller can see (TicketVisibility), so a key or client
+		// needs tickets:read as for GET /tickets.
+		r.With(authmw.RequireRole(user.RoleAdmin, user.RoleStaff), authmw.RequireMFA).
+			With(authmw.RequireResource(auth.ResourceTickets)).
+			Get("/reports/kpi", s.handleGetKPI)
 
 		// Who work can be given to: id and display name, for staff and
 		// admins.

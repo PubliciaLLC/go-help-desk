@@ -3,7 +3,7 @@ import { fireEvent, screen, waitFor, within } from '@testing-library/react'
 import { renderWithQuery } from '@/test/render'
 import * as ticketsApi from '@/api/tickets'
 import { FilterChips, type ChipNames } from './FilterChips'
-import type { TicketSearch } from '@/lib/ticketSearch'
+import { VIEW_FILTERS, type FilterKey, type TicketSearch } from '@/lib/ticketSearch'
 
 const NAMES: ChipNames = {
   status: id => ({ 'st-new': 'New', 'st-prog': 'In Progress' })[id],
@@ -14,11 +14,18 @@ const NAMES: ChipNames = {
   group: id => ({ 'g-1': 'Support' })[id],
 }
 
-function setup(search: TicketSearch, over: { staff?: boolean } = {}) {
+function setup(search: TicketSearch, over: { staff?: boolean; offered?: readonly FilterKey[] } = {}) {
   const onClear = vi.fn()
   const onClearAll = vi.fn()
   const utils = renderWithQuery(
-    <FilterChips search={search} names={NAMES} staff={over.staff ?? true} onClear={onClear} onClearAll={onClearAll} />,
+    <FilterChips
+      search={search}
+      names={NAMES}
+      staff={over.staff ?? true}
+      offered={over.offered}
+      onClear={onClear}
+      onClearAll={onClearAll}
+    />,
   )
   return { onClear, onClearAll, ...utils }
 }
@@ -34,6 +41,18 @@ beforeEach(() => {
 describe('FilterChips', () => {
   it('renders nothing when no filter is set (text, queue and sort are not filters)', () => {
     const { container } = setup({ q: 'x', scope: 'all', sort: 'subject' })
+    expect(container.textContent).toBe('')
+  })
+
+  it('shows no chip for a filter the view does not offer, even if the address carries it (#676)', () => {
+    setup({ priority: ['high'], assignee: 'u-sam', group: 'g-1', requester: 'whit' }, { offered: VIEW_FILTERS.available })
+    const group = screen.getByRole('group', { name: 'Active filters' })
+    const chips = within(group).getAllByRole('listitem').map(li => li.textContent?.replace(/\s+/g, ' ').trim())
+    expect(chips).toEqual(['Priority: High'])
+  })
+
+  it('renders nothing when every active filter is one the view leaves out', () => {
+    const { container } = setup({ assignee: 'u-sam' }, { offered: VIEW_FILTERS.me })
     expect(container.textContent).toBe('')
   })
 
@@ -128,6 +147,37 @@ describe('FilterChips', () => {
       const { onClear } = setup({ requester: 'whitfield' })
       fireEvent.click(screen.getByRole('button', { name: 'Remove Requester filter' }))
       expect(onClear).toHaveBeenCalledWith('requester')
+    })
+  })
+
+  // The chip names the filter by who reads it. A requester is never offered it:
+  // their request drops it, so they get no chip claiming a filter not applied.
+  describe('awaiting my reply', () => {
+    it('is one chip named for a staff member, with no value after it', () => {
+      setup({ awaiting_reply: true, priority: ['high'] }, { offered: VIEW_FILTERS.me })
+      const chips = within(screen.getByRole('group', { name: 'Active filters' }))
+        .getAllByRole('listitem')
+        .map(li => li.textContent?.replace(/\s+/g, ' ').trim())
+      expect(chips).toEqual(['Awaiting my reply', 'Priority: High'])
+    })
+
+    it('removes with its own button, through the awaiting key', () => {
+      const { onClear } = setup({ awaiting_reply: true }, { offered: VIEW_FILTERS.groups })
+      fireEvent.click(screen.getByRole('button', { name: 'Remove Awaiting my reply filter' }))
+      expect(onClear).toHaveBeenCalledWith('awaiting')
+    })
+
+    it('is shown for a view that offers it, and not on Available or Search', () => {
+      const { unmount } = setup({ awaiting_reply: true }, { offered: VIEW_FILTERS.me })
+      expect(screen.getByText('Awaiting my reply')).toBeTruthy()
+      unmount()
+      const { container } = setup({ awaiting_reply: true }, { offered: VIEW_FILTERS.available })
+      expect(container.textContent).toBe('')
+    })
+
+    it('is not shown to a requester, whose request does not send it', () => {
+      const { container } = setup({ awaiting_reply: true }, { staff: false })
+      expect(container.textContent).toBe('')
     })
   })
 

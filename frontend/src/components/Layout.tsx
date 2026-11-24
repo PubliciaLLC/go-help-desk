@@ -1,15 +1,19 @@
-import { useEffect, useId, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import * as Dialog from '@radix-ui/react-dialog'
 import { Link, useRouterState } from '@tanstack/react-router'
+import { useQuery } from '@tanstack/react-query'
+import { getMe } from '@/api/auth'
 import { useAuthStore } from '@/store/auth'
 import { logout } from '@/api/auth'
 import { useSiteBranding } from '@/hooks/useSiteBranding'
 import { InsecureConfigBanner } from '@/components/InsecureConfigBanner'
 import { clearDismissedNotices } from '@/lib/noticeDismissal'
+import { VIEW_NAME, type View } from '@/lib/ticketSearch'
 import { BrandLogo } from '@/components/BrandLogo'
 import { Button } from '@/components/ui/button'
 import { TicketIcon, UsersIcon, SettingsIcon, LogOutIcon, HomeIcon, FolderIcon, CircleDotIcon, ShieldIcon, UsersRoundIcon, TagIcon, SlidersIcon, KeyIcon, MessageSquareTextIcon, PlugIcon, WebhookIcon, RouteIcon, MenuIcon,
-  UserIcon, HistoryIcon, MailIcon, ChevronDownIcon, WrenchIcon,
+  UserIcon, HistoryIcon, MailIcon, ChevronDownIcon, WrenchIcon, ChartColumnIcon,
+  ToggleRightIcon, PaletteIcon, PaperclipIcon, DoorOpenIcon, LockIcon, EyeOffIcon,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { User } from '@/api/types'
@@ -19,22 +23,31 @@ interface NavItemProps {
   icon: React.ReactNode
   label: string
   onNavigate?: () => void
-  // The links inside an Admin section: a little shorter, so a six-link section
-  // and the three headings still fit a laptop screen. Back to full height for a
-  // finger.
+  // The links inside an Admin section: a little shorter, so a nine-link section
+  // (System, #674) and the Admin headings still fit a laptop screen. Back to
+  // full height for a finger. At 768 and at 800 pixels high System's nine links
+  // can still run past the bottom of the nav; the nav then scrolls, and NavItem
+  // brings the current link into view (admin-nav-sections.spec.ts).
   dense?: boolean
 }
 
 function NavItem({ to, icon, label, onNavigate, dense }: NavItemProps) {
   const { location } = useRouterState()
   const active = location.pathname === to || location.pathname.startsWith(to + '/')
+  // A link that becomes the current page is brought into view, so a page in a
+  // tall section is never out of sight on arrival (#674).
+  const ref = useRef<HTMLAnchorElement>(null)
+  useEffect(() => {
+    if (active) ref.current?.scrollIntoView?.({ block: 'nearest' })
+  }, [active])
   return (
     <Link
+      ref={ref}
       to={to}
       onClick={onNavigate}
       className={cn(
         'flex items-center gap-3 rounded-md px-3 text-sm font-medium transition-colors',
-        dense ? 'py-1.5 pointer-coarse:py-2' : 'py-2',
+        dense ? 'py-1 pointer-coarse:py-2' : 'py-2',
         active
           ? 'bg-blue-50 text-blue-700'
           : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900'
@@ -75,13 +88,21 @@ const ADMIN_SECTIONS = [
       { to: '/admin/api-keys', label: 'API Keys', icon: <KeyIcon className="h-4 w-4" /> },
       { to: '/admin/oauth-clients', label: 'OAuth Clients', icon: <PlugIcon className="h-4 w-4" /> },
       { to: '/admin/webhooks', label: 'Webhooks', icon: <WebhookIcon className="h-4 w-4" /> },
-      { to: '/admin/email-templates', label: 'Email Templates', icon: <MailIcon className="h-4 w-4" /> },
     ],
   },
+  // Email Templates is on the Email settings page now (#674), a tab beside
+  // Notifications, so it has no link of its own here.
   {
     id: 'system', label: 'System',
     items: [
-      { to: '/admin/settings', label: 'Settings', icon: <SettingsIcon className="h-4 w-4" /> },
+      { to: '/admin/settings/general', label: 'General', icon: <SettingsIcon className="h-4 w-4" /> },
+      { to: '/admin/settings/features', label: 'Features', icon: <ToggleRightIcon className="h-4 w-4" /> },
+      { to: '/admin/settings/branding', label: 'Branding', icon: <PaletteIcon className="h-4 w-4" /> },
+      { to: '/admin/settings/email', label: 'Email', icon: <MailIcon className="h-4 w-4" /> },
+      { to: '/admin/settings/attachments', label: 'File Attachments', icon: <PaperclipIcon className="h-4 w-4" /> },
+      { to: '/admin/settings/guest-access', label: 'Guest Access', icon: <DoorOpenIcon className="h-4 w-4" /> },
+      { to: '/admin/settings/authentication', label: 'Authentication', icon: <LockIcon className="h-4 w-4" /> },
+      { to: '/admin/settings/privacy', label: 'Privacy', icon: <EyeOffIcon className="h-4 w-4" /> },
       { to: '/admin/audit', label: 'Audit Log', icon: <HistoryIcon className="h-4 w-4" /> },
     ],
   },
@@ -195,7 +216,7 @@ function AdminSections({ nav, onNavigate }: { nav: AdminNav; onNavigate?: () => 
         aria-expanded={adminOpen}
         aria-controls={adminPanelId}
         onClick={() => nav.toggle(ADMIN_ID)}
-        className="flex w-full items-center gap-3 rounded-md px-3 py-2 text-sm font-medium text-gray-600 hover:bg-gray-100 hover:text-gray-900 pointer-coarse:min-h-11"
+        className="flex w-full items-center gap-3 rounded-md px-3 py-1 text-sm font-medium text-gray-600 hover:bg-gray-100 hover:text-gray-900 pointer-coarse:min-h-11"
       >
         <WrenchIcon className="h-4 w-4" />
         <span className="flex-1 text-left">Admin</span>
@@ -221,12 +242,72 @@ function AdminSections({ nav, onNavigate }: { nav: AdminNav; onNavigate?: () => 
                 {s.label}
                 <ChevronDownIcon className={cn('h-4 w-4 transition-transform', !open && '-rotate-90')} />
               </button>
-              <div id={panelId} role="group" aria-labelledby={headingId} hidden={!open} className="ml-2 space-y-1">
+              <div id={panelId} role="group" aria-labelledby={headingId} hidden={!open} className="ml-2">
                 {s.items.map((i) => (
                   <NavItem key={i.to} to={i.to} icon={i.icon} label={i.label} onNavigate={onNavigate} dense />
                 ))}
               </div>
             </div>
+          )
+        })}
+      </div>
+    </div>
+  )
+}
+
+// The views under Tickets, in the order they are on screen (DESIGN.md, Ticket
+// list views). Available is left out for a staff member the setting does not
+// allow it to.
+const TICKET_VIEWS: View[] = ['me', 'groups', 'available', 'search']
+
+// For staff and administrators the Tickets item is a fixed group, not a link:
+// the label, then one indented link per view the viewer may use (#676).
+function TicketViewsNav({ user, onNavigate }: { user: User; onNavigate?: () => void }) {
+  const uid = useId()
+  const labelId = `${uid}-tickets-label`
+  const { location } = useRouterState()
+  // Only staff need /me: it says whether the setting lets them open Available.
+  // An administrator may always open it. Until /me answers, staff see no
+  // Available link.
+  const { data: me } = useQuery({
+    queryKey: ['me'],
+    queryFn: getMe,
+    enabled: user.role === 'staff',
+    retry: false,
+  })
+  const canUseAvailable = user.role === 'admin' || me?.can_use_available_queue === true
+  const shown = TICKET_VIEWS.filter((v) => v !== 'available' || canUseAvailable)
+  const view = (location.search as { view?: unknown } | undefined)?.view
+  const currentView = location.pathname === '/tickets' ? view : undefined
+
+  return (
+    <div>
+      <div id={labelId} className="flex items-center gap-3 px-3 py-1 text-sm font-medium text-gray-600">
+        <TicketIcon className="h-4 w-4" />
+        Tickets
+      </div>
+      <div role="group" aria-labelledby={labelId}>
+        {shown.map((v) => {
+          const active = currentView === v
+          return (
+            <Link
+              key={v}
+              to="/tickets"
+              search={{ view: v }}
+              onClick={onNavigate}
+              aria-current={active ? 'page' : undefined}
+              className={cn(
+                // As tall as the Admin links (dense, no gap between): four of these
+                // sit in the sidebar beside the admin sections, and the headings
+                // must still fit on a 768-pixel-high screen (admin-nav-sections.spec.ts).
+                'flex items-center rounded-md py-1 pl-10 pr-3 text-sm font-medium transition-colors pointer-coarse:min-h-11',
+                active
+                  ? 'bg-blue-50 text-blue-700'
+                  : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900'
+              )}
+            >
+              {VIEW_NAME[v]}
+            </Link>
           )
         })}
       </div>
@@ -255,13 +336,28 @@ function SidebarContent({ user, adminNav, branding, onNavigate, onLogout }: Side
         />
       </div>
 
-      <nav className="flex-1 space-y-1 overflow-y-auto p-3">
-        <NavItem to="/dashboard" icon={<HomeIcon className="h-4 w-4" />} label="Dashboard" onNavigate={onNavigate} />
-        <NavItem to="/tickets" icon={<TicketIcon className="h-4 w-4" />} label="Tickets" onNavigate={onNavigate} />
+      {/* Tight on purpose: the Reports item (#131) is 32px of the 768-pixel
+          budget (admin-nav-sections.spec.ts), paid for by the Admin toggle, the
+          nav's and the footer's padding and the Sign out button being as dense
+          as the links. Touch targets are unchanged (pointer-coarse sizes).
+          System has nine links (#674) and no longer fits 768 or 800 pixels
+          high with every heading and the last link in view: there the nav
+          scrolls (overflow-y-auto), and the fit test asserts only that the
+          current link is in view, which NavItem brings into view on arrival. */}
+      <nav className="flex-1 space-y-1 overflow-y-auto px-3 py-1">
+        <NavItem to="/dashboard" icon={<HomeIcon className="h-4 w-4" />} label="Dashboard" onNavigate={onNavigate} dense />
+        {user?.role === 'staff' || user?.role === 'admin' ? (
+          <TicketViewsNav user={user} onNavigate={onNavigate} />
+        ) : (
+          <NavItem to="/tickets" icon={<TicketIcon className="h-4 w-4" />} label="Tickets" onNavigate={onNavigate} />
+        )}
+        {(user?.role === 'staff' || user?.role === 'admin') && (
+          <NavItem to="/reports" icon={<ChartColumnIcon className="h-4 w-4" />} label="Reports" onNavigate={onNavigate} dense />
+        )}
         {user?.role === 'admin' && <AdminSections nav={adminNav} onNavigate={onNavigate} />}
       </nav>
 
-      <div className="border-t p-3 space-y-2">
+      <div className="space-y-0.5 border-t px-3 py-1">
         <div className="px-3 text-xs text-gray-500 truncate" title={user?.email}>{user?.email}</div>
         {/* Your own account, not an admin screen: it sits with the identity
             it belongs to rather than in the nav list above. */}
@@ -270,8 +366,9 @@ function SidebarContent({ user, adminNav, branding, onNavigate, onLogout }: Side
           icon={<UserIcon className="h-4 w-4" />}
           label="Your account"
           onNavigate={onNavigate}
+          dense
         />
-        <Button variant="ghost" size="sm" className="w-full justify-start gap-2" onClick={onLogout}>
+        <Button variant="ghost" size="sm" className="h-7 w-full justify-start gap-2 pointer-coarse:h-8" onClick={onLogout}>
           <LogOutIcon className="h-4 w-4" />
           Sign out
         </Button>

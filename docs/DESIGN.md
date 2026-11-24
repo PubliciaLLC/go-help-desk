@@ -8,8 +8,8 @@ Open-source, self-hosted help desk system inspired by HESK, with local, SAML and
 
 | Version | Scope |
 |---------|-------|
-| **v1** | Core ticketing (linked tickets, follow-ups from Closed tickets, auto-assignment, optional SLA tracking with breach and at-risk alerts), local + SAML + OIDC auth, self-service signup, guest submission, MFA (TOTP or passkey), custom fields, CTI-linked group management, canned responses, full-text search (Postgres FTS), attachments with malware scanning and hash-reputation lookup, admin audit view with retention, REST API, MCP interface, email + webhook notifications delivered through a database outbox (with Slack/Teams/Discord/JIRA payload formats and per-hook ticket filters), Docker deployment |
-| **v1.4** | ITSM ticket types (Incident/SR/Problem/Change), Impact × Urgency priority matrix, default ticket type per CTI (#135); incident management (#408); monitoring events (#411); operational reporting (#131); asset reference (#415); continual improvement (#405); suppliers (#406); relationship management (#407) |
+| **v1** | Core ticketing (KPI reports, linked tickets, follow-ups from Closed tickets, auto-assignment, optional SLA tracking with breach and at-risk alerts), local + SAML + OIDC auth, self-service signup, guest submission, MFA (TOTP or passkey), custom fields, CTI-linked group management, canned responses, full-text search (Postgres FTS), attachments with malware scanning and hash-reputation lookup, admin audit view with retention, REST API, MCP interface, email + webhook notifications delivered through a database outbox (with Slack/Teams/Discord/JIRA payload formats and per-hook ticket filters), Docker deployment |
+| **v1.4** | ITSM ticket types (Incident/SR/Problem/Change), Impact × Urgency priority matrix, default ticket type per CTI (#135); incident management (#408); monitoring events (#411); operational reporting beyond the 1.3 KPI reports: scheduled reports, channel and agent cuts (#131); asset reference (#415); continual improvement (#405); suppliers (#406); relationship management (#407) |
 | **v2** | Plugin system (1st/3rd-party, sandboxed, admin UI install); plugin runtime (#416); Snipe-IT reference plugin (#403) |
 | **v3** | Knowledge base, custom admin-defined roles |
 | **v4** | Multi-tenancy / SaaS, plugin registry |
@@ -76,7 +76,7 @@ Core fields (all editions):
 - **Attachments** (file uploads)
 - **Replies/thread** (staff and user messages). **Append-only by design.** A reply cannot be edited or deleted, by anyone; a correction is a new reply. Decided on #468 (2026-10-13).
 - **Linked tickets** (related, parent/child, caused-by, duplicate-of — can link to any ticket including Closed)
-- **Tracking number** (quoted in notification email, and one half of a guest link re-request). Shaped `PREFIX-YEAR-SEQUENCE`, e.g. `GHD-2026-000001`. The prefix is the `ticket_prefix` setting (**Admin → Settings → General → Tickets**): one to eight uppercase letters or digits, `GHD` by default, validated when saved (`400 invalid_ticket_prefix`) and applied only to tickets created afterwards, because issued numbers are already in customers' inboxes and replies and are never rewritten
+- **Tracking number** (quoted in notification email, and one half of a guest link re-request). Shaped `PREFIX-YEAR-SEQUENCE`, e.g. `GHD-2026-000001`. The prefix is the `ticket_prefix` setting (**Admin → System → General → Tickets**): one to eight uppercase letters or digits, `GHD` by default, validated when saved (`400 invalid_ticket_prefix`) and applied only to tickets created afterwards, because issued numbers are already in customers' inboxes and replies and are never rewritten
 - **Resolution notes** (summary of what resolved the ticket, captured at resolution)
 - **Source channel** (`tickets.source_channel`, #130): how the ticket arrived, one of `web`, `api`, `mcp`, `guest`, `phone` (a CHECK constraint; `email` is reserved for inbound mail and is a migration away). **Derived by the server from the entry point, never asserted by a caller**, because a caller-chosen channel is a column no report can trust:
 
@@ -146,8 +146,8 @@ admins, or staff and admins, to force-reopen; requesters never can.
 
 - **Resolved**: ticket is answered/fixed. Starts the configurable reopen window.
 - **Reopen window**: admin setting (`reopen_window_days`, shown as **Reopen window and auto-close**) — "Users can reopen tickets for X days after resolution." Requesters can add a reply to reopen during this window. **It is also when the ticket closes** (#349): the auto-close sweep closes a Resolved ticket once the window has passed, and a Closed ticket is read-only and a requester can never reopen it. **0 means no reopening, and the ticket is closed and read-only on the next sweep, about five minutes after it is resolved** — not "off". One window, for every kind of requester (guest and account holder alike).
-- **Reopen target status**: the status a ticket is moved to when it is reopened. Configured from **Admin → Settings → General → Ticket lifecycle → Reopen target status** (a picker limited to active, non-system statuses). Defaults to the status named "New" when unset, not to the first active custom status. It is stored by name, so it can be deactivated after it was picked. An inactive status is retired, so every reopen (forced reopen, a requester's reply on a Resolved ticket, a guest's reply) goes to New instead, administrators see a banner from `GET /admin/security-warnings` (`reopen_target`) asking for an active status, and the `PATCH /admin/statuses/{id}` that deactivates the target carries a `warning` in its response.
-- **Closed reopen policy**: admin setting (`closed_reopen_policy`, shown as **Reopening closed tickets** under Admin → Settings → Ticket lifecycle; session-gated like the other settings that widen who may do what). `off` (the default) | `admin` | `staff_admin`. **Closed is terminal by default; an instance setting can allow forced reopen by admins only, or by staff and admins; requesters never.** Unset, unreadable or unrecognised reads as `off`, never as a permissive value; an unrecognised value is refused (`400 invalid_closed_reopen_policy`) when saved. Read on every request, never cached, so a change applies to the very next request.
+- **Reopen target status**: the status a ticket is moved to when it is reopened. Configured from **Admin → System → General → Ticket lifecycle → Reopen target status** (a picker limited to active, non-system statuses). Defaults to the status named "New" when unset, not to the first active custom status. It is stored by name, so it can be deactivated after it was picked. An inactive status is retired, so every reopen (forced reopen, a requester's reply on a Resolved ticket, a guest's reply) goes to New instead, administrators see a banner from `GET /admin/security-warnings` (`reopen_target`) asking for an active status, and the `PATCH /admin/statuses/{id}` that deactivates the target carries a `warning` in its response.
+- **Closed reopen policy**: admin setting (`closed_reopen_policy`, shown as **Reopening closed tickets** under Admin → System → General → Ticket lifecycle; session-gated like the other settings that widen who may do what). `off` (the default) | `admin` | `staff_admin`. **Closed is terminal by default; an instance setting can allow forced reopen by admins only, or by staff and admins; requesters never.** Unset, unreadable or unrecognised reads as `off`, never as a permissive value; an unrecognised value is refused (`400 invalid_closed_reopen_policy`) when saved. Read on every request, never cached, so a change applies to the very next request.
 - **A reopen** ([#464](https://github.com/PubliciaLLC/go-help-desk/issues/464)) is any move from Resolved or Closed back to an open status. Every way of doing it is the same reopen: a requester's reply on a Resolved ticket inside the window (an account holder, or a guest through their link); a status change by staff or an administrator (`PATCH /tickets/{id}` with `status_id`, and MCP `update_ticket_status`); and `POST /tickets/{id}/reopen`. Leaving Closed still needs `closed_reopen_policy` to allow the caller's role, and a refused request changes nothing. Resolved to Closed and Closed to Resolved are not reopens. A reopen does five things, in the same transaction as the status change (`ticket.Atomic`), so none of them happens without the others:
   - **It flags the ticket.** `tickets.reopen_count` (migration `000047`) goes up by one and is never reset; the ticket JSON carries it as `reopen_count`, to staff and administrators only (omitted when 0). A requester never receives it; see *What a requester sees of a ticket* below. Staff and administrators see a **Reopened** badge on the ticket page and on the ticket's row in the queue (table and mobile cards) while the ticket is open, and it goes away when the ticket is Resolved or Closed again. A requester does not see it. Tickets reopened before the upgrade start at 0: reopens were only ever audit entries, which retention can prune, so there is nothing reliable to count from.
   - **It raises the priority one level on the first reopen only** (low to medium to high to critical; critical stays critical). "First" is the count being 0 before this reopen, so a ticket that is resolved and reopened again is flagged again but not raised again. The change goes through the same primitive as a staff priority change (`changePriorityInTx`, reason `reopened`) and writes `priority_changed` with that reason if the priority moved (a critical ticket writes nothing). A `PATCH` that reopens a ticket and also sends a `priority` raises it first and then applies the priority sent, so the value sent wins.
@@ -525,7 +525,7 @@ The field-level before/after diff is a second, independent gate on top of the fe
 
 **Names in the diff** (#422). A diff holds ids, and an id says nothing to a reader (and a deleted status leaves one that names nothing). Each entry in both views therefore carries an optional `names` object beside `before` and `after`: it maps an id, exactly as it appears in the diff, to what it names **now**: `{"name": "In Progress"}`. The stored entry and the `before`/`after` values are unchanged, so the trail stays exact, and the response only gains a key. An id with no entry in `names` no longer resolves (a deleted status); the UI then shows the id, and otherwise shows the name with the id as its tooltip. A user id that cannot be found, an account that has been deleted whatever its role, is named `{"name": "Deleted account"}` (not `masked`: it is not the requester mask), so it tells nobody which role the account had and never carries the name. Only `status_id` (a status) and `assignee_user_id` (a user) are resolved, because they are the only id fields the allow-list lets through. Category, type, item and assignee-group ids are neither written to audit entries nor allow-listed; whoever allow-lists one adds it to the resolver (`auditNameFields`, `internal/server/audit_names.go`) in the same change. The names are built from the diffs **as they are about to be sent**, after `audit.Redact`, which is what keeps every existing rule in force: a viewer who is not shown the diff (staff with the change-history setting off, a reporting user) gets no `names`; only entries on the page are looked at, so a staff member's ticket scope is untouched and no name arrives through an entry outside it; a field that is not allow-listed is not resolved. A user who would be masked as an actor is masked here: `{"name": "Requester", "masked": true}`, by the same `audit_mask_requester_names` setting for the view (`admin_log` or `ticket_log`), the same current-role rule, and the same `masked` flag, so the setting cannot be bypassed by reading an assignee out of a diff. The lookup is one batch per page: one read of the (small) statuses table, one `id = ANY(...)` query for the users, and one for each of the category, type and item tables (`classified` entries), never one per entry and never one per id. A test pins the statement count. A lookup that fails costs the names, not the page, and is logged.
 
-**Actor names.** Staff and admin actors are always shown by name: the audit trail exists to say which employee did what. A requester (a student, a patient, a customer) is shown as **"Requester"** instead of by name in the views the setting `audit_mask_requester_names` names (Admin → Settings → General → Privacy, "Mask requester names in Audit Trail"): `admin_log` (the admin-wide log only), `ticket_log` (each ticket's Activity feed only) or `everywhere`, **the default**. Unset or unrecognised reads as `everywhere`, and the settings dump reports a stored value it does not recognise as `everywhere` too (see REST API → Settings dump and choice-list settings; [#366](https://github.com/PubliciaLLC/go-help-desk/issues/366)). An actor whose account has been deleted, of any role, is shown as **"Deleted account"** in both audit views, in the status timeline and in a diff's `names` (owner, 2026-11-11): accurate, the same for staff and requesters so it tells nobody which, and never the name. A masked entry keeps its `actor_id`, so it stays attributable for an investigation, and carries `actor_masked: true` beside `actor_name: "Requester"`, so an account whose display name is "Requester" is not mistaken for a masked requester; the UI shows a masked actor as *Requester (name hidden)* with an eye-off icon, which a display name cannot reproduce. Whether an actor is a requester is read from their role **when the entry is viewed**, not when it was written: a staff member later changed to the user role has their earlier entries shown as "Requester", and a requester promoted to staff has theirs shown by name. **Where it applies** (D35, 1.3.0): in every place an administrator reads requester names in audit output, each by the view the setting names. That is the actor and the names inside a diff in both audit views, a ticket's status timeline (`GET /tickets/{id}/history`, which sends `changed_by_masked: true` beside the label, as the feeds send `actor_masked`; it follows `ticket_log`; it fails closed: a name stays only for an account found and known to be staff or an administrator; an account that cannot be found, of any role, reads **"Deleted account"** and never its name, and when the lookup itself fails every name is withheld as "Requester"), and the audit log's own search: `q` also matches an actor's display name and email, and leaves requesters out of that match while the admin log masks them, so a search is not a way to find out who a masked requester is. There is no export of the audit log. Every change to the setting is itself an audit entry (entity `setting`, action `audit_mask_changed`, the value before and after, the administrator as actor); it is written after the change, outside its transaction, and detached from the request, so a loss between the two writes (a crash) loses the entry, not the change. **The mask is not a protection against the database.** It is applied when an entry is served, not when it is stored: the names are in the `users` table and the `actor_id` on every entry points at them, so anyone with direct access to the database can still read every name. Nor does it stop identification through the API: it keeps requester names off the audit list and whatever is copied or captured from it, and does not stop identification. Anyone who can see an entry may still be able to find out who the requester is. When the masked actor is the ticket's own requester, the usual case, the ticket its `entity_id` names shows them on its page. An administrator can look up any masked actor from its `actor_id` (`GET /admin/users/{id}`). It is not an access control. The setting is auth-critical: loosening it shows requester names, so a machine credential cannot change it. The ticket page itself still shows the requester's name.
+**Actor names.** Staff and admin actors are always shown by name: the audit trail exists to say which employee did what. A requester (a student, a patient, a customer) is shown as **"Requester"** instead of by name in the views the setting `audit_mask_requester_names` names (Admin → System → Privacy → Privacy, "Mask requester names in Audit Trail"): `admin_log` (the admin-wide log only), `ticket_log` (each ticket's Activity feed only) or `everywhere`, **the default**. Unset or unrecognised reads as `everywhere`, and the settings dump reports a stored value it does not recognise as `everywhere` too (see REST API → Settings dump and choice-list settings; [#366](https://github.com/PubliciaLLC/go-help-desk/issues/366)). An actor whose account has been deleted, of any role, is shown as **"Deleted account"** in both audit views, in the status timeline and in a diff's `names` (owner, 2026-11-11): accurate, the same for staff and requesters so it tells nobody which, and never the name. A masked entry keeps its `actor_id`, so it stays attributable for an investigation, and carries `actor_masked: true` beside `actor_name: "Requester"`, so an account whose display name is "Requester" is not mistaken for a masked requester; the UI shows a masked actor as *Requester (name hidden)* with an eye-off icon, which a display name cannot reproduce. Whether an actor is a requester is read from their role **when the entry is viewed**, not when it was written: a staff member later changed to the user role has their earlier entries shown as "Requester", and a requester promoted to staff has theirs shown by name. **Where it applies** (D35, 1.3.0): in every place an administrator reads requester names in audit output, each by the view the setting names. That is the actor and the names inside a diff in both audit views, a ticket's status timeline (`GET /tickets/{id}/history`, which sends `changed_by_masked: true` beside the label, as the feeds send `actor_masked`; it follows `ticket_log`; it fails closed: a name stays only for an account found and known to be staff or an administrator; an account that cannot be found, of any role, reads **"Deleted account"** and never its name, and when the lookup itself fails every name is withheld as "Requester"), and the audit log's own search: `q` also matches an actor's display name and email, and leaves requesters out of that match while the admin log masks them, so a search is not a way to find out who a masked requester is. There is no export of the audit log. Every change to the setting is itself an audit entry (entity `setting`, action `audit_mask_changed`, the value before and after, the administrator as actor); it is written after the change, outside its transaction, and detached from the request, so a loss between the two writes (a crash) loses the entry, not the change. **The mask is not a protection against the database.** It is applied when an entry is served, not when it is stored: the names are in the `users` table and the `actor_id` on every entry points at them, so anyone with direct access to the database can still read every name. Nor does it stop identification through the API: it keeps requester names off the audit list and whatever is copied or captured from it, and does not stop identification. Anyone who can see an entry may still be able to find out who the requester is. When the masked actor is the ticket's own requester, the usual case, the ticket its `entity_id` names shows them on its page. An administrator can look up any masked actor from its `actor_id` (`GET /admin/users/{id}`). It is not an access control. The setting is auth-critical: loosening it shows requester names, so a machine credential cannot change it. The ticket page itself still shows the requester's name.
 
 The view takes a repeatable `exclude_action` parameter that leaves those actions out, and the page offers it as **Hide replies and notes** (`reply_added`, `note_added`). It is applied in the query, so the page, the offset and the total describe one sequence; it only narrows, so it needs no gate. Every entry carries its diff, run through `audit.Redact`: the staff change-history and follow-history settings govern a ticket's own feed, not this view.
 
@@ -565,7 +565,7 @@ The ticket list includes a live search bar with a 300 ms debounce:
 - Results are fetched as you type, with no minimum length. Fetching is shown inline with a spinner.
 - **Staff and admin** can submit the form to perform a direct **tracking number / UUID jump** — navigates immediately to the ticket if found, or shows an inline error.
 - Users only see results from their own tickets.
-- **Staff and admin** searches cover **every ticket the viewer can see**, whatever queue is selected: all tickets, or, for staff with `ticket_scope_enforced` on, only what their scope admits (the same rule as everywhere else, not a second definition). The results area says "Searching all tickets you can see", and a one-click chip, "Only <queue>" (for example "Only my tickets", "Only unassigned"), narrows the search to the selected queue; clicking the chip again widens it. The label shows on every queue; the chip is not offered on an administrator's All queue, which is already everything. Spaces alone count as an empty box, and the chip resets to off when the box is cleared or the queue changes, so every new search starts wide. With an empty search box the queue behaves as it always did. The page sends `scope=visible` for the wide search (see **List filters**).
+- **Staff and admin** search **every ticket the viewer can see** from the **Search** view of the ticket list: all tickets, or, for staff with `ticket_scope_enforced` on, only what their scope admits (the same rule as everywhere else, not a second definition). The results area says "Searching all tickets you can see". The page sends `scope=visible` for it (see **List filters**). On the three queue views (Assigned to Me, My Group's Tickets, Available) text and filters narrow **within** that queue. In the 1.3.0 betas (#444, never in a release) a search on any queue widened to everything visible and an "Only <queue>" chip narrowed it back; the Search view replaces both (see **Ticket list views**). In 1.2 a search never left the queue, which is again what a queue view does.
 - **Reply search** (`search_replies=true` with text in `q`; off unless asked for, on by default in the page). A ticket also matches when **one** reply holds every word of the search, each as a prefix as above. Words found in different replies, or one in a reply and one in the subject, do not combine. **Staff and admin search public replies and internal notes; a requester, and any role not recognised, searches public replies only**, and is never shown an excerpt of an internal note, even on a ticket that matched by its subject. Which replies are searched comes from the viewer's role on the server and nothing in a request can change it. A ticket found through a reply carries `reply_match` (`reply_id`, `internal`, `created_at`, a snippet of the reply's own text with each matched word wrapped in U+0002 and U+0003, never an author). A ticket that matches on its own subject or description ranks ahead of one that matches only through a reply. A reply is searched, and excerpted, on its **first 50,000 characters** (the limit on a new reply; older replies may be longer), so words after that in a very long reply are not found.
   - **How it is stored.** `ticket_replies.body_tsv` is a nullable `tsvector` that a trigger fills on insert and on an update of `body`. Migration 000062 only adds the column and the trigger, which rewrites nothing, so it is instant at any size. A background job in the running server fills the column for the replies that already exist, in small batches, and then builds the two indexes the search needs (a GIN index on `body_tsv` and a btree on `created_at DESC`) with `CREATE INDEX CONCURRENTLY`, which blocks no write; it gives that session a larger `maintenance_work_mem` (256 MB, raised and never lowered). An invalid index left by an earlier failed build is dropped first. The job holds one pooled connection throughout and a second during each index build, and a row it cannot index (it computes the column from the first 50,000 characters, so this should not happen) gets an empty column and a log line instead of stopping the fill. One server at a time does it (an advisory lock) and a restart carries on.
   - **Until the indexes are valid** a search that asks for replies is answered from subject, description and ticket number only. It is skipped, not run as a scan of every reply. The response says so (`X-Replies-Searched: false` and `X-Reply-Index: building`; MCP adds a second text block; the page shows "Reply search is still being prepared").
@@ -591,6 +591,8 @@ Multi-value filters (`status_id`, `priority`, `source_channel`) are repeated key
 | `include_closed` | `true` (the default) or `false`, which leaves out the Closed system status. Ignored when `status_id` is given | everyone |
 | `source_channel` | `web`, `api`, `mcp`, `guest` or `phone` (repeatable) | staff and admin |
 | `sla` | `breached` or `at_risk`, the same buckets the list's indicator shows. `400` while SLA tracking is off, so an empty list is never mistaken for "nothing is breached" | staff and admin |
+| `held_by` | who personally holds the ticket, relative to the caller: `nobody` (no assignee user), `me` (the caller is the assignee user) or `others` (an assignee user who is not the caller). One value. Applies on every queue; it is how the three filters of **My Group's Tickets** are sent (see **Ticket list views**) | staff and admin |
+| `awaiting_reply` | `true` or `false` (absent and `false` are the same): the ticket is not Resolved or Closed and the newest public message is the requester's side, so it is waiting for the help desk. It reads the current role of the newest public reply's author, which a requester is never sent, so a requester sending it is `403` (see **Awaiting reply: the new list filter** under **Dashboard**, #675) | staff and admin |
 
 **A requester may filter or sort only on what they are sent.** A requester's tickets go through the allowed list (see **What a requester sees of a ticket**). Filtering or sorting on a field they are never sent would read it: narrowing `updated_after` step by step would show the minute staff last touched a ticket. So a filter outside the list above's "everyone" rows is `403 forbidden` ("<param> is not available to requesters"), and a test holds each rule to the allowed list.
 
@@ -605,16 +607,723 @@ Multi-value filters (`status_id`, `priority`, `source_channel`) are repeated key
 **Queue (`scope`).** The handler turns `scope` into a queue and ANDs it with everything else:
 
 - `scope=mine`, the default, is the tickets assigned to the caller or to any of their groups. With scope enforcement on, staff get everything their scope admits instead, so an unassigned ticket in a covered category is not invisible to the people who should pick it up. A reporting user always gets their own tickets.
-- `scope=unassigned` (no assignee user or group) and `scope=all` are **admin only** (`403` otherwise).
-- `scope=visible`: every ticket the caller can see. This is what a search with text in the box sends unless the "Only <queue>" chip is on.
+- `scope=assigned_to_me` (#676): the tickets whose assignee user is the caller, whatever group they are in.
+- `scope=my_groups` (#676): the tickets whose assignee group is one of the caller's groups, whoever personally holds them.
+- `scope=unassigned` (no assignee user or group; the **Available** view): administrators, and staff while `available_queue_roles` lists `staff` (`403` "only admins can use this scope" otherwise, the same answer as before; see **Ticket list views**). Admin only before #676.
+- `scope=all` is **admin only** (`403` otherwise).
+- `scope=visible`: every ticket the caller can see. This is what the ticket list's Search view sends.
 - Any other value is `mine`.
-- `reporter_id`, `requester` and `assignee_group_id` name which tickets, so the queue is "any" and `scope` is not consulted (and its admin-only refusals do not apply). Before 1.3.0 the first of `reporter_id`, `assignee_group_id` and `scope` present won and the rest were ignored; now they all apply, so `reporter_id` together with `assignee_group_id` is both, where the group used to be dropped.
+- `reporter_id`, `requester` and `assignee_group_id` name which tickets, so for `mine`, `unassigned`, `all` and `visible` the queue is "any" and `scope` is not consulted (and its refusals do not apply). Before 1.3.0 the first of `reporter_id`, `assignee_group_id` and `scope` present won and the rest were ignored; now they all apply, so `reporter_id` together with `assignee_group_id` is both, where the group used to be dropped. `assigned_to_me` and `my_groups` are always applied and ANDed with those three like any other filter.
+
+The exact rules for the two new values, the Available queue under scope enforcement, and MCP are in **Ticket list views**, next.
 
 A search on the `mine` queue is ranked by relevance like every other search. It used to merge one query per group in Go and stayed newest first. No ticket appears or disappears from `mine` because of this, only the order of a search's results changes.
 
-The ticket list page offers the scope as Mine / Unassigned / All buttons to administrators, an "Include closed" toggle (Closed tickets are hidden unless it is on), and a status filter, and pages 50 at a time.
+The ticket list page offers its queues as views in the sidebar (see **Ticket list views**; until #676 they were Mine / Unassigned / All buttons for administrators), an "Include closed" toggle (Closed tickets are hidden unless it is on), and a status filter, and pages 50 at a time.
 
 **Bulk status change.** On a desktop-width screen staff and admin can tick tickets in the list and apply one status to all of them. There is no bulk endpoint: the page sends one `PATCH /tickets/{id}` per ticket, so each goes through the same transition rules and authorisation as a single change and some can be refused (a move out of a Closed ticket, for one). The page then reports "n of m updated, k refused: reason" and leaves the refused tickets selected. Bulk selection does not exist on a phone (see Small screens).
+
+### Ticket list views
+
+([#676](https://github.com/PubliciaLLC/go-help-desk/issues/676), 1.3.x; owner decisions 2026-11-23.) The Tickets item in the sidebar has its own views, replacing the Mine / Unassigned / All toggle that only administrators had. Until now `scope=mine` was the **union** of "assigned to me" and "assigned to one of my groups", so there was no queue of what one person holds and no queue of what a group holds. Two scope values add them, one filter splits the group queue three ways, and a setting decides who may open the queue of tickets that nobody holds. **`mine` keeps its meaning** in REST and MCP; nothing an existing caller sends changes its answer.
+
+**Four views.**
+
+| View | What it lists | Request the page sends | Who sees it |
+| --- | --- | --- | --- |
+| **Assigned to Me** (the default) | tickets whose assignee user is me | `scope=assigned_to_me` | staff and admin |
+| **My Group's Tickets** | tickets whose assignee group is one of mine, narrowed by one of three filters | `scope=my_groups`, plus `held_by` | staff and admin |
+| **Available** | tickets with no assignee group **and** no assignee user | `scope=unassigned` | admin always; staff while `available_queue_roles` lists `staff` |
+| **Search** | every ticket I can see (the `all` queue, for an administrator) | `scope=visible` | staff and admin |
+
+A requester has no views: their Tickets item is the list of their own tickets, as before, and the page sends what it sent before.
+
+**How a ticket is classified.** A ticket has at most one assignee group (`assignee_group_id`) and at most one assignee user (`assignee_user_id`), set independently. Each view tests only the column it names, so a ticket assigned to both a group and a person is in **every** view whose test it passes, and in no view by elimination. For a viewer V who is in groups G1 and G2:
+
+| Assignee group | Assignee user | Assigned to Me | My Group's Tickets (`held_by`) | Available | `mine` (unchanged) |
+| --- | --- | --- | --- | --- | --- |
+| none | none | | | yes | |
+| none | V | yes | | | yes |
+| none | someone else | | | | |
+| G1 | none | | yes (`nobody`) | | yes |
+| G1 | V | yes | yes (`me`) | | yes |
+| G1 | someone else | | yes (`others`) | | yes |
+| G3, not one of V's | none | | | | |
+| G3, not one of V's | V | yes | | | yes |
+| G3, not one of V's | someone else | | | | |
+
+"Someone else" is any account that is not V, whether or not it is a member of the ticket's group, and a disabled or deleted account still assigned is someone else. A person in several groups sees, in My Group's Tickets, the union of every group's tickets; a ticket has one group, so it appears once. A person in no group has an empty My Group's Tickets, an administrator included; nothing special-cases it. `assigned_to_me ∪ my_groups = mine` for every viewer, and a test holds it.
+
+**The new scope values.** `GET /api/v1/tickets` accepts two more values of `scope` (see **List filters**):
+
+- `scope=assigned_to_me`: `t.assignee_user_id = caller`.
+- `scope=my_groups`: `t.assignee_group_id = ANY(caller's groups)`, the caller's group ids read just before the query as the store already does for `mine` (`mine_group_ids`).
+
+Both are open to staff and administrators. A requester who sends either gets their own tickets, as for `mine` (a requester has no queues; their visibility is already the answer). Unlike the four older values, these two are **always applied**: `reporter_id`, `requester` and `assignee_group_id` narrow them like any other filter and do not replace them. The older values keep yielding to those three exactly as they do today, which is a compatibility rule from 1.2 and not one the new values need: a group picked inside My Group's Tickets must narrow it, never silently widen to a group the viewer is not in.
+
+**The three group filters: `held_by`.** One new filter parameter, parsed by `ticket.ParseListFilter` like every other, staff and administrators only (`403` "held_by is not available to requesters"), one value, `400` "invalid held_by" for any other value:
+
+| `held_by` | Matches | Page label |
+| --- | --- | --- |
+| absent | no restriction | All |
+| `nobody` | `t.assignee_user_id IS NULL` | Group queue |
+| `me` | `t.assignee_user_id = caller` | Assigned to me |
+| `others` | `t.assignee_user_id IS NOT NULL AND t.assignee_user_id <> caller` | Assigned to others |
+
+It is relative to the caller, so it needs no account id and a page can send it without knowing its own. It is an ordinary filter, ANDed with the queue and everything else, and it means the same on every queue (`held_by=nobody` on Search is "every ticket I can see that no person holds"). On My Group's Tickets the three values partition the queue. `held_by=me` matches what `assignee_user_id=<my id>` matches without needing the id; both may be sent together and both apply.
+
+**Who may open Available: `available_queue_roles`.** The owner ruling is that unassigned tickets are not inherently admin-only.
+
+- **The setting.** `available_queue_roles`, a JSON array of role names, the same shape as `mfa_enforced_roles`. Accepted values are `admin` and `staff`; any other value (`user` included: a requester has no queues) is `400 bad_request` "available_queue_roles may list only admin and staff", and a value that is not an array of strings is `400` as for every typed setting. `[]` is accepted. Duplicates are harmless and stored as sent. Roles are a fixed set of three until v3's custom roles, which will extend the accepted values.
+- **Administrators always.** The rule is `role == admin OR role is listed`, so an administrator's access does not depend on what is stored. The settings control shows Administrators ticked and disabled and sends `["admin","staff"]` or `["admin"]`, so the stored value reads as what is in force.
+- **Default: admins only.** The key is absent on every install, fresh or upgraded, and absent reads as `[]`. So is a stored value that cannot be read or parsed: the reader fails closed. There is **no migration** and no setting changes value on upgrade (what the page shows does change; see **Upgrade**).
+- **Session-only.** It is in `admin.AuthCriticalKeys`, with `ticket_scope_enforced`, so an API key or OAuth client that sends it is `403 session_required`: widening who sees which tickets is a permission change, and a leaked key must not make it.
+- **Domain.** `admin.KeyAvailableQueueRoles`, listed in `KnownKeys`; `Service.AvailableQueueRoles(ctx) []string` (a missing or damaged row reads as none); `Service.AvailableQueueAllowed(ctx, role string) bool`. One function decides it for REST, MCP, `/me` and the sidebar.
+- **Machine credentials** take the role they act as: an API key its owner's, an OAuth client its service user's (staff). So ticking Staff opens `scope=unassigned` to an OAuth client too, as it opens it to every staff member.
+
+**`403` for Available is unchanged** (owner decision: "`403` is unchanged for a role that is not ticked"). `scope=unassigned` from a role the rule does not allow is `403 forbidden`, "only admins can use this scope", the status, code and words it has today, and the existing tests that pin them stay as they are. For staff the words remain true whenever the refusal fires, because it fires only while Staff is not ticked. The one caller for whom they are loose is a requester while Staff is ticked (staff may then use it too); that is accepted, since a requester has no queues and changing the text is not what the owner asked for. `scope=all` is unchanged as well: administrators only, the same `403`. As before, neither refusal applies when `reporter_id`, `requester` or `assignee_group_id` is present, because those requests are not on a queue.
+
+**Scope enforcement.** Visibility is never widened by a queue: every queue is ANDed with what the caller may see.
+
+| Queue | Staff, `ticket_scope_enforced` off | Staff, `ticket_scope_enforced` on | Administrator |
+| --- | --- | --- | --- |
+| `assigned_to_me`, `my_groups` | the queue | the queue (every such ticket is already in scope: it is assigned to them or to their group) | the queue |
+| `unassigned` (if allowed) | every available ticket | the available tickets their scope admits: in a Category/Type one of their groups covers, or reported by them | every available ticket |
+| `mine` (unchanged) | assigned to them or their groups | everything their scope admits | assigned to them or their groups |
+| `visible` | every ticket | everything their scope admits | every ticket |
+
+So with **Limit staff to their group scope** on, a ticked staff member's Available view is the unassigned tickets in their area, which is what **Groups & Scope** asks for (an unassigned ticket in a covered category must not be invisible to a covered staff member). A staff member in no group sees only the unassigned tickets they reported. In code, `queueFor`'s collapse of every queue to "any" for scoped staff stays for `mine` alone; the other values are applied as listed.
+
+**What a scoped staff member loses from the default list.** With `ticket_scope_enforced` on, a staff member's list in 1.2 and in the 1.3.0 betas opened on `mine`, which for them is everything their scope admits, "so an unassigned ticket in a covered category is not invisible to the people who should pick it up" (above). The page no longer sends `mine`: it opens on Assigned to Me, and the tickets their scope admits that are neither theirs nor their groups' are in no queue view: the pickup tickets with no group and no person (Available, closed to staff by default) and the covered tickets held by another group or person. They are not hidden: the **Search** view with an empty box sends `scope=visible`, which for scoped staff is exactly that old list, and `mine` itself is unchanged for every API and MCP caller. The page cannot keep both the owner's default for Available (admins only) and the old default list, so the change is stated, not avoided: the upgrade notes tell an installation with enforcement on to tick **Staff** under Available if staff are expected to pick up unassigned tickets, the settings control says the same while enforcement is on (see **The setting's control**), and the decision is listed below for the owner.
+
+**One resolution for REST and MCP.** The scope-to-queue rule moves from the handler into the domain, beside `AllowedFor`:
+
+- `ticket.Scope` (`mine`, `assigned_to_me`, `my_groups`, `unassigned`, `all`, `visible`) and `ticket.ParseScope(string) (Scope, bool)`, which trims and reports an unknown or empty value as not ok.
+- `ticket.QueueAssignedToMe` and `ticket.QueueMyGroups` join `Queue`.
+- `ticket.ResolveQueue(scope Scope, f Filter, role user.Role, availableOK bool) (Queue, error)`, called after `f.Visibility` is set. It returns the queue, or a `*FilterError` of kind `FilterForbidden` with the message above (one text, "only admins can use this scope", for both `unassigned` and `all`), so REST answers it through `writeFilterError` and MCP through its usual error path, in the same words. It reads `f.ReporterID`, `f.Requester` and `f.AssigneeGroupID` for the yielding rule and `f.Visibility` for the requester and scoped-staff rules. It is pure and table-tested over every scope, role, visibility and named-set combination.
+- REST: `scope` absent, empty or unknown is `mine`, as always. MCP: see below.
+
+**MCP `list_tickets`.** Two new arguments, through the same parser and the same `ResolveQueue`:
+
+- `scope`: a string, one of the six values. **Absent or null means `visible`**, which is what the tool has always listed, so an existing caller's answer is unchanged. An unknown value, an empty string or any other JSON type is refused ("invalid scope"): this tool never skips an argument (owner decision, 2026-11-12). `unassigned` and `all` are refused in REST's words for a role that may not use them.
+- `held_by`: a string, as in REST, read with the other string filters (`listFilterParams`).
+
+The tool needs the Available rule, so `mcp.Authorizer`, the one interface that already answers MCP's visibility questions, gains `AvailableQueueAllowed(ctx context.Context, a *authmw.Actor) bool`; `server.Server` implements it from `admin.Service.AvailableQueueAllowed`, and `deniedAuthorizer` answers false. The tool's other rule stays: a staff member outside a group may still name it in `assignee_group_id`, because it can only narrow what their scope admits.
+
+**What the page needs to know: `/me`.** For a person (a session, or an API key, which answers with its owner's account) `GET /api/v1/me` carries `can_use_available_queue`, a boolean, present in every such answer and never omitted (the same shape as `can_create_api_keys`, and unlike `sla_enabled`, which is absent for a requester): true for an administrator, true for staff while `staff` is listed, false for a requester. `PATCH /api/v1/me/email-preferences` answers with the same account view (the handler builds both with `meView`), so it carries the field too. An **OAuth client** is not a person and has no sidebar: its `/me` answer is the machine object (`machine`, `role`, `scopes`) and carries **no** `can_use_available_queue`, and nothing is added to it. The sidebar and the list read it; Settings makes the `me` query stale when it saves the setting. Until `/me` has answered, a staff member's sidebar shows no Available item (an administrator's always does).
+
+**Sidebar, per role.** For staff and administrators the Tickets item becomes a fixed group, not collapsible (it is the screen people use most, and four links fit): a label "Tickets" with the ticket icon, not itself a link, and indented links under it, in this order:
+
+| Role | Under Tickets |
+| --- | --- |
+| Administrator | Assigned to Me, My Group's Tickets, Available, Search |
+| Staff, `staff` listed | Assigned to Me, My Group's Tickets, Available, Search |
+| Staff, not listed | Assigned to Me, My Group's Tickets, Search |
+| Requester | none: Tickets stays one link to their tickets, as now |
+
+Each link is `/tickets?view=<view>`. A link is current (`aria-current="page"`, the active colour) when the path is `/tickets` and its `view` matches; on a ticket's own page none is. The group is a `role="group"` labelled by the "Tickets" label. The Admin sections below it are unchanged.
+
+**Addresses.** The page keeps its whole search in the address, as before, and adds `view` (`me`, `groups`, `available`, `search`) and `held_by` (kept only with `view=groups`). **The page always writes `view`**, so an address without one is a link made before #676 or by hand, and is translated once, replacing the history entry rather than adding one:
+
+| Address without `view` | Becomes | Why |
+| --- | --- | --- |
+| text or any filter in it (for example the dashboard's `?status=<id>`) | `view=search`, keeping them | before #676 a staff search that narrowed covered everything visible: this is the view that still does |
+| `scope=all` | `view=search` | Search is the administrator's All queue |
+| `scope=unassigned` | `view=available` | the same queue |
+| `scope=mine`, or nothing | `view=me` | the default view; no view equals the old union |
+
+The `scope` key is dropped in the rewrite; the API `scope` is derived from the view and never read from the address again. An address naming a view the viewer may not use (`view=available` for staff the setting leaves out, from an administrator's shared link) is replaced by `view=me`, with no error shown. A requester's `view`, `scope` and `held_by` are dropped. The translation is a pure function in `lib/ticketSearch.ts`, run after `/me` has answered (the list already waits for it). The dashboard's links keep working through the first row; #675 gives its queue strip explicit views.
+
+**On each view.**
+
+- **Text and filters narrow within the view.** The "Only <queue>" chip and the widening of a search to everything visible are retired: the Search view is the wide search. A tracking number or UUID submitted from the box still jumps to the ticket from any view.
+- **The request (`toApiParams`).** For a staff member or an administrator the page **always** sends `scope`, for every view, derived from the view as in the table above. Today's skip in `toApiParams` (`!namesASet(...)`, which sends no `scope` when the search carries a reporter, a requester or a group) is **removed**, and so is the `hasNarrowing` / `onlyQueue` choice of `visible`: with the skip a group or requester filter typed inside a view would send no `scope`, and the server, which reads an absent `scope` as `mine`, would answer with the union queue and widen the list. The server's rule that a named set makes `mine`, `unassigned` and `all` yield is unchanged, and `assigned_to_me` and `my_groups` are never replaced by one (see the decisions). `held_by` is sent only on My Group's Tickets. A requester's request is what it was before #676 (no view, no `held_by`). `namesASet` no longer decides whether `scope` is sent.
+- **Filters offered** (a per-view list, data in `lib/ticketSearch.ts`): Assigned to Me leaves out Assignee (it is always me). Available leaves out Assignee and Group (always empty for this queue) and Requester (with it present, `unassigned` yields to the named set under the 1.2 rule and would list tickets that are not available). My Group's Tickets and Search offer every filter. A filter the view does not offer is neither shown as a chip nor sent, even if the address carries it.
+- **My Group's Tickets** shows a four-way choice under the toolbar, **All / Group queue / Assigned to me / Assigned to others**, buttons with `aria-pressed`, writing `held_by` (All removes it) and resetting the page.
+- **Search** with an empty box and no filter lists every ticket the viewer can see, newest first: for an administrator, the old All queue.
+- **The heading** is the view's name; a requester's is "Tickets".
+- **Empty states**, when the box and filters are empty: Assigned to Me "No tickets are assigned to you." My Group's Tickets: All "No tickets are assigned to your groups.", Group queue "No group tickets are waiting for someone to take them.", Assigned to me "None of your groups' tickets are assigned to you.", Assigned to others "None of your groups' tickets are held by a teammate." Available "No tickets are waiting without a group or a person." Search "No tickets yet." With text or a filter, every view says "No tickets match your search.", as now.
+- **Bulk status change**, sorting, paging, the SLA column and "Include closed" are the same on every view.
+
+**Small screens.** The views are in the navigation drawer below `md`, the same `SidebarContent` as the desktop sidebar, so the two cannot drift; each link is at least 44 px tall on a coarse pointer and closes the drawer when followed. The My Group's Tickets choice wraps rather than scrolls, its buttons at least 44 px tall on a coarse pointer. At 320 px nothing scrolls sideways (an e2e test pins it for the drawer and for the My Group's Tickets toolbar).
+
+**The setting's control.** `AvailableQueueSection` (`frontend/src/components/admin/AvailableQueueSection.tsx`) is self-contained: it reads `GET /admin/settings`, writes only `available_queue_roles` with `PATCH /admin/settings`, shows the server's refusal inline, and invalidates the `me` query on success. No settings type is added to `api/admin.ts`: `getSettings` and `updateSettings` keep their `Record<string, unknown>` signatures, and the component reads and validates the one key it needs from that record. Heading "Available queue"; one sentence, "Who can open the Available view: tickets with no group and no person assigned."; checkboxes **Administrators** (ticked, disabled, "always") and **Staff**; and, while `ticket_scope_enforced` is on, "With Limit staff to their group scope on, staff see only the available tickets in their groups' categories. Tick Staff if your staff pick up new tickets themselves: otherwise they find them only through Search." It sits on **Admin → System → Privacy**, directly after Ticket visibility, "Limit staff to their group scope".
+
+**Upgrade.** The upgrade notes are read by someone coming from **1.2**, so this is what changes against 1.2; the #444 search widening and its chip were only ever in the 1.3.0 betas and are not described as removed.
+
+- **API and MCP callers: nothing changes.** Every value a caller can send to 1.2 means what it meant, with the same refusals in the same words (`403` "only admins can use this scope" for `unassigned` and `all`). The new `scope` values and `held_by` are additive (a 1.2 server answers an unknown `scope` as `mine` and ignores an unknown parameter). MCP's default listing is unchanged. Available stays admin-only until an administrator ticks Staff.
+- **Administrators.** The Mine / Unassigned / All buttons are replaced by the sidebar views: Mine's tickets are split between Assigned to Me and My Group's Tickets, Unassigned is Available, and All is Search with an empty box.
+- **Staff, `ticket_scope_enforced` off.** 1.2 opened on Mine (assigned to me or to one of my groups). The page opens on Assigned to Me; group tickets are under My Group's Tickets. A search made on a queue view stays in that queue, as in 1.2; the Search view is new and searches every ticket the staff member can see.
+- **Staff, `ticket_scope_enforced` on.** 1.2 opened on everything the staff member's scope admits, including unassigned tickets in their categories. That list is now the Search view with an empty box; the queue views are narrower, and unassigned tickets are in Available only once Staff is ticked (see **What a scoped staff member loses from the default list**). The notes say: if staff pick up new tickets themselves, tick Staff under Available.
+- **Requesters: nothing changes.**
+- **Addresses.** Bookmarks and links with `?scope=` are translated as above.
+- **No migration, and no setting changes value.** There is no post-upgrade wizard step (see the decisions).
+
+**API documents.** `docs/api/openapi.yaml`: `scope` on `GET /tickets` lists the six values with the table of who may use them and the 403 wording (unchanged); `held_by` is added as a query parameter; the `/me` schema is changed as follows. On the base branch the `200` of `GET /me` is `oneOf` [`User`, the machine object], and `User` is a schema shared with every endpoint that returns an account, so `can_use_available_queue` must not go on `User` (the other endpoints never carry it). A new schema `MeUser` is introduced: `allOf` `User` plus the extras `meUser` in `handler_me.go` really returns (`can_create_api_keys` and `api_key_max_lifetime_years`, always present; `sla_enabled` and `email_notifications`, optional as today) and the new `can_use_available_queue`, a boolean listed in `required` on `MeUser`. Those extras are declared on `MeUser` instead of `User`, where today's descriptions already say they appear only on `GET /me` and `PATCH /me/email-preferences`. The `200` of `GET /me` becomes `oneOf` [`MeUser`, the machine object] and the `200` of `PATCH /me/email-preferences` is `MeUser`. The machine object is unchanged and has no `can_use_available_queue` property; `available_queue_roles` is added to the admin settings schema, marked session-only. The MCP tools table (see **MCP Interface**) lists `scope` and `held_by` for `list_tickets`. `docs/upgrade-notes-1.3.0.md`: the existing section "Staff Search Now Covers Every Ticket They Can See (#444)" under New features describes the betas' widening and the "Only my tickets" chip, which this work removes, so it is **rewritten in place**, not added to. Its new title is "Ticket List: Views in the Sidebar, a Search View and Who May Open Available (#444, #676)", and it carries the bullets of **Upgrade** above, written against 1.2, plus: the new `scope` values (`assigned_to_me`, `my_groups`, `visible`) and `held_by`; `available_queue_roles`, its default (admins only), that it is session-only and where it is set; and MCP `list_tickets` gaining `scope` (absent means every visible ticket, as before) and `held_by`. Its "Who can see what is unchanged" bullet and its "no migration and no new index" bullet stay. No line in the notes may still mention the chip or say that the search box on every queue covers every ticket. Nothing goes under Breaking changes, because no API answer changes.
+
+**Out of scope.** Per-person saved views, counts beside the sidebar links (the dashboard's queue strip, #675, is where counts go), choosing one of my groups from the sidebar, and custom roles in the setting (v3).
+
+**Decisions taken without the owner.** Each can be overturned in one line.
+
+- Available is `scope=unassigned`, not a new `scope=available`: one queue, one name. Rejected: a synonym.
+- The new values are named `assigned_to_me` and `my_groups`. Rejected: `me` and `groups`, too close to `mine`.
+- The three group filters are one general filter, `held_by=nobody|me|others`, valid on every queue. Rejected: three sub-scopes, or a parameter that is `400` outside `my_groups`; both are special cases of a filter that has one meaning everywhere.
+- `assigned_to_me` and `my_groups` are always applied, even with `reporter_id`, `requester` or `assignee_group_id`; the four older values keep yielding to those as now. Rejected: one yielding rule for all six, which would make a group filter widen My Group's Tickets to a group the viewer is not in.
+- Under scope enforcement a staff member's `mine` still means everything their scope admits; only the new values are narrow. Rejected: narrowing `mine`, a breaking change.
+- The setting is a role list with `admin` implicit and always allowed, accepting only `admin` and `staff`. Rejected: a boolean (the owner asked for the role-list pattern), and accepting `user` (a requester has no queues).
+- No migration: the absent key reads as admins only (the reader treats a missing row as an empty list). Rejected: a migration seeding `[]`, which costs a migration number and changes nothing. (The open #616 branch seeds its `passkey_required_roles` in migration 000066; that is its own choice and does not bind this one, and nothing here takes a migration number.)
+- The setting is session-only (`AuthCriticalKeys`). Rejected: automatable, since it widens who sees tickets, the family `ticket_scope_enforced` is in.
+- MCP `list_tickets` gains `scope`, defaulting to `visible`, and refuses an unknown value. Rejected: no `scope` (no parity), or a default of `mine` (would change every existing caller's answer).
+- `/me` carries `can_use_available_queue` in every answer for a person (an OAuth client's machine answer has no such field). Rejected: the page reading the setting (staff cannot read settings) or guessing from a `403`.
+- Queue views narrow within the queue and the "Only <queue>" chip is retired; Search is the wide search. Rejected: keeping the widening on every view, which makes a queue stop being that queue the moment something is typed, and gives two ways to do what Search does.
+- Search with an empty box lists every visible ticket. Rejected: an empty prompt for staff, when the API already answers it and staff without enforcement can see every ticket anyway.
+- The address carries a page `view`, always written, and an address without one is translated once. Rejected: reusing `scope` for views, since views and API scopes do not map one to one (Search is `visible`, Assigned to Me is not `mine`).
+- `?scope=mine` becomes Assigned to Me. Rejected: My Group's Tickets; neither equals the old union, and the default is the least surprising.
+- A view the viewer may not use falls back to Assigned to Me silently. Rejected: showing the `403`, which would greet a colleague's shared link with an error.
+- Available offers no Assignee, Group or Requester filter, and Assigned to Me no Assignee filter. Rejected: offering them, which gives an always-empty list or, for Requester, one that leaves the queue.
+- Tickets is a fixed group in the sidebar for staff and administrators. Rejected: a collapsible section like Admin, which hides the most used links.
+- With scope enforcement on, staff lose the pickup tickets from their default list unless Staff is ticked; this is stated in the upgrade notes and in the settings control, and the old list stays one click away as Search. Rejected: ticking Staff by default, or only while enforcement is on (the owner set the default to admins only); a fifth view equal to the old scoped `mine` (not one of the owner's four views); and narrowing Search for it (Search must stay every visible ticket).
+- No post-upgrade wizard step. Rejected: a step offering `available_queue_roles` while enforcement is on, like the guest-upload step. It would be the right place if the owner wants more than the notes, and costs one conditional step; without the owner it is left out because no setting changes value and the old list is not lost (Search).
+- The upgrade notes rewrite the betas' #444 search section in place and are written against 1.2. Rejected: adding a #676 section beside it, which would leave the notes describing a chip and a widening that no release ships.
+- Until #674, the control sat under Settings → General → Ticket visibility; with #674 it is on System → Privacy. Rejected: waiting for #674, which would leave the setting reachable only through the API.
+
+**Tests.**
+
+- *Postgres, store* (`internal/database`): one fixture with every row of the classification table for a viewer in two groups, plus a ticket in a third group; `assigned_to_me`, `my_groups` and `unassigned` return exactly their rows; `assigned_to_me ∪ my_groups = mine`; each `held_by` value on `my_groups` returns exactly its rows and the three partition the queue; `held_by` on `any` and on `assigned_to_me`; a viewer in no group gets an empty `my_groups`; scoped visibility (`VisibilityScoped`) with `unassigned` returns only the unassigned tickets in a covered category or type, or reported by the viewer, and with the new queues returns the same as unscoped; the queues combine with a text search, `status_id` and `assignee_group_id`; the scale test's plan check covers `assigned_to_me` and `my_groups`.
+- *Domain*: `ParseListFilter` reads each `held_by` value and refuses others (`400`); `AllowedFor` refuses `held_by` to a requester and the requester-rule test covers the new row; `ParseScope` over every value, empty and unknown; `ResolveQueue` table over scope × role (user, staff, admin) × visibility × `availableOK` × a named set present or not, including that `unassigned` and `all` refusals do not apply with a named set and that the new values are not replaced by one; `admin.Service.AvailableQueueAllowed` for each role with the key absent, `[]`, `["staff"]`, `["admin"]` and a damaged value.
+- *REST, Postgres*: `scope=unassigned` as staff is `403` "only admins can use this scope" (the existing tests that pin those words are left unchanged) with the key absent and `200` with `["staff"]`, with enforcement off (every available ticket) and on (only the covered ones); as an administrator `200` whatever is stored; as a requester `403` whatever is stored; `scope=all` as ticked staff is still `403`; `scope=assigned_to_me` and `my_groups` with enforcement on and off; a requester sending them gets their own tickets; `held_by` as a requester is `403`; an unknown `scope` is still `mine`; `PATCH /admin/settings` accepts `[]`, `["admin"]`, `["admin","staff"]`, refuses `["user"]`, `["root"]`, `"staff"` and `null` with `400`, and answers an API key `403 session_required`; `/me` carries `can_use_available_queue` for each role and setting.
+- *MCP*: `scope` absent is the same listing as before (`visible`); each value gives the same tickets as REST for the same caller and setting (parity test over the store fixture); `unassigned` refused for unticked staff in REST's words; an unknown value, `""` and a number are refused; `held_by` passes through and is refused to a requester; `deniedAuthorizer` refuses `unassigned`.
+- *Frontend*: the address translation table row by row, including `view=available` for unticked staff and a requester's address; `toApiParams` per view (the scope sent, `held_by` only on `groups`, the filters each view leaves out); the sidebar per role and setting, the current link, and the Available link hidden until `/me` answers; the My Group's Tickets choice writes `held_by`; each empty state; `AvailableQueueSection` loads, shows Administrators ticked and disabled, saves `["admin","staff"]` and `["admin"]`, shows a refusal, and shows the enforcement sentence only while enforcement is on.
+- *e2e at 320 px*: the drawer lists the views per role and nothing scrolls sideways; the My Group's Tickets toolbar wraps without horizontal scroll.
+
+### Dashboard
+
+([#675](https://github.com/PubliciaLLC/go-help-desk/issues/675), 1.3.x; owner decisions 2026-11-23.) The dashboard (`frontend/src/pages/DashboardPage.tsx`) was one card per status and, for administrators, a By Client list. It gains **four blocks, and only four**: a queue strip, a needs-attention list, a 30-day volume trend and, for administrators, a health card. The status cards, the **View all tickets** button and By Client stay exactly as they are, with the same data and the same links.
+
+**One request, one rule.** The strip, the list and the trend come from **one new endpoint**, `GET /api/v1/dashboard`. Reusing `GET /tickets?limit=1` was rejected: the list answers a bare array with no total, so it cannot count, and adding a total would change every list response. Every number and every row the endpoint returns is computed by the **same path as `GET /tickets`**: the handler resolves the caller's visibility with `Server.TicketVisibility` and the queue with `ticket.ResolveQueue` (#676), builds a `ticket.Filter`, and the store answers it with the list query's own `WHERE` (below). There is no second definition of who may see what. With `ticket_scope_enforced` on, a staff member's numbers count only what their scope admits, because they are counts of the list they would open.
+
+**Who sees which block.**
+
+| Block | Requester | Staff | Administrator |
+| --- | --- | --- | --- |
+| Queue strip | their own tickets (one cell) | their queues (five cells) | their queues (five cells) |
+| Needs attention | not shown | yes | yes |
+| Volume trend | not shown | yes, over every ticket they can see | yes, every ticket |
+| Health card | not shown | not shown | yes |
+
+A requester's dashboard otherwise is what it was: the status cards already count only their own tickets (`statusCounter`).
+
+**The endpoint.** `GET /api/v1/dashboard?tz=<IANA zone>`, mounted with the ticket router's middleware (`RequireRole(admin, staff, user)`, `RequireMFA`, `RequireResource(tickets)`), so an API key or OAuth client needs `tickets:read`, as for `GET /tickets`. It reads nothing from the request but `tz`.
+
+- `tz`: the time zone the trend's days are counted in, the browser's (`Intl.DateTimeFormat().resolvedOptions().timeZone`). Absent or empty is `UTC`. At most 64 bytes of `A-Z a-z 0-9 _ + - /`, otherwise `400 bad_request` "invalid tz". A name Postgres does not know is `400 bad_request` "unknown time zone" for a staff member or administrator, the callers who get a trend (a requester runs no trend, so their zone is checked for form only): the trend runs before the other queries, and the first of its statements to use the zone maps SQLSTATE `22023` to the store sentinel `ticket.ErrUnknownTimeZone` (once #131 is in, that statement is `LocalToday`, see **KPI reports**). The zone is passed to Postgres as a parameter and only ever used in `AT TIME ZONE`.
+- The response, for staff and administrators:
+
+```json
+{
+  "queues": [
+    {"key": "assigned_to_me", "count": 4},
+    {"key": "my_groups", "count": 11},
+    {"key": "sla_breached", "count": 1},
+    {"key": "sla_at_risk", "count": 2},
+    {"key": "awaiting_my_reply", "count": 3}
+  ],
+  "attention": [
+    {"reason": "breached", "since": "2026-11-21T09:14:03Z", "ticket": {"id": "…", "tracking_number": "GHD-2026-000123", "subject": "…", "…": "…"}},
+    {"reason": "reopened", "since": "2026-11-24T07:40:11Z", "ticket": {"…": "…"}}
+  ],
+  "volume": {
+    "tz": "Europe/London",
+    "days": [{"date": "2026-10-26", "created": 3, "resolved": 2}, "… 30 entries, oldest first, the last is today"]
+  }
+}
+```
+
+  For a requester `queues` has their one cell (`my_tickets`), and `attention` and `volume` are `null`: `null` is "not part of your dashboard", `[]` is "nothing to show". `ticket` in an attention row is exactly the object `GET /tickets` returns for that ticket to that caller (the same `ticketViews` and `viewerJSON` shaping), so the SLA indicator and the badges render with the list's components; nothing is added to the ticket object. `since` (RFC 3339, UTC) is the instant the row's age is measured from, set by the server per reason: the ticket's `created_at` for `breached`, `at_risk` and `unassigned`, and its `last_reopened_at` for `reopened`. The reopen instant is not otherwise sent (`Ticket.LastReopenedAt` is `json:"-"`), and it is sent here only on the row whose reason it is, and only to staff and administrators (a requester has no attention list), so the requester allowed list is not touched. While SLA tracking is off the two `sla_*` cells are left out of `queues` and no SLA reason appears in `attention`, because `sla` is `400` on the list while it is off and a zero would read as "nothing is breached". If `sla_enabled` cannot be read it is treated as off for this response.
+- Errors: `401`/`403` as for `GET /tickets`; `400` for `tz` as above; a store failure is `500 internal_error` for the whole response. Nothing is cached on the server; the page keeps the answer for 60 seconds.
+
+**The queue strip.** A row of small numbers, each a link to the list that shows exactly those tickets. Each cell is data: a key, the `scope` and the filter criteria, from which the count's `ticket.Filter` is built exactly as `GET /tickets` builds one, and the address the page links to, which sends exactly those parameters (`include_closed=false` is what the ticket list sends while **Include closed** is off, its default).
+
+| Key | Label | Count = `GET /tickets` with | Links to | Roles |
+| --- | --- | --- | --- | --- |
+| `assigned_to_me` | Assigned to me | `scope=assigned_to_me&include_closed=false` | `/tickets?view=me` | staff, admin |
+| `my_groups` | My groups | `scope=my_groups&include_closed=false` | `/tickets?view=groups` | staff, admin |
+| `sla_breached` | Breached | `scope=assigned_to_me&sla=breached&include_closed=false` | `/tickets?view=me&sla=breached` | staff, admin, while SLA tracking is on |
+| `sla_at_risk` | At risk | `scope=assigned_to_me&sla=at_risk&include_closed=false` | `/tickets?view=me&sla=at_risk` | staff, admin, while SLA tracking is on |
+| `awaiting_my_reply` | Awaiting my reply | `scope=assigned_to_me&awaiting_reply=true&include_closed=false` | `/tickets?view=me&awaiting_reply=true` | staff, admin |
+| `my_tickets` | Your tickets | `scope=mine&include_closed=false` | `/tickets` | requester |
+
+Every key is distinct, so a cell's label and link are looked up by its key alone (the key enum in openapi is these six values). The order of the table is the order of `queues` and of the strip. The SLA cells count what is assigned to me, not the whole desk: the strip is "your queue", and the desk's breaches are what the needs-attention list is for. A count is a plain number (`0` is shown as `0`; the strip has no empty state). A staff member in no group has `my_groups: 0`; nothing special-cases it. A requester's dashboard has no "awaiting my reply" cell, because the filter behind it is staff-only (below). The page ignores a key it does not know, so a later release may add one.
+
+**Awaiting reply: the new list filter.** "Awaiting my reply" needs a fact the list could not express. `awaiting_reply=true` is an ordinary filter of `GET /tickets` (see **List filters**), parsed by `ticket.ParseListFilter` into `Filter.AwaitingReply bool` (`true` or `false`; any other value is `400` "invalid awaiting_reply"), **allowed to staff and administrators only** (a requester sending it is `403`, below), and ANDed like every other. A ticket matches when:
+
+1. its status is not the Resolved or Closed system status (by kind and name, `IS DISTINCT FROM` as `exclude_closed` does), and
+2. the newest public message on it is the **requester's side**, so the ticket is waiting for the help desk. The newest public reply (`internal = false`, ordered by `created_at DESC, id DESC`) is the help desk's when its author's role is now `staff` or `admin` (a service user is staff), and the requester's side otherwise: the reporter, a follower who is a requester, or a guest (a reply with no author: `author_id IS NULL` is a guest reply and nothing else, see `ticket.Reply.AuthorID`). The role is read whether or not the account is deleted: accounts are soft-deleted (`users.deleted_at`; `SoftDeleteUser`), the row and its role stay, and `ticket_replies.author_id ON DELETE SET NULL` never fires in practice. So a deleted staff member's last reply is still the help desk's, which is what it was when it was written, and the SQL below has no `deleted_at` test on purpose. A ticket with no public reply is the requester's side: the description is the requester's message, whoever typed it. There is one meaning for every caller who may send the filter, so the SQL needs no new parameter but `awaiting_reply` (it does not read `reporter_only`):
+
+```sql
+AND (NOT sqlc.arg(awaiting_reply)::bool OR (
+  t.status_id IS DISTINCT FROM (SELECT s.id FROM statuses s WHERE s.name = 'Closed'   AND s.kind = 'system')
+  AND t.status_id IS DISTINCT FROM (SELECT s.id FROM statuses s WHERE s.name = 'Resolved' AND s.kind = 'system')
+  AND NOT COALESCE((SELECT u.role IN ('admin', 'staff')
+                    FROM ticket_replies r LEFT JOIN users u ON u.id = r.author_id
+                    WHERE r.ticket_id = t.id AND NOT r.internal
+                    ORDER BY r.created_at DESC, r.id DESC LIMIT 1), false)))
+```
+
+Internal notes are never read, so a note neither makes a ticket wait nor stops it waiting. Pending is not special: a ticket a staff member put in Pending with a question has the help desk's message last, so it is not awaiting staff, and when the requester answers it is.
+
+**Staff and administrators only; a requester is refused.** The rule **A requester may filter or sort only on what they are sent** (see **List filters**) decides this. The clause reads the *current role* of the newest public reply's author, and a requester is never sent author roles: the public replies on their own ticket (`GET /tickets/{id}/replies`) carry `author_id` and `author_name`, not a role. If a requester could send `awaiting_reply=true`, toggling it on their own tickets would tell them, ticket by ticket, whether the newest public reply was written by someone who is now staff or an administrator, which is a fact they are not sent. So a requester who sends `awaiting_reply=true` is refused exactly as every other staff-only filter is (`held_by`, `sla`, `assignee_user_id`): `requesterRules` in `filter.go` holds a row for it with `requesterOK` false, and the loop in `AllowedFor` answers `&FilterError{Kind: FilterForbidden, Msg: "awaiting_reply is not available to requesters"}`, `403 forbidden` on REST and the same words on MCP, which runs the same check. The new row is `{"AwaitingReply", "awaiting_reply", "reply_author_role", false, func(f Filter) bool { return f.AwaitingReply }}`: its `ticketKey` names what the clause reads, which is not a key of the ticket object and is not on the requester allowed list, and `TestRequesterRules_OnlyAllowedListKeys` only holds rows whose `requesterOK` is true to that list, so the test needs no change and there is no `requesterThreadKeys` and no `public_replies` entry. `filterRaw` gains `"AwaitingReply": "awaiting_reply=true"`, `TestAllowedFor_FilterByRole`'s `staffOnly` map gains `"AwaitingReply"`, and `ReopenedAfter` is never parsed, so it joins `serverSetFields`. `awaiting_reply=false` sets nothing (absent and `false` are the same), so a requester sending `false` is not refused, as with `include_closed`. `AllowedFor` is the one gate: the store and the SQL do not re-check the role, so every door that builds a `Filter` (`GET /tickets`, MCP `list_tickets`, and the dashboard, whose requester cell never sets it) must call it, and each has a test with a requester.
+
+**MCP** `list_tickets` gains `awaiting_reply` for parity with REST: declared in the tool schema with `mcpgo.WithBoolean` like `include_closed`, and read in `listQuery` by the **boolean** loop, the one that reads `search_replies` and `include_closed` with `listArgBool` (it becomes `[]string{"search_replies", "include_closed", "awaiting_reply"}`), never through `listFilterParams`, which holds string arguments only. So JSON `true` and `false` are accepted and the string `"true"`, a number or an object is refused with "invalid awaiting_reply", as `include_closed` is today. A requester sending `true` is refused by the same `AllowedFor` check as on REST, "awaiting_reply is not available to requesters".
+
+The ticket list page reads `awaiting_reply=true` from the address into its search (`awaitingReply`), shows it as a chip, "Awaiting my reply", and a checkbox in the filter panel, and sends it. It is offered (the per-view list in `lib/ticketSearch.ts`) on **Assigned to Me** and **My Group's Tickets** only. For a requester `toApiParams` drops it, like every other filter a requester may not use, so an address copied from a colleague never sends a request the server would refuse. It is not offered on Available or Search: the test runs one ordered index lookup per candidate ticket, which is cheap on a person's or a group's queue and is not what an administrator's whole-desk search should pay for. The API accepts it everywhere for staff and administrators and means the same everywhere.
+
+**Needs attention.** Up to **five** tickets that want someone, for staff and administrators, each a link to the ticket. Four reasons, in this order; each is one `ListFiltered` call with `Limit: 5` on the `visible` queue (every ticket the caller can see, as Search lists), restricted to **open** tickets: `StatusIDs` set to every status, active or not, except the Resolved and Closed system statuses.
+
+| Reason | Filter, beyond visibility and open | Order | When |
+| --- | --- | --- | --- |
+| `breached` | `SLA: breached` | `created` ascending (oldest first) | SLA tracking on |
+| `at_risk` | `SLA: at_risk` | `created` ascending | SLA tracking on |
+| `unassigned` | queue `unassigned` (no group and no person) | `created` ascending | `AvailableQueueAllowed(role)` (#676): administrators, and staff while Staff is ticked under Available |
+| `reopened` | `ReopenedAfter: now − 7 days` | `updated` descending | always |
+
+The four lists are merged by a pure function, `dashboard.PickAttention(lists []AttentionList, limit int) []AttentionItem` (`AttentionList{Reason AttentionReason; Tickets []ticket.Ticket}`, `AttentionItem{Reason AttentionReason; Since time.Time; Ticket ticket.Ticket}`): walk the reasons in order, take each ticket not already taken (a ticket that is breached and reopened is listed once, as breached), stop at five. It sets `Since` from the reason: `Ticket.CreatedAt`, or for `reopened` `*Ticket.LastReopenedAt`, which the `ReopenedAfter` filter guarantees is set (a nil one is a programming error; `PickAttention` falls back to `CreatedAt` rather than panic, and a test pins both). So a desk with three breaches shows those three first, then whatever else fills the five. The `unassigned` reason uses `ResolveQueue(unassigned, …)` like the Available view, so under scope enforcement it is the unassigned tickets in the caller's scope, and a staff member who may not open Available is not shown its tickets here either. `Filter.ReopenedAfter *time.Time` is a new **server** field (never parsed from a request): `t.last_reopened_at >= reopened_after`, NULL meaning not filtered. The window and the limit are constants, `dashboard.ReopenedWindow` (7 days) and `dashboard.AttentionLimit` (5), not settings.
+
+A row shows the tracking number, the subject (it **wraps**; it is ticket content, and is not added to the list of places that end in an ellipsis), the reason as a badge in the existing colours (Breached red, At risk amber, Unassigned grey, Reopened the existing `ReopenedBadge`), and the age of `since`: "opened 3 days ago", or for `reopened` "reopened 2 hours ago". The frontend has no relative-time helper today (`lib/format.ts` exports `priorityVariant`, `fmtMin` and `slaTargetText` only), so one is added there: `fmtAgo(iso: string, now: Date = new Date()): string`, the time from `iso` to `now` floored to one unit: under 60 seconds, or in the future (clock skew), "just now"; under 60 minutes "1 minute ago" / "N minutes ago"; under 24 hours "1 hour ago" / "N hours ago"; otherwise "1 day ago" / "N days ago", with no weeks, months or years ("120 days ago" is exact and short). English only, like every other string on the page. The row writes "opened " or "reopened " before `fmtAgo(since)`. The age's `title` attribute is the full local date and time (`toLocaleString()`). Empty: "Nothing needs attention right now."
+
+**Volume trend.** One small area chart: tickets **created** and tickets **resolved** per day for the last 30 days, today included, over every ticket the caller can see (staff and administrators). One query, `TicketVolumeByDay`, given the visibility parameters, the caller and `tz`:
+
+- The days are the 30 local dates ending today in `tz`, so a day is a calendar day where the viewer is and a change to or from summer time is still one day.
+- **Created** on a day: tickets whose `created_at`, in `tz`, falls on it.
+- **Resolved** on a day: tickets whose `COALESCE(resolved_at, closed_at)`, in `tz`, falls on it. That is the current resolution: a ticket resolved, then reopened and not resolved again, no longer counts on its old day; one resolved and later closed counts on the day it was resolved; one closed without being resolved counts on the day it was closed. The audit trail is not read for history: it is a second source, and its entries are filtered by retention.
+- Every day is present, with zeros. The sums of `created` over the 30 days equal the count of `GET /tickets?scope=visible&created_after=<first local midnight>&created_before=<next local midnight after today>` for the same caller, and a test holds them equal.
+
+```sql
+-- name: TicketVolumeByDay :many
+WITH bounds AS (
+  SELECT date_trunc('day', sqlc.arg(now)::timestamptz AT TIME ZONE sqlc.arg(tz)::text) - interval '29 days' AS first_day
+), w AS (
+  -- first_day is a local date-time; since_at is the instant it begins in tz
+  SELECT first_day, first_day AT TIME ZONE sqlc.arg(tz)::text AS since_at FROM bounds
+), events AS (
+  SELECT (t.created_at AT TIME ZONE sqlc.arg(tz)::text)::date AS day, 1 AS created, 0 AS resolved
+  FROM tickets t, w
+  WHERE <the visibility block> AND t.created_at >= w.since_at
+  UNION ALL
+  SELECT (COALESCE(t.resolved_at, t.closed_at) AT TIME ZONE sqlc.arg(tz)::text)::date, 0, 1
+  FROM tickets t, w
+  WHERE <the visibility block> AND COALESCE(t.resolved_at, t.closed_at) >= w.since_at
+)
+SELECT d::date AS day, COALESCE(sum(e.created), 0)::bigint AS created, COALESCE(sum(e.resolved), 0)::bigint AS resolved
+FROM w, generate_series(w.first_day, w.first_day + interval '29 days', interval '1 day') AS d
+LEFT JOIN events e ON e.day = d::date
+GROUP BY d ORDER BY d;
+```
+
+The created arm is served by `tickets_created_at_idx`. The resolved arm needs an index of its own, added by a migration (the next free number when it lands: `000068` if #616's `000066` and #670's `000067` are in first): `CREATE INDEX IF NOT EXISTS tickets_done_at_idx ON tickets ((COALESCE(resolved_at, closed_at)))`, and `DROP INDEX IF EXISTS tickets_done_at_idx` down. It is built inside the migration, not concurrently, as `000021` built its ticket indexes: one btree on the tickets table takes seconds at a million rows, and the migration runs before the server answers. It changes no data.
+
+KPI reports (#131) generalise this query to any date range and three filters (see **KPI reports**, SQL). The store method that serves this trend then runs `LocalToday` itself and passes the 30 days ending it and no filters, so the dashboard handler, `ticket.Service` and what the dashboard shows do not change.
+
+Empty: when every day is zero, the chart's box keeps its height and says "No tickets were created or resolved in the last 30 days." Under it, a legend with each series' 30-day total ("Created 84", "Resolved 79").
+
+**The list query's `WHERE` is the one rule, and a test keeps it so.** Counting needs SQL that sqlc cannot share, so it is copied and the copies are pinned:
+
+- `CountTicketsFiltered :one` is `ListTicketsFiltered` with its select list replaced by `count(*)` and everything from `ORDER BY` to the end removed: the same `reply_hits` CTE, the same SLA lateral, the same `WHERE`, the same parameter names, so the store fills both from one function (the existing parameter building in `listFilteredAt`, factored into `filterParams(f, now)`, which returns the list's params; `countParams` copies every field the count query shares, which is all of them but sort direction, limit and offset). `Store.CountFiltered(ctx, f) (int64, error)` and `CountFilteredAt(ctx, f, now)`; `ticket.Service.CountFiltered`. It ignores `Sort`, `Limit` and `Offset`, and never runs the reply arm (it forces `SearchReplies` false: no cell searches text).
+- The visibility clause of `ListTicketsFiltered` (the first `AND` group of the `WHERE`, from `sqlc.arg(unrestricted)` to the end of the staff-scope arm) is wrapped in two comment lines, `-- visibility: begin` and `-- visibility: end`. That is a comment-only change to the list query. `TicketVolumeByDay` carries the same block, between the same markers, in both arms.
+- `TestSQL_DashboardQueriesShareTheListRule` (in `internal/database/ticketstore`, no database needed) reads `queries/tickets.sql`, drops comments and collapses whitespace, and fails unless `CountTicketsFiltered` equals `ListTicketsFiltered` with that select list and tail removed, and every `visibility` block in the file is identical to the list query's. A change to who may see what is then made in one place and copied, or the build fails.
+- The two new filter clauses (`awaiting_reply`, `reopened_after`) are added to `ListTicketsFiltered` and so, by the same test, to `CountTicketsFiltered`.
+
+**Admin health card.** Administrators only. It surfaces four things the app already knows and says nothing more when all is well. It is **frontend only**: it reads the two queries an administrator's page already makes, `GET /admin/security-warnings` (query key `['security-warnings']`, shared with `InsecureConfigBanner`, so no extra request and no extra scanner ping) and `GET /admin/settings` (query key `['admin', 'settings']`, shared with the settings pages through the cache). On the dashboard the settings dump is **one new request for an administrator**, refetched when the window regains focus like any query with the default `staleTime`; the warnings query is the banner's, so it adds none. No endpoint, probe or setting is added. A pure function, `adminHealthItems(warnings?, settings?) => HealthItem[]` (`frontend/src/lib/adminHealth.ts`), decides it, in this order:
+
+| Item | Shown when | Severity | Says | Link |
+| --- | --- | --- | --- | --- |
+| Update available | `warnings.update` is present (the check is on and found a newer release) | info (blue) | "Version X is available (you run Y)." | the release notes, the URL the banner uses, new tab |
+| SLA alerts off | `settings.sla_enabled === true` and `settings.sla_alerts_enabled === false` (#670) | amber | "SLA tracking is on, but breach and at-risk alerts are off." | `/admin/settings/email`, "Email → Notifications → SLA alerts" |
+| Passkey requirement suspended | `warnings.passkeys.suspended_roles` is a non-empty array (#616) | amber | "The passkey requirement is suspended for <roles>: passkeys are unavailable (<reason>)." | `/admin/settings/authentication`, "Authentication → Multi-factor authentication" |
+| Attachment scanner down | `attachment_scanning.policy !== 'off'` and not `reachable`, the banner's own `scannerDegraded` test | red | "The attachment scanner is unreachable." plus its `effect` sentence | `/admin/settings/attachments`, "File Attachments → Malware scanning" |
+
+Each item carries its link and its place name as data (`HealthItem{id, severity, text, href, place, external}`), so a page that moves is one row to change. **The card was built after #674**, in the build plan's task 12, once the settings pages and their routes existed, so it has the final addresses from its first line: the three settings items link to `/admin/settings/email`, `/admin/settings/authentication` and `/admin/settings/attachments`, and `place` is the table's wording (the sidebar's, "Page → Section"). A test pins each `href` and each `place`. There was never an interim `/admin/settings` link and nothing is retargeted; the update item's `href` is the release-notes URL. The card reads `warnings.passkeys.suspended_roles` (#616) and `settings.sla_alerts_enabled` (#670), both in this build's base; a server that does not send one shows nothing for its item. A key that is absent (a server older than the frontend) shows nothing for its item; the function never infers a problem from a missing field. The card has no Hide: it states what is true now, and the banner's Hide, including "Hide until the next release" for the update, governs only the banner. When there is no item, the card is **one muted line**, "No problems to report.", so an administrator can tell "checked and fine" from "not loaded". If either query has failed, the card says "Health checks could not be loaded." with a Retry button that refetches both; it never says "No problems" on a failure.
+
+**States.** The status cards keep their own query and spinner. The dashboard query (`['dashboard', tz]`, `staleTime` 60 s, refetched on window focus) feeds the strip, the list and the trend: while it loads, each block shows the existing `Spinner` in a box of its final height (no jump); if it fails, one inline message replaces the three blocks, "The dashboard summary could not be loaded.", with **Retry**, and the status cards and By Client still show.
+
+**Layout.** Top to bottom: the header (unchanged); the health card (administrators); the strip, headed "Your queue" ("Your tickets" for a requester); the status cards (unchanged); needs attention and the trend, side by side from `lg` and stacked below it; **View all tickets**; By Client (unchanged). The strip is a `<nav aria-label="Your queue">` holding a list of links, each reading as one phrase ("4 Assigned to me"); a two-column grid below `sm`, three from `sm`, one row of five from `lg`; each cell at least 44 px tall on a coarse pointer. The SLA numbers are red (`text-red-600`) and amber (`text-amber-700`) only when above zero, grey otherwise; no new colours. Needs attention is a list of rows, never a table, so it is the same at every width. The chart takes the full width of its card at a fixed height. Nothing scrolls sideways at 320 px, and the e2e check covers the dashboard at 375 px and at desktop width for each role.
+
+**Chart primitives: `frontend/src/components/charts/`.** Inline SVG, no chart library. The module is shared: the KPI viewer (#131) builds on it, so its exports are a contract and change only additively.
+
+- `tones.ts`: `type ChartTone = 'blue' | 'green' | 'amber' | 'red' | 'gray'` and `TONE_CLASS: Record<ChartTone, string>` mapping each to a Tailwind text class already in use (`text-blue-600`, `text-green-600`, `text-amber-600`, `text-red-600`, `text-gray-500`). Marks are drawn in `currentColor`, so a tone is a class and nothing else.
+- `geometry.ts`, pure and unit-tested: `niceCeiling(n: number): number` (the smallest of 1, 2 or 5 × 10^k at or above `n`; `1` for `n <= 0`); `pointsFor(values: number[], width: number, height: number, max: number): [number, number][]` (evenly spaced from `x = 0` to `x = width`, a single value at the centre, `y` measured down from the top, `max <= 0` treated as 1); `linePath(points): string` and `areaPath(points, height): string` (the line closed down to the baseline), both `''` for no points.
+- `AreaChart.tsx`:
+
+```ts
+export interface ChartSeries {
+  key: string          // stable id, React key and the data table's column
+  label: string        // legend and table header
+  values: number[]     // one per label; must be labels.length
+  tone: ChartTone
+}
+export interface AreaChartProps {
+  labels: string[]                          // x categories, oldest first (ISO dates for a day series)
+  series: ChartSeries[]                     // drawn in order, the first underneath
+  ariaLabel: string                         // what the chart shows, e.g. "Tickets created and resolved per day, last 30 days"
+  height?: number                           // CSS px, default 160; the width is the container's
+  formatLabel?: (label: string) => string   // x labels and the table's first column; default identity
+  formatValue?: (value: number) => string   // axis maximum, legend totals and table cells; default String
+  emptyText?: string                        // shown instead of the marks when there are no labels or every value is 0
+}
+```
+
+  It renders a `<figure>`: an `<svg role="img" aria-label={ariaLabel}>` with `viewBox="0 0 100 {height}"`, `preserveAspectRatio="none"` and `width="100%"`, holding for each series an area at `fill-opacity` 0.15 and a line with `vector-effect="non-scaling-stroke"` (2 px), plus one baseline. Text is never inside the SVG, so stretching cannot distort it: the axis maximum (`niceCeiling` of the largest value) sits in HTML at the top left, the first and last x labels in HTML below, and a `ChartLegend` in the `<figcaption>`. A visually hidden `<table>` (`sr-only`) carries every value, so the data is readable without the picture. A series whose `values.length` is not `labels.length` is a programming error and throws. No hover, tooltip or animation in this version; #131 may add them as optional props.
+- `ChartLegend.tsx`: `{ items: { label: string; tone: ChartTone; value?: string }[] }`, a wrapping row of swatch, label and value.
+- `index.ts` re-exports the above.
+
+The dashboard draws `AreaChart` with `labels` the 30 dates, series Created (blue) and Resolved (green), `formatLabel` a short local date ("26 Oct", from the date at local noon so the zone cannot move it), and the legend values the 30-day totals.
+
+**Code.** `internal/domain/dashboard` (no HTTP, no SQL): `Cell{Key string; Scope ticket.Scope; Filter ticket.Filter}` and `Cells(role user.Role, slaOn bool) []Cell`, the table above as data; `AttentionReason` (`breached`, `at_risk`, `unassigned`, `reopened`), `PickAttention`, `AttentionLimit`, `ReopenedWindow`. `internal/server/handler_dashboard.go`: `handleGetDashboard`, which for each cell sets `ActorID`, `Visibility` and the queue (`ResolveQueue`) and calls `CountFiltered`, runs the four attention lists for staff and administrators, and the trend. The frontend: `api/dashboard.ts` (`getDashboard(tz?: string)`), the `Dashboard` types in `api/types.ts`, `lib/dashboard.ts` (`QUEUE_CELLS: Record<QueueKey, {label: string; href: string}>`, the six distinct keys of the table, data), `fmtAgo` in `lib/format.ts`, and one component per block under `components/dashboard/` (`QueueStrip`, `NeedsAttention`, `VolumeTrend`, `AdminHealthCard`).
+
+**Build order.** #675 is built on #676's code, not beside it: `ticket.Scope` and its `assigned_to_me` and `my_groups` values, `ticket.ResolveQueue`, `admin.Service.AvailableQueueAllowed`, the `view=` addresses of the ticket list and its per-view offered-filter data in `lib/ticketSearch.ts` are all #676's and none exists on `v1.3.0-beta` today. So every part of #675 that names them (the `dashboard` domain package, the endpoint, the ticket list's `awaiting_reply` control and the dashboard page) is built once #676's code is merged on the 1.3 line. The count query and its drift test, the `awaiting_reply` and `ReopenedAfter` filter (REST and MCP), the trend query with its index, and the chart module do not use any of them and may be built first. The health card additionally needs #616 (`warnings.passkeys`), #670 (`sla_alerts_enabled`) and the #674 settings pages it links to, none of which is in this branch's base, so **the card (`AdminHealthCard` and `adminHealthItems`, the build plan's task 9) is built after #674, on the integration branch that holds #616, #670, #672 and #674's pages, with the final addresses** (see **Admin health card**), and every other block is built here.
+
+**Upgrade.** Nothing an existing caller sends changes its answer: the endpoint is new, `awaiting_reply` is a new optional filter (a 1.2 server ignores it), MCP's `list_tickets` gains an optional argument, and the list query's `WHERE` gains two clauses that are inert when not asked for. The migration adds one index and changes no data; no setting is added or changes value. The dashboard shows more for every role but loses nothing. A requester sees one number, their open tickets, above their status cards.
+
+**API documents.** `docs/api/openapi.yaml`: `GET /dashboard` with `tz`, the response schema above (`queues[].key` an enum of the six keys, `attention` items `{reason, since, ticket}` with the reason enum, `since` a date-time and the ticket schema `GET /tickets` uses, `volume`), and the two `400`s; `awaiting_reply` on `GET /tickets` (staff and administrators, `403` for a requester). The MCP tools table (**MCP Interface**) lists `awaiting_reply` for `list_tickets`. `docs/upgrade-notes-1.3.0.md`, under New features: "Dashboard: Your Queue, Needs Attention, a 30-Day Trend and a Health Card (#675)", saying what each block shows and for whom, that every number respects ticket scope, the new `awaiting_reply` filter (REST and MCP, staff and administrators only), and that the migration builds one index on the tickets table, which on a very large install holds writes to that table for the seconds it takes. Nothing goes under Breaking changes. The README's dashboard screenshot is retaken.
+
+**Out of scope.** Configurable or rearranged blocks, per-person dashboards, more blocks than the four, a requester's trend or attention list, drill-down from a chart day to a ticket list, an MCP dashboard tool (a machine caller counts with `list_tickets`), and KPIs (#131).
+
+**Decisions taken without the owner.** Each can be overturned in one line.
+
+- One new `GET /api/v1/dashboard` for the strip, the list and the trend. Rejected: `GET /tickets?limit=1` per number, which cannot count (the list has no total) and would need four to eight requests.
+- The counts run the list query's own `WHERE` (`CountTicketsFiltered`), pinned to it by a text test, and each count is the `Filter` its link sends. Rejected: a dashboard query with its own visibility predicate and `FILTER` counts (one query, but a second rule that would drift); a SQL function for visibility (changes the tuned list plan).
+- The SLA cells count what is assigned to me. Rejected: every visible ticket (that is the whole desk for an administrator; the needs-attention list covers it) and a single "overdue or at risk" number (two links are needed, since `sla` takes one value).
+- "Awaiting my reply" is a new filter, `awaiting_reply`: the requester's side spoke last on a ticket that is not Resolved or Closed, so it waits for the help desk. Rejected: an SLA first-response test (only the first reply counts), "assigned to me and not Pending" (Pending is a renamable custom status, and a Pending ticket the requester has answered does want staff), and leaving it out (the owner listed it).
+- The side of a reply is its author's current role, read whether or not the account is deleted (accounts are soft-deleted and keep their role, so a deleted staff member's last reply stays the help desk's); an author-less reply is a guest's and is the requester's side. Rejected: storing the side on each reply (a migration and a backfill for one count), and adding `AND u.deleted_at IS NULL` (it would turn a departed colleague's answer into a requester message and put the ticket back in someone's "awaiting my reply").
+- Every cell has a distinct key, so a cell is looked up by its key alone. Rejected: one key shared by two roles with different meanings, looked up by key and role (every consumer, openapi's enum and the Go and TS copies of the table would need the role too).
+- The attention row carries `since`, the instant its age is measured from. Rejected: adding `last_reopened_at` to the ticket object (it changes `GET /tickets` and the requester allowed list for one label), and dropping the reopened age (the owner's "recently reopened" wants a when).
+- `awaiting_reply` is a staff and administrator filter only. A requester who sends it is refused like any other staff-only filter (`403`, "awaiting_reply is not available to requesters", through the `requesterRules` row with `requesterOK` false), and a requester's dashboard has no "awaiting my reply" cell. The reason: the clause reads the current role of the newest public reply's author, which a requester is never sent, so letting them filter would disclose, ticket by ticket, whether that author is now staff or an administrator, against the rule that a requester may filter or sort only on what they are sent. Rejected: letting requesters filter and documenting the disclosure (a rule with a written exception is no longer a rule, and the dashboard cell is the only thing that wanted it), and a `requesterThreadKeys` list naming `public_replies` as a source a requester is sent (the replies are sent, but not the role the clause reads, so the row would pass the allowed-list test for the wrong reason).
+- MCP reads `awaiting_reply` with the boolean arguments (`listArgBool`), like `include_closed`. Rejected: a string argument through `listFilterParams` (it would accept `"true"` and refuse `true`, unlike every other boolean on the tool).
+- The relative age is a new `fmtAgo` in `lib/format.ts`, floored to minutes, hours or days. Rejected: `Intl.RelativeTimeFormat` with auto units (it says "last week" and "2 months ago", which is vaguer than a row needs) and a date library.
+- The health card is built after #616, #670 and #674, so its three settings links are the final `/admin/settings/email`, `/admin/settings/authentication` and `/admin/settings/attachments` from the start. Rejected: building it before #674 with interim `/admin/settings` links and retargeting them later (a second change to the same three rows, and an address that opens the wrong page in between), and two link sets chosen at run time. The order of the work is: #675's other blocks, then #674's pages, then the card.
+- #675's build starts after #676's code is merged. Rejected: building against #676's open branch (two moving bases) or re-creating its names here.
+- `awaiting_reply` is offered in the page on Assigned to Me and My Group's Tickets only; the API accepts it everywhere for staff and administrators. Rejected: offering it on Search and Available, where it would cost a reply lookup per ticket across the whole desk.
+- A requester gets a strip of one cell (Your tickets) and nothing else new. Rejected: an "Awaiting your reply" cell (it needs the staff-only `awaiting_reply` filter, see above), no new block for requesters (the owner said they see their own tickets' summary), and a trend or attention list of their own few tickets.
+- Needs attention lists every visible ticket (the Search set), open only, breached then at risk then unassigned then reopened, five at most, each ticket once. Rejected: only my queues (an unassigned ticket is by definition nobody's queue) and a ranking score (harder to explain than an order).
+- Oldest unassigned follows the Available rule (`AvailableQueueAllowed`). Rejected: listing unassigned tickets to staff the owner's default keeps out of Available.
+- "Recently reopened" is the last 7 days, a constant, via a server-only `ReopenedAfter`. Rejected: a setting, and a public `reopened_after` parameter (no link needs it).
+- Open, for the attention list, is "not the Resolved or Closed system status", sent as `StatusIDs`. Rejected: a new public filter for it.
+- The trend counts days in the browser's time zone, sent as `tz`, validated by Postgres. Rejected: UTC days (today's bar would be wrong for most of the world) and embedding Go's time zone database to validate in Go (a binary change for one parameter).
+- Resolved is `COALESCE(resolved_at, closed_at)`, the current state, with an index added for it. Rejected: the audit trail as history (a second source, and pruned by retention), and no index (a sequential scan of tickets on every dashboard load).
+- The health card is frontend only, reading the security warnings and the settings the page already loads. Rejected: a health endpoint (a second source of truth for the same facts) and adding `sla_alerts` to the security warnings (it is a setting, which the page can already read).
+- The card shows the update even if the banner's notice was hidden, and has no Hide of its own. Rejected: honouring the banner's Hide (the card is a status, not a notice).
+- An all-clear card is one muted line. Rejected: hiding the card, which cannot be told apart from a card that failed to load.
+- The chart has no text inside the SVG and stretches to its container. Rejected: measuring the container (a resize observer) to draw text in the SVG.
+- No MCP dashboard tool. Rejected: a `dashboard_summary` tool, which no one has asked for.
+
+**Tests.**
+
+- *SQL text* (`internal/database/ticketstore`, no database): `TestSQL_DashboardQueriesShareTheListRule` as above; it fails on a one-character change to either copy.
+- *Postgres, store*: one fixture with tickets in every visibility case (reported by the viewer, assigned to them, to one of their groups, in a covered category, in a covered type, outside the scope) and every assignment case; `CountFiltered(f) == len(ListFiltered(f with a large limit))` for every dashboard cell's filter, for an administrator, unscoped staff, scoped staff and a requester; `awaiting_reply` for staff over: no reply, the requester last, staff last, an internal note last after the requester (still waiting) and after staff (not), a guest reply (no author) last (waiting for staff), a soft-deleted staff member's reply last (the help desk's: not waiting for staff), an admin's reply, and a Resolved and a Closed ticket (never); `ReopenedAfter` at its boundary; `TicketVolumeByDay`: 30 rows oldest first ending today, zeros present, a ticket created at 23:30 local counted on that local day in `Europe/London` and in `America/New_York` across the end of summer time (1 November 2026), resolved via `closed_at` when `resolved_at` is null, a reopened ticket no longer counted as resolved, scoped visibility, the created sum equal to the created-range count; an unknown zone returns `ErrUnknownTimeZone`; the scale test's plan check covers `CountTicketsFiltered` for `assigned_to_me` with and without `awaiting_reply` and the trend's resolved arm using `tickets_done_at_idx` for an administrator.
+- *Migration*: up creates `tickets_done_at_idx`, down drops it, and up runs on a database that has it.
+- *Domain*: `ParseListFilter` reads `awaiting_reply` `true`, `false`, empty and refuses `yes`; `AllowedFor` allows `awaiting_reply=true` to staff and administrators and refuses a requester with `FilterForbidden` and "awaiting_reply is not available to requesters" (and allows `awaiting_reply=false`); `TestFilter_EveryFieldIsClassified` passes with `AwaitingReply` in `filterRaw` and `requesterRules` (`requesterOK` false) and `ReopenedAfter` in `serverSetFields`; `TestAllowedFor_FilterByRole` lists `AwaitingReply` as staff-only; `TestRequesterRules_OnlyAllowedListKeys` is unchanged and passes; `dashboard.Cells` per role and `slaOn` (keys, order, scope, criteria; no two cells for one role share a key); each cell's filter equals what `ParseListFilter` and `ResolveQueue` make of the table's parameter string for that role; `PickAttention`: order, one ticket once under its first reason, the limit, fewer than five, all empty, `Since` is `CreatedAt` for the first three reasons and `LastReopenedAt` for `reopened`, and `CreatedAt` when that is nil.
+- *REST, Postgres*: per role the response's keys and nulls; **with `ticket_scope_enforced` on, a scoped staff member's counts, attention rows and trend include nothing outside their scope**, and the same caller with enforcement off sees the wider numbers; each cell's count equals the length of `GET /tickets` with that cell's parameters for the same caller; an attention row's `since` is its ticket's `created_at`, and on a `reopened` row the ticket's reopen instant; SLA off: no `sla_*` cell and no SLA reason; staff not ticked for Available: no `unassigned` reason, ticked: present and scoped; `tz` absent (UTC), valid, too long, bad characters and unknown (`400` with each message); an API key without `tickets:read` is `403`; `GET /tickets?awaiting_reply=true` as staff, and as a requester `403` "awaiting_reply is not available to requesters", and `awaiting_reply=maybe` is `400`.
+- *MCP*: `list_tickets` with `awaiting_reply: true` lists what REST lists for the same staff caller, a requester sending it is refused in REST's words, and `false` lists what no argument lists; the string `"true"`, a number and an object are refused with "invalid awaiting_reply"; the tool schema declares it a boolean.
+- *Frontend*: `geometry.ts` (`niceCeiling` at 0, 1, 7, 10, 11, 999; points for one, two and thirty values; paths for none); `AreaChart` renders one area and line per series, the hidden table with every value, the empty text, and throws on a length mismatch; `lib/dashboard.ts`: for every cell, `toApiParams(parseTicketSearch(link))` gives exactly the table's parameters (the table above, copied into the Go test and this one); `QueueStrip` per role, the SLA cells' colours at zero and above, links; `fmtAgo` at 0 s, 59 s, 60 s, 61 min, 23 h 59 min, 24 h, 1 day and 2 days, 120 days and a future instant (singular and plural each); `NeedsAttention` rows, badges, "opened …" from `since` and "reopened …" from `since` on a reopened row, wrapping subject and the empty text; `VolumeTrend` totals and empty; the page per role shows the right blocks and keeps the status cards and By Client; the failure message and Retry; `adminHealthItems` table over each item present, absent and with keys missing, each item's `place` and `href` as the table above gives them: the final addresses and places (`/admin/settings/email`, `/admin/settings/authentication` and `/admin/settings/attachments` for the three settings items, the release-notes URL for the update). The card is built after #674, so there was never an interim link; the card's quiet line and its failure state; the ticket list parses, shows, clears and sends `awaiting_reply` for staff, offers it only on Assigned to Me and My Group's Tickets, and drops it from a requester's request.
+- *e2e*: the dashboard at 375 px and 1280 px for an administrator, a staff member and a requester, with a 300-character subject in the attention list: no horizontal scroll, the strip's cells at least 44 px tall on a touch profile.
+
+### KPI reports
+
+([#131](https://github.com/PubliciaLLC/go-help-desk/issues/131), 1.3.x; owner decisions 2026-11-23.) A **Reports** page shows staff and administrators how the desk is doing over a period: how long tickets take to resolve and to get a first response, how many met their SLA, how many came back, how old the open work is, how much arrived and who holds it. It reads what is already captured (`tickets`, `sla_records`); **nothing new is recorded and no table is added**. Every number is computed on the server, live, by set-based SQL; the browser formats and draws. Scheduled and emailed reports are not part of it (they stay in v1.4 with the rest of #131's original list).
+
+**One rule for who sees what.** The page is for staff and administrators; a requester has no Reports item and the endpoint answers them `403`. Every query carries the ticket list's visibility block (the one between `-- visibility: begin` and `-- visibility: end`, #675), filled from `Server.TicketVisibility` exactly as `GET /tickets` fills it, so a number counts only tickets the caller could open:
+
+| Caller | `ticket_scope_enforced` off | `ticket_scope_enforced` on |
+| --- | --- | --- |
+| Administrator | every ticket | every ticket |
+| Staff | every ticket (they can open every ticket) | the tickets their scope admits: reported by them, assigned to them or one of their groups, or in a Category/Type their groups cover |
+| Requester | `403` | `403` |
+
+There is no second definition of scope and no report-only permission. A staff member in no group with enforcement on sees almost nothing, as on the ticket list. The workload card names the people and groups holding the visible tickets; staff can already read every assignable name (`GET /staff`), so nothing new is disclosed.
+
+**Status of the dependencies.** Pause is built (#127: `tickets.sla_paused_seconds`, `pending_since`, the Pending status), so time to resolve can exclude it. `source_channel` is built (#130, migration `000056`), but the owner's list of volume cuts is category and priority, so a channel cut is not part of this (out of scope, below). The SLA sweep runs (#126). The KPI queries need `tickets_done_at_idx` and the `TicketVolumeByDay` query from #675; #131 adds no migration.
+
+**Prerequisites.** This work is stacked on #675 (the dashboard) and builds only after #675 is **fully built and merged into its base**: when #131's tasks start, `ticket.ErrUnknownTimeZone`, `tickets_done_at_idx`, `TicketVolumeByDay`, the visibility markers with their drift test and the `components/charts/` package (with `AreaChart`) exist, and #131 reuses them. Two things #675 left in its own place are **moved, not created**: the `tz` syntax check is `validTZ`, called inline in `handleGetDashboard` (`internal/server/handler_dashboard.go`), and #131 moves it, unchanged, into `parseTZ` in `internal/server/tz.go`, which both handlers call (see **Code**); and `VolumeTrend` lives in `components/dashboard/`, and #131 moves it into `components/charts/` and re-exports it from that package's `index.ts` (see **Charts**). #131 writes neither from scratch; nothing else of #675 is rewritten.
+
+**Definitions.** Two populations, and every measure names which one it reads:
+
+- **Finished in the period**: tickets whose `COALESCE(resolved_at, closed_at)` (the *finish instant*, the expression the dashboard's resolved series and `tickets_done_at_idx` use) falls in the period. That is the current resolution: a ticket resolved, reopened and not yet resolved again is not finished; one resolved and later closed finished when it was resolved; one closed without being resolved finished when it was closed. A ticket that is reopened leaves the period it had finished in and counts in the period it finishes again, so a past period's numbers can change; the audit trail is not read for history (a second source, pruned by retention), as for the dashboard.
+- **Open now**: tickets whose finish instant is NULL. By the invariant migration `000028` repaired and every status door keeps (Resolved has `resolved_at`, Closed has `closed_at`, every other status has neither), this is exactly "not in the Resolved or Closed system status", and it is served by `tickets_done_at_idx` (a btree indexes NULL). A store test holds the two definitions equal on its fixture.
+
+The period measures:
+
+| Measure | Population | Definition |
+| --- | --- | --- |
+| **Created** | tickets created in the period | `count(*)` of `created_at` in the period |
+| **Resolved** | finished in the period | `count(*)` |
+| **Time to resolve**, median and 90th percentile | finished in the period | per ticket, `finish instant − created_at − sla_paused_seconds`, in seconds, floored at 0. **Pending time is excluded**: every Pending interval is closed by the move out of Pending, so a finished ticket's `sla_paused_seconds` is the whole of its time Pending and `pending_since` is NULL (it is not read). **Time in Resolved before a reopen is included**: the requester's problem was not solved then. The clock starts at creation, not at the last reopen, and SLA records are not read, so it does not depend on SLA tracking. `percentile_cont(0.5)` and `percentile_cont(0.9)`, rounded to whole seconds |
+| **Time to first response**, median | finished in the period, with an SLA first response on the ticket's original clock | per ticket, the frozen reading `sla_records.response_elapsed_at_met_seconds` of its earliest `first_response_at` among its records whose clock runs from creation (`started_at IS NULL`; a re-match copies both the stamp and the reading, so any of them gives the same answer). That is the number the SLA judged: the time to the first public staff reply, or to the resolution when nothing came first (#219), minus time Pending before it. A record a reopen started (`started_at` set) times the response to the reopen, not to the ticket, and is not read. A ticket without such a record does not count; the card says the measure needs SLA tracking |
+| **SLA attainment** | finished in the period that had a **current** SLA record when they finished (*tracked*) | **met**: no record of the ticket carries `response_breached_at` or `resolution_breached_at`. **Breached**: any record does. Once a ticket is tracked, every record of it is read, current and superseded, which is what stops a reopen's clean clock hiding a breach before it. Response met and resolution met are the same test on one stamp each. For a finished ticket that has a current record, both targets have been judged on it (a response, or the resolution counting as one, and the resolution are each stamped when recorded, whether or not the toggle is on), so its stamps are final. That is why the population is the tickets with a current record, not those with any record: a ticket whose record was superseded and not replaced was **never judged**. A priority change to a priority no policy matches supersedes the record and creates none (`planSLARematch` returns `SLARemoved`, and a reopen to such a priority does the same), so when the ticket finishes `RecordResolved` finds no current record and writes nothing, and the sweep never evaluates superseded records. Such a ticket is treated like one that never had a policy: neither met nor breached, in neither the numerator nor the denominator, whatever its superseded records say. Rate = met / tracked |
+| **Reopen rate** | finished in the period | tickets with `reopen_count > 0` / resolved. A share of tickets, so it is between 0 and 100%. `reopen_count` has no backfill (migration `000047`): reopens before 1.3.0 are not counted, which the upgrade notes say |
+
+The snapshot measures ignore the period (they are "now") and honour the filters:
+
+| Measure | Definition |
+| --- | --- |
+| **Backlog aging** | open tickets by age, `floor((now − created_at) / 24 h)` whole days, in four buckets: **0–2**, **3–7**, **8–30** and **over 30** days. The owner's "30+" is read as "more than 30", so the buckets do not overlap. Age is from creation, not from a reopen. Pending tickets are included: they are open work |
+| **Workload** | open tickets counted per assignee person (`assignee_user_id`) and, separately, per assignee group (`assignee_group_id`). A ticket with a person and a group counts once in each list. The tickets with no person are one row of the person list ("Nobody"), those with no group one row of the group list ("No group"); there is no third "unassigned" figure |
+
+**Filters** narrow every measure, the snapshots included, and are ANDed with visibility, on the ticket's **current** values (a ticket moved from Hardware to Network counts as Network): `category_id` (one; the category and everything under it), `priority` (repeatable, at most four, the list's values), `assignee_group_id` (one; the current group). An id that names nothing matches nothing (zeros, not `404`), as on the list.
+
+**Period and comparison.** A period is two local dates, `from` and `to`, inclusive, in the caller's time zone `tz` (validated exactly as `GET /dashboard` validates it). It runs from local midnight at the start of `from` to local midnight at the end of `to`, so a change to or from summer time is still whole days. At most **366 days**; that is the upper bound on what one request scans. The **previous period** is always computed: the same number of days ending the day before `from`. Every period measure comes back for both; the snapshot measures and the breakdowns come back for the current period only.
+
+**The endpoint.** `GET /api/v1/reports/kpi`, mounted beside `/staff` with `RequireRole(admin, staff)`, `RequireMFA` and `RequireResource(tickets)`, so an API key or OAuth client needs `tickets:read` (it can list the same tickets already). Query parameters: `tz`, `from`, `to`, `category_id`, `priority`, `assignee_group_id`; anything else is ignored, as on the list.
+
+- `from` and `to`: `YYYY-MM-DD`. Both absent: the last 30 days ending today in `tz`. One without the other: `400 bad_request` "from and to go together". A malformed date: "invalid from" / "invalid to". `from` after `to`: "from must not be after to". More than 366 days: "the range is longer than 366 days". A `from` before 1970-01-01: "from is too early" (the previous period starts as many days before `from`, and a date near year 1 would be out of Postgres's range). A repeated `priority` value is kept once. A `to` after today is allowed; its days count zero. "Today" is read from Postgres, the only place that knows `tz` (`LocalToday`, below), so the server needs no time zone database.
+- `category_id`, `assignee_group_id`: a UUID or `400` "invalid category_id" / "invalid assignee_group_id". `priority`: one of the four, or `400` "invalid priority"; more than four values: "too many priority values".
+- The response:
+
+```json
+{
+  "tz": "Europe/London",
+  "period":   {"from": "2026-10-26", "to": "2026-11-24", "days": 30},
+  "previous": {"from": "2026-09-26", "to": "2026-10-25", "days": 30},
+  "filters":  {"category_id": null, "priority": [], "assignee_group_id": null},
+  "sla_enabled": true,
+  "measures": {
+    "current": {
+      "created": 84,
+      "resolved": 79,
+      "time_to_resolve": {"count": 79, "median_seconds": 52200, "p90_seconds": 345600},
+      "first_response":  {"count": 61, "median_seconds": 3900},
+      "sla": {"tracked": 61, "met": 52, "response_met": 57, "resolution_met": 54,
+              "met_rate": 0.8525, "response_met_rate": 0.9344, "resolution_met_rate": 0.8852},
+      "reopen": {"reopened": 4, "rate": 0.0506}
+    },
+    "previous": { "…": "the same shape" },
+    "change": {
+      "created":                 {"kind": "relative", "state": "change",      "value": 0.1667},
+      "resolved":                {"kind": "relative", "state": "from_zero",   "value": null},
+      "time_to_resolve_median":  {"kind": "relative", "state": "change",      "value": -0.0812},
+      "time_to_resolve_p90":     {"kind": "relative", "state": "change",      "value": 0.0},
+      "first_response_median":   {"kind": "relative", "state": "no_previous", "value": null},
+      "sla_met_rate":            {"kind": "points",   "state": "change",      "value": -0.031},
+      "sla_response_met_rate":   {"kind": "points",   "state": "change",      "value": 0.0121},
+      "sla_resolution_met_rate": {"kind": "points",   "state": "change",      "value": 0.0},
+      "reopen_rate":             {"kind": "points",   "state": "change",      "value": 0.0506}
+    }
+  },
+  "volume": {
+    "days": [{"date": "2026-10-26", "created": 3, "resolved": 2}, "… one per day, oldest first"],
+    "by_category": [{"id": "…", "name": "Hardware", "count": 31}, "…"],
+    "by_priority": [{"priority": "critical", "count": 2}, {"priority": "high", "count": 9},
+                    {"priority": "medium", "count": 60}, {"priority": "low", "count": 13}]
+  },
+  "backlog": {
+    "as_of": "2026-11-24T10:15:00Z",
+    "total": 42,
+    "buckets": [{"key": "0_2", "min_days": 0, "max_days": 2, "count": 17},
+                {"key": "3_7", "min_days": 3, "max_days": 7, "count": 11},
+                {"key": "8_30", "min_days": 8, "max_days": 30, "count": 10},
+                {"key": "over_30", "min_days": 31, "max_days": null, "count": 4}]
+  },
+  "workload": {
+    "as_of": "2026-11-24T10:15:00Z",
+    "total": 42,
+    "by_assignee": [{"id": "…", "name": "Ada Lovelace", "count": 9}, "…", {"id": null, "name": null, "count": 6}],
+    "by_group":    [{"id": "…", "name": "Service Desk", "count": 30}, "…", {"id": null, "name": null, "count": 3}]
+  }
+}
+```
+
+  Counts are integers. A median or percentile is `null` when its `count` is 0. A rate is a fraction between 0 and 1 rounded to four places, computed on the server, and `null` when its denominator is 0; the counts it came from are sent beside it.
+
+  `measures.change` is the period-over-period change, also computed on the server (`report.Compare`), one entry for each of the nine measures a card compares (the keys above, always all nine). `kind` is `relative` for counts and durations and `points` for rates (it follows the measure, so it never varies). With `cur` the current value and `prev` the previous one, the first rule that applies gives `state` and `value`:
+
+  | `state` | When | `value` |
+  | --- | --- | --- |
+  | `no_current` | `cur` is `null` (no tickets to take a median of, or a rate's denominator is 0 this period) | `null` |
+  | `no_previous` | `prev` is `null` (the same, in the previous period) | `null` |
+  | `change` | `cur == prev` | `0` |
+  | `from_zero` | `kind` is `relative` and `prev` is 0 (a relative change from 0 has no value) | `null` |
+  | `change` | otherwise | `relative`: `(cur − prev) / prev`; `points`: `cur − prev` (both fractions, so −0.031 is 3.1 points down); rounded to four places |
+
+  So a previous rate of 0 (no reopens last period, which is common) is data and gives a `points` change, and a previous count of 0 is data and gives `from_zero`; only a `null` previous value is "no data". The direction that counts as better is presentation and stays in the browser (below); the arithmetic does not. `by_priority` always has the four priorities, in that order, zeros included. `by_category`, `by_assignee` and `by_group` hold only rows above zero, largest first, then by name; the `null` row (no person, no group) is last whatever its count. Names are the current names, of deleted and disabled people and archived categories too (their tickets still exist). `backlog.buckets` always has the four, in order. `filters` echoes what was applied (`priority` sorted in the fixed order). `sla_enabled` is the toggle as now (read failure: `false`), sent so the page can say why the SLA figures are thin; the figures are computed either way from the records that exist.
+- Errors: `401`/`403` as for `GET /tickets`, `403` for a requester; the `400`s above and the dashboard's two `tz` messages; a store failure is `500 internal_error` for the whole response. Nothing is cached on the server.
+
+**SQL.** All queries live in `queries/tickets.sql` under a `-- KPI reports (#131)` heading, each carrying the visibility block between its markers, so `TestSQL_DashboardQueriesShareTheListRule` (which compares every block in that file with the list query's) covers them with no change. Every query takes the visibility parameters, `tz`, and the three filters as `sqlc.narg(category_id)`, `sqlc.arg(priorities)::text[]` (`cardinality(...) = 0` is unfiltered) and `sqlc.narg(assignee_group_id)`, written as the list writes them. A period's instants come from its dates in one CTE, `w`: `since_at = (from_day::timestamp) AT TIME ZONE tz` and `until_at = ((to_day + 1)::timestamp) AT TIME ZONE tz`, and every range test is `>= since_at AND < until_at`.
+
+- `LocalToday :one`: `SELECT (sqlc.arg(now)::timestamptz AT TIME ZONE sqlc.arg(tz)::text)::date`. Run first (`report.Store.Today`, step 4 of the handler below), outside the KPI transaction; an unknown zone (SQLSTATE `22023`) maps to `ticket.ErrUnknownTimeZone` here, before any KPI query runs. The store method serving the dashboard's trend runs it too, through the same `ticketstore` helper (see **Code**).
+- `TicketVolumeByDay` (#675) is **generalised**, not copied: it takes `from_day` and `to_day` in place of "the 30 days ending `now`", and the three filters. Its arms, its `generate_series(from_day, to_day, '1 day')` and its zeros are otherwise unchanged. The dashboard passes `LocalToday − 29` to `LocalToday` and no filters, so its trend is what it was and its tests still pass. One query means "created on a day" and "resolved on a day" have one definition, and the volume card's daily series sums to its headline counts (a test holds `sum(days.created) == measures.current.created` and the same for resolved).
+- `KPIPeriod :one`, run once per period (current and previous): the created count from the `created_at` range (`tickets_created_at_idx`), and every finished-population measure from the finish-instant range (`tickets_done_at_idx`), in one statement:
+
+```sql
+-- name: KPIPeriod :one
+WITH w AS (…), created AS (
+  SELECT count(*) AS n FROM tickets t, w
+  WHERE <visibility> AND <filters> AND t.created_at >= w.since_at AND t.created_at < w.until_at
+), done AS (
+  SELECT GREATEST(0, EXTRACT(EPOCH FROM COALESCE(t.resolved_at, t.closed_at) - t.created_at)::bigint
+                     - t.sla_paused_seconds) AS resolve_s,
+         t.reopen_count > 0 AS reopened,
+         s.tracked, s.response_breached, s.resolution_breached, s.first_response_s
+  FROM tickets t CROSS JOIN w
+  CROSS JOIN LATERAL (
+    SELECT count(*) FILTER (WHERE r.superseded_at IS NULL) > 0 AS tracked,   -- a current record at the finish
+           COALESCE(bool_or(r.response_breached_at IS NOT NULL), false)   AS response_breached,
+           COALESCE(bool_or(r.resolution_breached_at IS NOT NULL), false) AS resolution_breached,
+           (array_agg(r.response_elapsed_at_met_seconds ORDER BY r.first_response_at, r.id)
+              FILTER (WHERE r.started_at IS NULL AND r.first_response_at IS NOT NULL
+                        AND r.response_elapsed_at_met_seconds IS NOT NULL))[1] AS first_response_s
+    FROM sla_records r WHERE r.ticket_id = t.id          -- breaches read from every record, superseded included
+  ) s
+  WHERE <visibility> AND <filters>
+    AND COALESCE(t.resolved_at, t.closed_at) >= w.since_at
+    AND COALESCE(t.resolved_at, t.closed_at) <  w.until_at
+)
+SELECT (SELECT n FROM created)::bigint                                        AS created,
+       count(*)::bigint                                                       AS resolved,
+       round(percentile_cont(0.5) WITHIN GROUP (ORDER BY resolve_s))::bigint  AS resolve_median,
+       round(percentile_cont(0.9) WITHIN GROUP (ORDER BY resolve_s))::bigint  AS resolve_p90,
+       count(first_response_s)::bigint                                        AS first_response_count,
+       round(percentile_cont(0.5) WITHIN GROUP (ORDER BY first_response_s))::bigint AS first_response_median,
+       count(*) FILTER (WHERE tracked)::bigint                                AS sla_tracked,
+       count(*) FILTER (WHERE tracked AND NOT response_breached AND NOT resolution_breached)::bigint AS sla_met,
+       count(*) FILTER (WHERE tracked AND NOT response_breached)::bigint      AS sla_response_met,
+       count(*) FILTER (WHERE tracked AND NOT resolution_breached)::bigint    AS sla_resolution_met,
+       count(*) FILTER (WHERE reopened)::bigint                               AS reopened
+FROM done;
+```
+
+  `percentile_cont` ignores NULLs and returns NULL over no rows, which is the `null` the response sends. The lateral is one `sla_records_ticket_idx` lookup per finished ticket. A ticket is tracked when one of its records has `superseded_at IS NULL` (`sla_records_current_idx`, migration `000043`); the breach flags still read all of its records. Percentiles need every value, so this is not incremental; at the 366-day cap on a desk finishing 1,000 tickets a day it sorts 366,000 integers, which Postgres does in memory in well under a second.
+- `KPICreatedByCategory :many` (`t.category_id, c.name, count(*)` over the created range, joined to `categories`, `GROUP BY` both, ordered count descending then name) and `KPICreatedByPriority :many` (`t.priority, count(*)`); Go puts the priorities into their fixed order with zeros.
+- `KPIOpenByAge :many`: `LEAST(floor(EXTRACT(EPOCH FROM sqlc.arg(now) - t.created_at) / 86400), 31)::int AS age_days, count(*)` over open tickets (`COALESCE(t.resolved_at, t.closed_at) IS NULL`), grouped by it: at most 32 rows. The bucket bounds are Go data (`report.BacklogBuckets`) applied to those rows, so they are written down once.
+- `KPIOpenByAssignee :many` (`t.assignee_user_id, u.display_name, count(*)`, `LEFT JOIN users`) and `KPIOpenByGroup :many` (`t.assignee_group_id, g.name, count(*)`, `LEFT JOIN groups`) over open tickets. The `NULL` key is a row like any other.
+
+All of a request's queries run in **one read-only `REPEATABLE READ` transaction** (`Store.KPI`), so the numbers on the page are one snapshot: the daily series sums to the headline, and the workload total equals the backlog total, even while tickets are being written.
+
+**Code.** `internal/domain/report` (no HTTP, no SQL):
+
+- `Day` is a calendar date (`time.Time` at 00:00 UTC; only the date means anything) with `ParseDay(s string) (Day, error)` and `Add(n int) Day`. `Period{From, To Day}` with `Days() int` and `Previous() Period`.
+- `Query{TZ string; From, To *Day; CategoryID *uuid.UUID; Priorities []ticket.Priority; GroupID *uuid.UUID}` and `ParseQuery(q url.Values) (Query, error)`, whose errors are `*ticket.FilterError` so the handler maps them to `400` as it maps the list's. `(Query) Period(today Day) (Period, error)`: the default, the order check and `MaxDays` (366); `DefaultDays` (30).
+- `BacklogBucket{Key string; MinDays int; MaxDays *int}`, `BacklogBuckets` (the four, as data), and `Buckets(rows []AgeCount) []BucketCount`; `Rate(n, d int64) *float64`; `PriorityOrder` (critical, high, medium, low); the result types `KPI`, `Measures`, `Volume`, `Backlog`, `Workload`.
+- `Compare(cur, prev *float64, kind ChangeKind) Change`, pure, the table under the response; `Change{Kind ChangeKind; State ChangeState; Value *float64}`, `ChangeKind` (`relative`, `points`), `ChangeState` (`change`, `from_zero`, `no_previous`, `no_current`). `Compared` is the nine compared measures as data (`{Key string; Kind ChangeKind; Value func(Measures) *float64}`, counts converted to `float64`), so the keys, their order and their kinds are written once.
+- `Store`, implemented by `*ticketstore.Store` (the same type that implements `ticket.Store`; neither interface names the other's methods):
+
+  ```go
+  type Store interface {
+      // Today is the local date of now in tz (LocalToday). An unknown zone is
+      // ticket.ErrUnknownTimeZone.
+      Today(ctx context.Context, tz string, now time.Time) (Day, error)
+      // KPI runs every query of one request in one read-only REPEATABLE READ
+      // transaction.
+      KPI(ctx context.Context, req Request) (Raw, error)
+  }
+  ```
+
+  `Service` (`NewService(store Store) *Service`) has the two matching methods: `Today(ctx, tz, now) (Day, error)` passes through, and `KPI(ctx, Request) (KPI, error)` turns the raw rows into the result (buckets, rates, `Compare` for every entry of `Compared`, priority order, ordering). `Request` carries `ActorID`, `Visibility`, the query, both periods and `Now`. The server holds `reports *report.Service`, like its other services, wired in `cmd/server/main.go` with the ticket store; the handler reaches `Today` only through it (the recorded decision on `server.Server` holds: concrete `*Service` pointers, no store).
+- The dashboard does not call `report` at all. In `ticketstore`, one unexported helper, `localToday(ctx, q, tz, now) (report.Day, error)`, runs `LocalToday` and maps SQLSTATE `22023`; `Store.Today` calls it, and so does the store method that serves #675's trend, which then passes `today − 29` to `today` to the generalised `TicketVolumeByDay`. The trend's signature, `ticket.Service` and `handleGetDashboard` are unchanged.
+
+`internal/server/handler_reports.go`: `handleGetKPI` does exactly this, in this order, and the first failure answers:
+
+1. `tz`: the dashboard's syntax check, the one function both handlers call (`parseTZ(r *http.Request) (string, error)` in `internal/server/tz.go`; it is `validTZ`, which #675 left inline in `handleGetDashboard`, moved there unchanged) → `400` "invalid tz".
+2. `report.ParseQuery(r.URL.Query())`, which checks its parameters in a fixed order, `from`/`to` together, `from`, `to`, `category_id`, `priority`, `assignee_group_id`, and returns the first error → `400` with its message.
+3. `s.TicketVisibility(ctx, actor)` → `500` on failure.
+4. `s.reports.Today(ctx, tz, now)` → `400` "unknown time zone" for `ticket.ErrUnknownTimeZone`, `500` otherwise.
+5. `query.Period(today)` → `400` "from must not be after to", "from is too early" or "the range is longer than 366 days".
+6. `s.adminSvc.SLAEnabled(ctx)` → an error is logged and reads as `false`.
+7. `s.reports.KPI(ctx, req)` → `500` on failure; otherwise `200` with the JSON above.
+
+So a request that is wrong in several ways gets the first message in this list: a malformed `tz` beats everything, a malformed date beats an unknown zone, and an unknown zone beats a range that is too long (the range cannot be judged without today). `now` is read once, at step 4, and is the `Now` of the request.
+
+**The page.** `/reports`, the sidebar item **Reports** (a bar-chart icon) between Tickets and Admin, shown to staff and administrators. **The sidebar gets denser to make room for it** (desktop pointers only; touch sizes are unchanged): with the four Tickets views of #676 and this item, the administrator's sidebar no longer fits 768 px at its old row heights, so the Admin toggle, the nav padding, the footer and Sign out are a few pixels tighter for every role, and `admin-nav-sections.spec.ts` keeps its 768 px budget; a requester who opens the address is sent to the dashboard. The address holds the state, so a refresh or a shared link shows the same board: `range=7|30|90` (default 30), or `from` and `to` for a custom range, plus `category_id`, `priority`, `assignee_group_id`. The router writes the address with its own serialiser, which quotes a string that reads as JSON, so the page writes the preset as a number (`range=7`) and one priority as a plain value (`priority=high`); two or more priorities are written as the router's list form (`priority=["high","low"]`, URL-encoded), which the page reads back, along with a repeated `priority=high&priority=low` typed by hand. An e2e check reads the real address after a click. The browser turns a preset into dates from its own today, and always sends `tz` (`Intl.DateTimeFormat().resolvedOptions().timeZone`).
+
+- **Header**: "Reports", a line naming the period and its comparison ("26 Oct – 24 Nov 2026, compared with 26 Sep – 25 Oct"), under it a muted line naming the filters ("All categories · All priorities · All groups", or the chosen names, e.g. "Hardware · High, Critical · All groups"), and **Download CSV** and **Download image** (the whole board).
+- **Controls**: a segmented choice 7 days / 30 days / 90 days / Custom; Custom shows two native date inputs and **Apply** (the server's `400` message shows under them). Three selects: Category (top-level categories, "Any category"), Priority ("Any priority" and the four), Group ("Any group"), from the lookups the ticket list's filter panel uses. Changing one updates the address and refetches.
+- **Cards**, in this order, each with a title, the figure, its comparison and a per-card **Download image** button (an icon button with `aria-label` "Download <card title> as an image"):
+  1. *Time to resolve*: the median large, the 90th percentile beside it, "79 tickets resolved".
+  2. *First response*: the median, "61 tickets with an SLA first response".
+  3. *SLA attainment*: met rate as a percentage, then response and resolution rates, "61 tickets tracked".
+  4. *Reopen rate*: the percentage, "4 of 79 resolved tickets had been reopened".
+  5. *Volume*: Created and Resolved totals with comparisons; the daily chart; created by priority and by category as bar charts.
+  6. *Backlog aging*: the total open and a bar chart of the four buckets ("Now", no comparison).
+  7. *Workload*: two bar charts, by person and by group ("Now", no comparison), each the ten largest rows with **Show all (N)** when there are more; once expanded the same button reads **Show top 10**, and collapses the list again.
+- **Comparison**: under each compared figure, the server's `measures.change` entry for it, formatted and coloured; the browser does no arithmetic on the numbers but scaling a fraction for display. A data table in `lib/kpi.ts`, `KPI_MEASURES: {key, label, unit: 'count'|'seconds'|'rate', better: 'lower'|'higher'|'neutral'}[]`, holds the labels and which direction is better. By `state`:
+  - `change`, `value` above 0: "▲ 12%" (`relative`, `value × 100`, no decimals) or "▲ 3.1 pts" (`points`, `value × 100`, one decimal); below 0 the same with "▼"; exactly 0: "No change". Green when the direction is the `better` one, red when against it, grey for `neutral` (Created, Resolved) and for no change.
+  - `from_zero`: "Up from 0 in the previous period", coloured as an increase.
+  - `no_previous`: "No data for the previous period", grey.
+  - `no_current`: nothing (the card is showing its empty text).
+
+  The full sentence is in the text for a screen reader ("up 12% from the previous period", "up 3.1 points from the previous period", "no change from the previous period").
+- **Durations** are written by a new `fmtDuration(seconds: number): string` in `lib/format.ts`: under a minute "under 1 min"; under an hour "N min"; under a day "N h M min" (minutes dropped when 0); otherwise "N d M h" (hours dropped when 0). Percentages: one decimal place.
+- **Empty and SLA-off states**: each card says what it lacks instead of showing zeros or dashes: "No tickets were resolved in this period." (Time to resolve, Reopen rate), "No ticket resolved in this period had an SLA first response." (First response), "No ticket resolved in this period was tracked by an SLA." (SLA attainment), "No tickets were created or resolved in this period." (the volume chart), "No open tickets." (Backlog, Workload). A bar chart that has nothing to draw while its card has other content (the volume card's category and priority charts when nothing was created in the period, though tickets were resolved) says "Nothing to show.", the one empty text every bar chart in a card shares. While `sla_enabled` is false, the First response and SLA attainment cards add one muted line, "SLA tracking is off, so new tickets are not timed. These figures cover tickets timed while it was on." The line names no settings place and links nowhere: #674 is moving Features from Settings to System (and rewriting every "Settings → …" string it lists), so a place named here would be wrong in one of the two merge orders, and #674's table would have to learn about a string on another branch. Staff cannot change the setting anyway; an administrator knows where SLA tracking is.
+- **States**: the query key is `['reports', 'kpi', params]`, `staleTime` 60 s; while loading each card shows the existing `Spinner` in a box of its final height; a failure replaces the cards with "The reports could not be loaded." and **Retry**; the controls stay.
+
+**Charts** reuse `frontend/src/components/charts/` (#675), additively:
+
+- The volume chart **is** the dashboard's `VolumeTrend`, moved from `components/dashboard/` into `components/charts/` and re-exported from `index.ts`, with two optional props, `emptyText` and `ariaLabel`, whose defaults are the dashboard's own wording, so the dashboard is unchanged. The Reports page passes "No tickets were created or resolved in this period." and "Tickets created and resolved per day, <period>". With 366 days it draws 366 points; the x labels are still the first and last only.
+- `AreaChart` is used as it is; the image export finds its `<svg>` in the DOM, so no ref or prop is added for it.
+- `BarChart.tsx` (new): `{rows: {key: string; label: string; value: number}[]; ariaLabel: string; tone?: ChartTone; formatValue?: (n: number) => string; emptyText?: string}`. A two-column grid: labels in HTML on the left, one-line and truncated with the full label in `title` (it is a chart row; this is the fifteenth place on the ellipsis list in **Small screens**, and the e2e check covers it), the value in HTML on the right, and between them **one** `<svg>` with `viewBox="0 0 100 {rows × 28}"`, `preserveAspectRatio="none"`, one `<rect>` per row 28 px apart (height 18, width `value / max × 100`, `max` the largest value, `fill="currentColor"`), so every bar lines up with its HTML row at any width. No text in the SVG, as for `AreaChart`. An `sr-only` table carries every row.
+
+**CSV export.** Built in the browser from the response the page is showing, by a pure function `kpiCsv(resp: KpiResponse, names: KpiNames): string` in `lib/kpi.ts` (`names` resolves the filter ids to labels). It formats numbers the server computed and computes nothing. RFC 4180, CRLF line ends, a UTF-8 byte order mark (so spreadsheet programs read names correctly), one header and long rows, `measure,key,label,current,previous,change,unit`:
+
+- the context first: `period_from`, `period_to`, `previous_from`, `previous_to`, `tz`, `filter_category`, `filter_priority`, `filter_group` (value in `label`);
+- every period measure with both values (`created`, `resolved`, `time_to_resolve_median`, `time_to_resolve_p90`, `time_to_resolve_count`, `first_response_median`, `first_response_count`, `sla_tracked`, `sla_met`, `sla_response_met`, `sla_resolution_met`, `sla_met_rate`, `sla_response_met_rate`, `sla_resolution_met_rate`, `reopened`, `reopen_rate`), durations in seconds and rates as fractions, so the file is data and not formatting, an empty cell for `null`; `change` is the server's `measures.change` value for the nine compared measures (a fraction: relative for counts and durations, the difference of the two fractions for rates) and empty when it is `null` or the measure is not compared;
+- then the current period's rows: `created_by_day` and `resolved_by_day` (key the date), `created_by_category` (key the id, label the name), `created_by_priority`, `backlog` (key the bucket), `workload_person` and `workload_group` (every row, not only the ten shown; the `null` row's key is empty and its label "Nobody" / "No group").
+
+A label that begins with `=`, `+`, `-`, `@`, a tab or a carriage return is prefixed with `'`, so a category called `=HYPERLINK(…)` is text in a spreadsheet, not a formula. The `change` cell of every row after the measures is empty. The file is `kpis-<from>-to-<to>.csv`, saved with `saveDataUrl` (below) from `data:text/csv;charset=utf-8,` plus the `encodeURIComponent` of the text (byte order mark included).
+
+**Image export.** A PNG per card and one of the whole board, with no image library. **The image is the screen as the browser laid it out**: there is one layout, the page's CSS, and the export reads it back instead of laying the card out a second time. The chart marks are the card's own `<svg>` elements; every piece of text, background and border is painted where the browser put it, in the font, size and colour it computed. So the image is the card at the width it has on screen (a phone gives a narrow image, a three-column desktop a wide board), wrapped where the screen wraps and cut where the screen cuts. It is a repaint, not a screenshot: canvas text shaping can differ from the page's by a fraction of a pixel, and two things are added that are not on screen (below). Each card's content is still data before it is markup: a pure `kpiCardModels(resp): KpiCardModel[]` (`lib/kpi.ts`) gives each card its `key`, `title`, figures (`{label, value, comparison?, tone}`), lines, empty text and chart rows, and the card component renders that model; the export does not read the model, it reads the DOM the model produced. The pieces are in `components/charts/exportImage.ts`; the join to the page's own element is in `components/reports/exportElement.ts` (below, after the numbered pieces):
+
+1. `inlineSvg(svg: SVGSVGElement, widthPx: number, heightPx: number): string`. Clone the element; walk the original and the clone together and copy onto each cloned element, as attributes, the computed `fill`, `fill-opacity`, `stroke`, `stroke-width`, `stroke-opacity`, `opacity` and `vector-effect` (computed values are resolved colours, so `currentColor` and the Tailwind tone classes become `rgb(…)`); remove every `class` and `style`; set `width` and `height` to the target pixels (the `xmlns` declaration is written by `XMLSerializer`, which writes it exactly once; it is not set by hand), keeping `viewBox` and `preserveAspectRatio="none"`. Serialise with `XMLSerializer` and return `data:image/svg+xml;charset=utf-8,` plus the `encodeURIComponent` of it. **No font or stylesheet is inlined, because the SVG has no text**: that is #675's rule for these charts, and it is what makes this step small. A `data:` URL, not a `blob:` URL, because the CSP allows `img-src 'self' data:` and nothing else.
+2. `readBoxes(root: HTMLElement, measure: Measure): Box[]` walks `root`'s subtree in document order and returns what to paint, in CSS pixels relative to `root.getBoundingClientRect()`. `Box` is `{kind: 'fill', x, y, w, h, color, radius} | {kind: 'border', x, y, w, h, color, width, radius} | {kind: 'text', x, y, h, text, font, color} | {kind: 'image', x, y, w, h, src}`. For each element: skip it and its subtree if it matches `.sr-only, [data-export="skip"]` or its computed `visibility` is `hidden` (an element with `display: none` has no box and adds nothing); a non-transparent computed `background-color` is a `fill` (radius from `border-top-left-radius`); a non-zero `border-top-width` with a non-transparent colour is a `border` (the cards use one width and colour on all four sides; nothing else is read); an `<svg>` is an `image` from `inlineSvg` at its rect's size, and its children are not walked. For each text node: `font` is the parent's computed `font-style font-weight font-size font-family` and `color` its computed `color`; its lines come from the browser, by asking a `Range` for the rect of each character and grouping them with `linesFromCharRects` (below), one `text` box per line, so wrapped text is wrapped where the screen wraps it. A text node whose parent has computed `text-overflow: ellipsis` and `scrollWidth > clientWidth` (a truncated bar label) is one `text` box, cut with "…" to the parent's `clientWidth` by `measure`, as the browser cuts it. `measure(text, font)` is the canvas's `measureText` width in the browser and a fixed-width fake in tests.
+3. `linesFromCharRects(text: string, rects: {left: number; top: number; height: number}[]): {text: string; x: number; y: number; h: number}[]`, pure: consecutive characters whose `top` is within 1 px of the line's first are one line; `x` is the first character's `left`, the line's text has its trailing whitespace dropped, and an all-whitespace line is dropped.
+4. `contextBox(lines: string[], widthPx, measure, top = 0): {boxes: Box[], h: number}`, pure: the one thing added below the captured element (`top` is where the strip starts, the height of the element, so its boxes are placed in the same coordinates; 0 when omitted), a strip 12 px muted text wrapped to the width (by `measure`, at spaces) with 12 px padding and a top border, holding the period and the comparison period, the filters ("All categories · All priorities · All groups" when none), and "Created <local date and time> · <site name>". A card on its own does not say which period or filters it shows; the strip makes the image say it. It is on every image, card and board.
+5. `paintPng(boxes: Box[], widthPx: number, heightPx: number, background: string): Promise<string>`: wait for `document.fonts.ready`; load each image (`new Image()`, `src` the data URL, `await img.decode()`); make a canvas at the size × 2, or × 1 if either side × 2 would exceed 16,384 px; fill `background` (the computed `background-color` of the root, or of its nearest ancestor that has one, so a dark page gives a dark image); paint the boxes in order (`fill` and `border` with `roundRect`, `text` with `fillText` and `textBaseline = 'middle'` at `y + h / 2`, `image` with `drawImage`); `canvas.toDataURL('image/png')`. If the URL is longer than 2 MiB (`2 * 1024 * 1024` characters, the longest `data:` URL Chromium will download), paint again at × 1; if still longer, reject. Returns the data URL.
+
+`components/reports/exportElement.ts` joins these to the page and holds what needs the browser: `canvasMeasure()` (the `measure` function, canvas `measureText`, or 7 px a character where there is no canvas, as in jsdom), `backgroundOf(el)` (the `background` that `paintPng` takes: the element's own computed `background-color` or its nearest ancestor's that is not transparent, white when none), `exportElement(el, contextLines, filename)` (read the boxes, add the strip below the element at `top` = the element's height, paint at the element's width and the height plus the strip's, save with `saveDataUrl`), the failure message (`IMAGE_FAILED`, the text under **Failure** below) and the hook `useImageExport()` that gives each image button its `busy` and `failed` state and a `run`.
+
+The per-card button exports the card's root element (the `<section>` of the card); the board button exports the board element, `<div id="reports-board">`, which holds the page header (title and period line, and the filter line below) and the card grid but not the controls. Buttons that are not content (every image button, **Download CSV**, **Download image**, **Show all (N)**) carry `data-export="skip"`. Workload is exported as it is shown, ten rows or all. To make the board say what it filters on screen as well as in the image, the header shows, under the period line, the filter line the strip uses ("All categories · All priorities · All groups", or the chosen names); that line is the second addition, and it is on the page, not only in the image.
+
+The file is `kpi-<card key>-<from>-to-<to>.png`, or `kpis-<from>-to-<to>.png` for the board, saved by `saveDataUrl(url: string, filename: string)` (new, `lib/saveFile.ts`: a temporary `<a download={filename} href={url}>`, appended, clicked and removed). **No `Blob` and no object URL anywhere**: `frontend/src/pages/attachments-download-only.test.tsx` ("never turns a response into a blob or object URL") fails on any file matching `createObjectURL` or `new Blob(` in the frontend, and it backs the download-only attachment decision recorded in CLAUDE.md (#165). The PNG is a `data:` URL from `toDataURL` and the CSV a `data:` URL from its text, so that test passes unchanged. Nothing is sent to the server.
+
+**Failure**: an image that fails to decode, a `SecurityError` from a tainted canvas (an SVG image without `foreignObject` does not taint a canvas in current Chrome, Firefox or Safari, but the code does not assume it), or a PNG still over 2 MiB at × 1 rejects the promise; the button then shows, beside itself, "The image could not be created in this browser. Download the CSV for the same numbers." No file is saved. While the image is being made the button is disabled with `aria-busy`.
+
+**Layout.** One column below `md`, two from `md`, three from `xl`, the Volume and Workload cards spanning the full row from `md`. The controls wrap: the segmented choice on its own line, the custom dates stacked below `sm`, the three selects one per line below `sm` and in a row from `sm`. Every button, including each card's image button, is at least 44 px on a coarse pointer. Bar labels truncate; nothing else in a card does (titles and lines wrap). Nothing scrolls sideways at 320 px.
+
+**API documents.** `docs/api/openapi.yaml`: `GET /reports/kpi` with its parameters, the response schema above (`backlog.buckets[].key` an enum of the four keys, `by_priority[].priority` the priority enum, `measures.change` an object with the nine keys required, each `{kind, state, value}` with `kind` an enum of `relative` and `points`, `state` an enum of the four states and `value` a nullable number, the nullable fields marked), the `400`s and `403`. The MCP tools table is unchanged. `docs/upgrade-notes-1.3.0.md`, under New features: "Reports: KPIs for Resolution, First Response, SLA, Reopens, Backlog, Volume and Workload (#131)", saying who sees it, that staff numbers follow ticket scope, how each measure is defined in one line, that time to resolve excludes Pending, that first response and SLA attainment need SLA tracking, that reopens before 1.3.0 are not counted, and that the CSV and the images are made in the browser. Nothing under Breaking changes. **Upgrade**: no migration, no setting, no change to any existing request or response; the dashboard's trend is the same. The roadmap table lists KPI reports under v1 and operational reporting's remainder (scheduled reports, channel and agent cuts, the later measures) under v1.4.
+
+**Build order.** #131 is built after #675 is merged into the base it is stacked on (see **Prerequisites** above); what it uses of #675 is: `tickets_done_at_idx`, `TicketVolumeByDay`, the visibility markers and their drift test, `ticket.ErrUnknownTimeZone`, the inline `tz` validation (`validTZ`, which it moves into `parseTZ`), and `components/charts/` with `AreaChart` and `VolumeTrend` (which it moves there from `components/dashboard/`). #675's other blocks are not read, and #131 names nothing of #676's directly: no #131 definition (the workload's "Nobody" and "No group" rows, the open population) borrows from #676's list views. #676 is nevertheless always in the base, because #675 is built on #676's code and starts only after #676 is merged (see the #675 section), so it is a transitive prerequisite, not an optional one.
+
+**Out of scope.** Scheduled or emailed reports (they need the notification outbox and a schedule; v1.4); cuts by channel, agent, item or type, and per-policy SLA tables; drill-down from a figure or a bar to the ticket list; saved or custom reports; trends of the snapshot measures (no history is kept); an MCP tool; the later measures #131 lists (CSAT, escalations, vendor wait); a rollup table.
+
+**Decisions taken without the owner.** Each can be overturned in one line.
+
+- Staff see Reports, counting only what `ticket_scope_enforced` lets them open (every ticket while it is off). Rejected: administrators only (the owner's constraint names staff numbers), and staff restricted to their own tickets (a third visibility rule).
+- Live queries in one read-only repeatable-read transaction, capped at 366 days. Rejected: a rollup table (premature; it would need its own correctness story for reopens and re-matches).
+- Every period measure reads the tickets **finished** in the period (by `COALESCE(resolved_at, closed_at)`), so one card's numbers describe the same tickets. Rejected: first responses that happened in the period (needs an index on `sla_records` and mixes populations) and tickets created in the period (a recent period would show only the fast ones).
+- Time to resolve is creation to the finish instant minus `sla_paused_seconds`, time in Resolved before a reopen included. Rejected: wall-clock (measures the requester's latency), from the last reopen (the flattering number the issue warns against), and the SLA's frozen resolution reading (needs SLA records, and restarts on reopen).
+- Time to first response is the SLA's frozen reading on the ticket's original clock, which follows the owner's note that it depends on SLA records. Rejected: the first public staff reply from `ticket_replies` (works without SLA, but cannot subtract the Pending time before it, because the pause total is not kept per instant).
+- SLA attainment counts only finished tickets that have a **current** SLA record when they finish, and calls one met only if none of its records, superseded included, carries a breach stamp. A ticket with no current record is excluded from numerator and denominator, like one that never had a policy; that includes a ticket whose priority was changed to one no policy matches, whose record was superseded and not replaced, so it was never judged. Rejected: the current record only (a reopen's clean clock would hide the earlier breach); counting an SLA-removed ticket as met (it was never measured, and it would raise the rate); counting only tickets whose records were all judged (it needs a per-record "was judged" test that no column answers, since a record has no judged flag, and it would still leave out a ticket whose last record was superseded for a reason other than a removal).
+- Reopen rate is the share of finished tickets with `reopen_count > 0`. Rejected: reopen events from `ticket_status_history` over resolutions (history is incomplete before 1.1.1, per `000028`, and needs a new index) and `sum(reopen_count)` over resolved (can exceed 100%).
+- "30+" is "over 30 days"; age counts whole 24-hour days from creation; Pending tickets are in the backlog. Rejected: local calendar days (depends on the viewer), age from the last reopen.
+- Workload is two independent lists, with "Nobody" and "No group" as ordinary rows. Rejected: a separate "unassigned" figure (the Available view's definition belongs to #676's views).
+- Filters apply to current values, one category, repeatable priority, one group, with the list's parameter names. Rejected: values as they were when the ticket was created (needs history), multi-select categories and groups.
+- The comparison is always the immediately preceding period of equal length and is always shown. Rejected: a toggle, year-on-year.
+- Rates and the period-over-period changes come from the server: the rates with their counts, the changes as `measures.change` with a `state` for the cases that have no number. The owner's rule ("aggregates are computed on the server, never in the browser") is read as covering every number the page shows, so the browser only scales a fraction to a percentage and picks an arrow and a colour. Rejected: computing the change in the browser (a number on screen with no server source and none in the CSV), and showing "No data" for a previous value of 0 (a 0% reopen rate or a count of 0 is data).
+- CSV is made in the browser from the JSON on screen, formulas neutralised. Rejected: a server `?format=csv` (a second response format to document and test for the same numbers).
+- **The owner asked for an image "drawn from the same SVG so the image matches the screen"; it is not literally that, and this is how it differs.** Only the chart marks are SVG (four of the seven cards have none, and #675's rule keeps text out of the SVG), so the PNG is the card's live SVG inlined into a `data:` URL plus the card's text, backgrounds and borders repainted on a canvas at the positions, fonts and colours the browser computed for them (`readBoxes`). There is one layout, the page's: the image has the card's on-screen width, wraps and truncates where the screen does, and a board exported on a phone is one tall column. It is not pixel-identical (canvas text shaping can differ by a fraction of a pixel), and it adds a context strip under every image (period, comparison period, filters, when it was made) that is not inside the card on screen. Rejected: a second, canvas-only layout of fixed-width cards (the earlier draft: text cut where the screen wraps, two columns where the screen has three, layout maintained twice); the card's HTML in a `foreignObject` (pixel-exact, but it taints the canvas in Safari, so `toDataURL` throws, and every stylesheet would have to be inlined); text inside the chart SVG (breaks #675's rule and distorts under `preserveAspectRatio="none"`); a library (the owner's rule); `blob:` images (blocked by the CSP).
+- Files are saved from `data:` URLs (`toDataURL` for the PNG, the CSV text encoded into the URL) on a temporary `<a download>`, so `attachments-download-only.test.tsx`'s "no blob, no object URL" check passes unchanged and the recorded #165 decision is not touched. The cost: Chromium will not download a `data:` URL over 2 MiB, so an image is repainted at × 1 above that and refused (with the CSV offered) if it is still too large; a board at × 1 is far below it in practice. Rejected: a named one-file exemption for `lib/saveFile.ts` in that test (an object URL made from a canvas carries no server response, but the test is a tripwire for a security decision and an exemption is the precedent for the next one).
+- The volume card reuses the dashboard's `VolumeTrend` and its query, generalised to a date range and filters. Rejected: a second component and a second query with their own definitions of "created on a day".
+- No MCP tool. Rejected: a `kpi_report` tool nobody has asked for.
+- The SLA-off line names no settings place and does not link. Rejected: naming "Settings → Features" (wrong once #674 moves it to System) or "System → Features" (wrong until #674 lands), and adding the string to #674's rewrite table (two branches that must land in one order).
+- Today's date for the period comes from Postgres through `report.Service.Today` → `report.Store.Today`, both new; the dashboard's trend reaches the same `LocalToday` statement inside `ticketstore` and its signatures do not change. Rejected: a `Today` method on `ticket.Service` (the report has a service of its own; the ticket service would grow a method only the report handler calls) and the server holding a store (the recorded decision on `server.Server`).
+- When several parameters are wrong, the first check in the handler's fixed order answers: `tz` syntax, the query parameters, the zone, the period. Rejected: collecting every error into one response (no other endpoint does).
+- Sidebar label **Reports**, route `/reports`, endpoint `/reports/kpi`. Rejected: "KPIs" (the page will hold scheduled reports later).
+
+**Tests.**
+
+- *SQL text*: `TestSQL_DashboardQueriesShareTheListRule` passes with the KPI queries in `tickets.sql` and fails if any of their visibility blocks differs by one character.
+- *Postgres, store* (`ticketstore`), one fixture, `now` fixed: **time to resolve** for a ticket with no pause, one with two closed Pending intervals (exactly subtracted), one resolved then reopened then resolved (time in Resolved counted), one closed without resolution (ends at `closed_at`), one resolved and later closed (ends at `resolved_at`), one reopened and open (not counted), a negative raw value floored at 0; median and p90 against hand-computed values for odd and even counts; **first response** from the frozen reading, the earliest of two original-clock records, a reopen-started record ignored, a ticket without records not counted, `null` median on no rows; **SLA** met, response breached only, resolution breached only, a breach on a superseded record with a clean current one (breached), no record (not tracked), a ticket with only a superseded record, its priority changed to one no policy matches (SLA removed: not counted in `sla_tracked`, `sla_met` or either rate, even when the superseded record carries a breach stamp and when it carries none); **reopen rate** with `reopen_count` 0 and 2; **periods**: a ticket created and finished at 23:30 local on the last day counts in `Europe/London` and in `America/New_York` across 1 November 2026, the instant `until_at` itself is outside, the previous period is disjoint; **filters**: category (and its types), each priority and two together, group, an unknown id (zeros); **visibility**: administrator, unscoped staff, scoped staff (nothing outside scope in any measure, snapshot or breakdown), the same staff with enforcement off (the wider numbers); **open now** equals "status not Resolved or Closed" on the fixture; **backlog** at 0, 2, 3, 7, 8, 30 and 31 days (boundaries); **workload** with person and group, person only, group only, neither, a deleted assignee's name; **one snapshot**: the daily series sums to `created` and `resolved`, workload total equals backlog total; `TicketVolumeByDay` for the dashboard's arguments returns what #675's tests expect; `LocalToday` across midnight in two zones and `ErrUnknownTimeZone`; a plan check in the style of `planRecorder` (`ticketstore_reply_search_test.go`) on a 20,000-ticket fixture that the finished arm uses `tickets_done_at_idx`, the created arm `tickets_created_at_idx` and the open queries `tickets_done_at_idx`.
+- *Domain* (`report`): `ParseQuery` per parameter (valid, malformed, five priorities, one date without the other); `Period` default 30 days ending today, a 366-day range accepted, 367 refused, `from` after `to` refused, `from == to` (one day); `Previous` for 1, 7, 30 and 366 days and across a month and a leap day; `Buckets` over ages 0 to 31; `Rate` with a zero denominator (`nil`) and rounding to four places; `Compare` for every row of its table and both kinds: `cur` null, `prev` null, both null (`no_current`), equal values including 0 and 0 (`change`, 0), a count from 0 (`from_zero`), a rate from 0.0 (`change`, the points), a rise and a fall, rounding to four places; `Compared` has nine distinct keys in the response's order; `Service.KPI` fills `change` for all nine, orders priorities with zeros, sorts rows by count then name with the `null` row last.
+- *REST, Postgres*: the response's shape and keys for an administrator and for staff; a requester `403`; an API key with and without `tickets:read`; every `400` message; the order of the checks, one request per pair (a malformed `tz` and a malformed `from` answer "invalid tz"; a malformed `from` and an unknown zone answer "invalid from"; an unknown zone and a 367-day range answer "unknown time zone"); `measures.change` present with nine entries; with enforcement on, a scoped staff member's numbers exclude a ticket outside their scope that an administrator's include; `sla_enabled` follows the toggle and the SLA figures are still computed while it is off; `filters` echoes the request.
+- *openapi*: the spec test lists `GET /reports/kpi` with its handler and its roles.
+- *Frontend*: `fmtDuration` at 0, 59 s, 60 s, 59 min, 1 h, 1 h 1 min, 23 h 59 min, 1 d, 1 d 1 h, 400 d; the comparison text and tone for each `state` (`change` up, down and 0, `from_zero`, `no_previous`, `no_current`) per `better` direction and per `kind`, and its screen-reader sentence, from fixed `change` entries (no arithmetic beyond `× 100`); `parseKpiSearch`/`toKpiParams` round trips for each preset, a custom range and every filter, and a preset's dates from a fixed today; `kpiCsv`: header (with `change`), the server's change values in the nine compared rows and empty elsewhere, CRLF, BOM, quoting of a comma, a quote and a newline, the formula prefix for each of the six leading characters, empty cells for `null`, every workload row present; `kpiCardModels` per card including each empty text and the SLA-off line; `BarChart` (one rect per row aligned to 28 px, widths relative to the largest, the hidden table, the empty text, the `title` on a truncated label); `VolumeTrend` with and without the new props renders the dashboard's text by default; `inlineSvg` (no `class` or `style` left, colours resolved from a stubbed computed style, `xmlns`, size, `viewBox` kept, a `data:image/svg+xml` URL); `linesFromCharRects` (one line, a wrap into two and three lines, trailing spaces dropped, a 0.5 px jitter in `top` kept on one line, an all-space line dropped); `contextBox` with the fake `measure` (wrapping at spaces, the no-filter wording, the created line); `readBoxes` in jsdom with stubbed `getBoundingClientRect`, `getComputedStyle` and `Range` rects (`.sr-only` and `[data-export="skip"]` subtrees skipped, `visibility: hidden` skipped, a background and a border read, an `<svg>` an image box and its children not walked, a truncated label cut with "…"); `saveDataUrl` sets `download` and `href` and removes the link; `attachments-download-only.test.tsx` passes unchanged (no `Blob`, no object URL); the export button's busy and failure states with a rejecting painter; the page per role (requester redirected), the sidebar item for staff and admin only, loading, failure with Retry, a custom-range `400` shown under the dates.
+- *e2e*: Reports at 375 px and 1280 px for an administrator and a staff member, with a 120-character category name: no horizontal scroll, buttons at least 44 px on a touch profile; **Download image** for one card and for the board in Chromium yields a PNG (signature checked, and its width twice the card's or the board's on-screen width, so the image is the screen's layout) and **Download CSV** a file whose header row is as specified; the same image download under the production CSP (`e2e-csp`), so a CSP that blocks the `data:` image fails the build.
 
 ### Linked Tickets
 
@@ -756,7 +1465,7 @@ did.
 
 Scope does two separate jobs: it can restrict what staff see, and it routes new tickets.
 
-**Visibility: `ticket_scope_enforced`, off by default.** Set under **Admin → Settings → General → Ticket visibility** ("Limit staff to their group scope"). With it **off**, every staff member can open every ticket, which is how every release before it behaved and why it is not on by default: switching it on during an upgrade would hide tickets from people mid-conversation. (Staff's default ticket list still shows the tickets assigned to them or their groups.) With it **on**, a staff member sees a ticket if they reported it, are assigned it, one of their groups is assigned it, or it falls in a Category/Type a group of theirs covers. That is the union of two readings that both applied (a ticket in your area that nobody has picked up is visible, and so is one assigned to you outside your usual area), and staff can take any action on tickets they can see. Administrators always see everything and a reporting user sees their own. One rule serves REST, MCP and a ticket's own audit feed (`ticket.CanView`, `CanViewTicket`/`TicketVisibility`). Staff in no group see almost nothing, so turn it on once groups and their scopes are configured.
+**Visibility: `ticket_scope_enforced`, off by default.** Set under **Admin → System → Privacy → Ticket visibility** ("Limit staff to their group scope"). With it **off**, every staff member can open every ticket, which is how every release before it behaved and why it is not on by default: switching it on during an upgrade would hide tickets from people mid-conversation. (Staff's ticket list still opens on the tickets assigned to them; see **Ticket list views**.) With it **on**, a staff member sees a ticket if they reported it, are assigned it, one of their groups is assigned it, or it falls in a Category/Type a group of theirs covers. That is the union of two readings that both applied (a ticket in your area that nobody has picked up is visible, and so is one assigned to you outside your usual area), and staff can take any action on tickets they can see. Administrators always see everything and a reporting user sees their own. One rule serves REST, MCP and a ticket's own audit feed (`ticket.CanView`, `CanViewTicket`/`TicketVisibility`). Staff in no group see almost nothing, so turn it on once groups and their scopes are configured.
 
 **Routing: auto-assignment.** A newly created ticket is routed once, at creation, by the first rule that matches (the assignment is made by the system, so its audit entry has no actor):
 
@@ -770,8 +1479,8 @@ Routing is best-effort in one respect: a candidate that cannot be given a ticket
 ### Branding
 
 - **Site name** — the product name shown in the sidebar header and browser title. Defaults to "Go Help Desk".
-- **Logo** — uploaded via **Admin → Settings → Branding**. Accepted formats: PNG, JPEG, GIF. Max 2 MB. Images are proportionally scaled to fit within **320 × 64 px** and re-encoded as PNG. When set, the logo replaces the site name text in the sidebar. **SVG is not accepted** (#165): the logo is the only upload rendered inline in this origin, and pattern-matching SVG for scripts is a game you have to keep winning. An SVG logo uploaded by an earlier release stops being served after the upgrade — the route serves PNG and nothing else, so the sidebar falls back to the site name. The settings page says so where the logo would be: the file picker no longer offers SVG, a sentence explains why it went, and an instance whose stored logo can no longer be loaded is told that rather than shown an empty space.
-- Both settings are stored in the database and managed via **Admin → Settings → Branding**.
+- **Logo** — uploaded via **Admin → System → Branding**. Accepted formats: PNG, JPEG, GIF. Max 2 MB. Images are proportionally scaled to fit within **320 × 64 px** and re-encoded as PNG. When set, the logo replaces the site name text in the sidebar. **SVG is not accepted** (#165): the logo is the only upload rendered inline in this origin, and pattern-matching SVG for scripts is a game you have to keep winning. An SVG logo uploaded by an earlier release stops being served after the upgrade — the route serves PNG and nothing else, so the sidebar falls back to the site name. The settings page says so where the logo would be: the file picker no longer offers SVG, a sentence explains why it went, and an instance whose stored logo can no longer be loaded is told that rather than shown an empty space.
+- Both settings are stored in the database and managed via **Admin → System → Branding**.
 - A public `GET /api/v1/site` endpoint returns `{name, logo_url, version, guest_submission_enabled, guest_attachments_enabled}`, plus `guest_attachment_max_bytes`, `guest_attachment_max_per_ticket` and `guest_attachment_uploads_per_hour` while guests may attach (#445) — no authentication required, so the shell and the login page render correctly before login (`guest_submission_enabled` is what decides whether the login page links to `/submit`; it reveals only what an unauthenticated `POST /guest/tickets` would reveal by answering 404). `guest_attachments_enabled` and the three figures are different: `POST /guest/attachments` answers the same `404` whether the setting or the token failed, so it never says whether uploads are on, but `/site` does, together with the effective per-file limit, to anyone. That disclosure was accepted (#445): it is low sensitivity, and it keeps the guest ticket response's allow-list unchanged.
 - A public `GET /api/v1/logo` endpoint serves the stored logo file with a 5-minute cache header. `logo_url` in the site response points here when a logo is uploaded.
 
@@ -779,7 +1488,7 @@ Routing is best-effort in one respect: a candidate that cannot be given a ticket
 
 An administrator can have the server check for newer releases. It is **off unless chosen**, on a fresh install and on an upgraded one alike, and **while it is off the server makes no request at all**. That is how this respects an air-gapped or no-outbound deployment: DESIGN.md has no separate no-outbound rule (the only other outbound call is the reputation lookup, which is also opt-in), so there is nothing to configure, and the setting never needs to be hunted down and disabled.
 
-- **Setting.** `update_check_enabled` (boolean; PATCH refuses any other JSON type, null included; unset reads as off), under Settings → General → Updates. It is in `AuthCriticalKeys`, so an API key or OAuth client cannot change it (403 `session_required`): it decides what leaves the server, the same family as the reputation toggles. Choosing it is a decision for a signed-in person.
+- **Setting.** `update_check_enabled` (boolean; PATCH refuses any other JSON type, null included; unset reads as off), under Admin → System → General → Updates. It is in `AuthCriticalKeys`, so an API key or OAuth client cannot change it (403 `session_required`): it decides what leaves the server, the same family as the reputation toggles. Choosing it is a decision for a signed-in person.
 - **The request.** At most once every 7 days, `GET https://api.github.com/repos/PubliciaLLC/go-help-desk/releases/latest`. Its own headers are exactly `User-Agent: go-help-desk` (fixed, **no version**) and `Accept: application/vnd.github+json`; no query string, body, cookie or identifier. Ten-second timeout. GitHub learns that an IP address fetched the file, once a week, and nothing about the instance, which is what the checkbox says ("contacts GitHub once a week; sends nothing about your server"). A change to what is sent must change that wording; a test pins the exact headers. Issue #170 asks for no version in the User-Agent because a version turns "an instance exists here" into "an instance running 1.2.0 exists here", a list of applicable CVEs. An earlier draft of this feature sent the version; it does not.
 - **When.** A background goroutine started in `cmd/server/main.go` wakes hourly and does nothing unless the setting is on and the stored `checked_at` is more than 7 days old. Rendering an admin page never causes a request. A restart cannot re-check, because the time is stored (`update_check_result` in the settings table: `checked_at` and the newest stable `latest`). `checked_at` is written **before** the request, detached from the caller's context, so a process killed mid-request (SIGTERM, a crash loop) cannot ask again on restart. A failed check consumes the window too, so an instance with no egress does not retry hourly; the previous answer is kept. If the record cannot be read at all, that tick is skipped rather than treated as "never checked".
 - **What counts.** The endpoint already skips drafts and prereleases, and the checker ignores a response flagged either. The tag must be exactly `v?MAJOR.MINOR.PATCH` with no leading zeros, no `+build` part and no prerelease; anything else is no answer. What is stored and shown is rebuilt from the parsed numbers (`%d.%d.%d`), never the tag's text, and the link is built from that, so a hostile response cannot choose where an administrator is sent. The stored value is re-checked the same way when read. Versions are compared as semantic versions against `internal/version`, so `1.3.0-beta` is behind `1.3.0` and `1.10.0` is ahead of `1.9.0`.
@@ -797,6 +1506,690 @@ An install upgraded from an earlier release has never been asked about the choic
 - **Small screens.** One column, wrapping buttons, no horizontal scroll at 320 px (an e2e test pins it). Each step has one `h2`, focus moves to it when the step changes, and "Step N of M" is announced.
 - **Setup.** The `/setup` form has an unchecked "Check for new releases (contacts GitHub once a week; sends nothing about your server)" box; `POST /setup` takes `update_check` (absent means false) and stores it as `update_check_enabled`.
 
+### Settings pages under System (#674)
+
+Until #674 every instance setting was on one page, `/admin/settings`
+(`SettingsPage.tsx`), behind six tabs: General, Branding, Authentication,
+Features, Email and Attachments. The tab was component state, not part of the
+address, so no link, notice or bookmark could open a tab: every one of them
+opened General. Email Templates was a separate page under Integrations. #674
+splits the tabs into pages listed in the sidebar under **System**, and moves
+Email Templates onto the Email page. It replaces #594's "System hub with
+tabs". #594's People, Tickets and Integrations hubs are not affected.
+
+**This is a frontend change only.** No endpoint, setting key, default, stored
+value, MCP tool or permission changes. Every section keeps its controls, its
+copy (except the cross-references listed under **Copy that names a place**),
+its API calls and its validation. There is no migration, and an existing
+install changes only in where things are on screen.
+
+**Sequencing.** The issue says to land the branches that edit
+`SettingsPage.tsx` first and then split the file. The split is built on an
+`origin/v1.3.0-beta` that already contains #616 (passkey roles), #670 (SLA
+alerts), #672 (the SLA policies editor), #673 (the overall file size limit,
+`AttachmentSizeLimitSection`, the guest clamp in the save and
+`GuestSizeSlider`'s `max`) and #676 (`AvailableQueueSection`). Until all five
+are merged, no part of #674 is implemented. This section names their
+components and rules as those issues specify them. It does not say what to do
+if one of them has not landed, because #674 is not started in that state. If
+one of them is dropped instead, its rows are removed from the tables below,
+and nothing else changes.
+
+**This build's base.** The branch for this build is stacked on a local
+integration branch whose base contains #616, #670, #672, #673, #676, #675 and
+#131, so all five prerequisites above are present, and so are #675 and #131.
+#675 matters here, but **its admin health card is not in this base**: the
+dashboard has the other #675 blocks, and `DashboardPage.tsx` held only a
+placeholder where the card goes (`AdminHealthCard` and `adminHealthItems` did
+not exist). This build constructed the card after the pages and routes below
+existed (plan task 12), directly with the final `href` and `place` values that
+**Copy that names a place** lists, so there was no interim link set and no
+retargeting step anywhere in #674. `warnings.passkeys.suspended_roles` (#616)
+and `sla_alerts_enabled` (#670), the card's two inputs from those issues, are
+both in this base.
+#131 adds no migration and touches no settings page. The newest migrations in
+the base are 000066 (passkey), 000067 (SLA alerts) and 000068 (the dashboard
+index); #674 adds none.
+
+#### The pages
+
+Every section that exists once #616, #670, #672, #673 and #676 have landed is
+assigned to exactly one page. Sections keep their current headings (the `h2`
+of `Section`) and keep their current order on the page.
+
+| Sidebar item | Address | Sections, in order | Comes from |
+| --- | --- | --- | --- |
+| **General** | `/admin/settings/general` | Tickets · Ticket lifecycle · Updates | General tab |
+| **Features** | `/admin/settings/features` | tab **SLA**: SLA (the `sla_enabled` switch and, while it is on, the SLA Policies editor from #672) | Features tab |
+| **Branding** | `/admin/settings/branding` | Identity (site name, logo) | Branding tab |
+| **Email** | `/admin/settings/email` | tab **Notifications**: Staff email about tickets (the four overrides, #670's included) · SLA alerts (`sla_alerts_enabled`) | Email tab; SLA alerts from the Features tab (#670) |
+| | `/admin/settings/email/templates` | tab **Templates**: the email template list and editor | the `/admin/email-templates` page |
+| **File Attachments** | `/admin/settings/attachments` | Uploads (allowed types, mismatch handling) · File size (#673) · Malware scanning (with the scanner status block) · Reputation lookup | Attachments tab |
+| **Guest Access** | `/admin/settings/guest-access` | Submissions (guest submission and its email note, guests may attach files, the guest size slider, files per ticket, uploads per hour) | General tab |
+| **Authentication** | `/admin/settings/authentication` | SAML · OIDC / OpenID Connect · Multi-factor authentication (with #616's passkey roles) · Passwords · API keys · Registration | Authentication tab |
+| **Privacy** | `/admin/settings/privacy` | Ticket visibility · Available queue (#676) · Audit log · Privacy | General tab |
+| **Audit Log** | `/admin/audit` (unchanged) | the audit viewer | unchanged |
+
+The issue's table leaves out the following, or conflicts with the code. Each
+is placed here:
+
+- **Identity (site name and logo).** The issue lists Identity first under
+  Authentication and says Branding is "unchanged". On origin/v1.3.0-beta the
+  only section called Identity is the Branding tab's, and it is the only
+  section that tab has (`SettingsPage.tsx`, `BrandingPanel`). The
+  Authentication tab has no Identity section. Following both lines of the
+  table literally would leave Branding empty. Identity stays on **Branding**,
+  which keeps Branding "unchanged", and is not on Authentication. This is
+  listed for the owner below.
+- **"Should mirror the user's own notification preferences screen."** The
+  issue says this about Staff email about tickets. Once #670 has landed, the
+  section already mirrors it. It has one override row per switch on the
+  profile's `EmailNotificationsSection`, with the same names in the same
+  order: Tickets assigned to me, Activity on tickets I'm assigned to or
+  follow, My groups' tickets, SLA alerts. Each row is a three-way choice
+  (Use each person's choice, On for everyone, Off for everyone), because an
+  administrator chooses whether to override, which the person's on/off
+  switch cannot express. #674 moves the section unchanged. A test pins the
+  mirror so the two lists cannot drift: the override names equal the profile
+  labels, in order. This is listed for the owner below.
+
+- **Available queue** (`AvailableQueueSection`, #676). #676 put it under
+  General → Ticket visibility until #674 placed it. It goes on **Privacy**,
+  directly after Ticket visibility. Its copy is about `ticket_scope_enforced`,
+  which is the switch above it.
+- **The save warning about OAuth clients.** It appears when a save turns
+  `ticket_scope_enforced` on, and it includes the "Open OAuth clients" link to
+  `/admin/oauth-clients`. It moves with Ticket visibility to **Privacy**. An
+  SSO warning from the same `warning` field (a `saml_*` key saved through
+  `PATCH /admin/settings`) shows on **Authentication**. Both are shown by the
+  page shell, as described below.
+- **The "Email templates" section on the Email tab** (one sentence and a link
+  to `/admin/email-templates`). It is removed. The Templates tab next to it
+  replaces it.
+- **`sla_alerts_enabled`.** #670 put it on the Features tab under SLA
+  tracking. The owner's table moves "the fourth SLA alerts switch and
+  setting" to Email. The override row stays in Staff email about tickets.
+  The switch becomes its own section, **SLA alerts**, after it. The section
+  has the same `SettingRow`, label, description and `Toggle` that #670
+  specifies.
+- **`EmailStatusNote`.** It stays under the row it qualifies: under guest
+  submission on Guest Access, and under self-service signup on
+  Authentication.
+
+Audit Log stays administrator-only. The issue says it is "visible to staff",
+but that is not what it does today. Since #129 both the route and
+`GET /admin/audit` are administrator-only, and the sidebar's comment says so.
+#674 moves pages and does not change who may read the log (see the decisions
+below).
+
+#### Addresses and redirects
+
+All settings pages are under `/admin/settings/<page>`. The old address is a
+prefix of every new one, so the active-link rule (`pathname === to ||
+startsWith(to + '/')`) and `sectionOfPath` work without a special case. The
+redirects are routes whose `beforeLoad` throws `redirect({ to, search,
+replace: true })`. That replaces the history entry, so Back does not loop
+through the redirect.
+
+| Old address | New address |
+| --- | --- |
+| `/admin/settings` | `/admin/settings/general` |
+| `/admin/email-templates` | `/admin/settings/email/templates` |
+| `/admin/email-templates?t=<name>` | `/admin/settings/email/templates?t=<name>` (the query is kept as it was) |
+
+That is every old address. The six tabs never had an address, hash or
+query parameter, so no tab-level redirect is needed. A link that opened
+`/admin/settings` to reach, for example, Attachments opened General before
+#674 and opens General after it. `/admin/audit` does not move.
+
+The redirect routes do not check the signed-in user. The route they redirect
+to does: a signed-out visitor is sent on to `/login`, and a staff member to
+`/dashboard`, by the new route's `requireAdmin`, exactly as the old route
+did.
+
+#### Who sees what
+
+Every page in the table is administrator-only. Each new route has
+`beforeLoad: requireAdmin`, as `/admin/settings` and `/admin/email-templates`
+have today. The System section is inside the Admin group of the sidebar,
+which only an administrator is shown. A staff member or requester who types
+a settings address is sent to `/dashboard`, and someone signed out is sent to
+`/login`. The server already refuses `GET|PATCH /admin/settings` and the
+other admin endpoints to everyone but administrators, and that does not
+change.
+
+#### Sidebar
+
+`ADMIN_SECTIONS` in `Layout.tsx`:
+
+- **Integrations**: API Keys, OAuth Clients, Webhooks. Email Templates leaves
+  this section.
+- **System**: General (`SettingsIcon`), Features (`ToggleRightIcon`),
+  Branding (`PaletteIcon`), Email (`MailIcon`), File Attachments
+  (`PaperclipIcon`), Guest Access (`DoorOpenIcon`), Authentication
+  (`LockIcon`), Privacy (`EyeOffIcon`), Audit Log (`HistoryIcon`), in that
+  order. The links are dense `NavItem`s, like every section's.
+- The section ids (`people`, `tickets`, `integrations`, `system`) do not
+  change, so the remembered open section (`ghd.admin-nav-open`) reads as
+  before.
+- Email is the current link on both Email tabs, because
+  `/admin/settings/email/templates` starts with `/admin/settings/email/`.
+
+With nine links, System is now the longest section (Tickets has six). The fit
+test in `e2e/admin-nav-sections.spec.ts` gains the System case on
+`/admin/settings/general`, at 1440×768, 800 and 900, with the notice bar
+showing and #676's ticket views in the sidebar. It keeps all its
+assertions: every heading fully in view, and 24 px of headroom under every
+heading and under the last link. If the last-link assertion fails at 768 or
+at 800 for System only, the nav, which is already `overflow-y-auto`, is
+allowed to scroll in those cases (at 900 the full assertion holds). The assertion for that case becomes "the current
+page's link is fully in view". `NavItem` then scrolls the current link into
+view (`scrollIntoView({ block: 'nearest' })`) when the path changes. The
+link rows are not made any denser. A finger needs their height, and so does
+the 44 px coarse-pointer rule.
+
+#### The page shell and tabs
+
+`frontend/src/pages/admin/settings/SettingsPageShell.tsx` takes `{ title,
+description, tabs?, draft?, wide?, children }`. It renders `<Layout>`, then
+the `h1` (`title`, the sidebar label), then one line of `description`, then
+the tab bar if `tabs` is given, then, when `draft` is given, the draft's save
+warning, then `children`. When `draft` is given and `draft.isLoading` is
+true, it renders the spinner instead of the save warning and `children`.
+`children` sit in `max-w-2xl`, as the tab panel does today, unless `wide` is
+set. The descriptions are:
+
+| Page | Description |
+| --- | --- |
+| General | Ticket numbers, the ticket lifecycle and update checks. |
+| Features | Optional features of this help desk. |
+| Branding | The name and logo in the sidebar and the browser tab. |
+| Email | The email staff receive about tickets, and the wording of every email this help desk sends. |
+| File Attachments | What can be uploaded, how large it may be, and how uploads are checked. |
+| Guest Access | Tickets from people without an account. |
+| Authentication | How people sign in, and who may create API keys. |
+| Privacy | Who sees which tickets, and what the audit trail shows and keeps. |
+
+`SettingsTabs` (same folder) takes `{ label, to }[]`. It renders a
+`<nav aria-label="<Page> sections">` of router `Link`s with the classes of
+today's tab bar (`-mb-px flex gap-6 overflow-x-auto`, a blue bottom border
+on the current tab). A tab is current, with `aria-current="page"`, when the
+pathname equals its `to` exactly. The tabs are links, not `role="tab"`
+buttons, because each tab has its own address, Back works between them and
+the banner can link straight to Templates. Features has one tab, **SLA**.
+Email has **Notifications** and **Templates**.
+
+**One route, one component.** Every address in the table is its own flat
+route in `router.tsx`, like every admin route today, with its own page
+component. There are no layout routes and no `<Outlet>`. The two Email
+addresses are two routes and two components, which render the same shell
+title, description and tabs:
+
+| Route | Component | Draft | Leave guard | Save bar | Shell |
+| --- | --- | --- | --- | --- | --- |
+| `/admin/settings/email` | `EmailSettingsPage` | `useSettingsDraft()` | `useLeaveGuard(draft)` | one `SaveBar` at the end | `draft`, `max-w-2xl` |
+| `/admin/settings/email/templates` | `EmailTemplatesSettingsPage` | none | none | none | no `draft`, `wide` |
+
+Moving between the two tabs is a route change, so the component unmounts and
+the next one mounts fresh. Notifications to Templates with unsaved edits
+therefore asks first, like any other link out of a page with a draft (see
+**The leave guard**). Templates to Notifications never asks, because the
+Templates page has no draft. Coming back to Notifications starts a new draft
+from the dump. The other seven pages are each one component with a draft, a
+guard and one `SaveBar`: `GeneralSettingsPage`, `FeaturesSettingsPage`,
+`BrandingSettingsPage`, `AttachmentSettingsPage`, `GuestAccessSettingsPage`,
+`AuthenticationSettingsPage` and `PrivacySettingsPage`. Branding's draft
+holds only the site name; the logo uploader keeps its own state, as today.
+
+**The Templates tab** is the body of today's `EmailTemplatesPage`, moved into
+`frontend/src/pages/admin/settings/EmailTemplatesTab.tsx`: the intro
+paragraph with the advisory link, and the list or the editor.
+`EmailTemplatesSettingsPage` renders it inside the shell instead of its own
+`<Layout>`. Its "Email templates" heading becomes an `h2` under the page's
+`h1` "Email". Nothing else changes. It still keeps the open template in
+`?t=`, reading `window.location.search` and writing with
+`history.replaceState(window.location.pathname + …)`, so it works at the new
+path as it did at the old one. The template editor has no leave prompt today
+and gets none here.
+
+#### State: one draft per page
+
+**What is shared today.** `SettingsPage` holds one draft, `local`, seeded
+from `GET /admin/settings` (query key `['admin', 'settings']`). It holds the
+write-only key fields `apiKeys` and `clearedKeys`, one `saveMutation`, and
+one `saved`, `saveError` and `saveWarning`. All six tab panels read and write
+that draft through `bool`/`num`/`str`/`strArr`/`has` and their setters.
+Every tab's **Save changes** runs the same mutation, which sends every key
+that differs from the dump (#394) on all tabs, not only the tab you are on.
+An edit on General therefore survives a switch to Authentication, and is
+saved by Authentication's Save. The SAML and OIDC sections, the SLA
+policies editor (#672), the logo upload and the Available queue (#676) have
+their own state and saves and are not part of the draft.
+
+**After #674 each page has its own draft.** A page's Save sends only what
+was edited on that page. This is the rule #673 already states for the File
+Attachments and Guest Access pages. One shared draft above every page would
+keep the cross-tab behaviour, but a Save on one page would then write edits
+made on another page that is no longer on screen.
+
+The draft logic is moved out of `SettingsPage`, unchanged apart from the two
+changes listed below, into
+`frontend/src/pages/admin/settings/useSettingsDraft.ts`:
+
+```ts
+interface SettingsDraft {
+  isLoading: boolean                       // no seeded draft yet (see below)
+  stored: Record<string, unknown> | undefined  // the dump as last fetched
+  bool(k: string): boolean; num(k: string): number; str(k: string): string
+  strArr(k: string): string[]; has(k: string): boolean
+  setBool(k: string, v: boolean): void; setNum(k: string, v: number): void
+  setStr(k: string, v: string): void; setStrArr(k: string, v: string[]): void
+  toggleStrArr(k: string, item: string, checked: boolean): void
+  // Write-only keys (today: the three reputation API keys). Never in the draft.
+  secret(k: string): string; setSecret(k: string, v: string): void
+  secretCleared(k: string): boolean; setSecretCleared(k: string, v: boolean): void
+  dirty: boolean                           // the patch below is non-empty
+  save(): void; isPending: boolean; error: string; saved: boolean
+  warning: { text: string; aboutClients: boolean } | null
+}
+export function useSettingsDraft(): SettingsDraft
+```
+
+- **The patch is today's, in one pure function**, `buildSettingsPatch(stored,
+  local, secrets, cleared)`, exported for its tests. It skips `*_set` keys
+  and keys equal to the dump under `JSON.stringify`. It applies #673's guest
+  clamp: a changed `guest_attachment_max_mb` is sent as `min(local guest,
+  overallMB)`, where `overallMB` is `local.attachment_max_mb` if that is an
+  integer from 1 to 100, and 25 otherwise. On Guest Access that local value
+  is the stored one, because nothing on that page edits it, so the rule
+  needs no page-specific code. A key in `cleared` is sent as `''`. Any other
+  key in `secrets` whose trimmed value is not empty is sent trimmed.
+  `secrets` and `cleared` are a general map instead of a loop over
+  `REPUTATION_PROVIDERS`. Only the reputation rows ever set them, so what is
+  sent is identical.
+- **The rest is also today's:** the `email_required` message; `aboutClients`
+  (`patch.ticket_scope_enforced === true`); the success path, which sets
+  `saved` for 2.5 s, clears the secrets and invalidates `['admin',
+  'settings']`, `['site-config']`, `['security-warnings']` and `['me']`; and a
+  refused save, which keeps every edit.
+- **The first change: a save stays pending until the settings have been fetched
+  again.** `onSuccess` awaits the `['admin', 'settings']` invalidation, so
+  `isPending`, and with it "Saving…", lasts until the fresh dump has
+  arrived. Without that, the draft would differ from the old dump for one
+  round trip after a successful save, and the leave guard below would ask
+  about changes that were already saved. The other three invalidations are
+  not awaited.
+- **A second change: no section renders before the draft is seeded.** Today
+  `local` starts as `{}` and the seeding effect fills it after the render in
+  which the query's data first appears. So for one render every section sees
+  an empty draft. On today's page that is harmless only by accident: the
+  sections that copy a draft value into their own state when they mount do so
+  on a tab that is opened by a click, after seeding. The Uploads section
+  seeds its allowed-types text from `has('attachment_allowed_types')` with
+  `useState` and never re-reads it. Mounted in that empty render, as it would
+  be on its own page, it would show `DEFAULT_ALLOWED_TYPES` instead of the
+  stored list, and the next edit would save the defaults over the stored
+  setting. The hook therefore keeps `local` as `Record<string, unknown> |
+  null`:
+  - `local` starts as `queryClient.getQueryData(['admin', 'settings']) ??
+    null`, a `useState` initialiser. A page opened with the dump already
+    cached (from another settings page) is seeded in its first render and
+    shows its sections at once, with no spinner.
+  - The seeding effect is today's (`if (settings) setLocal(settings)`).
+  - `isLoading` is `query.isLoading || (query.data !== undefined && local
+    === null)`. It is true while the read is in flight, and for the one
+    render between the data arriving and the effect copying it. The shell
+    shows its spinner in both, so no section mounts on an empty draft.
+  - The accessors and `buildSettingsPatch` read `local ?? {}`. A failed read
+    has no data, so `isLoading` is false and the page renders with an empty
+    draft, as today.
+
+  No section changes. A section that seeds its own state at mount sees the
+  stored value, whichever way the page was opened.
+- **`dirty`** is `!isPending && Object.keys(buildSettingsPatch(…)).length > 0`.
+  While `local` is `null` the patch is empty, so a page that is still loading
+  is never dirty.
+
+Sections receive the draft as one prop, `draft: SettingsDraft`, instead of
+today's ten to fifteen separate functions. The sections that do not use the
+draft (SAML and OIDC config, the SLA policies editor, the logo uploader,
+`AvailableQueueSection`) take no draft and keep their own state.
+
+**Cross-page reads.** The Guest Access slider's `max` is the **stored**
+`attachment_max_mb` (`draft.stored`, with the reader's fallback of 25), as
+#673 specifies for the split. File Attachments passes the stored guest value
+to `AttachmentSizeLimitSection` as `guestMB`, because the guest value cannot
+be edited on that page. `EmailStatusNote` and the scanner status read
+`['security-warnings']`, as they do today. No other section reads a key
+that is edited on another page. The server rules that check two keys
+together (open registration and the domain list, MFA and its roles, the
+guest limit and the overall limit) have both keys on one page, except the
+pair of size limits, which #673 handles.
+
+**The leave guard.** Splitting the draft means that leaving a page with
+unsaved edits would discard them without a word. That used to be a tab
+switch, which kept them. So every page that uses the draft calls
+`useLeaveGuard(draft)` (`frontend/src/pages/admin/settings/useLeaveGuard.tsx`),
+which calls `useBlocker({ shouldBlockFn: () => draft.dirty,
+enableBeforeUnload: () => draft.dirty, withResolver: true })` (TanStack
+Router) and returns the dialog element for the page to render. While the
+blocker is `blocked`, the dialog is `ConfirmDialog` with:
+
+- title "Leave without saving?"
+- description "Your changes on this page have not been saved. Leaving
+  discards them."
+- confirm label "Leave without saving" (`destructive`), which calls
+  `proceed`
+- cancel label "Stay", which calls `reset`
+
+The guard covers every router navigation: sidebar links, tab links, in-page
+links such as Open OAuth clients, and Back and Forward. Reloading or closing
+the tab gets the browser's own prompt. It covers only the draft. The SAML,
+OIDC, SLA and template forms keep their own state, as they do when you leave
+the Settings page today. The Email tabs follow from **One route, one
+component**: from Notifications with unsaved edits, the Templates tab link
+asks like any other link, and Leave discards the edits; the Templates page
+has no draft and never asks. A page with no edits, or with edits that were
+saved, never prompts. Clicking a link in the phone drawer closes the drawer
+before the dialog opens, and Stay leaves the drawer closed.
+
+**Loading and errors.** Each page with a draft shows the shell's spinner
+while `draft.isLoading`, which covers the unseeded render described above. A
+query that is already cached (from another settings page) is seeded in the
+first render and shows at once. The existing seeding effect updates the draft
+when the background refetch lands, as it does today; a section that copied a
+value into its own state at mount keeps that copy, as it does today after a
+tab switch. A failed read renders the page as today, with an empty draft.
+There is no new empty state: every section already renders its own unset
+values. The Templates page has no draft and loads its templates as today's
+`EmailTemplatesPage` does.
+
+#### Copy that names a place
+
+Places are named the way the sidebar shows them: in UI copy as "System →
+Page → Section", and in the docs as "Admin → System → Page → Section". Each
+of these changes to the new name:
+
+| Where | Today | After |
+| --- | --- | --- |
+| `InsecureConfigBanner.tsx`, reopen-target notice | Settings → Ticket lifecycle → Reopen target status | System → General → Ticket lifecycle → Reopen target status |
+| same, SAML metadata notices (two) | Settings → SAML | System → Authentication → SAML |
+| same, scanner notice | Settings → Attachments | System → File Attachments |
+| same, template notice link | `href="/admin/email-templates?t=…"` | `href="/admin/settings/email/templates?t=…"` |
+| `AfterUpgradePage.tsx`, guest step | under Settings, General, Submissions | under System, Guest Access |
+| `SetupPage.tsx`, update-check box | under Settings | under System → General |
+| `handler_admin_settings.go`, reopen-target `warning` text | under Settings, Ticket lifecycle, Reopen target status | under System, General, Ticket lifecycle, Reopen target status |
+| `notify/templates.go`, `SiteName` variable help | from Settings | from System → Branding |
+| Email → Staff email, #670's SLA override help | Needs SLA alerts turned on under Features | Needs SLA alerts turned on below |
+| `AfterUpgradePage.tsx`, staff-email step, SLA alerts paragraph (#670) | the SLA alerts setting under Features decides whether those alerts are sent at all | the SLA alerts setting under System → Email decides whether those alerts are sent at all |
+| `EmailNotificationsSection.tsx`, the comment above `SWITCHES` (#670) | from Settings -> Email | from System -> Email |
+| `GuestSizeSlider` description (#673) | set under Attachments | set under System → File Attachments |
+| `AttachmentSizeLimitSection` (#673) | — | names Guest Access as the place of the guest slider |
+| `AdminHealthCard` / `adminHealthItems`, SLA alerts off item (#675) | — (new in this build) | `href` `/admin/settings/email`, `place` "Email → Notifications → SLA alerts" |
+| same, passkey requirement suspended item (#675) | — (new in this build) | `href` `/admin/settings/authentication`, `place` "Authentication → Multi-factor authentication" |
+| same, attachment scanner down item (#675) | — (new in this build) | `href` `/admin/settings/attachments`, `place` "File Attachments → Malware scanning" |
+
+The last three rows are the dashboard's health card (#675). They are links, not
+plain-text notices. The card did not exist in this base (see **This build's
+base**), so their "Today" cell is "— (new in this build)": nothing shipped with
+an interim address and nothing is retargeted. **The plan's task 12 built the
+card once the pages existed, directly with the "After" values**, and tests each
+target (`/admin/settings/email`, `/admin/settings/authentication`,
+`/admin/settings/attachments`) and each `place`. The update item's `href` (the
+release-notes URL) is as the #675 section specifies. The #675 section's text
+(**Admin health card**, **Build order** and Decisions) says the card was built
+after #674 with these addresses.
+
+The notices stay plain text. None of them was a link to a settings tab
+before, because a tab had no address, and making them links is not part of
+this issue. The only links into settings today are the template notice (its
+new address is in the table above) and Email's own link to templates, which
+is removed. The admin health card adds three more, built in this
+branch with their final addresses (see the last three rows of the table
+above), so none of them is ever a link to `/admin/settings`. The links out of
+settings (Open OAuth clients, and the user page's OAuth-clients links) keep
+their target. The backend `warning` string
+is human-readable text, not a code. No test pins it, and its `400`/`200`
+shapes do not change.
+
+#### Phone layout
+
+Nothing is redesigned. The rules in *Small screens → Admin pages (#522)*
+apply to each page, as they did to each tab:
+
+- Below `md` the System links are in the navigation drawer, which is the
+  same `SidebarContent`. They are full height on a coarse pointer and close
+  the drawer when followed.
+- The `h1` and description wrap. The tab bar scrolls sideways inside its own
+  row, as today's does.
+- `SettingRow` stacks the control under its label below `sm`.
+- The template editor keeps its own phone layout.
+- There is no sideways scroll at 320 or 375 px on any page or tab, with long
+  data and with short data. `e2e/mobile-layout.spec.ts`'s `ADMIN_PAGES` has
+  one entry per address in the table, with no `tab` field. The two SAML
+  certificate tests go straight to `/admin/settings/authentication`.
+
+#### Docs, screenshots and tests
+
+- **DESIGN.md.** Every "Admin → Settings → …" and "Settings → …" reference
+  is rewritten by the mapping in the table above. Today about twenty-five of
+  them: Tickets (tracking number), Ticket lifecycle (reopen target, closed
+  reopen policy), Privacy (masking), Ticket visibility, Branding (two), Updates,
+  Authentication (SAML, OIDC, Registration, Passwords, API keys, key
+  lifetime), Submissions (guests attaching files), Attachments (scanner
+  address, twice), Email (staff email, twice), Features (SLA), and the ones
+  #616, #670, #673 and #676 add. *Small screens → Admin pages (#522)*
+  becomes "each Settings page" instead of "each Settings tab", and "the
+  Settings Authentication tab" becomes "the Authentication page".
+  *Email templates* (Notifications) gives the new address.
+- **`docs/upgrade-notes-1.3.0.md`.** A new entry, *Settings Are Now Pages
+  Under System (#674)*. It says that the settings page is now eight pages
+  under System, with the table of where each old tab's sections went, and
+  that Email Templates is now the Templates tab of Email. Old addresses and
+  bookmarks redirect. No setting, default or API changes. Each page saves
+  only its own changes and asks before leaving with unsaved edits. Every
+  "Settings → …" location in the notes is rewritten, about fifteen of them.
+- **`README.md`** line 86: "turn it on under System → Email".
+- **`docs/api/openapi.yaml`, MCP, CLAUDE.md:** no change. No API moves.
+- **Screenshots** (`frontend/scripts/screenshots/capture.mjs`). The file
+  names do not change, so the pages that embed them keep working.
+  - `08-admin-settings.png`: path `/admin/settings/general`.
+  - `14-admin-settings-attachments.png`: path `/admin/settings/attachments`,
+    without the tab click.
+  - `19-admin-settings-privacy.png`: path `/admin/settings/privacy`. It
+    covers the same three sections, which are now on one page, plus Available
+    queue between them.
+  - `31-email-template-html.png` and `32-email-template-refused.png`: path
+    `/admin/settings/email/templates?t=ticket_created`.
+
+  The admin guide on the project site (gh-pages, outside this branch) names
+  "Settings → …" places. It is updated when the screenshots are taken
+  again.
+- **Browser tests.**
+  - `admin-nav-sections.spec.ts`: the new `SECTIONS` and the fit case (see
+    Sidebar).
+  - `mobile-layout.spec.ts`: as above.
+  - `email-templates.spec.ts` and `e2e-csp/email-template-preview.spec.ts`:
+    the new path. One test keeps the old path and asserts that it lands on
+    the new one with `?t=` kept.
+  - `after-upgrade.spec.ts`: unchanged, apart from copy.
+
+**Tests to write**:
+
+- *Router* (`router.settings-pages.test.tsx`):
+  - Each of the nine new paths has a `beforeLoad` that resolves for an
+    administrator, redirects staff and a requester to `/dashboard`, and
+    redirects someone signed out to `/login`.
+  - `/admin/settings` lands on `/admin/settings/general` and
+    `/admin/email-templates?t=ticket_created` lands on
+    `/admin/settings/email/templates?t=ticket_created`. Both replace the
+    history entry.
+  - `router.email-templates-guard.test.tsx` moves to the new path.
+- *The patch* (`buildSettingsPatch`, pure):
+  - An unchanged key is not sent, and a `*_set` key never is.
+  - A changed array is sent.
+  - A key that is absent from the dump and set in the draft is sent.
+  - A typed secret is sent trimmed, a blank one is not sent, and a cleared
+    one is sent as `''`.
+  - A changed guest 20 with a draft overall limit of 10 is sent as 10.
+- *The draft hook*:
+  - `dirty` is false while loading and false after load with no edits. It is
+    true after an edit and after typing a secret.
+  - `dirty` is false while the save is pending and after the save and its
+    refetch.
+  - With nothing cached, `isLoading` is true until the draft has been seeded:
+    in the render where the query's data first appears, `isLoading` is still
+    true. With the dump already in the cache, `isLoading` is false and the
+    accessors return the stored values in the first render.
+  - A refused save keeps the edits and `dirty`.
+  - The `email_required` message is shown.
+  - `aboutClients` is set only when the patch turns `ticket_scope_enforced`
+    on.
+- *Each page holds exactly its sections*: render each page and assert the
+  list of `h2` names equals the table, in order. Features also checks its
+  one SLA tab, and Email checks both tabs and that Notifications has the
+  four overrides and the SLA alerts switch. Nothing else is on the page.
+- *Each page saves only its own keys*: edit one setting on General and save.
+  The `PATCH` body is exactly that key. Repeat on File Attachments with a
+  reputation key typed.
+- *A section that seeds at mount sees the stored value*: with
+  `attachment_allowed_types` stored as `["application/pdf"]` (different from
+  `DEFAULT_ALLOWED_TYPES`), File Attachments' allowed-types box shows
+  `application/pdf`, both when the page is opened with nothing cached and
+  when it is opened with the dump already cached. Editing another Uploads
+  setting and saving does not send `attachment_allowed_types`.
+- *Staff email mirrors the profile*: the override names of Staff email about
+  tickets equal the switch labels of `EmailNotificationsSection`, in order.
+  Both lists are exported for this test (`STAFF_EMAIL_SWITCHES` from
+  `StaffEmailSection`, `EMAIL_SWITCHES` from `EmailNotificationsSection`, the
+  latter renamed from `SWITCHES`).
+- *The Email tabs*: `/admin/settings/email` and
+  `/admin/settings/email/templates` both show the `h1` "Email" and the two
+  tab links, with `aria-current="page"` on the one for the current address.
+  Templates shows no Save changes button.
+- *The leave guard*:
+  - Edit, then follow a sidebar link: the dialog appears. Stay keeps the edit
+    and the address. Leave navigates and discards the edit.
+  - Edit an override on Notifications, then follow the Templates tab: the
+    dialog appears. Leave opens Templates; following Notifications back shows
+    the stored value, not the edit.
+  - With no edits, after a successful save, and on the Templates tab,
+    following a link shows no dialog.
+  - Opening each page and leaving without touching anything never prompts.
+    This catches a control that writes the draft on mount.
+- *Guest Access and File Attachments*:
+  - With `attachment_max_mb` 10 stored, the guest slider's top is 10.
+  - After saving 30 on File Attachments, Guest Access shows a top of 30.
+  - File Attachments shows "Guests: up to …" from the stored guest value.
+- *Sidebar* (`AdminNavSections.test.tsx`):
+  - System lists the nine links in order, and Integrations no longer lists
+    Email Templates.
+  - On `/admin/settings/email/templates`, Email is the current link and
+    System is open.
+  - A non-administrator sees no System section.
+- *Banner*: the template notice links to
+  `/admin/settings/email/templates?t=<name>`, and the reopen-target, SAML and
+  scanner notices name the new places.
+- *After upgrade* (`after-upgrade.test.tsx`): the guest step says "under
+  System, Guest Access", and the staff-email step's SLA alerts paragraph says
+  "under System → Email" and no longer says "under Features".
+- *Moved tests*: every existing test that renders `SettingsPage` and clicks a
+  tab renders the page that now holds the section instead. The ones on
+  origin/v1.3.0-beta are `settings-*`, `audit-*`, `api-key*`,
+  `password-grace-settings`, `saml-metadata`, `guest-attachments-setting`,
+  `scanner-status`, `attachment-security-settings`, `logo-uploader` and
+  `attachments-download-only`. #616, #670, #672 and #673 add
+  `settings-passkey-required`, `settings-sla-alerts`, `sla-policy-form` and
+  #673's. The assertions do not change. Only the rendered page and the
+  router mock change: the mock gains `useBlocker`. The `settings-sla-alerts`
+  switch test now renders Email.
+
+#### Decisions taken without the owner
+
+Each can be overturned in one line.
+
+- **The addresses are `/admin/settings/<page>`.** Rejected:
+  `/admin/system/<page>`. Audit Log stays at `/admin/audit`, so a `system`
+  prefix would not cover the System section anyway, and with
+  `/admin/settings` as a prefix the old address keeps meaning "the settings".
+- **Audit Log stays administrator-only.** Rejected: showing it to staff, as
+  the issue's table says. That is a permission change to `GET /admin/audit`
+  (#129), not a page move, and it would need its own issue.
+- **One draft per page, with a leave guard.** Rejected: one draft shared by
+  every page, which would save edits from a page that is no longer on screen
+  and contradicts #673's per-page rule. Also rejected: no guard, which
+  silently drops the edits that a tab switch used to keep.
+- **A save stays "Saving…" until the settings have been fetched again.**
+  Rejected: writing the patch into the query cache, which would show stored
+  bytes where the dump reports the value in force.
+- **Email has two tabs, Notifications and Templates, each with its own
+  address.** Rejected: one long page with the template editor under the
+  overrides. That would put two save models on one page and give the
+  editor's `?t=` deep link a page it does not own.
+- **Features shows its one tab (SLA) at `/admin/settings/features`, with no
+  tab segment in the address.** The owner asked for SLA as a tab. Rejected:
+  `/admin/settings/features/sla`, an address for a choice that does not
+  exist yet. The second feature tab adds its own segment.
+- **`sla_alerts_enabled` becomes its own section, SLA alerts, after Staff
+  email about tickets on Email.** This follows the owner's "switch and
+  setting". Rejected: one row inside the overrides section, which would mix
+  a gate with the per-person overrides.
+- **Available queue goes on Privacy after Ticket visibility.** Rejected:
+  General → Tickets. Its copy depends on `ticket_scope_enforced`, which is
+  on Privacy.
+- **Privacy keeps today's relative order: Ticket visibility, Available
+  queue, Audit log, Privacy.** Rejected: the order in the issue's table
+  (masking first), which reorders for no stated reason and changes the
+  composition of screenshot 19.
+- **Section headings do not change, including "Privacy" on the Privacy
+  page.** Rejected: renaming it to "Requester names", which is churn in
+  tests and screenshots for wording only.
+- **The Email tab's "Email templates" link section is removed.** Rejected:
+  keeping a link to the tab beside it.
+- **The redirect routes check nothing, and the target route guards.**
+  Rejected: a guard on both, which tests the same rule twice.
+- **UI copy says "System → Page → Section".** Rejected: keeping "Settings →
+  …", which names a page that no longer exists.
+- **Notices are reworded but not made into links.** Rejected: links on every
+  notice, which is new behaviour the issue does not ask for.
+- **Identity (site name and logo) stays on Branding and is not on
+  Authentication.** The issue's table puts Identity first under
+  Authentication and also says Branding is "unchanged". Identity is the
+  Branding tab's only section, so both cannot hold. This reading keeps
+  Branding unchanged. Rejected: moving Identity to Authentication, which
+  leaves Branding an empty page. To overturn: render `IdentitySection` first
+  on `AuthenticationSettingsPage` and remove Branding from the sidebar.
+- **"Mirror the user's own notification preferences screen" is met by the
+  section as it is.** After #670 it has one override per profile switch, with
+  the same names in the same order, and a test now pins that. Rejected:
+  restyling it as the profile's on/off list, which cannot show the third
+  choice ("Use each person's choice") and is a redesign the move does not
+  need. To overturn: say what else should match, and it becomes its own
+  change.
+- **Each address is its own flat route and component; the two Email tabs
+  are two pages that share a title and tab bar.** Notifications has the draft,
+  the guard and the save bar; Templates has none of them. Rejected: one
+  layout route with an `<Outlet>` holding one draft for both tabs, which would
+  keep an unsaved override alive while the template editor is open and put a
+  Save button for overrides under the editor.
+- **The draft hook does not render sections until the draft is seeded, and
+  seeds from the query cache when it can.** Rejected: re-syncing the Uploads
+  section's text box with an effect, which fixes one section and leaves the
+  next control that seeds at mount with the same bug.
+- **#674 is implemented only after #616, #670, #672, #673 and #676 are
+  merged.** This is the issue's own sequencing. Rejected: building on today's
+  base and adding the five later, which means splitting `SettingsPage.tsx`
+  twice and resolving each branch's conflicts against files that no longer
+  exist.
+- **The sidebar keeps its dense rows. If System does not fit at 768 or at 800,
+  the nav scrolls for that case and the current link is scrolled into view
+  (decided without the owner, after the build showed System's nine links run
+  39 px past the headroom at 800; at 900 it fits).** Rejected: denser rows,
+  which make the coarse-pointer target harder to hit, and dropping the last-link
+  headroom check for System at every height.
+- **Page titles are the sidebar labels.** Rejected: "General settings" and
+  similar, which repeat the section heading.
+
 ---
 
 ## Authentication
@@ -804,7 +2197,7 @@ An install upgraded from an earlier release has never been asked about the choic
 ### Local Auth (Default)
 
 - Username/password with bcrypt hashing at **cost 12** (`user.ProductionBcryptCost`, #453). Releases up to 1.2 hashed at cost 10; a hash made at a lower cost is replaced at that account's next successful password sign-in, with a write conditional on the old hash so a password changed in between is never overwritten. The upgrade is best effort: a failure is logged and the sign-in still succeeds. While accounts are still on a lower cost, a wrong password for such an account spends the extra comparisons needed to cost as much as one at cost 12, so it takes as long to refuse as an address with no account. An account with no password (one that signs in only through SSO) or with a hash bcrypt cannot read is refused after the same comparison an unknown address gets, so a wrong password does not say which addresses belong to SSO-only accounts (#476). A hash at a higher cost than this one still takes longer to refuse; none is ever written. A password is 8 to 72 **bytes**, the same rule wherever one is set: first-run setup, admin create, admin reset, the account page and signup verification (`user.ValidatePassword`, #368). The upper bound is bcrypt's: it reads only the first 72 bytes and refuses to hash more. It counts bytes, not characters, so accented letters take 2 bytes each and most other non-Latin characters 3 or 4, and a 25-character passphrase in Chinese is already too long. A password over the limit is refused with a 400 that names it (`bad_request`, or `password_too_long` at signup verification). Sign-in applies no maximum, so a hash made elsewhere by a bcrypt that silently truncated still accepts its owner's full password: only the first 72 bytes are compared, as bcrypt always has. A missing or wrong **current** password on `PATCH /me/password` is `400 invalid_current_password`, not 401 (#555): the session is good, and the web client reads every 401 as an expired session and signs the person out. Wrong guesses are throttled per user with a budget the size of sign-in's, counted separately (key `change-password:<user id>`, failures only, same `AUTH_THROTTLE_DELAY` tarpit: the right password always works).
-- **Old hashes stop working after N days (#453).** Rehash at sign-in only reaches accounts that sign in, so a hash made below cost 12 is refused too once the grace period ends. `admin.KeyPasswordRehashStartedAt` (`password_rehash_started_at`) holds the moment 1.3.0 first ran against the database, written once by migration 000044 (`ON CONFLICT DO NOTHING`; a fresh install has no old hashes, so its date changes nothing). It is a settings row rather than an `instance_secrets` row: that table is for secrets (a name allowlist and at least 32 bytes), and a date is not one. It is a known key only because the migration test requires every seeded key to be one; `PATCH /admin/settings` refuses it with `readonly_setting`, it is auth-critical, and the settings dump leaves it out, so nobody can restart the clock. N is `password_rehash_grace_days` (Authentication tab, default **30**, 1 to 365 enforced when saved; an unreadable or out-of-range stored value reads as 30). Sign-in only: `user.Service.VerifyPasswordForSignIn` returns `ErrPasswordResetRequired` for a **correct** password on a hash below the current cost once `started_at + N days` has passed, and the handler answers 403 `password_reset_required` (the reset link is sent, or the message says what to do instead; see below). A wrong password still answers 401 `invalid_credentials`, so a guesser learns nothing about the hash. The refusal spends the same bcrypt work as a wrong password on that hash (it burns the cost difference instead of the rehash), pinned by a work-counting test next to #475's. `VerifyPassword` (confirming the current password while changing it) never refuses, since changing the password is the cure. No deadline recorded, or one that cannot be read, means no refusal. **Every administrator is exempt** (rehashed at sign-in as before): administrators are who reset everyone else, setup does not reopen, and email may be off. An earlier version exempted only the last active administrator, which still locked out the others; Erik widened it. Staff and requesters are refused. The SAML restriction (`saml_required`, password sign-in limited to administrators) is checked first, so a non-administrator under SAML gets that refusal rather than a reset instruction. When the server can send email (`passwordResetAvailable()`), the refusal also sends the reset link, through the same code path as "Forgot password" (`requestPasswordReset`, see below), and the message says to check email; Erik's ruling of 2026-10-19, replacing "refuse and point at Forgot password". It is sent only after the password was verified and after the SAML check, so a wrong password or a SAML refusal sends nothing. It spends the same per-address budget as `POST /auth/forgot-password` (`forgotPasswordKey`), and the per-account limit applies when the worker sends. Over the budget, or if the queue insert fails, nothing is queued and the message says "We could not send a reset link just now. Try again in a minute, or ask an administrator." rather than claiming a mail was sent; the code stays `password_reset_required`. The work added to the request is one outbox insert; the mail is sent by the worker. When email is off nothing is sent and the message points at an administrator. The sign-in page shows the "Forgot password?" link in the email-on case (#451).
+- **Old hashes stop working after N days (#453).** Rehash at sign-in only reaches accounts that sign in, so a hash made below cost 12 is refused too once the grace period ends. `admin.KeyPasswordRehashStartedAt` (`password_rehash_started_at`) holds the moment 1.3.0 first ran against the database, written once by migration 000044 (`ON CONFLICT DO NOTHING`; a fresh install has no old hashes, so its date changes nothing). It is a settings row rather than an `instance_secrets` row: that table is for secrets (a name allowlist and at least 32 bytes), and a date is not one. It is a known key only because the migration test requires every seeded key to be one; `PATCH /admin/settings` refuses it with `readonly_setting`, it is auth-critical, and the settings dump leaves it out, so nobody can restart the clock. N is `password_rehash_grace_days` (Authentication page, default **30**, 1 to 365 enforced when saved; an unreadable or out-of-range stored value reads as 30). Sign-in only: `user.Service.VerifyPasswordForSignIn` returns `ErrPasswordResetRequired` for a **correct** password on a hash below the current cost once `started_at + N days` has passed, and the handler answers 403 `password_reset_required` (the reset link is sent, or the message says what to do instead; see below). A wrong password still answers 401 `invalid_credentials`, so a guesser learns nothing about the hash. The refusal spends the same bcrypt work as a wrong password on that hash (it burns the cost difference instead of the rehash), pinned by a work-counting test next to #475's. `VerifyPassword` (confirming the current password while changing it) never refuses, since changing the password is the cure. No deadline recorded, or one that cannot be read, means no refusal. **Every administrator is exempt** (rehashed at sign-in as before): administrators are who reset everyone else, setup does not reopen, and email may be off. An earlier version exempted only the last active administrator, which still locked out the others; Erik widened it. Staff and requesters are refused. The SAML restriction (`saml_required`, password sign-in limited to administrators) is checked first, so a non-administrator under SAML gets that refusal rather than a reset instruction. When the server can send email (`passwordResetAvailable()`), the refusal also sends the reset link, through the same code path as "Forgot password" (`requestPasswordReset`, see below), and the message says to check email; Erik's ruling of 2026-10-19, replacing "refuse and point at Forgot password". It is sent only after the password was verified and after the SAML check, so a wrong password or a SAML refusal sends nothing. It spends the same per-address budget as `POST /auth/forgot-password` (`forgotPasswordKey`), and the per-account limit applies when the worker sends. Over the budget, or if the queue insert fails, nothing is queued and the message says "We could not send a reset link just now. Try again in a minute, or ask an administrator." rather than claiming a mail was sent; the code stays `password_reset_required`. The work added to the request is one outbox insert; the mail is sent by the worker. When email is off nothing is sent and the message points at an administrator. The sign-in page shows the "Forgot password?" link in the email-on case (#451).
 - Available for all roles by default. With `saml_enabled` on, only administrators keep it (see SAML below).
 - **MFA** (optional toggle `mfa_enabled` in admin settings): a second factor is **either** a TOTP authenticator app (Google Authenticator, Authy, etc., enrolled by QR code) **or** a registered passkey (below). Admin can enforce MFA for specific roles (`mfa_enforced_roles`) or all users, and can require a passkey, instead of TOTP being enough, for specific roles (`passkey_required_roles`, an auth-critical setting; see "Passkey required for roles (#616 part c)"; a listed role is MFA-enforced as well, and the settings page shows its MFA box checked and disabled); an enforced user with no factor is sent to enrolment at sign-in, and right after verifying a self-service signup.
 - **A half-signed-in session expires** (#452). After the password is accepted but before the second factor is done, the session is good for **5 minutes** when a code from an existing factor is owed (TOTP or passkey) and **15 minutes** for first-time enrolment, which takes longer (installing an app, scanning a code). The limit is chosen when the session is created (`auth.PendingDeadline`) and stored as `SessionData.PendingUntil`; saving a staged enrolment secret does not extend it. Past it, `SessionAuth` deletes the session row and the request carries no actor, so the route answers its usual 401 and the person signs in with their password again; a refused code is never checked, so it does not use up an MFA attempt. The cookie and row are also given that lifetime so an abandoned sign-in clears itself. A pending session with no `PendingUntil` (saved before this existed) counts as expired, so anyone mid-sign-in at upgrade signs in once more. A fully signed-in session is not affected. Enrolment stays outside `RequireMFA`, so the password is still a way in: the sole administrator can always sign in again and recover (`TestSoleAdministrator_CanSelfRecoverWithNoSecondFactor`).
@@ -1423,7 +2816,7 @@ on a passkey-grade assertion, otherwise a passkey step follows the SSO.
 
 ### SAML (Optional, Off by Default)
 
-- Configured under **Admin → Settings → Authentication** with the IdP's metadata, given as a URL the server fetches or as the metadata XML pasted or uploaded on the settings page (readable after saving: it is public data), and a service-provider certificate and key (the key is write-only). The IdP registers this instance from `GET /api/v1/auth/saml/metadata`. Sign-in starts at `GET /api/v1/auth/saml/login`, which always opens a new request at the IdP (even when the browser still holds a hand-over cookie) and accepts no return address. It returns to `POST /api/v1/auth/saml/acs`, then always to `GET /api/v1/auth/saml/complete` ([#390](https://github.com/PubliciaLLC/go-help-desk/issues/390); pinned by `TestSAMLLogin_RedirectsToTheIdP`, `TestSAMLLogin_IgnoresReturnToParameters` and `TestSAMLLogin_StartsFreshEvenWithAHandoverCookie`). IdP-initiated sign-in is not accepted. The login page shows a **Sign in with SAML** button, a plain link to `GET /api/v1/auth/saml/login`, when `GET /auth/providers` reports SAML enabled (the middleware is loaded, whatever `saml_enabled` says) ([#393](https://github.com/PubliciaLLC/go-help-desk/issues/393), [#421](https://github.com/PubliciaLLC/go-help-desk/issues/421)).
+- Configured under **Admin → System → Authentication** with the IdP's metadata, given as a URL the server fetches or as the metadata XML pasted or uploaded on the settings page (readable after saving: it is public data), and a service-provider certificate and key (the key is write-only). The IdP registers this instance from `GET /api/v1/auth/saml/metadata`. Sign-in starts at `GET /api/v1/auth/saml/login`, which always opens a new request at the IdP (even when the browser still holds a hand-over cookie) and accepts no return address. It returns to `POST /api/v1/auth/saml/acs`, then always to `GET /api/v1/auth/saml/complete` ([#390](https://github.com/PubliciaLLC/go-help-desk/issues/390); pinned by `TestSAMLLogin_RedirectsToTheIdP`, `TestSAMLLogin_IgnoresReturnToParameters` and `TestSAMLLogin_StartsFreshEvenWithAHandoverCookie`). IdP-initiated sign-in is not accepted. The login page shows a **Sign in with SAML** button, a plain link to `GET /api/v1/auth/saml/login`, when `GET /auth/providers` reports SAML enabled (the middleware is loaded, whatever `saml_enabled` says) ([#393](https://github.com/PubliciaLLC/go-help-desk/issues/393), [#421](https://github.com/PubliciaLLC/go-help-desk/issues/421)).
 - **SAML runs whenever the IdP metadata (a URL or XML), the certificate and the key are all set**; otherwise its routes answer `503 saml_not_configured`. There is no on/off switch for SAML itself. The settings page only shows the SAML fields while the "Enable SAML login" (`saml_enabled`) toggle is on, so it steers an operator configuring SAML toward also turning off password login for non-administrators; the toggle only takes effect when the settings are saved (the SAML fields have their own "Save SAML config"), so it can be switched back off after the SAML config is saved.
 - **IdP metadata: a URL or XML (#461).** `saml_metadata_url` and `saml_metadata_xml` are alternatives. A save that would leave both set is refused: `400 saml_metadata_conflict` on `PUT /admin/saml`, and `400 bad_request` on the settings PATCH. Pasted XML is parsed before anything is saved, by the parser a fetched URL goes through (`samlsp.ParseMetadata`). A document that does not parse, is not SAML metadata, has no `IDPSSODescriptor` (most often this instance's own SP metadata pasted by mistake), or has no signing certificate that parses as X.509 (the certificates the SP verifies every assertion against; such metadata loads, so it would otherwise count as reachable for the lockout guard and then refuse every sign-in) is refused with `invalid_saml_metadata`, and one over 256 KiB with `saml_metadata_too_large`. Go's XML decoder resolves no external entities, fetches no DTD and expands no declared entity, so a pasted document cannot make the server read a file or a URL (pinned by `TestParseIdPMetadataXML_FetchesNoExternalEntity`). The settings page's upload button only fills the text box, so pasted and uploaded XML are the same input. Saved XML is never refreshed: when the IdP rotates its signing certificate, paste its new metadata. A URL is fetched again at each save and each restart, and **every hour** by `Server.RefreshSAML` (from the same hourly goroutine that sweeps expired sessions) under the rules in the next bullet. Pasted XML may declare any `encoding` in its XML declaration, UTF-16 included (a UTF-16 file keeps its declaration when a browser reads its text): the text is already UTF-8, so the declaration is rewritten to `UTF-8` for parsing only and the stored XML is exactly what was pasted. A metadata URL that serves real UTF-16 bytes is not decoded. **Certificate expiry warning:** `GET /admin/security-warnings` carries `saml_idp_certificate: {expires_at, expired}` when the live IdP metadata's signing certificate is expired or expires within 30 days (absent otherwise, and while SAML is not loaded). With several signing certificates (an IdP mid-rollover) the latest expiry decides. The banner shows it amber before expiry and red after. Metadata cannot be refreshed from pasted XML, so this is the only signal; prefer the URL if your IdP has one (Google Workspace offers only a download). The private key stays write-only; the XML is returned by `GET /admin/saml` and the settings dump.
 - **The hourly refresh may not move the trust anchor unattended (#619).** What the IdP's metadata says decides which certificate signs anyone in, so an automatic re-fetch is limited; a save by an administrator is not. Each tick, under the reload lock (below), `RefreshSAML` compares the stored settings with the settings the running middleware was built from:
@@ -1498,7 +2891,7 @@ The request-tracking cookie is `SameSite=None; Secure` when the base URL is http
 
 ### OIDC (Optional, Off by Default)
 
-- Configured under **Admin → Settings → Authentication** (`PUT /api/v1/admin/oidc`, refused to machine credentials; `GET` blanks the secret): `oidc_enabled`, `oidc_issuer_url`, `oidc_client_id`, `oidc_client_secret` (write-only; a blank secret on save keeps the stored one) and `oidc_redirect_url`. `PUT /admin/oidc` takes no redirect URL: the stored value is kept, or `{BASE_URL}/api/v1/auth/oidc/callback` is filled in when there is none, and that is what the identity provider must allow. The provider is found by OIDC discovery from the issuer URL and reloaded without a restart. Enabling it with a blank issuer, client id or secret is refused (`400`).
+- Configured under **Admin → System → Authentication** (`PUT /api/v1/admin/oidc`, refused to machine credentials; `GET` blanks the secret): `oidc_enabled`, `oidc_issuer_url`, `oidc_client_id`, `oidc_client_secret` (write-only; a blank secret on save keeps the stored one) and `oidc_redirect_url`. `PUT /admin/oidc` takes no redirect URL: the stored value is kept, or `{BASE_URL}/api/v1/auth/oidc/callback` is filled in when there is none, and that is what the identity provider must allow. The provider is found by OIDC discovery from the issuer URL and reloaded without a restart. Enabling it with a blank issuer, client id or secret is refused (`400`).
 - Sign-in is the authorization-code flow with PKCE (S256), a `state` and a nonce, scopes `openid profile email`. `GET /api/v1/auth/oidc/login` redirects to the provider; `GET /api/v1/auth/oidc/callback` finishes it and redirects to `/`. A refused callback redirects to `/login?error=<code>`, as SAML does, so the login page can say why. A missing or mismatched `state` is `invalid_state`, and a missing session is `invalid_session`. The routes answer `503 oidc_not_configured` while no provider is loaded. The login page shows a **Sign in with OIDC** button when `GET /auth/providers` reports it enabled, which means the provider is loaded. `GET /admin/oidc` and `GET /admin/saml` carry two facts: `configured` (the saved settings are complete) and `live` (the provider is loaded now), so "saved, not working" is `configured: true, live: false` (#421).
 - **Only a verified email counts.** An address the provider has not marked `email_verified` is dropped: it cannot be used to adopt an account or provision one. A subject already bound to an account still signs in; a first-time login with no verified email is refused (`email_not_verified`), and one whose address needs quotation marks with `invalid_email` (see Guest Submission).
 - **`allowed_email_domains` applies to every OIDC sign-in** that carries an email (`domain_not_allowed`), unlike SAML where it gates provisioning only; an empty list is unrestricted.
@@ -1509,7 +2902,7 @@ The request-tracking cookie is `SameSite=None; Secure` when the base URL is http
 
 A visitor creates a `User`-role account for themselves and proves they own the address before it exists.
 
-- Settings, all under **Admin → Settings → Authentication → Registration** and all auth-critical (a machine credential cannot change them): `self_signup_enabled` (off), `allowed_email_domains` (one domain per line) and `open_registration_enabled`. With a non-empty domain list only those domains may sign up. With an empty list, signup is refused (`422 domain_not_allowed`) unless open registration is on, so "anyone with any address" is a separate, confirmed choice and never the accident of a blank list. The same domain list also gates SAML provisioning and OIDC sign-in (above).
+- Settings, all under **Admin → System → Authentication → Registration** and all auth-critical (a machine credential cannot change them): `self_signup_enabled` (off), `allowed_email_domains` (one domain per line) and `open_registration_enabled`. With a non-empty domain list only those domains may sign up. With an empty list, signup is refused (`422 domain_not_allowed`) unless open registration is on, so "anyone with any address" is a separate, confirmed choice and never the accident of a blank list. The same domain list also gates SAML provisioning and OIDC sign-in (above).
 - `GET /api/v1/auth/signup/status` (public) returns `{enabled, open_registration, restricted_by_domain_list, saml_enabled}`; the login page offers "Create one" from it. `open_registration` is what is in force: the setting **and** no domain list, because a non-empty list overrides open registration. `restricted_by_domain_list` is true when such a list limits signup, which is why `open_registration` can be false while its setting is on (#421). Who may sign up is unchanged.
 - `POST /api/v1/auth/signup` takes `{email}` and answers `403 signup_disabled` when off. The signup form takes only the address: no password (#360) and no display name (#374), and either one sent by an older client is ignored. The address must be a single valid email (`400`), and not one whose local part needs quotation marks (#389, see Guest Submission). Attempts are counted per source address (`AUTH_RATE_LIMIT_PER_MINUTE`, `429`). It stores a **pending registration** (address and a 24-hour token; one pending row per address, and a repeat only re-issues the token, since no name or password is stored) and queues one event naming only that registration's id; the verification mail, a link to `{BASE_URL}/verify-email?token=…`, is sent from the notification outbox, not on the request (see the signup bullet under Notifications). Nothing is sent if SMTP is not configured, so signup cannot complete on an instance without email; turning `self_signup_enabled` on in that state is refused (`400 email_required`, see Notifications), and an instance that already has it on is warned in the admin security warnings.
 - **Same answer whether or not the address already has an account.** The response is `202` with the same body either way (deleted accounts still own their address), and a new and a taken address do the same work on the request: the address is checked, the pending row written and one event queued. Whether a mail goes out is decided when it would be sent, off the request: the send re-reads the row and mails nothing if the row is gone or expired or the address has an account, so a taken address gets a pending row that is never mailed and expires unused. Because neither case dials the mail server on the request, the timing does not tell them apart either. That is the request only: the timing of the send is a separate signal, recorded under Guest Submission. Anything that distinguished them would make signup a way to find out who has an account here; the person who forgot they have one reaches for the login page.
@@ -1519,8 +2912,7 @@ A visitor creates a `User`-role account for themselves and proves they own the a
 
 A federated account (SAML or OIDC) can have no local password at all
 (`password_hash` empty; local login refuses it with 401), so its only way in is
-that provider. Disabling or clearing the provider's configuration in **Admin →
-Settings** removes that channel while leaving the row, the role and the
+that provider. Disabling or clearing the provider's configuration in **Admin → System → Authentication** removes that channel while leaving the row, the role and the
 active-administrator count untouched: the same class of mistake as the
 last-administrator guard (see User Management), reached through a door that
 guard does not watch, since it watches the administrator *row* and not their
@@ -1775,7 +3167,7 @@ whether the caller is a guest, which is the shape of the authorisation bug fixed
 in 1.2.0.
 
 - **Toggle in admin settings:** when off, all guest routes (both public submission and token-based read/reply/attach) answer 404 to visitors, suspending any links already issued until the setting is turned back on (#424).
-- **Guests attaching files** (#445) is a second, separate switch, **Guests may attach files** (`guest_attachments_enabled`, **Admin → Settings → General → Submissions**, under guest submission). **Off by default, upgraded installs included**: before it existed a guest could upload through `POST /guest/attachments` whenever guest submission was on, and that is now closed until an administrator opens it. It is **dependent** on guest submission: the setting only takes effect while `guest_submission_enabled` is on (the settings page shows it unavailable while submission is off, and the server treats it as off), so there is no state in which uploads are on and submission is off.
+- **Guests attaching files** (#445) is a second, separate switch, **Guests may attach files** (`guest_attachments_enabled`, **Admin → System → Guest Access → Submissions**, under guest submission). **Off by default, upgraded installs included**: before it existed a guest could upload through `POST /guest/attachments` whenever guest submission was on, and that is now closed until an administrator opens it. It is **dependent** on guest submission: the setting only takes effect while `guest_submission_enabled` is on (the settings page shows it unavailable while submission is off, and the server treats it as off), so there is no state in which uploads are on and submission is off.
   - **Size.** `guest_attachment_max_mb` is a per-file maximum for guests, 5 MB by default, set with a slider that runs from 1 MB to the per-file limit every upload has (`attachment_max_mb`, 25 MB by default; see Per-file size limit, #673). The server holds the guest to the **lower** of the two. A value outside 1 to that limit is refused at save (`400 bad_request`) and not stored; a stored value that the limit was later lowered beneath is kept, and the limit applies until one of them changes (the page says so). An unreadable stored value, or one outside 1 to 100, reads as 5. Over the limit is `413 too_large`, with the limit that applied in the message ("file exceeds 5 MB limit"); the body is capped while it is read, as for every upload.
   - **Per-ticket cap and hourly rate** (Erik, 2026-10-19). `guest_attachment_max_per_ticket` is the most files guests may attach to one ticket (1 to 50, default 5); `guest_attachment_uploads_per_hour` is how many uploads one guest link may make per hour (1 to 30, default 3). Both are set under the uploads switch in Settings, unavailable while it is off, session-only, validated at save (`400`, nothing stored) and read as their defaults when unset or damaged, so an upgraded install gets 5 and 3 as soon as an administrator turns uploads on. Both are checked on the guest upload route after the setting, the token and the lifecycle check, the cap first: a full ticket answers `409 guest_attachment_limit` ("This ticket already has the most files a guest can attach"), and the cap does not spend the hour. Past the hourly figure the answer is `429 rate_limited` with `Retry-After` in whole seconds. The rate is keyed by the **ticket the link names**, not the address, so a guest behind a shared address cannot use up another's hour; it counts in the database like every limiter (see Rate limits), through `ratelimit.Limiter.TakeWithLimit`, because the figure is an admin setting that changes while the server runs. The window is the ticket's own, opened by its first upload in an hour, so `Retry-After` is the time left in that ticket's window; a restart does not clear it and every replica shares it. The unit is spent before the work, so parallel uploads cannot all pass a budget with one slot left, and **given back only when the refusal was decided before the scanner**: a wrong type, an over-size file, a name or request the parser refuses (`unsupported_type`, `too_large`, `invalid_filename`, `bad_request`). Those cost the server a body read and nothing more. Everything decided after the scan keeps its unit: `invalid_image`, `invalid_file` (a content mismatch), a malware verdict (`422 infected`), a scanner or storage fault (`503`) and any 5xx, and so does the cap refusal that comes from inside the transaction. Refunding a post-scan refusal let a guest make the server scan without limit (measured: twenty bad PNGs at a budget of one were twenty scans). Because a pre-scan refusal is free of the hour, **every refused attempt also draws on a second, fixed budget of 20 per hour per ticket** (`guestRefusalLimiter`, not a setting), whether or not its unit came back; it is charged up front in one locked step (so parallel refusals cannot overshoot it) and given back when the upload is accepted, and it is charged before the hourly budget, so an attempt turned away by it never spends an hourly upload (#559). Once spent, the route answers `429 rate_limited` with `Retry-After` before reading anything, a good file included, until the window ends. It is in the database too, with the window of its own ticket. The cap counts **only guest uploads**, for which `attachments.uploaded_by_guest` (migration 000054) records the fact, because nothing recorded who uploaded a file; staff and reporter files never count. Files a guest attached before the migration are not counted (the column defaults to false). The cap is **exact**: the authority is `ticket.Service.CreateGuestAttachment`, which counts inside the transaction that already locks the ticket row, so uploads racing for the last slot leave exactly one file there (`TestCreateGuestAttachment_ParallelUploadsCannotOvershootTheCap`). A cheaper count before the file is read and scanned only saves that work. `GET /site` carries the cap and the hourly figure with the size, and the page offers at most the lower of what the ticket has room for and the hour allows, worded "up to 3 files now (5 per ticket)" when they differ.
   - **Refusal.** With uploads off the route answers the generic `404 not_found`, byte-identical to a bad link and to guest submission being off, like every other guest refusal: a different status would tell an anonymous caller which setting is in force.
@@ -1860,7 +3252,7 @@ own box, which does not count as cutting text.
 **Admin pages (#522).** The same treatment, applied to every page under Admin
 (Users and a user's page, Groups, Roles, Categories, Statuses, Tags, Canned
 responses, Custom fields, API keys, OAuth clients, Webhooks, Routing, Audit and
-each Settings tab): `wrap-anywhere` on what an administrator typed (names,
+each settings page): `wrap-anywhere` on what an administrator typed (names,
 descriptions, URLs, email addresses), and `min-w-0` on flex and grid children so
 they can shrink to it. The tables on Users, Roles, Statuses, Tags, Canned
 responses, Custom fields, API keys, OAuth clients, Webhooks and Audit, and the
@@ -1868,7 +3260,7 @@ Categories tree, each sit in an `overflow-x-auto` box. Those tables are still
 wider than a phone with short data, so they scroll sideways inside that box and
 every column, action buttons included, can be reached; the page does not move.
 (They used to be `overflow-hidden`, which cut the columns off instead.) Groups,
-a user's page, Routing and Settings are cards and forms, not tables. On Settings, the tab bar scrolls inside its own row, and a
+a user's page, Routing and the settings pages are cards and forms, not tables. On the pages with tabs, the tab bar scrolls inside its own row, and a
 setting's control sits under its label below `sm` instead of beside it, because
 a select or number box that cannot shrink does not fit beside a label at 320
 pixels. The end-to-end check pins every admin page, with a 300-character name,
@@ -1878,7 +3270,7 @@ fails if the page or `main` scrolls sideways, and also if anything sticks out
 past `main`'s right edge without an `overflow-x: auto` box around it, which is
 what an `overflow-hidden` wrapper looks like.
 
-Fourteen compact places still end in an ellipsis, because they are one-line rows or
+Fifteen compact places still end in an ellipsis, because they are one-line rows or
 chips where wrapping would break the row, and none of them is ticket content:
 
 - in the Linked tickets panel, the linked ticket line;
@@ -1888,11 +3280,14 @@ chips where wrapping would break the row, and none of them is ticket content:
 - in the shell, the signed-in email at the foot of the sidebar and the brand
   name in the mobile top bar;
 - on the Dashboard, each client's name and email in the By Client cards;
+- on the Reports page (#131), each bar chart row's label (the Backlog and
+  Workload bars, and the Volume bars by category and priority), with its full
+  text in the `title`;
 - on the Account page, a passkey's label;
 - in the authenticator-app setup, the secret under the QR code;
 - on a ticket, each attachment's SHA-256, cut to its first 12 characters;
 - on the Canned responses admin page, the body preview, cut to 80 characters;
-- on the Settings Authentication tab, the SAML certificate: its first line, with
+- on the Authentication page, the SAML certificate: its first line, with
   the whole PEM in the `title`;
 - on the same tab, the SAML private key: its first line followed by "…". It is
   not cut by CSS, the text is simply shortened, and it has no `title`, on
@@ -2602,7 +3997,7 @@ upgrade.
 **Phone layout.** Nothing new: the input is the `BoundedNumberInput` the guest
 cap already uses, full width under its label below `sm`, and the guest line
 and the scanner hint are text that wraps. The admin-page width checks (Small
-screens) cover the Attachments tab at 320 and 375 pixels with the hint and the
+screens) cover the File Attachments page at 320 and 375 pixels with the hint and the
 two-sentence guest line shown.
 
 **Docs.** `openapi.yaml`: `attachment_max_mb` in the settings schema (integer,
@@ -2747,7 +4142,7 @@ path skips a ~300 MB signature download it may never need. Enabling it is
 documented in `docker/.env.example`.
 
 The setting `attachment_scan_address` overrides it and takes precedence once
-saved. It has a field under Admin → Settings → Attachments, beside the scan
+saved. It has a field under Admin → System → File Attachments, beside the scan
 policy select (#172): a plain text input showing the current value, accepting
 `tcp://host:port` or `unix:///path/to/socket`, blank to fall back to
 `CLAMAV_ADDR`.
@@ -2794,7 +4189,7 @@ administrator how to turn scanning back on. This is the state of an install that
 upgraded from a release whose Compose file ran a scanner by default: "off" there
 is an accident of what was deployed, not a position anyone holds. Explicitly
 saving "Do not scan" makes `policy_explicit` true and clears the banner for good,
-so a deliberate "off" is still never warned about. Settings → Attachments shows
+so a deliberate "off" is still never warned about. Admin → System → File Attachments shows
 the same status (policy, configured, reachable, and the `effect` sentence) so an
 administrator can check it without waiting for an upload to fail.
 
@@ -3509,7 +4904,7 @@ Serves both the frontend SPA and external integrations.
 
 Everything else under `/api/v1` requires a session, API key or OAuth token, and the role and scope rules below.
 
-**Unknown settings keys.** `PATCH /admin/settings` accepts only the keys declared as `Key*` constants in `internal/domain/admin/settings.go` (`admin.KnownKeys()`, held equal to the constants by a test, with further tests that every key the Settings page sends and every key a migration seeds is in it). A body with any other key is refused whole with `400 unknown_setting` naming the first such key (sorted), and nothing is written, the valid keys beside it included. A key ending in `_set` keeps its own `400 readonly_setting`. Before 1.3.0 any key was stored, so a typo answered 204 and changed nothing (#421).
+**Unknown settings keys.** `PATCH /admin/settings` accepts only the keys declared as `Key*` constants in `internal/domain/admin/settings.go` (`admin.KnownKeys()`, held equal to the constants by a test, with further tests that every key the settings pages send and every key a migration seeds is in it). A body with any other key is refused whole with `400 unknown_setting` naming the first such key (sorted), and nothing is written, the valid keys beside it included. A key ending in `_set` keeps its own `400 readonly_setting`. Before 1.3.0 any key was stored, so a typo answered 204 and changed nothing (#421).
 
 **Errors and limits worth knowing.** A handler panic answers the standard `500 internal_error` JSON envelope (logged with the request id and stack, never echoed), not an empty body. A `429 rate_limited` from a counted window carries `Retry-After` as the whole seconds *left in the refused key's own window* (rounded up, at least 1, at most the window's length: 60 for sign-in, signup and the guest forms); the per-account MFA lock keeps its fixed length. `POST /tickets/{id}/resolve` takes an optional body: empty resolves with no notes, malformed JSON is `400`. `POST /guest/resend` accepts an empty body as `{}`. The passkey finish routes read at most 64 KiB (`413 too_large`) and answer a fault writing the session as `500`, not `400 no_challenge`. `POST /me/mfa/enroll/confirm` answers a wrong code or an unstarted enrolment as `400 invalid_code` and a storage fault as `500` (`user.ErrMFAInvalidCode`, `user.ErrMFANotStarted`). A 405 on `/tickets` names its methods in `Allow` as one line per method (chi's behaviour); read every line (#421).
 
@@ -3527,7 +4922,7 @@ Exposes help desk operations as an MCP server for AI tool integration, over two 
 | Tool | Who may call it | Notes |
 |------|-----------------|-------|
 | `get_ticket` | any signed-in user | By UUID or tracking number. Returns the reply thread and linked tickets; internal notes are omitted for reporting users. `include_replies` (default `true`): `false` returns the ticket alone, without replies or links. Staff and administrators also get the ticket's `custom_fields` (field id, name, type, options, retired options, value), left out when it has none (#627); a reporting user is never given them here. |
-| `list_tickets` | any signed-in user | The filters of `GET /api/v1/tickets` (see **List filters**), through the same parser and the same check, so the same values are accepted and the same callers are refused, in the same words (one exception: a requester who sends `assignee_group_id` is told "assignee_group_id is not available to requesters" here, where REST says "users cannot list group tickets"): `q`, `search_replies`, `reporter_id`, `requester`, `created_after`, `created_before`, `updated_after`, `updated_before`, `priority`, `category_id`, `type_id`, `item_id`, `assignee_user_id`, `assignee_group_id`, `status_id`, `status_ids`, `include_closed`, `source_channel`, `sla`, `sort` and `order`. Lists are JSON arrays (`status_ids`, `source_channel`, and `priority`, which is still accepted as a single string), at most 20 values each (a longer list is refused before any work is done on it), ORed. `status_id` (one) is kept for existing callers and may be combined with `status_ids`. A requester is refused the filters and sorts outside their allowed list ("<param> is not available to requesters"), and `requester` free text from an API key or OAuth client needs `requester_search:read` ("this credential does not carry the requester_search:read scope"); a session needs no scope. `sla`, and `sort` by `sla`, are refused while SLA tracking is off. An argument of the wrong JSON type (`limit` and `offset` included), an unknown value, or an unknown `sort` or `order` is refused with a message, never skipped (owner decision, 2026-11-12), and is not logged as a server error. Whether a reply search may match internal notes comes from the caller's role; there is no argument for it. The listing is every ticket the caller may see, as it has always been here (REST's `scope=visible`), not REST's default queue of tickets assigned to the caller, and `assignee_group_id` is not refused to a staff member who is outside the group, because it can only narrow what their scope already admits. `limit` defaults to 20 and is clamped to 100; `offset` pages the full result set. |
+| `list_tickets` | any signed-in user | The filters of `GET /api/v1/tickets` (see **List filters**), through the same parser and the same check, so the same values are accepted and the same callers are refused, in the same words (one exception: a requester who sends `assignee_group_id` is told "assignee_group_id is not available to requesters" here, where REST says "users cannot list group tickets"): `q`, `search_replies`, `reporter_id`, `requester`, `created_after`, `created_before`, `updated_after`, `updated_before`, `priority`, `category_id`, `type_id`, `item_id`, `assignee_user_id`, `assignee_group_id`, `status_id`, `status_ids`, `include_closed`, `awaiting_reply`, `source_channel`, `sla`, `held_by`, `sort` and `order`, plus `scope` (#676: absent means `visible`, what this tool has always listed; the other values and their refusals are REST's, through the same `ticket.ResolveQueue`, and an unknown value is refused; see **Ticket list views**). Lists are JSON arrays (`status_ids`, `source_channel`, and `priority`, which is still accepted as a single string), at most 20 values each (a longer list is refused before any work is done on it), ORed. `status_id` (one) is kept for existing callers and may be combined with `status_ids`. `awaiting_reply` is a JSON boolean (`true` or `false`; absent is `false`; a string, number or object is refused with "invalid awaiting_reply"), staff and administrators only: a requester sending `true` is refused "awaiting_reply is not available to requesters". A requester is refused the filters and sorts outside their allowed list ("<param> is not available to requesters"), and `requester` free text from an API key or OAuth client needs `requester_search:read` ("this credential does not carry the requester_search:read scope"); a session needs no scope. `sla`, and `sort` by `sla`, are refused while SLA tracking is off. An argument of the wrong JSON type (`limit` and `offset` included), an unknown value, or an unknown `sort` or `order` is refused with a message, never skipped (owner decision, 2026-11-12), and is not logged as a server error. Whether a reply search may match internal notes comes from the caller's role; there is no argument for it. With no `scope` the listing is every ticket the caller may see, as it has always been here (REST's `scope=visible`), not REST's default queue of tickets assigned to the caller, and `assignee_group_id` is not refused to a staff member who is outside the group, because it can only narrow what their scope already admits. `limit` defaults to 20 and is clamped to 100; `offset` pages the full result set. |
 | `list_attachments` | any signed-in user | `ticket_id` is a UUID or tracking number; a ticket the caller may not see answers the same "not found" as one that does not exist. Metadata for each file: `id`, `filename`, `mime_type`, `size_bytes`, `created_at`, `detected_mime`, `sha256`, `virus_name`, `mismatch` and `quarantined` (`virus_name` is set). `mismatch` is `null` for a file that predates the inspection, which is not the same as `false`. **No file content** (attachments are download-only) and **no reputation lookup**: that spends the operator's provider allowance, so it stays in the web interface. |
 | `list_categories` | any signed-in user | The Category/Type/Item tree, nested, for filling in CTI. Active entries only; `include_inactive: true` adds retired ones, for staff and administrators only, as on the REST catalogue; for anyone else the flag is ignored and they get active entries (no error). |
 | `list_statuses` | any signed-in user | The statuses this instance defines. |
@@ -3756,7 +5151,7 @@ Four more things are off limits to a machine credential, for the same reason:
   address and policy, allowed types, infected and mismatch handling, the
   reputation toggles, keys and refresh interval); and audit retention, staff
   visibility of change history and whether requester names are masked in audit
-  views; who may create API keys (`staff_can_create_api_keys`) and how long a new one may live (`api_key_max_lifetime_years`, #450); and who sees tickets and who is handed them (`ticket_scope_enforced`, `auto_assign_group_id`, `auto_assign_user_ids`, #450): a key that could switch scope enforcement off, or point auto-assign at an account it controls, would widen what that account sees or is given.
+  views; who may create API keys (`staff_can_create_api_keys`) and how long a new one may live (`api_key_max_lifetime_years`, #450); and who sees tickets and who is handed them (`ticket_scope_enforced`, `auto_assign_group_id`, `auto_assign_user_ids`, #450; `available_queue_roles`, #676): a key that could switch scope enforcement off, or point auto-assign at an account it controls, would widen what that account sees or is given.
   Ordinary configuration such as the site name
   stays automatable.
 - **Verifying a second factor** (`POST /auth/local/mfa/verify` and
@@ -3794,7 +5189,7 @@ one is a permission decision with one switch and no per-user exceptions.
 - **Administrators** can always create their own keys.
 - **Staff** can create their own only while the admin setting
   `staff_can_create_api_keys` ("Staff may create their own API keys", Admin →
-  Settings → Authentication → API keys) is on. It is off by default. It governs
+  System → Authentication → API keys) is on. It is off by default. It governs
   *creating* a key: turning it off revokes nothing, and staff can still list
   and revoke their own keys whatever it says, including a key an administrator
   issued for them. Revoking only ever removes access, and a person must be able
@@ -3944,7 +5339,7 @@ one is a permission decision with one switch and no per-user exceptions.
   behalf; NULL means unknown (a key made before 1.3, or an issuer deleted since).
   It is returned by both key lists, and the Account page says "Issued for you by
   an administrator" and the admin page "Issued on their behalf".
-- **Maximum key lifetime** (`api_key_max_lifetime_years`, Admin → Settings →
+- **Maximum key lifetime** (`api_key_max_lifetime_years`, Admin → System →
   Authentication → API keys). Every key made through `/me/api-keys` or
   `POST /admin/api-keys`, own or on someone's behalf, must expire, and no later
   than this: **2 years by default**, set on a slider with six stops, 1 to 5 years
@@ -4159,7 +5554,7 @@ on the existing webhook feature instead of as plugins.
   guest through its own event.
 
   An administrator can **override each switch for everyone**
-  (**Admin → Settings → Email**; the settings `staff_email_assigned_override`,
+  (**Admin → System → Email → Notifications**; the settings `staff_email_assigned_override`,
   `staff_email_activity_override`, `staff_email_group_override`,
   `staff_email_sla_override`): `user`
   leaves it to each person (the default), `on` and `off` ignore what people
@@ -4176,7 +5571,7 @@ on the existing webhook feature instead of as plugins.
   override already stored is kept (`ON CONFLICT DO NOTHING`). The down step is a
   no-op: it cannot tell its rows from an administrator's own `off`, and deleting
   them would turn mail back on. The administrator turns staff email on under
-  **Admin → Settings → Email**. Migration `000067` does the same for the fourth
+  **Admin → System → Email → Notifications**. Migration `000067` does the same for the fourth
   override, `staff_email_sla_override`, on the same condition, with the same
   no-op down step for that row, so an upgraded install, including a 1.3 beta
   whose administrator already turned the first three back on, gets no SLA mail
@@ -4237,8 +5632,7 @@ on the existing webhook feature instead of as plugins.
   **Guest tickets** carry a per-ticket link instead of a ticket id, so a
   recipient with no account reaches their own thread and nothing else.
 - **Editable email templates** ([#158](https://github.com/PubliciaLLC/go-help-desk/issues/158)).
-  An administrator edits the wording of all 24 emails under **Admin → Email
-  Templates** (`/admin/email-templates`), and a shared **header** and **footer**
+  An administrator edits the wording of all 24 emails under **Admin → System → Email → Templates** (`/admin/settings/email/templates`), and a shared **header** and **footer**
   that wrap every mail. Each can also have an optional HTML part (see *The HTML
   part* below); without one, mail is plain text.
 
@@ -5915,7 +7309,7 @@ Only admins create, edit, and delete canned responses; all staff and admins can 
 ## SLA Tracking (v1)
 
 This section describes what runs. SLA tracking is off until an operator turns
-it on from **Admin → Settings → Features**. The setting is read live, so the
+it on from **Admin → System → Features**. The setting is read live, so the
 toggle takes effect without a restart.
 
 `SLA_ENABLED=true` in the environment switches that setting on at **every**
@@ -5927,7 +7321,7 @@ tracking" rather than as a default.
 
 ### SLA Policies
 
-When the SLA toggle is enabled, a **SLA Policies** management blade appears directly in the Features settings tab. Policies define the maximum time from ticket creation until a first response and until resolution. Each policy has:
+When the SLA toggle is enabled, a **SLA Policies** management blade appears directly on the Features page. Policies define the maximum time from ticket creation until a first response and until resolution. Each policy has:
 
 | Field | Description |
 |-------|-------------|
@@ -6393,7 +7787,7 @@ them as it ignores the breach stamps. A ticket whose at-risk stamp a re-match to
 a longer target carried over shows green.
 
 **The off switch: `sla_alerts_enabled`.** One setting gates both events, for
-email and for webhooks (**Admin → Settings → Features**, under SLA tracking).
+email and for webhooks (**Admin → System → Email → Notifications**, in the SLA alerts section).
 Off, the sweep still runs and still stamps, breach and at-risk alike; it raises
 nothing. A crossing stamped while it is off is never announced later. It is read
 on every tick; a failed read skips the tick, as a failed read of `sla_enabled`

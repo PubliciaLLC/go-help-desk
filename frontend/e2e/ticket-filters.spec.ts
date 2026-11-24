@@ -255,7 +255,9 @@ test.describe('desktop, 1440x900', () => {
     expect(last.get('category_id')).toBe(CAT_HW)
     expect(last.get('type_id')).toBe(TY_PRINTERS)
     expect(last.has('created_after')).toBe(true)
-    expect(last.has('scope')).toBe(false) // an account names a set of tickets: no queue
+    // A link made before views is the Search view, and the scope is sent even
+    // with an account named (#676): without it the server would read mine.
+    expect(last.get('scope')).toBe('visible')
 
     const q = new URL(page.url()).searchParams
     expect(q.get('sort')).toBe('subject')
