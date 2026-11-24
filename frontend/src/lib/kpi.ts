@@ -174,15 +174,22 @@ export function kpiSearchFromRecord(rec: Record<string, unknown>): KpiSearch {
   return parseKpiSearch(p)
 }
 
-// A search state as the record the router writes into the address: a repeated
-// priority is a list, everything else a string.
-export function kpiSearchToRecord(s: KpiSearch): Record<string, string | string[]> {
-  const out: Record<string, string | string[]> = {}
-  const p = kpiSearchParams(s)
-  for (const k of new Set(p.keys())) {
-    const all = p.getAll(k)
-    out[k] = k === 'priority' ? all : all[0]
+// A search state as the record the router writes into the address. The router
+// serialises with JSON rules: a string that reads as JSON is quoted (the string
+// '7' becomes range=%227%22) and a list is written as a JSON list. So the
+// preset is a number (range=7), one priority a plain string (priority=high),
+// and only two or more priorities are a list (priority=["high","low"]).
+export function kpiSearchToRecord(s: KpiSearch): Record<string, string | number | string[]> {
+  const out: Record<string, string | number | string[]> = {}
+  if (s.range.kind === 'preset') {
+    out.range = s.range.days
+  } else {
+    if (s.range.from) out.from = s.range.from
+    if (s.range.to) out.to = s.range.to
   }
+  if (s.categoryId) out.category_id = s.categoryId
+  if (s.priorities.length) out.priority = s.priorities.length === 1 ? s.priorities[0] : s.priorities
+  if (s.groupId) out.assignee_group_id = s.groupId
   return out
 }
 

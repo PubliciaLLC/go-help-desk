@@ -1,3 +1,4 @@
+import { defaultParseSearch, defaultStringifySearch } from '@tanstack/react-router'
 import { describe, expect, it } from 'vitest'
 import type { KpiChanges, KpiPeriodMeasures, KpiResponse, MeasureChange } from '@/api/types'
 import {
@@ -885,10 +886,43 @@ describe('the address as a router search record', () => {
     expect(kpiSearchFromRecord(rec)).toEqual(full)
   })
 
+  it('writes one priority as a plain value and several as a list', () => {
+    const base = { range: { kind: 'preset', days: 30 }, categoryId: null, groupId: null } as const
+    expect(kpiSearchToRecord({ ...base, priorities: ['high'] })).toEqual({ range: 30, priority: 'high' })
+    expect(kpiSearchToRecord({ ...base, priorities: ['high', 'low'] })).toEqual({ range: 30, priority: ['high', 'low'] })
+  })
+
   it('writes a preset as range and nothing else', () => {
     expect(kpiSearchToRecord({ range: { kind: 'preset', days: 90 }, categoryId: null, priorities: [], groupId: null })).toEqual({
-      range: '90',
+      range: 90,
     })
+  })
+
+  // The router writes a record with its own JSON-aware serialiser, which quotes
+  // a string that reads as JSON: the string '7' becomes range=%227%22. The
+  // address DESIGN.md names is range=7 and priority=high, so what is asserted
+  // here is the real serialiser's output, not the record.
+  it.each([
+    { name: 'a preset', s: { range: { kind: 'preset', days: 7 }, categoryId: null, priorities: [], groupId: null }, url: 'range=7' },
+    {
+      name: 'a preset with one priority, a plain value',
+      s: { range: { kind: 'preset', days: 30 }, categoryId: null, priorities: ['high'], groupId: null },
+      url: 'range=30&priority=high',
+    },
+    {
+      name: 'two priorities, a list (the router writes a list as JSON)',
+      s: { range: { kind: 'preset', days: 90 }, categoryId: null, priorities: ['high', 'low'], groupId: null },
+      url: 'range=90&priority=%5B%22high%22%2C%22low%22%5D',
+    },
+    {
+      name: 'a custom range with a category and a group',
+      s: { range: { kind: 'custom', from: '2026-10-01', to: '2026-10-31' }, categoryId: 'c1', priorities: [], groupId: 'g1' },
+      url: 'from=2026-10-01&to=2026-10-31&category_id=c1&assignee_group_id=g1',
+    },
+  ] satisfies { name: string; s: KpiSearch; url: string }[])('is written as $url by the router for $name', ({ s, url }) => {
+    const written = defaultStringifySearch(kpiSearchToRecord(s))
+    expect(written).toBe(`?${url}`)
+    expect(kpiSearchFromRecord(defaultParseSearch(written))).toEqual(s)
   })
 
   // The router parses range=30 into the number 30 and one priority into a string.

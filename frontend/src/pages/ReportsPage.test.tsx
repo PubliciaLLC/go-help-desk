@@ -248,7 +248,7 @@ describe('the controls', () => {
     await screen.findByText(/compared with/)
     fireEvent.click(screen.getByRole('button', { name: '7 days' }))
     await waitFor(() => expect(lastParams()).toEqual({ tz: tzNow(), from: '2026-11-18', to: '2026-11-24' }))
-    expect(router.search).toEqual({ range: '7' })
+    expect(router.search).toEqual({ range: 7 })
     expect(screen.getByRole('button', { name: '7 days' }).getAttribute('aria-pressed')).toBe('true')
     expect(screen.getByRole('button', { name: '30 days' }).getAttribute('aria-pressed')).toBe('false')
   })
@@ -300,7 +300,7 @@ describe('the controls', () => {
     await waitFor(() =>
       expect(lastParams()).toMatchObject({ category_id: 'cat-1', priority: ['high'], assignee_group_id: 'g1' }),
     )
-    expect(router.search).toMatchObject({ range: '30', category_id: 'cat-1', priority: ['high'], assignee_group_id: 'g1' })
+    expect(router.search).toMatchObject({ range: 30, category_id: 'cat-1', priority: 'high', assignee_group_id: 'g1' })
     fireEvent.change(screen.getByLabelText('Category'), { target: { value: '' } })
     expect(router.search).not.toHaveProperty('category_id')
   })

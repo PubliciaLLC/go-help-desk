@@ -42,7 +42,7 @@ describe('the /reports route', () => {
     const route = (router.routesByPath as Record<string, { options: { validateSearch?: (s: Record<string, unknown>) => unknown } }>)['/reports']
     const validate = route.options.validateSearch
     expect(validate).toBeTypeOf('function')
-    expect(validate!({ range: 7, priority: 'high', junk: 1 })).toEqual({ range: '7', priority: ['high'] })
-    expect(validate!({})).toEqual({ range: '30' })
+    expect(validate!({ range: 7, priority: 'high', junk: 1 })).toEqual({ range: 7, priority: 'high' })
+    expect(validate!({})).toEqual({ range: 30 })
   })
 })

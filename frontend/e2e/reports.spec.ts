@@ -89,6 +89,31 @@ for (const { who, me } of roles) {
   })
 }
 
+// DESIGN.md, KPI reports, The page: the address reads range=7 and priority=high.
+// The router quotes a string that reads as JSON, so this looks at the real
+// address in a real browser, not at the record the page hands the router.
+test.describe('the Reports address', () => {
+  test.use({ viewport: { width: 1280, height: 900 } })
+
+  test('a preset and one priority are written as range=7 and priority=high', async ({ page }) => {
+    await mockApi(page, { me: ME_ADMIN, categories: CATEGORIES })
+    await page.goto('/reports')
+    await expect(page.getByText(/compared with/)).toBeVisible()
+
+    await page.getByRole('button', { name: '7 days' }).click()
+    await expect(page.getByRole('button', { name: '7 days' })).toHaveAttribute('aria-pressed', 'true')
+    expect(new URL(page.url()).search).toBe('?range=7')
+
+    await page.getByLabel('Priority', { exact: true }).selectOption({ label: 'High' })
+    await expect.poll(() => new URL(page.url()).search).toBe('?range=7&priority=high')
+
+    // And the address, typed or shared, shows the same board.
+    await page.reload()
+    await expect(page.getByRole('button', { name: '7 days' })).toHaveAttribute('aria-pressed', 'true')
+    await expect(page.getByLabel('Priority', { exact: true })).toHaveValue('high')
+  })
+})
+
 test.describe('Reports exports', () => {
   test.use({ viewport: { width: 1280, height: 900 } })
   test.skip(({ browserName }) => browserName !== 'chromium', 'the downloads are checked in Chromium')

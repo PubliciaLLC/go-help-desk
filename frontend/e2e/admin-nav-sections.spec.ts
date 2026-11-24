@@ -65,11 +65,7 @@ test.describe('the headings fit with headroom to spare, notice bar showing', () 
     { open: 'Integrations', path: '/admin/webhooks' },
     { open: 'System', path: '/admin/settings' },
   ]
-  // 768 was the smallest height the sidebar was budgeted for. The Reports item
-  // (#131) is 32px of it, which leaves 5px at 768 on a Mac and a heading below
-  // the fold on Linux, so the smallest height is now 800 (the nav still scrolls
-  // below that; nothing is cut off).
-  for (const height of [800, 850, 900]) {
+  for (const height of [768, 800, 900]) {
     for (const p of pages) {
       test(`1440x${height}, on ${p.path}`, async ({ page }) => {
         await page.setViewportSize({ width: 1440, height })
