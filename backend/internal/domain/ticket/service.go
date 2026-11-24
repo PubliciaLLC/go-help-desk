@@ -3376,6 +3376,13 @@ func (s *Service) ListFilteredWithMeta(ctx context.Context, f Filter) (ListResul
 	return s.store.ListFilteredWithMeta(ctx, f)
 }
 
+// CountFiltered is how many tickets ListFiltered would return for f. Like
+// ListFiltered it applies the Filter it is given and does not re-derive the
+// actor's authority.
+func (s *Service) CountFiltered(ctx context.Context, f Filter) (int64, error) {
+	return s.store.CountFiltered(ctx, f)
+}
+
 // ReplyMatches is Store.ReplyMatches: the reply each ticket of a page matched
 // through, read with the same Filter that listed them.
 func (s *Service) ReplyMatches(ctx context.Context, f Filter, ticketIDs []uuid.UUID) (map[uuid.UUID]ReplyMatch, error) {

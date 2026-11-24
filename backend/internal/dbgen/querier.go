@@ -201,6 +201,34 @@ type Querier interface {
 	// A ticket that holds an item also holds that item's type, so this covers
 	// the type's items too.
 	CountTicketsByType(ctx context.Context, typeID uuid.NullUUID) (int64, error)
+	// How many tickets ListTicketsFiltered would return for the same parameters,
+	// without paging: the dashboard's counts (#675). It is that query with the select
+	// list replaced by count(*) and everything from ORDER BY to the end removed,
+	// the same reply_hits CTE, SLA lateral and WHERE, so the store fills both from
+	// one function. The two are held equal by TestSQL_DashboardQueriesShareTheListRule
+	// (comments and whitespace aside): change one, copy the change to the other.
+	// Single values are NULL-means-absent and arrays are cardinality(...) = 0, so
+	// one prepared statement serves every combination. The store always passes a
+	// non-nil array.
+	//
+	// The SLA bucket joins the CURRENT record only and is computed only when the
+	// filter or the sort asks for it (the first condition in the lateral is a
+	// parameter-only test, so the planner evaluates it once, not per ticket). It is
+	// a lateral join and not a correlated subquery because the planner can hash
+	// join it: as a subquery, sorting by SLA took 1 s at 200k instead of 0.25 s. It
+	// reproduces sla.StatusFor, the live read the list indicator shows, NOT the
+	// breach stamps: StatusFor never reads them, and a target met on time keeps
+	// its frozen reading. Per target, with elapsed as sla.ElapsedFrom has it
+	// (the clock stops at pending_since or at the instant the target was met):
+	//   a met target with a frozen reading  -> that reading
+	//   anything else                       -> LEAST(COALESCE(pending_since, at), at)
+	//                                          - start - pause, with at = the met
+	//                                          instant, or now while outstanding
+	// 0 = a target at or past 100% (red), 1 = otherwise one at or past 80%
+	// (amber, exactly target_min * 48 seconds), 2 = everything else. This is the
+	// third copy of the formula, after sla.ElapsedFrom and ListSLABreachCandidates;
+	// TestListFiltered_SLAAgreesWithStatusFor holds it to the first.
+	CountTicketsFiltered(ctx context.Context, arg CountTicketsFilteredParams) (int64, error)
 	CountUsers(ctx context.Context) (int64, error)
 	// Accounts that would have to reset their password once the grace period
 	// ends (#453): enabled, not an administrator (every administrator is exempt),
