@@ -136,7 +136,7 @@
   <li><strong>Email address</strong>: for someone with no account. A <strong>name is required</strong> with every address, whether or not it has an account, and a phone number is optional. The ticket is filed like a guest ticket, and the person is emailed the link to read and reply. This is refused while guest submission is off, because the link would not open. If the address belongs to an account, the ticket is filed for that account instead (the name is ignored).</li>
 </ul>
 
-<img src="../screenshots/34-staff-new-ticket-on-behalf.png" alt="The New ticket page as a staff member sees it when filing for someone else: Requester set to Another user (Casey Nguyen), a How did this reach you? choice with Phone call selected, then subject, a description editor, category, type, priority and attachments" width="2880" height="2088" loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
+<img src="../screenshots/34-staff-new-ticket-on-behalf.png" width="2880" height="2088" alt="The New ticket page as a staff member sees it when filing for someone else: Requester set to Another user (Casey Nguyen), a How did this reach you? choice with Phone call selected, then subject, a description editor, category, type, priority and attachments" loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
 <p style="margin:0.4rem 0 1.25rem;font-size:0.85rem;color:var(--muted);">Filing for someone else: the Requester choice, and How did this reach you? with Phone call selected.</p>
 <ul>
   <li>The staff member is recorded as the one who filed it, in the ticket's history and in the audit log. The requester is its reporter.</li>
@@ -269,7 +269,7 @@
   <li><strong>Staff and admins</strong> can open a follow-up from any Closed ticket they can see. It copies the subject, description, category, type, item, priority and requester.</li>
   <li><strong>The requester</strong> can open one from their own Closed ticket: an account holder through their account, or a guest through their link. It copies the subject, description and category, and the type for an account holder, never for a guest. It starts at Medium priority, with no item, unassigned, and with a fresh SLA clock.</li>
 </ul>
-<img src="../screenshots/27-closed-ticket-requester.png" alt="A closed ticket as its requester sees it: a notice that the ticket is closed and read-only with a pointer to Create follow-up, the Create follow-up button at the top right, the description, a public reply in the Timeline, and Tags, Classification and Details panels" width="2880" height="1800" loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
+<img src="../screenshots/27-closed-ticket-requester.png" width="2880" height="1800" alt="A closed ticket as its requester sees it: a notice that the ticket is closed and read-only with a pointer to Create follow-up, the Create follow-up button at the top right, the description, a public reply in the Timeline, and Tags, Classification and Details panels" loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
 
 <p>A requester can open one follow-up per closed ticket. A second request from a requester is refused with <code>409 follow_up_exists</code>, and a follow-up opened by staff counts towards that one. Staff and administrators are not limited. Staff, admins and the requester open one with <em>Create follow-up</em> on the ticket. The API routes are <code>POST /api/v1/tickets/{id}/follow-up</code> for a signed-in user and <code>POST /api/v1/guest/follow-up</code> for a guest link. A follow-up is the only write a guest can make on a closed ticket.</p>
 
@@ -628,7 +628,7 @@
   </tbody>
 </table>
 
-<img src="../screenshots/49-ticket-views-groups.png" alt="My Group's Tickets for a staff member, with the views listed under Tickets in the sidebar and the choice of All, Group queue, Assigned to me and Assigned to others above the list" width="2880" height="1800" loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
+<img src="../screenshots/49-ticket-views-groups.png" width="2880" height="1800" alt="My Group's Tickets for a staff member, with the views listed under Tickets in the sidebar and the choice of All, Group queue, Assigned to me and Assigned to others above the list" loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
 <p style="margin:0.4rem 0 1.25rem;font-size:0.85rem;color:var(--muted);">The ticket views in the sidebar. My Group's Tickets splits the group's tickets by who holds them.</p>
 
 <ul>
@@ -653,7 +653,7 @@
 
 <p>The ticket list has a search box, a <em>Filters</em> button and sortable column headings. <span class="badge-new">New in 1.3.0</span> The filters, the sorting and the reply search are new. The search box was there before. For staff and administrators it works inside the <a href="#tickets-views">view</a> you are on, and the <em>Search</em> view is the one that covers every ticket you can see.</p>
 
-<img src="../screenshots/42-ticket-list-filters-and-sort.png" alt="The Tickets page on the Search view as a staff member sees it, with the Filters panel open: Status (In Progress and Pending ticked), Priority (High ticked), Requester, Assignee, Group, Category, Type, Item, SLA, Created dates, Last updated dates and Came in by. Under the panel are chips for each active filter, the line Searching all tickets you can see, and a table sorted by Updated, newest first, with sortable Ticket, Subject, Status, Priority, SLA, Created and Updated headings" width="1440" height="1301" loading="lazy" style="width:100%;height:auto;max-width:1440px;border:1px solid var(--border);border-radius:8px;" />
+<img src="../screenshots/42-ticket-list-filters-and-sort.png" width="2880" height="2348" alt="The Tickets page on the Search view as a staff member sees it, with the Filters panel open: Status (In Progress and Pending ticked), Priority (High ticked), Requester, Assignee, Group, Category, Type, Item, SLA, Created dates, Last updated dates and Came in by. Under the panel are chips for each active filter, the line Searching all tickets you can see, and a table sorted by Updated, newest first, with sortable Ticket, Subject, Status, Priority, SLA, Created and Updated headings" loading="lazy" style="width:100%;height:auto;max-width:1440px;border:1px solid var(--border);border-radius:8px;" />
 <p style="margin:0.4rem 0 1.25rem;font-size:0.85rem;color:var(--muted);">The Search view with the Filters panel open and four filters on. Each one shows as a chip with its own ×.</p>
 
 <h3 id="tickets-search-box">The search box</h3>
@@ -706,7 +706,7 @@
 <h3 id="tickets-search-replies">Search replies</h3>
 <p>The <em>Search replies</em> box is under the search box. It is <strong>ticked by default</strong> and only matters when there is text in the search box. With it ticked, a ticket also matches when <strong>one reply</strong> holds every word you typed. Words match as prefixes, as in the subject.</p>
 
-<img src="../screenshots/43-ticket-list-reply-match.png" alt="A search for fuser with Search replies ticked. Two tickets are listed, each with a line under its subject. The first says Public reply, Nov 3, with the word fuser highlighted in yellow in a short excerpt. The second says Internal note, Nov 4, in an amber label, with fuser highlighted in its excerpt" width="1440" height="900" loading="lazy" style="width:100%;height:auto;max-width:1440px;border:1px solid var(--border);border-radius:8px;" />
+<img src="../screenshots/43-ticket-list-reply-match.png" width="2880" height="1800" alt="A search for fuser with Search replies ticked. Two tickets are listed, each with a line under its subject. The first says Public reply, Nov 3, with the word fuser highlighted in yellow in a short excerpt. The second says Internal note, Nov 4, in an amber label, with fuser highlighted in its excerpt" loading="lazy" style="width:100%;height:auto;max-width:1440px;border:1px solid var(--border);border-radius:8px;" />
 <p style="margin:0.4rem 0 1.25rem;font-size:0.85rem;color:var(--muted);">A staff member's search for "fuser". Each ticket that matched through a reply shows where the words were.</p>
 
 <ul>
@@ -728,10 +728,10 @@
 <h4 id="tickets-search-notices">The two notices</h4>
 <p>When the page could not search the replies, an amber notice appears above the list. The results are still right for subjects, descriptions and tracking numbers.</p>
 
-<img src="../screenshots/44-ticket-list-replies-not-searched.png" alt="A search for printer with an amber notice above the table: Replies weren't fully searched, so tickets that matched only through a reply may be missing. Try a narrower search, or search again" width="1440" height="900" loading="lazy" style="width:100%;height:auto;max-width:1440px;border:1px solid var(--border);border-radius:8px;" />
+<img src="../screenshots/44-ticket-list-replies-not-searched.png" width="2880" height="1800" alt="A search for printer with an amber notice above the table: Replies weren't fully searched, so tickets that matched only through a reply may be missing. Try a narrower search, or search again" loading="lazy" style="width:100%;height:auto;max-width:1440px;border:1px solid var(--border);border-radius:8px;" />
 <p style="margin:0.4rem 0 1.25rem;font-size:0.85rem;color:var(--muted);">The notice when the five-second limit ran out.</p>
 
-<img src="../screenshots/45-ticket-list-reply-index-preparing.png" alt="The same search with a different amber notice above the table: Reply search is still being prepared, so these results cover ticket subjects and descriptions only. Try again later to include replies" width="1440" height="900" loading="lazy" style="width:100%;height:auto;max-width:1440px;border:1px solid var(--border);border-radius:8px;" />
+<img src="../screenshots/45-ticket-list-reply-index-preparing.png" width="2880" height="1800" alt="The same search with a different amber notice above the table: Reply search is still being prepared, so these results cover ticket subjects and descriptions only. Try again later to include replies" loading="lazy" style="width:100%;height:auto;max-width:1440px;border:1px solid var(--border);border-radius:8px;" />
 <p style="margin:0.4rem 0 1.25rem;font-size:0.85rem;color:var(--muted);">The notice while the reply index is still being built after an upgrade.</p>
 
 <ul>
@@ -746,8 +746,8 @@
 <p>On a narrow screen the search box takes a full row of its own, so it is no longer squeezed. <em>Filters</em> opens a full-screen dialog. Changes in it wait until you tap <em>Show results</em>, and <em>Clear all</em> empties it. Results are cards, with the reply excerpt under the subject and the sort menu above them. Bulk selection is for a desktop-width screen only. Long text on a ticket is covered under <a href="#tickets-phone">Tickets on a phone</a>.</p>
 
 <div style="display:flex;flex-wrap:wrap;gap:1rem;align-items:flex-start;">
-<img src="../screenshots/46-mobile-ticket-filters.png" alt="The Filters dialog on a phone: Status, Priority, Requester, Category, Type and Created, with Clear all and Show results buttons at the bottom" width="390" height="844" loading="lazy" style="width:100%;height:auto;max-width:260px;border:1px solid var(--border);border-radius:8px;" />
-<img src="../screenshots/47-mobile-ticket-reply-match.png" alt="A search for fuser on a phone: two ticket cards, each with a line under the subject showing a public reply and an internal note with the word fuser highlighted" width="390" height="856" loading="lazy" style="width:100%;height:auto;max-width:260px;border:1px solid var(--border);border-radius:8px;" />
+<img src="../screenshots/46-mobile-ticket-filters.png" width="780" height="1688" alt="The Filters dialog on a phone: Status, Priority, Requester, Category, Type and Created, with Clear all and Show results buttons at the bottom" loading="lazy" style="width:100%;height:auto;max-width:260px;border:1px solid var(--border);border-radius:8px;" />
+<img src="../screenshots/47-mobile-ticket-reply-match.png" width="780" height="1800" alt="A search for fuser on a phone: two ticket cards, each with a line under the subject showing a public reply and an internal note with the word fuser highlighted" loading="lazy" style="width:100%;height:auto;max-width:260px;border:1px solid var(--border);border-radius:8px;" />
 </div>
 <p style="margin:0.4rem 0 1.25rem;font-size:0.85rem;color:var(--muted);">The filters dialog, and results with a reply excerpt, on a phone.</p>
 
@@ -758,7 +758,7 @@
 
 <p>The dashboard shows how your own work and the desk are doing. The status cards, the <em>View all tickets</em> button and, for administrators, the <em>By Client</em> list are as they were. Four blocks are new, from top to bottom: a health card (administrators only), <em>Your queue</em>, then <em>Needs attention</em> and a 30-day trend side by side on a wide screen and stacked on a narrow one.</p>
 
-<img src="../screenshots/02-dashboard.png" alt="Administrator's dashboard: a health card with one amber notice, a Your queue row of five counts, the status cards, a Needs attention list with breached, at-risk, unassigned and reopened tickets, and a 30-day chart of tickets created and resolved" width="2880" loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
+<img src="../screenshots/02-dashboard.png" width="2880" height="2606" alt="Administrator's dashboard: a health card with one amber notice, a Your queue row of five counts, the status cards, a Needs attention list with breached, at-risk, unassigned and reopened tickets, and a 30-day chart of tickets created and resolved" loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
 <p style="margin:0.4rem 0 1.25rem;font-size:0.85rem;color:var(--muted);">The dashboard for an administrator. Each number links to the ticket list it counts.</p>
 
 <h3 id="tickets-dashboard-queue">Your queue</h3>
@@ -799,7 +799,7 @@
 <h3 id="tickets-dashboard-phone">On a phone</h3>
 <p>The queue numbers wrap into two columns, and <em>Needs attention</em> and the trend stack under the status cards.</p>
 
-<img src="../screenshots/51-mobile-dashboard.png" alt="The dashboard on a phone: the Your queue counts in two columns above the status cards and the start of the Needs attention list" width="390" height="844" loading="lazy" style="width:100%;height:auto;max-width:260px;border:1px solid var(--border);border-radius:8px;" />
+<img src="../screenshots/51-mobile-dashboard.png" width="780" height="2486" alt="The dashboard on a phone: the Your queue counts in two columns above the status cards and the start of the Needs attention list" loading="lazy" style="width:100%;height:auto;max-width:260px;border:1px solid var(--border);border-radius:8px;" />
 <p style="margin:0.4rem 0 1.25rem;font-size:0.85rem;color:var(--muted);">On a phone the queue counts wrap into two columns.</p>
 
 <p>Over the API, the same numbers are <code>GET /api/v1/dashboard</code>, which takes an optional <code>tz</code> time zone and needs <code>tickets:read</code> for an API key or OAuth client. There is no MCP tool for it. See the <a href="api-reference.html">API reference</a>.</p>
@@ -809,7 +809,7 @@
 
 <p><strong>Reports</strong> shows how the desk is doing over a period: how long tickets take to resolve and to get a first response, how many met their SLA, how many came back, how old the open work is, how much arrived and who holds it. Staff and administrators see the <em>Reports</em> item in the sidebar, between Tickets and Admin. A requester has no Reports item, and opening the address sends them to the dashboard.</p>
 
-<img src="../screenshots/48-reports.png" alt="Reports page for the last 30 days compared with the 30 days before: time to resolve, first response, SLA attainment and reopen rate with their changes, a created-and-resolved chart, open tickets by age, and open tickets by assignee and by group" width="2880" loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
+<img src="../screenshots/48-reports.png" width="2880" height="3902" alt="Reports page for the last 30 days compared with the 30 days before: time to resolve, first response, SLA attainment and reopen rate with their changes, a created-and-resolved chart, open tickets by age, and open tickets by assignee and by group" loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
 <p style="margin:0.4rem 0 1.25rem;font-size:0.85rem;color:var(--muted);">Reports for the last 30 days. Every period total and rate is compared with the previous period of the same length. Backlog, Workload and the volume breakdowns show the current period only.</p>
 
 <h3 id="tickets-reports-measures">What each card measures</h3>

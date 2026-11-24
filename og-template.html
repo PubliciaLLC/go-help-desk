@@ -155,10 +155,14 @@
   .dot.y { background: #fbbf24; }
   .dot.g { background: #4ade80; }
 
+  /* The dashboard shot is taller than the frame (it grows with the page), so
+     show its top at the old 8:5 proportion instead of letting it run on. */
   .browser img {
     display: block;
     width: 100%;
-    height: auto;
+    height: 400px;
+    object-fit: cover;
+    object-position: top left;
   }
 
   .footer {

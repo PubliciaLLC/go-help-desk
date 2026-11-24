@@ -658,7 +658,7 @@ CLAMAV_ADDR=tcp://clamav:3310</code></pre></li>
 
 <p>Administrators can now archive and unarchive a category, type or item from <strong>Admin → Tickets → Categories</strong>. To file into it again, unarchive it there. Archiving changes only the row you pick: types under an archived category keep their own setting. On a touch screen the row buttons are always shown and are large enough to tap; with a mouse they appear when you point at the row.</p>
 
-<img src="../screenshots/33-admin-categories-archive.png" alt="Admin, Tickets, Categories with the sidebar's Tickets section open and four categories listed (Hardware, Software, Network, Accounts and Access) and a fifth, Desk phones, greyed out with an Archived badge. Each row has an archive icon (a restore icon on the archived row) and a delete icon" width="2880" height="1800" loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
+<img src="../screenshots/33-admin-categories-archive.png" width="2880" height="1800" alt="Admin, Tickets, Categories with the sidebar's Tickets section open and four categories listed (Hardware, Software, Network, Accounts and Access) and a fifth, Desk phones, greyed out with an Archived badge. Each row has an archive icon (a restore icon on the archived row) and a delete icon" loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
 <p style="margin:0.4rem 0 1.25rem;font-size:0.85rem;color:var(--muted);">Admin → Tickets → Categories: an archived category stays in the list, greyed out and marked Archived.</p>
 
 <h2 id="service-users">OAuth clients act through a service user</h2>
@@ -873,7 +873,7 @@ CLAMAV_ADDR=tcp://clamav:3310</code></pre></li>
 
 <p>The ticket list's queues are now views in the sidebar, under <strong>Tickets</strong>: <strong>Assigned to Me</strong>, <strong>My Group's Tickets</strong>, <strong>Available</strong> and <strong>Search</strong>. Search is the one view that covers every ticket you can see. Queue views narrow a search to their queue, as they did in 1.2. How to use them is in <a href="tickets.html#tickets-views">Working with Tickets: Ticket list views</a>.</p>
 
-<img src="../screenshots/49-ticket-views-groups.png" alt="My Group's Tickets for a staff member, with the views listed under Tickets in the sidebar and the choice of All, Group queue, Assigned to me and Assigned to others above the list" width="2880" height="1800" loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
+<img src="../screenshots/49-ticket-views-groups.png" width="2880" height="1800" alt="My Group's Tickets for a staff member, with the views listed under Tickets in the sidebar and the choice of All, Group queue, Assigned to me and Assigned to others above the list" loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
 <p style="margin:0.4rem 0 1.25rem;font-size:0.85rem;color:var(--muted);">The ticket views in the sidebar. My Group's Tickets splits the group's tickets by who holds them.</p>
 
 <ul>
@@ -988,7 +988,7 @@ SELECT pg_reload_conf();</code></pre>
 
 <p>On the New ticket page, staff and administrators get a <strong>Requester</strong> choice: <em>Me</em> (the default), <em>Another user</em> (search by name or address) or <em>Email address</em>. In the API, <code>POST /api/v1/tickets</code> takes <code>reporter_user_id</code> or <code>reporter_email</code> (at most one). A requester who sends either is refused with <code>403</code>.</p>
 
-<img src="../screenshots/34-staff-new-ticket-on-behalf.png" alt="The New ticket page as a staff member sees it when filing for someone else: Requester set to Another user (Casey Nguyen), a How did this reach you? choice with Phone call selected, then subject, a description editor, category, type, priority and attachments" width="2880" height="2088" loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
+<img src="../screenshots/34-staff-new-ticket-on-behalf.png" width="2880" height="2088" alt="The New ticket page as a staff member sees it when filing for someone else: Requester set to Another user (Casey Nguyen), a How did this reach you? choice with Phone call selected, then subject, a description editor, category, type, priority and attachments" loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
 <p style="margin:0.4rem 0 1.25rem;font-size:0.85rem;color:var(--muted);">Filing for someone else: the Requester choice, and How did this reach you? with Phone call selected.</p>
 <ul>
   <li><strong>A typed address</strong> is filed like a guest ticket, and the person is emailed the link to read and reply. It needs a name with every address (<code>400</code> without one), whether or not it has an account, so a refusal says nothing about the address; a phone number is optional. It is refused with <code>400</code> while guest submission is off and the address has no account, because the link would not open. If the address belongs to an account, the ticket is filed for that account.</li>
@@ -1040,7 +1040,7 @@ SELECT pg_reload_conf();</code></pre>
   <li>Changing someone's role keeps their keys. A key acts within its owner's current role, so promoting a staff member who holds an administrator-issued key leaves an administrator holding it. Revoke it if that is not wanted.</li>
 </ul>
 
-<img src="../screenshots/36-account-api-keys.png" alt="The API keys section of the Your account page: a green notice, API key created, copy it now, with the one-time token and a Copy button; below it the new-key form with Tickets read and write and Groups read permissions, a required expiry date and a Create key button; and a list holding Nightly ticket export with tickets:read and a Revoke button" width="2016" height="1372" loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
+<img src="../screenshots/36-account-api-keys.png" width="2016" height="1502" alt="The API keys section of the Your account page: a green notice, API key created, copy it now, with the one-time token and a Copy button; below it the new-key form with Tickets read and write and Groups read permissions, a required expiry date and a Create key button; and a list holding Nightly ticket export with tickets:read and a Revoke button" loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
 <p style="margin:0.4rem 0 1.25rem;font-size:0.85rem;color:var(--muted);">A staff member's own API keys on Your account: the token is shown once, and a key needs at least one permission and an expiry date.</p>
 
 <h3>Breaking: scripts that stop working</h3>
@@ -1231,7 +1231,7 @@ echo "ok: Postgres is bound to 127.0.0.1 only"</code></pre>
 
 <p>Until now the largest file anyone could attach was 25 MB, fixed in the program. It is now a setting, <code>attachment_max_mb</code>, and the guest size slider stops at it.</p>
 
-<img src="../screenshots/50-system-file-size.png" alt="File size section: Largest file anyone may attach set to 50 MB, a note that it applies to staff, requesters and guests, the line Guests: up to 5 MB, and a grey note about the virus scanner's own limit" loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
+<img src="../screenshots/50-system-file-size.png" width="1408" height="600" alt="File size section: Largest file anyone may attach set to 50 MB, a note that it applies to staff, requesters and guests, the line Guests: up to 5 MB, and a grey note about the virus scanner's own limit" loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
 <p style="margin:0.4rem 0 1.25rem;font-size:0.85rem;color:var(--muted);">The per-file limit, 25 MB unless you change it. Above 25 MB with scanning on, the page reminds you that the scanner must accept the size.</p>
 
 <ul>
@@ -1379,7 +1379,7 @@ echo "ok: Postgres is bound to 127.0.0.1 only"</code></pre>
 
 <p><strong>Who notices:</strong> staff and administrators. A <strong>Reports</strong> item in the sidebar, between Tickets and Admin, shows how the desk is doing over a period. A requester has no Reports item, and the endpoint answers a requester <code>403</code>. Every number is counted on the server, live, from the tickets already recorded. Nothing new is stored, and there is <strong>no migration and no new setting</strong>.</p>
 
-<img src="../screenshots/48-reports.png" alt="Reports page for the last 30 days compared with the 30 days before: time to resolve, first response, SLA attainment and reopen rate with their changes, a created-and-resolved chart, open tickets by age, and open tickets by assignee and by group" loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
+<img src="../screenshots/48-reports.png" width="2880" height="3902" alt="Reports page for the last 30 days compared with the 30 days before: time to resolve, first response, SLA attainment and reopen rate with their changes, a created-and-resolved chart, open tickets by age, and open tickets by assignee and by group" loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
 <p style="margin:0.4rem 0 1.25rem;font-size:0.85rem;color:var(--muted);">Reports for the last 30 days. The period figures are compared with the previous period of the same length.</p>
 
 <ul>
@@ -1407,7 +1407,7 @@ echo "ok: Postgres is bound to 127.0.0.1 only"</code></pre>
 
 <p><strong>Who notices:</strong> administrators. The Settings page is now eight pages in the sidebar under <strong>System</strong>, and Email Templates is no longer a separate page under Integrations: it is the <strong>Templates</strong> tab of <strong>Email</strong>. Nothing else moves. No setting, default, stored value or API changes, and there is no migration.</p>
 
-<img src="../screenshots/08-admin-settings.png" alt="The General settings page, with the System section of the sidebar open: General, Features, Branding, Email, File Attachments, Guest Access, Authentication, Privacy and Audit Log" width="2880" height="1800" loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
+<img src="../screenshots/08-admin-settings.png" width="2880" height="1800" alt="The General settings page, with the System section of the sidebar open: General, Features, Branding, Email, File Attachments, Guest Access, Authentication, Privacy and Audit Log" loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
 <p style="margin:0.4rem 0 1.25rem;font-size:0.85rem;color:var(--muted);">Settings are pages under Admin → System.</p>
 
 <table class="breaks-table">
