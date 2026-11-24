@@ -1292,7 +1292,7 @@ func TestOpenAPISpec_TicketListViews(t *testing.T) {
 		}
 		ext, _ := all[1].(map[string]any)
 		props, _ := ext["properties"].(map[string]any)
-		for _, name := range []string{"can_create_api_keys", "api_key_max_lifetime_years", "sla_enabled", "can_use_available_queue"} {
+		for _, name := range []string{"can_create_api_keys", "api_key_max_lifetime_years", "sla_enabled", "email_notifications", "can_use_available_queue"} {
 			if _, ok := props[name]; !ok {
 				fail("MeUser does not declare %s", name)
 			}
@@ -1313,6 +1313,9 @@ func TestOpenAPISpec_TicketListViews(t *testing.T) {
 		}
 		if slices.Contains(stringList(u["required"]), "can_use_available_queue") {
 			fail("User requires can_use_available_queue")
+		}
+		if _, ok := props["email_notifications"]; ok {
+			fail("User declares email_notifications; it belongs on MeUser only")
 		}
 	})
 

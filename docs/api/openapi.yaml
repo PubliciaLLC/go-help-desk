@@ -3296,7 +3296,7 @@ paths:
             unassigned (the Available queue): the tickets with no assignee group and no assignee user. Administrators always, and staff while available_queue_roles lists staff. Anyone else is refused 403 forbidden, "only admins can use this scope".
             all: every ticket. Administrators only; anyone else is refused 403 forbidden, "only admins can use this scope".
             visible (the Search view): every ticket the caller can see. Staff and administrators.
-            A reporting user always gets only their own tickets, whatever the value.
+            A reporting user has no queues: for mine, assigned_to_me, my_groups and visible they get only their own tickets, and for unassigned and all they are refused as above.
             Yield rule: when reporter_id, requester or assignee_group_id is present, mine, unassigned, all and visible do not apply and do not refuse; the queue is "any". assigned_to_me and my_groups are always applied and narrowed by those filters like any other.
             Any other value is mine.
           schema:
@@ -11331,6 +11331,19 @@ components:
                 staff and administrators, and only when the setting could be read: absent means unknown, not off.
                 A requester never gets it, and it is not on the public GET /site. The ticket list offers the sla
                 filter and sort only while it is true; both answer 400 while it is false.
+            email_notifications:
+              type: object
+              description: |
+                What the three email switches amount to for this person, which is not always what they chose: an
+                administrator can force a switch on or off for everyone (the staff_email_*_override settings).
+                enabled is whether they get that mail; forced is true when the administrator decided it, so their
+                own email_notify_* value is not what applies. Present only on GET /me and PATCH /me/email-preferences,
+                and only for staff and administrators.
+              required: [assigned, activity, group]
+              properties:
+                assigned: {$ref: '#/components/schemas/EmailSwitchState'}
+                activity: {$ref: '#/components/schemas/EmailSwitchState'}
+                group: {$ref: '#/components/schemas/EmailSwitchState'}
             can_use_available_queue:
               type: boolean
               description: >-
@@ -11354,19 +11367,6 @@ components:
         email_notify_assigned: {type: boolean, description: 'Email me when a ticket is assigned to me. Staff email switch, on by default.'}
         email_notify_activity: {type: boolean, description: 'Email me when a requester replies on a ticket assigned to me, or it is reopened. On by default.'}
         email_notify_group: {type: boolean, description: "Email me about my groups' tickets. On by default."}
-        email_notifications:
-          type: object
-          description: |
-            What the three email switches amount to for this person, which is not always what they chose: an
-            administrator can force a switch on or off for everyone (the staff_email_*_override settings).
-            enabled is whether they get that mail; forced is true when the administrator decided it, so their
-            own email_notify_* value is not what applies. Present only on GET /me and PATCH /me/email-preferences,
-            and only for staff and administrators.
-          required: [assigned, activity, group]
-          properties:
-            assigned: {$ref: '#/components/schemas/EmailSwitchState'}
-            activity: {$ref: '#/components/schemas/EmailSwitchState'}
-            group: {$ref: '#/components/schemas/EmailSwitchState'}
     EmailSwitchState:
       type: object
       required: [enabled, forced]
