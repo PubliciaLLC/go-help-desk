@@ -20,94 +20,8 @@ import { cn } from '@/lib/utils'
 import { useState, useEffect, useRef, useId } from 'react'
 import { fmtMin } from '@/lib/format'
 import { UPDATE_CHECK_LABEL, UPDATE_CHECK_DETAIL } from '@/lib/updateCheck'
-
-// ── Shared primitives ─────────────────────────────────────────────────────────
-
-function Toggle({ checked, onChange, label, disabled }: {
-  checked: boolean
-  onChange: (v: boolean) => void
-  disabled?: boolean
-  /** The switch's own name, where the surrounding row does not supply one. */
-  label?: string
-}) {
-  return (
-    <button
-      type="button"
-      role="switch"
-      aria-checked={checked}
-      aria-label={label}
-      disabled={disabled}
-      onClick={() => onChange(!checked)}
-      className={cn(
-        'relative inline-flex h-6 w-11 shrink-0 cursor-pointer items-center disabled:cursor-not-allowed disabled:opacity-50 rounded-full border-2 border-transparent transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2',
-        checked ? 'bg-blue-600' : 'bg-gray-200'
-      )}
-    >
-      <span
-        className={cn(
-          'inline-block h-5 w-5 transform rounded-full bg-white shadow-sm ring-0 transition-transform',
-          checked ? 'translate-x-5' : 'translate-x-0'
-        )}
-      />
-    </button>
-  )
-}
-
-/** Where email stands, shown beside the settings that send mail. The banner
- *  stays quiet for an install that runs without email on purpose. */
-function EmailStatusNote({ on }: { on: boolean }) {
-  const { data } = useQuery({ queryKey: ['security-warnings'], queryFn: getSecurityWarnings, retry: false })
-  const email = data?.email
-  if (!email || email.enabled) return null
-  return (
-    <p role="note" className="px-5 pb-4 text-sm text-amber-800">
-      Email is not set up ({email.missing.join(' and ')} not set in docker/.env)
-      {on ? ": people using this aren't getting their mail." : ', so this cannot be turned on until it is.'} Set{' '}
-      {email.missing.length === 1 ? 'it' : 'both'} and restart the server.
-    </p>
-  )
-}
-
-function SettingRow({
-  label,
-  description,
-  children,
-}: {
-  label: string
-  description?: string
-  children: React.ReactNode
-}) {
-  return (
-    // Stacked below sm: a control that cannot shrink (a select, a number box)
-    // beside its label is wider than a phone's content box (#522).
-    <div className="flex flex-col gap-2 px-5 py-4 sm:flex-row sm:items-center sm:justify-between sm:gap-8">
-      <div className="min-w-0 flex-1">
-        <div className="text-sm font-medium text-gray-900">{label}</div>
-        {description && <div className="mt-0.5 text-sm text-gray-500">{description}</div>}
-      </div>
-      <div className="min-w-0 max-w-full sm:shrink-0">{children}</div>
-    </div>
-  )
-}
-
-function SaveBar({ onSave, isPending, error, saved }: {
-  onSave: () => void
-  isPending: boolean
-  error: string
-  saved: boolean
-}) {
-  return (
-    <div className="flex items-center gap-3 pt-2">
-      <Button onClick={onSave} disabled={isPending}>
-        {isPending ? 'Saving…' : 'Save changes'}
-      </Button>
-      {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
-      {saved && <p className="text-sm text-green-600">Saved.</p>}
-    </div>
-  )
-}
-
-// ── SAML section ──────────────────────────────────────────────────────────────
+import { Toggle, EmailStatusNote, SettingRow, SaveBar } from '@/pages/admin/settings/primitives'
+import { buildSettingsPatch } from '@/pages/admin/settings/buildSettingsPatch'
 
 function SAMLSection() {
   const qc = useQueryClient()
@@ -2400,27 +2314,9 @@ export function SettingsPage() {
       /* The dump's "<key>_set" entries are the server describing secrets it
          will not send, not settings. Sending one back writes a settings row by
          that name which nothing ever reads. */
-      const patch: Record<string, unknown> = {}
-      for (const [k, v] of Object.entries(local)) {
-        if (k.endsWith('_set')) continue
-        /* Only what the operator changed (#394). A stored value the server refuses
-           (only a database edit can put one there) used to travel back with every
-           save and fail it, on every tab. JSON.stringify so an untouched array
-           compares equal; a key absent from the dump stringifies to undefined and
-           is always sent. */
-        if (settings && JSON.stringify(settings[k]) === JSON.stringify(v)) continue
-        // A guest figure above the per-file limit is refused whole by the
-        // server (#673), and the page shows it held to the limit, so that is
-        // what is sent. The draft itself is not rewritten; see guestValue.
-        patch[k] = k === 'guest_attachment_max_mb' && typeof v === 'number' ? Math.min(v, overallMB) : v
-      }
-      for (const p of REPUTATION_PROVIDERS) {
-        if (!p.keySetting) continue
-        if (clearedKeys[p.keySetting]) patch[p.keySetting] = ''
-        else if ((apiKeys[p.keySetting] ?? '').trim() !== '') {
-          patch[p.keySetting] = apiKeys[p.keySetting].trim()
-        }
-      }
+      // Only what the operator changed (#394), with the guest clamp (#673); see
+      // buildSettingsPatch.
+      const patch = buildSettingsPatch(settings, local, apiKeys, clearedKeys)
       const res = await updateSettings(patch)
       // The save that turned ticket scope on is the one whose warning is about
       // OAuth clients; an SSO warning shares the field and gets no such link.
