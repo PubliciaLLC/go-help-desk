@@ -1215,3 +1215,44 @@ func stringList(v any) []string {
 	}
 	return out
 }
+
+// TestOpenAPISpec_SLAAlertsDocumented pins the places the SLA alerts change
+// (#670) reaches the API: the fourth staff-email switch on the account and on
+// its PATCH, and the two settings keys. Each is a name a client can send or
+// read, so each must be in the spec.
+func TestOpenAPISpec_SLAAlertsDocumented(t *testing.T) {
+	doc := loadSpec(t)
+	comps, _ := doc.root["components"].(map[string]any)
+	schemas, _ := comps["schemas"].(map[string]any)
+	userSchema, _ := schemas["User"].(map[string]any)
+	userProps, _ := userSchema["properties"].(map[string]any)
+	emailNotes, _ := userProps["email_notifications"].(map[string]any)
+	emailNotesProps, _ := emailNotes["properties"].(map[string]any)
+	settings, _ := schemas["SettingsValues"].(map[string]any)
+	settingsProps, _ := settings["properties"].(map[string]any)
+
+	patch := doc.ops["PATCH /api/v1/me/email-preferences"]
+	reqBody, _ := patch.op["requestBody"].(map[string]any)
+	reqContent, _ := reqBody["content"].(map[string]any)
+	reqMedia, _ := reqContent["application/json"].(map[string]any)
+	reqSchema, _ := reqMedia["schema"].(map[string]any)
+	reqProps, _ := reqSchema["properties"].(map[string]any)
+
+	cases := []struct {
+		name  string
+		found bool
+	}{
+		{"schemas.User.required lists email_notify_sla", slices.Contains(stringList(userSchema["required"]), "email_notify_sla")},
+		{"schemas.User.properties.email_notify_sla", userProps["email_notify_sla"] != nil},
+		{"schemas.User.properties.email_notifications.properties.sla", emailNotesProps["sla"] != nil},
+		{"schemas.User.properties.email_notifications.required lists sla", slices.Contains(stringList(emailNotes["required"]), "sla")},
+		{"PATCH /me/email-preferences requestBody.email_notify_sla", reqProps["email_notify_sla"] != nil},
+		{"schemas.SettingsValues.properties.sla_alerts_enabled", settingsProps["sla_alerts_enabled"] != nil},
+		{"schemas.SettingsValues.properties.staff_email_sla_override", settingsProps["staff_email_sla_override"] != nil},
+	}
+	for _, c := range cases {
+		if !c.found {
+			t.Errorf("%s: %s is not documented", specFile, c.name)
+		}
+	}
+}
