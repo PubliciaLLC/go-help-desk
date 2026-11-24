@@ -118,7 +118,7 @@ export function SetupPage() {
               <div className="space-y-1">
                 <Label htmlFor="update-check" className="font-normal">{UPDATE_CHECK_LABEL}</Label>
                 <p className="text-xs text-gray-500">
-                  Off unless you tick it. You can change it later under Settings.
+                  Off unless you tick it. You can change it later under System → General.
                 </p>
               </div>
             </div>

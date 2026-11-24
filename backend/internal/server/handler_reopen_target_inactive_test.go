@@ -156,6 +156,7 @@ func TestReopenTarget_DeactivatingTheTargetWarnsInTheResponse(t *testing.T) {
 	w, _ := got["warning"].(string)
 	require.Contains(t, w, retiredTarget)
 	require.Contains(t, w, "New", "it says where reopened tickets go meanwhile")
+	require.Contains(t, w, "under System, General, Ticket lifecycle, Reopen target status.", "it names the place by its System address")
 }
 
 // The saved change is the answer. If the follow-up check for the warning

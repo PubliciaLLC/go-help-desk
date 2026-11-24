@@ -52,6 +52,20 @@ func mustDef(t *testing.T, name string) TemplateDef {
 
 // ── the accept / refuse table ────────────────────────────────────────────────
 
+// The SiteName help is shown in the template editor, so it names the place
+// the name is set, by its System address.
+func TestSiteNameHelpNamesTheBrandingPlace(t *testing.T) {
+	def, ok := LookupTemplate(NameHeader)
+	require.True(t, ok, "no header template")
+	for _, v := range def.Vars {
+		if v.Name == "SiteName" {
+			require.Contains(t, v.Description, "from System → Branding")
+			return
+		}
+	}
+	require.Fail(t, "header has no SiteName variable")
+}
+
 func TestValidate_BodyTable(t *testing.T) {
 	def := mustDef(t, "ticket_created")
 	for _, tc := range []struct {

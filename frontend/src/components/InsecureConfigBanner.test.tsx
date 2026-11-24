@@ -137,7 +137,7 @@ describe('the scanning-is-off-by-default warning', () => {
     expect(text).toContain('CLAMAV_ADDR=tcp://clamav:3310')
     expect(text).toContain('docker/.env')
     expect(text).toContain('docker compose up -d')
-    expect(text).toMatch(/Settings.*Attachments/)
+    expect(text).toContain('System → File Attachments')
     expect(text).toContain('Do not scan')
   })
 

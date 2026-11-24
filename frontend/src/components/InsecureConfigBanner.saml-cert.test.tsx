@@ -41,6 +41,7 @@ describe('the SAML IdP certificate warning', () => {
     expect(text).toContain('SAML sign-in certificate expires')
     expect(text).toContain(new Date(expiresAt).toLocaleDateString())
     expect(text).toContain('metadata URL')
+    expect(text).toContain('System → Authentication → SAML')
     expect(text).toContain('paste')
   })
 
@@ -97,6 +98,7 @@ describe('the SAML metadata refresh warning', () => {
     const text = (await screen.findByRole('region', { name: 'Server notices' })).textContent ?? ''
     expect(text).toContain('entity ID changed')
     expect(text).toContain('re-save')
+    expect(text).toContain('System → Authentication → SAML')
   })
 
   it('says the metadata could not be used and was not applied', async () => {

@@ -25,7 +25,9 @@ interface NavItemProps {
   onNavigate?: () => void
   // The links inside an Admin section: a little shorter, so a nine-link section
   // (System, #674) and the Admin headings still fit a laptop screen. Back to
-  // full height for a finger.
+  // full height for a finger. At 768 and at 800 pixels high System's nine links
+  // can still run past the bottom of the nav; the nav then scrolls, and NavItem
+  // brings the current link into view (admin-nav-sections.spec.ts).
   dense?: boolean
 }
 

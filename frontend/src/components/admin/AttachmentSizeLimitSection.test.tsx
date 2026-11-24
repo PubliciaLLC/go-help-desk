@@ -36,7 +36,7 @@ describe('the file size section', () => {
   it('says it applies to everyone, and who is held to the lower figure', () => {
     show()
     expect(screen.getByText(
-      'Applies to every upload: staff, requesters and guests. Guests are held to the lower of this and their own limit.',
+      'Applies to every upload: staff, requesters and guests. Guests are held to the lower of this and their own limit, set under System → Guest Access.',
     )).toBeTruthy()
   })
 

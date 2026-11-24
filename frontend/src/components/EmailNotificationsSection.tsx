@@ -11,7 +11,7 @@ import { useAuthStore } from '@/store/auth'
 // cannot undo each other.
 //
 // An administrator can force any switch on or off for everyone from
-// Settings -> Email. The server reports each switch's effective value and
+// System -> Email. The server reports each switch's effective value and
 // whether it is forced (email_notifications); a forced switch is shown as it
 // applies, locked, and says who decided.
 

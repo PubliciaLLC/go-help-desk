@@ -1286,7 +1286,7 @@ func (s *Server) reopenTargetInactive(ctx context.Context) (reopenTargetStatus, 
 // security warnings banner and the status response.
 func reopenTargetWarning(name string) string {
 	return "The reopen target status \"" + name + "\" is inactive, so reopened tickets are going to \"New\" instead. " +
-		"Pick an active status under Settings, Ticket lifecycle, Reopen target status."
+		"Pick an active status under System, General, Ticket lifecycle, Reopen target status."
 }
 
 type passkeyStatus struct {

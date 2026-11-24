@@ -132,6 +132,8 @@ describe('the post-upgrade wizard', () => {
     const text = (document.body.textContent ?? '').replace(/\s+/g, ' ')
     expect(text).toMatch(/fourth(, | )SLA alerts/i)
     expect(text).toMatch(/breached or is at risk/i)
+    expect(text).toContain('the SLA alerts setting under System → Email decides whether those alerts are sent at all')
+    expect(text).not.toContain('under Features')
   })
 
   it('step 3 saves the staff-keys switch and the lifetime', async () => {
@@ -290,7 +292,7 @@ describe('the guest file uploads step', () => {
     expect(slider.max).toBe(top)
     expect(Array.from(screen.getByTestId('guest-size-ticks').children).map((c) => c.textContent)).toEqual(['1 MB', `${top} MB`])
     expect(screen.getByText(
-      `The largest file a guest may attach. It can never exceed the per-file limit for every upload, ${top} MB, set under Attachments.`,
+      `The largest file a guest may attach. It can never exceed the per-file limit for every upload, ${top} MB, set under System → File Attachments.`,
     )).toBeTruthy()
   })
 
@@ -317,6 +319,7 @@ describe('the guest file uploads step', () => {
     expect(heading()).toBe('Reset window for old passwords')
     expect(screen.getByText(/guest file uploads stay off/i)).toBeTruthy()
     expect(screen.getByText(/need guest submission/i)).toBeTruthy()
+    expect(screen.getByText(/turn it on under System, Guest Access,/)).toBeTruthy()
     expect(button('Finish')).toBeTruthy()
   })
 

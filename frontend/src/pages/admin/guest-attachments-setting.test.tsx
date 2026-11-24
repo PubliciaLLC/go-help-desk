@@ -154,7 +154,7 @@ describe('the guest size slider and the per-file limit', () => {
   it('says what the description above it holds, without a literal 25', async () => {
     await renderSettings({ ...ON, attachment_max_mb: 10 })
     expect(screen.getByText(
-      'The largest file a guest may attach. It can never exceed the per-file limit for every upload, 10 MB, set under Attachments.',
+      'The largest file a guest may attach. It can never exceed the per-file limit for every upload, 10 MB, set under System → File Attachments.',
     )).toBeTruthy()
   })
 

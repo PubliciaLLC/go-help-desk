@@ -33,7 +33,7 @@ export function SubmissionsSection({ draft }: { draft: SettingsDraft }) {
       </SettingRow>
       <div className="border-t px-5 py-4 space-y-2">
         <div className="text-sm text-gray-500">
-          The largest file a guest may attach. It can never exceed the per-file limit for every upload, {overallMB} MB, set under Attachments.
+          The largest file a guest may attach. It can never exceed the per-file limit for every upload, {overallMB} MB, set under System → File Attachments.
         </div>
         <GuestSizeSlider
           value={guestValue}

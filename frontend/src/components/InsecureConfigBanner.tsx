@@ -210,7 +210,7 @@ export function InsecureConfigBanner({ isAdmin }: InsecureConfigBannerProps) {
           <p className="font-semibold">The reopen target status is inactive</p>
           <p className="mt-1">
             &quot;{reopenTarget?.name}&quot; has been deactivated, so reopened tickets are going to &quot;New&quot;
-            instead. Pick an active status under Settings → Ticket lifecycle → Reopen target status.
+            instead. Pick an active status under System → General → Ticket lifecycle → Reopen target status.
           </p>
         </>
       ),
@@ -332,7 +332,7 @@ export function InsecureConfigBanner({ isAdmin }: InsecureConfigBannerProps) {
             {samlCert.expired
               ? `Your identity provider's signing certificate expired on ${on}, so SAML sign-in is failing. `
               : 'When it expires, SAML sign-in will stop working. '}
-            If your identity provider offers a metadata URL, switch to it under Settings → SAML: it is re-read every
+            If your identity provider offers a metadata URL, switch to it under System → Authentication → SAML: it is re-read every
             hour, so a new certificate arrives by itself. If you pasted the metadata, download the current metadata
             from your identity provider and paste it again.
           </p>
@@ -361,7 +361,7 @@ export function InsecureConfigBanner({ isAdmin }: InsecureConfigBannerProps) {
             {samlRefresh.problem === 'http_url' &&
               'The metadata URL is not https, and an unattended refresh of what the server trusts to sign people in must not travel in the clear, so it is never fetched again after you save it. Switch to an https URL, or paste the metadata.'}
             {samlRefresh.problem === 'entity_id_changed' &&
-              'The metadata at your metadata URL now names a different identity provider (entity ID) than the one in use. It was not applied and SAML sign-in continues on the saved configuration. If you expected this, re-save the SAML settings under Settings → SAML to accept it.'}
+              'The metadata at your metadata URL now names a different identity provider (entity ID) than the one in use. It was not applied and SAML sign-in continues on the saved configuration. If you expected this, re-save the SAML settings under System → Authentication → SAML to accept it.'}
             {samlRefresh.problem === 'metadata_invalid' &&
               'The metadata at your metadata URL has a signing certificate that cannot be read, or none, so signing in with it would fail. It was not applied and SAML sign-in continues on the saved configuration. Ask your identity provider to fix its metadata.'}
             {samlRefresh.problem === 'new_certificate' &&
@@ -413,7 +413,7 @@ export function InsecureConfigBanner({ isAdmin }: InsecureConfigBannerProps) {
             To turn scanning back on, add <code className={CODE}>COMPOSE_PROFILES=antivirus</code> and{' '}
             <code className={CODE}>CLAMAV_ADDR=tcp://clamav:3310</code> to{' '}
             <code className={CODE}>docker/.env</code>, run <code className={CODE}>docker compose up -d</code>, then
-            confirm the scanner address under Settings → Attachments. To keep scanning off, choose
+            confirm the scanner address under System → File Attachments. To keep scanning off, choose
             &quot;Do not scan&quot; there.
           </p>
         </>
@@ -446,7 +446,7 @@ function BrokenTemplateNotice({ template, title, onReverted }: { template: Broke
         >
           Revert to default
         </button>
-        <a className="font-medium underline" href={`/admin/email-templates?t=${encodeURIComponent(template.name)}`}>
+        <a className="font-medium underline" href={`/admin/settings/email/templates?t=${encodeURIComponent(template.name)}`}>
           Edit
         </a>
       </p>
