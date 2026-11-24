@@ -1688,6 +1688,22 @@ view (`scrollIntoView({ block: 'nearest' })`) when the path changes. The
 link rows are not made any denser. A finger needs their height, and so does
 the 44 px coarse-pointer rule.
 
+**One line per row, in the widest default font.** The budget above counts
+every sidebar row as one line (28 px for a link or the Admin toggle, 24 px for
+a section heading), so no label may wrap at 1440 px. The font decides that:
+where `system-ui` is DejaVu Sans (the default sans-serif on many Linux
+installs, and on the GitHub runner that runs the e2e job), "Canned Responses"
+needs 132.6 px, and the room beside its icon was 130 px. It wrapped, the
+Tickets section came out 20 px taller, and System's heading had 16 px of its 24
+under it at 768 while the same page passed on a Mac (found when the combined
+#674/#676/#675/#131 build first ran in CI). The fix is room, not a looser
+test: each of the three indents of the Admin group (the panel's left margin,
+its padding after the rule, and the section's own margin) is 4 px smaller, so a
+link has 142 px for its text, 9 px more than the widest label needs in DejaVu
+Sans. A wider font than that wraps, as everything outside the list of
+ellipsis places does, and the nav scrolls. `admin-nav-sections.spec.ts` now
+also fails, naming the label, when any sidebar row is taller than one line.
+
 #### The page shell and tabs
 
 `frontend/src/pages/admin/settings/SettingsPageShell.tsx` takes `{ title,
