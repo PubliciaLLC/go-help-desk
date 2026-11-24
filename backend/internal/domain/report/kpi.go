@@ -1,6 +1,8 @@
 package report
 
 import (
+	"time"
+
 	"github.com/google/uuid"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 )
@@ -102,4 +104,46 @@ type Holder struct {
 	ID    *uuid.UUID
 	Name  *string
 	Count int64
+}
+
+// Request is everything one KPI run needs: who is asking and what they may
+// see, the parsed query, both periods and the instant "now" was read at.
+type Request struct {
+	ActorID    uuid.UUID
+	Visibility ticket.Visibility
+	Query      Query
+	Current    Period
+	Previous   Period
+	Now        time.Time
+}
+
+// PeriodRow is the one row KPIPeriod returns for a period: counts, and the
+// median and percentile in seconds, nil when their population is empty.
+type PeriodRow struct {
+	Created                    int64
+	Resolved                   int64
+	ResolveMedianSeconds       *int64
+	ResolveP90Seconds          *int64
+	FirstResponseCount         int64
+	FirstResponseMedianSeconds *int64
+	SLATracked                 int64
+	SLAMet                     int64
+	SLAResponseMet             int64
+	SLAResolutionMet           int64
+	Reopened                   int64
+}
+
+// Raw is the unprocessed rows of the eight queries of one request, read in
+// one transaction: both periods' rows, the current period's daily volume and
+// created counts by category and priority, the open tickets by age, and the
+// open tickets by assignee and by group. Service.KPI turns it into a KPI.
+type Raw struct {
+	Current    PeriodRow
+	Previous   PeriodRow
+	Days       []ticket.DayVolume
+	ByCategory []CategoryCount
+	ByPriority []PriorityCount
+	Ages       []AgeCount
+	ByAssignee []Holder
+	ByGroup    []Holder
 }
