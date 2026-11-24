@@ -450,6 +450,12 @@ func ValidMismatchHandling(v string) bool {
 	return v == MismatchHandlingRefuse || v == MismatchHandlingWrap
 }
 
+// KeyPasskeyRequiredRoles lists the roles whose members must finish every
+// sign-in with a passkey (#616c): a JSON array of role names, seeded []. Its own
+// list; nothing writes mfa_enforced_roles on its behalf. That a listed role is
+// thereby MFA-enforced is computed when read (Service.MFARequiredFor).
+const KeyPasskeyRequiredRoles = "passkey_required_roles"
+
 // Store is the persistence interface for the key/value settings table.
 type Store interface {
 	Get(ctx context.Context, key string) ([]byte, error) // returns raw JSON value
@@ -468,7 +474,7 @@ func KnownKeys() []string {
 		KeyOIDCEnabled, KeyOIDCIssuerURL, KeyOIDCClientID, KeyOIDCClientSecret, KeyOIDCRedirectURL,
 		KeyGuestSubmissionEnabled, KeyGuestAttachmentsEnabled, KeyGuestAttachmentMaxMB,
 		KeyGuestAttachmentMaxPerTicket, KeyGuestAttachmentUploadsPerHour,
-		KeySLAEnabled, KeySLAAlertsEnabled, KeyMFAEnabled, KeyMFAEnforcedRoles,
+		KeySLAEnabled, KeySLAAlertsEnabled, KeyMFAEnabled, KeyMFAEnforcedRoles, KeyPasskeyRequiredRoles,
 		KeyReopenWindowDays, KeyReopenTargetStatusName,
 		KeyAttachmentScanPolicy, KeyAttachmentScanAddress,
 		KeySiteName, KeySiteLogoURL,
@@ -509,7 +515,7 @@ func AuthCriticalKeys() []string {
 		KeySAMLEnabled, KeySAMLMetadataURL, KeySAMLMetadataXML, KeySAMLCertPEM, KeySAMLKeyPEM,
 		KeyOIDCEnabled, KeyOIDCIssuerURL, KeyOIDCClientID, KeyOIDCClientSecret,
 		KeyOIDCRedirectURL,
-		KeyMFAEnabled, KeyMFAEnforcedRoles,
+		KeyMFAEnabled, KeyMFAEnforcedRoles, KeyPasskeyRequiredRoles,
 		KeyAllowedEmailDomains, KeySelfSignupEnabled, KeyOpenRegistrationEnabled,
 		// Who may force-reopen a closed ticket (#349). Widening it is a
 		// permission change, not configuration: a leaked API key must not be

@@ -530,6 +530,27 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// The same list shape, with the elements checked: a role no account holds
+	// would be accepted and silently do nothing, and the administrator would
+	// believe a requirement was in force (#616c).
+	if raw, ok := body[admin.KeyPasskeyRequiredRoles]; ok {
+		var roles []string
+		if err := unmarshalSetting(raw, admin.KeyPasskeyRequiredRoles, &roles); err != nil {
+			handleError(w, err)
+			return
+		}
+		for _, role := range roles {
+			if !user.Role(role).Valid() {
+				Error(w, http.StatusBadRequest, "bad_request",
+					"passkey_required_roles may only list admin, staff or user")
+				return
+			}
+		}
+		if err := s.refusePasskeySelfLockout(r.Context(), authmw.GetActor(r), roles); err != nil {
+			handleError(w, err)
+			return
+		}
+	}
 	if raw, ok := body[admin.KeyReopenTargetStatusName]; ok {
 		var name string
 		if err := unmarshalSetting(raw, admin.KeyReopenTargetStatusName, &name); err != nil {
@@ -1055,6 +1076,44 @@ func (s *Server) ssoSettingsWarning(ctx context.Context, body map[string]json.Ra
 	return s.refuseIfOrphaning(ctx, samlFieldsLookConfigured(c), oidcFieldsLookConfigured(cfg))
 }
 
+// refusePasskeySelfLockout is the #300 guard's shape for passkey_required_roles
+// (#616c): a save that newly lists the saving administrator's own role is
+// refused unless they hold a passkey. The aim is that an administrator does not
+// require a passkey of their own role before they have shown they can hold one:
+// one who cannot create a passkey on their device or browser would be stuck at
+// the registration step at their next sign-in. 400 bad_request, as
+// ErrWouldOrphanInstance is.
+//
+// Only a newly listed own role matters: when the stored list already names the
+// saver's role, or the new list does not, the save changes nothing about their
+// own exposure, so any other edit (a removal included) is never refused. It
+// applies whether or not mfa_enabled is on, since turning that on later would
+// activate the policy under the saver. A machine credential cannot reach this
+// (the key is auth-critical), so the actor is a signed-in person. A save racing
+// the deletion of the saver's last key is accepted, as #300's race is, and so
+// is a key bound to an old relying-party ID (BASE_URL moved): it counts as held
+// but cannot sign in.
+func (s *Server) refusePasskeySelfLockout(ctx context.Context, a *authmw.Actor, roles []string) error {
+	role := string(a.Role)
+	if !slices.Contains(roles, role) || slices.Contains(s.adminSvc.PasskeyRequiredRoles(ctx), role) {
+		return nil
+	}
+	n, err := s.passkeyStore.CountForUser(ctx, a.UserID)
+	if err != nil {
+		return fmt.Errorf("counting passkeys: %w", err)
+	}
+	if n > 0 {
+		return nil
+	}
+	if !s.passkeysAvailable() {
+		return fmt.Errorf("%w: your role cannot be listed in passkey_required_roles because you have no passkey, "+
+			"and passkeys are not available on this instance: BASE_URL must be a domain name (or localhost); "+
+			"fix that, register a passkey on your Account page, then save again", user.ErrValidation)
+	}
+	return fmt.Errorf("%w: your role cannot be listed in passkey_required_roles because you have no passkey: "+
+		"register a passkey on your Account page first, then save again", user.ErrValidation)
+}
+
 // refuseNullSetting is unmarshalSetting's null half, for the settings whose
 // wrong-type refusal already has wording clients see and which must keep it.
 func refuseNullSetting(raw json.RawMessage, name string) error {
@@ -1197,6 +1256,11 @@ type passkeyStatus struct {
 	Available bool `json:"available"`
 	// Reason is why not, in the library's words. Empty when Available.
 	Reason string `json:"reason"`
+	// SuspendedRoles are the roles whose passkey requirement (#616c) is not
+	// being enforced because passkeys are unavailable: TOTP is accepted for
+	// them until BASE_URL is fixed. Always an array; empty unless passkeys are
+	// unavailable, MFA is on and passkey_required_roles lists a role.
+	SuspendedRoles []string `json:"suspended_roles"`
 }
 
 // emailStatus never carries a credential or an address: names of unset
@@ -1295,20 +1359,24 @@ func (s *Server) handleGetSecurityWarnings(w http.ResponseWriter, r *http.Reques
 		AttachmentScanning:        s.scanStatus(r.Context()),
 		AttachmentStorage:         storageStatus{Writable: problem == "", Problem: problem},
 		OAuthClientsWithoutGroups: unscoped,
-		Passkeys:                  s.passkeyStatus(),
+		Passkeys:                  s.passkeyStatus(r.Context()),
 		Email:                     s.emailStatus(r.Context()),
 	})
 }
 
-func (s *Server) passkeyStatus() passkeyStatus {
+func (s *Server) passkeyStatus(ctx context.Context) passkeyStatus {
 	if s.passkeysAvailable() {
-		return passkeyStatus{Available: true}
+		return passkeyStatus{Available: true, SuspendedRoles: []string{}}
 	}
 	reason := s.passkeysReason
 	if reason == "" {
 		reason = "BASE_URL cannot be used as a passkey domain"
 	}
-	return passkeyStatus{Reason: reason}
+	suspended := []string{}
+	if s.adminSvc.MFAEnabled(ctx) {
+		suspended = append(suspended, s.adminSvc.PasskeyRequiredRoles(ctx)...)
+	}
+	return passkeyStatus{Reason: reason, SuspendedRoles: suspended}
 }
 
 func (s *Server) emailStatus(ctx context.Context) emailStatus {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -456,18 +457,40 @@ func (s *Service) MFAEnforcedRoles(ctx context.Context) []string {
 	return roles
 }
 
+// PasskeyRequiredRoles returns the roles (as lowercase strings) whose members
+// must finish every sign-in with a passkey (#616c). A missing or damaged row
+// reads as no roles.
+func (s *Service) PasskeyRequiredRoles(ctx context.Context) []string {
+	raw, err := s.store.Get(ctx, KeyPasskeyRequiredRoles)
+	if err != nil {
+		return nil
+	}
+	var roles []string
+	if err := json.Unmarshal(raw, &roles); err != nil {
+		return nil
+	}
+	return roles
+}
+
+// PasskeyRequiredFor returns true when MFA is globally enabled AND the role is
+// in the passkey-required list. Like the enforced list it is inert while
+// mfa_enabled is off. It does not know whether passkeys can be used on this
+// server (#494); the caller combines the two.
+func (s *Service) PasskeyRequiredFor(ctx context.Context, role string) bool {
+	return s.MFAEnabled(ctx) && slices.Contains(s.PasskeyRequiredRoles(ctx), role)
+}
+
 // MFARequiredFor returns true when MFA is globally enabled AND the given role
-// is in the enforced-roles list.
+// is in the enforced-roles list or the passkey-required list: a role that must
+// use a passkey is a role whose MFA is enforced, and that is decided here, when
+// the settings are read, rather than by writing one list on behalf of the
+// other.
 func (s *Service) MFARequiredFor(ctx context.Context, role string) bool {
 	if !s.MFAEnabled(ctx) {
 		return false
 	}
-	for _, r := range s.MFAEnforcedRoles(ctx) {
-		if r == role {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(s.MFAEnforcedRoles(ctx), role) ||
+		slices.Contains(s.PasskeyRequiredRoles(ctx), role)
 }
 
 // ReopenTargetStatusName returns the name of the status tickets are moved to

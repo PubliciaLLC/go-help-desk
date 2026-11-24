@@ -751,7 +751,16 @@ export interface SecurityWarnings {
    * address, a single-label host or non-ASCII. Optional so a server that
    * predates the field reads as fine.
    */
-  passkeys?: { available: boolean; reason: string }
+  passkeys?: {
+    available: boolean
+    reason: string
+    /**
+     * Roles whose passkey requirement (#616) is paused because passkeys are
+     * unavailable: they sign in with an authenticator code until BASE_URL is
+     * fixed. Optional so a server that predates it reads as none.
+     */
+    suspended_roles?: string[]
+  }
 
   /**
    * Whether email can be sent and is being delivered (#455, #456). Optional so
