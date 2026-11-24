@@ -61,6 +61,121 @@ order leaves two failure modes, both retryable (nothing happened, or a category
 exists and no user does), and the existence check makes a retry reuse the
 category instead of stacking duplicates. See #323.
 
+**Descriptions (1.3.0).** Each category, type and item has an optional
+`description`: a short line of guidance that tells a person what belongs under
+it ("Laptops, desktops, docks and monitors. For phones see Mobile."). Nothing
+changes for an instance until an administrator writes one.
+
+- **The value.** Plain text, at most **500 characters**, counted as characters
+  (Unicode code points), not bytes. Trimmed on the way in; an empty or
+  whitespace-only value is stored as the empty string and means *none*. Newlines
+  are kept and shown as line breaks. It is **never** rendered as HTML or Markdown:
+  `<b>x</b>` is stored verbatim and shown as those literal characters (the UI
+  puts it in a React text node and breaks lines with CSS `white-space:
+  pre-line`). The column is `TEXT NOT NULL DEFAULT ''` on `categories`, `types`
+  and `items`, with `CHECK (char_length(description) <= 500)`, so a row cannot
+  hold more even if a handler is bypassed. `NOT NULL DEFAULT ''` rather than
+  nullable so "none" has one spelling and no reader needs two branches. Migration
+  `000069`; its down drops the three columns (and their checks with them).
+- **The limit is enforced twice.** `category.Service` rejects a longer value with
+  `category.ErrValidation`, which the handlers already answer as `400
+  bad_request` ("description is too long: 501 characters, the limit is 500"); the
+  CHECK is the backstop and is not expected to fire. The service trims.
+- **Most specific wins, with fallback.** What the chooser shows is one text: the
+  chosen **item's** description if it has one, otherwise the chosen **type's**,
+  otherwise the chosen **category's**; nothing if none of the chosen levels has
+  one. It follows every selector change, shows nothing before a category is
+  chosen, and a change of category clears the chosen type and item and so the
+  text with them. The rule is one pure function over the three chosen rows
+  (`mostSpecificDescription`, `frontend/src/lib/ctiDescription.ts`), so no
+  component repeats it.
+- **Where it shows: every place a person *chooses* a classification.**
+  1. **New ticket** (`/tickets/new`), for staff and administrators (including
+     when filing for another person) and for requesters. Requesters have a
+     category and a type selector, staff and administrators add an item, so a
+     requester sees at most the type's text (an item is never chosen there).
+  2. **Guest form** (`/submit`): the category selector only (a guest is given no
+     type or item, see Guest submission).
+
+  **Who can read a description: every active one, at every level.** The
+  catalogue routes (`GET /categories`, `/categories/{id}/types`, `.../items`)
+  are open to anyone while guest submission is on, and to any signed-in user
+  always, and they serve the description of **every active category, type and
+  item**, not only the category the guest form shows: a guest or a requester
+  never *chooses* a type or an item there, but can still read the text by
+  calling the route. An **archived** entry is not served to anyone but staff and
+  administrators, and neither are the children of an archived parent (archiving
+  does not cascade, so the lists check the parent: a guest or requester gets an
+  empty list under an archived category or type; a failed lookup of the parent
+  is a `500`, not an unfiltered list). The visible effect: a requester's view of a
+  ticket whose category (or type) was archived later no longer shows its type and
+  item names (the category already showed a dash), and the filter chips of a
+  requester filtering by an archived category lose their type and item names the
+  same way (`useFilterLookups`); staff, administrators and the reclassify card
+  are unchanged. The admin form says all of
+  this. **Decision (kept, not filtered):** type and item descriptions are not
+  withheld from the anonymous routes. The rule is one sentence and the same as
+  for names (a guest can already read every active type and item *name*); a
+  second, per-caller shape of the same list would be a special case in every
+  handler that serves it, for text that is public by design.
+  3. **Reclassify** on the ticket page (the **Classification** card's Edit mode,
+     staff and administrators): the same three selectors, so the same text
+     beneath them. It is shown only while editing, not in the read-only display
+     of the ticket's current classification, where nobody is choosing.
+
+  Not included, because nobody chooses a classification there and the text
+  would only be noise: the ticket list filters, Reports, the webhook and SLA
+  policy editors, canned responses and custom-field placement (each picks a
+  *scope* to match, not a classification for a ticket), and the guest
+  follow-up form (it has no chooser: the follow-up inherits the original's).
+- **Accessibility and phones.** The text sits in one element beneath the
+  selectors, `id`-linked to them with `aria-describedby` on each selector and
+  announced by an `aria-live="polite"` container that is always in the page (so
+  a change is announced); the text itself is a child that exists only while
+  there is text, so an empty state has no box and no height, and the form does not
+  jump beyond the text itself. It wraps (`wrap-anywhere`) and is readable at 320
+  CSS pixels with no sideways scroll. **There is no hover tooltip and no `title`
+  attribute**: a native `<select>` cannot give an `<option>` a tooltip, and a
+  hover-only affordance does not exist on a phone, so the text beneath the
+  chooser is the mechanism.
+- **Admin.** **Admin → Categories** gets an optional **Description** on create
+  and edit for all three levels: a multi-line field with a live
+  "N / 500" counter that turns to an error at 501 and disables Save. The counter
+  and the limit both count the **trimmed** text (padding is neither counted nor
+  stored). It sits in the node's expanded panel (edit, beside **Groups** and
+  **Fields**) and under the name in the Add category / type / item forms
+  (create). The same hint is under the field at all three levels: "Shown beneath
+  the Category / Type / Item chooser on the new-ticket form, the guest form
+  (categories only) and the reclassify card on a ticket. Plain text, no
+  formatting; line breaks are kept. This text is public: while guest submission
+  is on, anyone can read the description of every active category, type and
+  item, and any signed-in user can read them at any time. Do not put anything
+  here you would not put on a public web page." (`DESCRIPTION_HINT`,
+  `DescriptionField.tsx`.) The box follows the row when another administrator
+  changes it, unless something has been typed in it. What counts as padding:
+  Go's white space plus U+FEFF, on the server; the form strips the same set
+  (`trimDescription`), because a browser's `trim()` and Go's `TrimSpace`
+  disagree on U+FEFF and U+0085. Archiving, restoring and deleting are
+  unchanged, and an archived row keeps its description.
+- **API (additive).** `description` (string, `""` for none) is in the response of
+  every endpoint that returns a category, type or item: the admin CRUD under
+  `/admin/categories`, the catalogue the forms read (`GET /categories`,
+  `/categories/{id}/types`, `.../items`), and the MCP `list_categories` tree.
+  `POST` and `PATCH` on the admin routes accept an optional `description`; on
+  `PATCH` an absent key leaves the value alone and `""` clears it, like every
+  other field of that body. **Checked and left alone:** a ticket's payload
+  carries only `category_id`, `type_id` and `item_id`, no names and so no
+  descriptions, and the webhook and event payloads carry ids too, so nothing
+  there changes; the audit view resolves names only.
+- **Audit.** Creating, editing, archiving and deleting a category, type or item
+  is not audited today (the only entries the CTI routes write are the
+  `custom_field_detached` entries a delete takes with it, and a ticket's
+  `classified`). A description edit is the same kind of edit, so it is covered by
+  exactly what covers the others: nothing new is written. Adding a mechanism to
+  audit CTI edits is a separate decision, not part of this change.
+- **No import, export or copy.** There is no CTI import, export or clone
+  feature, so there is nothing to carry the field through.
+
 ### Tickets (v1)
 
 Core fields (all editions):
@@ -3200,7 +3315,7 @@ in 1.2.0.
   - **One migration.** 000054 adds `attachments.uploaded_by_guest BOOLEAN NOT NULL DEFAULT false`, so the cap can count only guest uploads (nothing recorded who uploaded a file). The settings themselves are rows read with defaults and need none; files guests attached before the upgrade are not counted.
   - **Where the control is.** The guest ticket page (`/g`) shows **Add files** on an open ticket when `GET /site` says `guest_attachments_enabled`, with the effective per-file limit in `guest_attachment_max_bytes` (the lower of the two figures, so the page never promises more than the server takes). Files go up one after another as they are chosen, to `POST /guest/attachments` with the `Authorization: Guest` header; there is no draft, because a guest's attachment belongs to the ticket and not to a reply. The server's own reason is shown for a refusal. There is no control on the submission page (`/submit`): the link that identifies the ticket is emailed after the ticket exists, so a guest attaches from that link. The page does not list the guest's uploads (the guest read has no attachment list) and renders none of their content; attachments stay download-only.
 - Unauthenticated users submit a ticket at `/submit` and receive a **tracking number**
-- Guest ticket form collects: **name** (required), **email** (required), **phone** (optional), subject, description, and category (active only — no type or item)
+- Guest ticket form collects: **name** (required), **email** (required), **phone** (optional), subject, description, and category (active only — no type or item). The chosen category's description, when it has one, is shown beneath the selector (see Ticket Classification → Descriptions); it is public to anyone who can open the form, and so is the description of every active type and item (the catalogue routes serve them to anyone while guest submission is on)
 - The tracking number can be referenced when following up with the help desk by phone or email
 - No account creation required
 
@@ -4925,7 +5040,7 @@ Serves both the frontend SPA and external integrations.
 - `GET /api/v1/setup/status` — whether first-run setup is needed; `POST /api/v1/setup` creates the first administrator (and the first category, see Ticket Classification). It answers `409 already_configured` once **any** user row exists, disabled and deleted accounts included, so setup never reopens.
 - `/api/v1/auth/*` — `POST /local/login`, `POST /local/logout`, `GET /providers`, `POST /oauth/token` (OAuth client credentials), the SAML and OIDC sign-in routes, and `GET /signup/status`, `POST /signup`, `GET` and `POST /verify-email` (see Authentication). `POST /local/mfa/verify` and `POST /local/passkey/*` need the session the password step produced and are refused to machine credentials.
 - `/api/v1/guest/*` — `POST /tickets` (submit), `GET /fields?category_id=` (the custom fields the form offers, #627) and `POST /resend` (re-request a link) are public, throttled, and answer `404` while guest submission is off. `GET /ticket`, `POST /follow-up`, `POST /replies` and `POST /attachments` are authenticated by the per-ticket link token alone (see Guest Submission); `POST /follow-up`, `GET /ticket`, `POST /replies` and `POST /attachments` answer `404` while guest submission is off (#424).
-- `GET /api/v1/categories` and its `/{id}/types` and `/{id}/types/{typeId}/items` children — public **only while guest submission is on**, because the guest form needs them; otherwise they require a fully signed-in caller (a session that has passed MFA and owes no password change, an API key or an OAuth token; a half-signed-in session gets `403` like every other route). Active entries for a guest or a reporting user, all of them for staff and administrators.
+- `GET /api/v1/categories` and its `/{id}/types` and `/{id}/types/{typeId}/items` children — public **only while guest submission is on**, because the guest form needs them; otherwise they require a fully signed-in caller (a session that has passed MFA and owes no password change, an API key or an OAuth token; a half-signed-in session gets `403` like every other route). Active entries for a guest or a reporting user, all of them for staff and administrators; nothing under an archived parent for anyone else. Each entry carries its `description`.
 
 Everything else under `/api/v1` requires a session, API key or OAuth token, and the role and scope rules below.
 
@@ -4949,7 +5064,7 @@ Exposes help desk operations as an MCP server for AI tool integration, over two 
 | `get_ticket` | any signed-in user | By UUID or tracking number. Returns the reply thread and linked tickets; internal notes are omitted for reporting users. `include_replies` (default `true`): `false` returns the ticket alone, without replies or links. Staff and administrators also get the ticket's `custom_fields` (field id, name, type, options, retired options, value), left out when it has none (#627); a reporting user is never given them here. |
 | `list_tickets` | any signed-in user | The filters of `GET /api/v1/tickets` (see **List filters**), through the same parser and the same check, so the same values are accepted and the same callers are refused, in the same words (one exception: a requester who sends `assignee_group_id` is told "assignee_group_id is not available to requesters" here, where REST says "users cannot list group tickets"): `q`, `search_replies`, `reporter_id`, `requester`, `created_after`, `created_before`, `updated_after`, `updated_before`, `priority`, `category_id`, `type_id`, `item_id`, `assignee_user_id`, `assignee_group_id`, `status_id`, `status_ids`, `include_closed`, `awaiting_reply`, `source_channel`, `sla`, `held_by`, `sort` and `order`, plus `scope` (#676: absent means `visible`, what this tool has always listed; the other values and their refusals are REST's, through the same `ticket.ResolveQueue`, and an unknown value is refused; see **Ticket list views**). Lists are JSON arrays (`status_ids`, `source_channel`, and `priority`, which is still accepted as a single string), at most 20 values each (a longer list is refused before any work is done on it), ORed. `status_id` (one) is kept for existing callers and may be combined with `status_ids`. `awaiting_reply` is a JSON boolean (`true` or `false`; absent is `false`; a string, number or object is refused with "invalid awaiting_reply"), staff and administrators only: a requester sending `true` is refused "awaiting_reply is not available to requesters". A requester is refused the filters and sorts outside their allowed list ("<param> is not available to requesters"), and `requester` free text from an API key or OAuth client needs `requester_search:read` ("this credential does not carry the requester_search:read scope"); a session needs no scope. `sla`, and `sort` by `sla`, are refused while SLA tracking is off. An argument of the wrong JSON type (`limit` and `offset` included), an unknown value, or an unknown `sort` or `order` is refused with a message, never skipped (owner decision, 2026-11-12), and is not logged as a server error. Whether a reply search may match internal notes comes from the caller's role; there is no argument for it. With no `scope` the listing is every ticket the caller may see, as it has always been here (REST's `scope=visible`), not REST's default queue of tickets assigned to the caller, and `assignee_group_id` is not refused to a staff member who is outside the group, because it can only narrow what their scope already admits. `limit` defaults to 20 and is clamped to 100; `offset` pages the full result set. |
 | `list_attachments` | any signed-in user | `ticket_id` is a UUID or tracking number; a ticket the caller may not see answers the same "not found" as one that does not exist. Metadata for each file: `id`, `filename`, `mime_type`, `size_bytes`, `created_at`, `detected_mime`, `sha256`, `virus_name`, `mismatch` and `quarantined` (`virus_name` is set). `mismatch` is `null` for a file that predates the inspection, which is not the same as `false`. **No file content** (attachments are download-only) and **no reputation lookup**: that spends the operator's provider allowance, so it stays in the web interface. |
-| `list_categories` | any signed-in user | The Category/Type/Item tree, nested, for filling in CTI. Active entries only; `include_inactive: true` adds retired ones, for staff and administrators only, as on the REST catalogue; for anyone else the flag is ignored and they get active entries (no error). |
+| `list_categories` | any signed-in user | The Category/Type/Item tree, nested, for filling in CTI. Every entry carries its `description` (plain text, `""` when none; 1.3.0). Active entries only; `include_inactive: true` adds retired ones, for staff and administrators only, as on the REST catalogue; for anyone else the flag is ignored and they get active entries (no error). |
 | `list_statuses` | any signed-in user | The statuses this instance defines. |
 | `list_ticket_fields` | any signed-in user | `category_id` required; `type_id` and `item_id` optional. The custom fields the new-ticket form would show there (#627): shown on the form and active, at their most specific attachment, in the form's order. Each is `id`, `name`, `field_type`, `options` (select, in use only), `required`, `max_length` (the longest value, in characters) and `level`. These are the ids and options `create_ticket`'s `custom_fields` takes. A field hidden from the form, deactivated, or attached at a level not asked for is not listed. |
 | `create_ticket` | staff, admin | Category required; Type and Item optional. `reporter_user_id` or `reporter_email` (with `guest_name`, always required with the address) names the subject of the ticket; both are absent by default and the caller is the subject. `description` is Markdown unless `format: "plain"` is passed (#443); an invalid `format` is a tool error. The ticket is recorded as `mcp` (#130), including one filed for someone else; a `source_channel` argument is a tool error and nothing is written. `custom_fields` (an object of field id to string, #627) is held to the REST rules from the same code: a field the classification requires must have a usable value or the call is a tool error and nothing is created (#626); any other value that cannot be written is dropped and returned under `warnings`, as on REST. A value that is not a string, or a `custom_fields` that is not an object, is a tool error. |
@@ -7299,6 +7414,7 @@ Admins can manage which groups handle each CTI node directly from the CTI editor
 
 The same editor archives and restores a category, type or item (#446): an archive button on each row sends `active: false`, after a confirmation that says requesters will no longer see it or be able to file new tickets under it; a restore button sends `active: true` with no confirmation. Archived rows are greyed and labelled **Archived**. Deleting an entry that tickets use is refused with `409` (`category_in_use`, `type_in_use`, `item_in_use`), and the dialog then suggests archiving instead.
 
+- Each expanded row, at all three levels, also has an optional **Description** (1.3.0; see Data Model → Ticket Classification → Descriptions).
 - Each expanded **Category** row shows a **Groups** subsection listing groups assigned at the category level (type_id = NULL in `group_scopes`).
 - Each expanded **Type** row shows a **Groups** subsection listing groups assigned to that specific category + type pair.
 - **Items do not have a group management section** — items do not factor into scope per the scope model.

@@ -9,6 +9,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/admin"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/category"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/group"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
@@ -62,6 +63,25 @@ func (s *Server) FailUserLookupForTest() { s.users = user.NewService(failingUser
 // FailGroupLookupForTest makes group lookups fail as a database outage would,
 // injected for the reason given on FailSAMLSpendForTest.
 func (s *Server) FailGroupLookupForTest() { s.groups = group.NewService(failingGroupLookup{}) }
+
+// failingCategoryLookup makes the single-row category and type reads fail with
+// something other than "no such row" and leaves every other call to the real
+// store, so a handler that wrongly carried on would be served real lists.
+type failingCategoryLookup struct{ category.Store }
+
+func (failingCategoryLookup) GetCategory(context.Context, uuid.UUID) (category.Category, error) {
+	return category.Category{}, errors.New("injected category lookup failure")
+}
+
+func (failingCategoryLookup) GetType(context.Context, uuid.UUID) (category.Type, error) {
+	return category.Type{}, errors.New("injected type lookup failure")
+}
+
+// FailCategoryLookupForTest makes category and type reads fail as a database
+// outage would, for the public catalogue's check that a parent is active.
+func (s *Server) FailCategoryLookupForTest(real category.Store) {
+	s.categories = category.NewService(failingCategoryLookup{real})
+}
 
 // failingSpend makes the SAML hand-over ledger write fail and leaves every
 // other session call alone.

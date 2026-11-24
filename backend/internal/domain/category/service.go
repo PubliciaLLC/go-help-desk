@@ -5,9 +5,36 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 )
+
+// MaxDescription is the longest description, in characters (not bytes). The
+// database holds the same limit in a CHECK (migration 000069); this is the
+// check that answers with a message.
+const MaxDescription = 500
+
+// trimmable is what a description is trimmed of: Go's white space plus the byte
+// order mark, which a browser's trim() strips and TrimSpace keeps. (The other
+// difference, U+0085, Go already strips and the form strips as well.) Both sides
+// strip the same set, so a text the form accepts is not refused here for its length.
+func trimmable(r rune) bool { return unicode.IsSpace(r) || r == '\uFEFF' }
+
+// cleanDescription trims a description and refuses one that is too long or
+// holds a NUL, which text columns cannot store. Empty means none. The text is
+// otherwise kept verbatim: it is plain text, never parsed.
+func cleanDescription(d string) (string, error) {
+	d = strings.TrimFunc(d, trimmable)
+	if n := utf8.RuneCountInString(d); n > MaxDescription {
+		return "", fmt.Errorf("description is too long: %d characters, the limit is %d: %w", n, MaxDescription, ErrValidation)
+	}
+	if strings.ContainsRune(d, 0) {
+		return "", fmt.Errorf("description must not contain a NUL character: %w", ErrValidation)
+	}
+	return d, nil
+}
 
 // Service manages the CTI hierarchy.
 type Service struct{ store Store }
@@ -16,11 +43,23 @@ type Service struct{ store Store }
 func NewService(store Store) *Service { return &Service{store: store} }
 
 func (s *Service) CreateCategory(ctx context.Context, name string, sortOrder int) (Category, error) {
+	return s.CreateCategoryWithDescription(ctx, name, "", sortOrder)
+}
+
+// CreateCategoryWithDescription is CreateCategory with the optional description
+// (see Description). It is a method of its own, not a new parameter, so the
+// callers that have no description (setup, most tests) stay as they are.
+func (s *Service) CreateCategoryWithDescription(ctx context.Context, name, description string, sortOrder int) (Category, error) {
+	description, err := cleanDescription(description)
+	if err != nil {
+		return Category{}, err
+	}
 	c := Category{
-		ID:        uuid.New(),
-		Name:      strings.TrimSpace(name),
-		SortOrder: sortOrder,
-		Active:    true,
+		ID:          uuid.New(),
+		Name:        strings.TrimSpace(name),
+		Description: description,
+		SortOrder:   sortOrder,
+		Active:      true,
 	}
 	if c.Name == "" {
 		return Category{}, fmt.Errorf("category name: %w", ErrValidation)
@@ -38,6 +77,10 @@ func (s *Service) UpdateCategory(ctx context.Context, c Category) error {
 	if c.Name == "" {
 		return fmt.Errorf("category name: %w", ErrValidation)
 	}
+	var err error
+	if c.Description, err = cleanDescription(c.Description); err != nil {
+		return err
+	}
 	return s.store.UpdateCategory(ctx, c)
 }
 
@@ -54,16 +97,26 @@ func (s *Service) ListCategories(ctx context.Context, activeOnly bool) ([]Catego
 }
 
 func (s *Service) CreateType(ctx context.Context, categoryID uuid.UUID, name string, sortOrder int) (Type, error) {
+	return s.CreateTypeWithDescription(ctx, categoryID, name, "", sortOrder)
+}
+
+// CreateTypeWithDescription is CreateType with the optional description.
+func (s *Service) CreateTypeWithDescription(ctx context.Context, categoryID uuid.UUID, name, description string, sortOrder int) (Type, error) {
 	// Verify the category exists.
 	if _, err := s.store.GetCategory(ctx, categoryID); err != nil {
 		return Type{}, fmt.Errorf("category not found: %w", err)
 	}
+	description, err := cleanDescription(description)
+	if err != nil {
+		return Type{}, err
+	}
 	tp := Type{
-		ID:         uuid.New(),
-		CategoryID: categoryID,
-		Name:       strings.TrimSpace(name),
-		SortOrder:  sortOrder,
-		Active:     true,
+		ID:          uuid.New(),
+		CategoryID:  categoryID,
+		Name:        strings.TrimSpace(name),
+		Description: description,
+		SortOrder:   sortOrder,
+		Active:      true,
 	}
 	if tp.Name == "" {
 		return Type{}, fmt.Errorf("type name: %w", ErrValidation)
@@ -81,6 +134,10 @@ func (s *Service) UpdateType(ctx context.Context, tp Type) error {
 	if tp.Name == "" {
 		return fmt.Errorf("type name: %w", ErrValidation)
 	}
+	var err error
+	if tp.Description, err = cleanDescription(tp.Description); err != nil {
+		return err
+	}
 	return s.store.UpdateType(ctx, tp)
 }
 
@@ -97,15 +154,25 @@ func (s *Service) ListTypes(ctx context.Context, categoryID uuid.UUID, activeOnl
 }
 
 func (s *Service) CreateItem(ctx context.Context, typeID uuid.UUID, name string, sortOrder int) (Item, error) {
+	return s.CreateItemWithDescription(ctx, typeID, name, "", sortOrder)
+}
+
+// CreateItemWithDescription is CreateItem with the optional description.
+func (s *Service) CreateItemWithDescription(ctx context.Context, typeID uuid.UUID, name, description string, sortOrder int) (Item, error) {
 	if _, err := s.store.GetType(ctx, typeID); err != nil {
 		return Item{}, fmt.Errorf("type not found: %w", err)
 	}
+	description, err := cleanDescription(description)
+	if err != nil {
+		return Item{}, err
+	}
 	it := Item{
-		ID:        uuid.New(),
-		TypeID:    typeID,
-		Name:      strings.TrimSpace(name),
-		SortOrder: sortOrder,
-		Active:    true,
+		ID:          uuid.New(),
+		TypeID:      typeID,
+		Name:        strings.TrimSpace(name),
+		Description: description,
+		SortOrder:   sortOrder,
+		Active:      true,
 	}
 	if it.Name == "" {
 		return Item{}, fmt.Errorf("item name: %w", ErrValidation)
@@ -122,6 +189,10 @@ func (s *Service) UpdateItem(ctx context.Context, it Item) error {
 	it.Name = strings.TrimSpace(it.Name)
 	if it.Name == "" {
 		return fmt.Errorf("item name: %w", ErrValidation)
+	}
+	var err error
+	if it.Description, err = cleanDescription(it.Description); err != nil {
+		return err
 	}
 	return s.store.UpdateItem(ctx, it)
 }
