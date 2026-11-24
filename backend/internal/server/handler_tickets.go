@@ -68,12 +68,18 @@ func pageParams(r *http.Request) (limit, offset int) {
 // already see. See docs/DESIGN.md, Ticket Search and List filters.
 //
 // The parameters the handler itself reads:
-//   - scope=mine|unassigned|all|visible. The queue. "mine" (the default) is
-//     tickets assigned to the caller or to one of their groups, "unassigned" is
-//     tickets with neither, "all" and "visible" are every ticket the caller can
-//     see. Unassigned and all are administrators only. A staff member with
-//     scope enforcement on always gets what the scope admits, which is why
-//     "mine" does not narrow them; a requester always gets their own tickets.
+//   - scope=mine|assigned_to_me|my_groups|unassigned|all|visible. The queue,
+//     resolved by ticket.ResolveQueue (#676). "mine" (the default, and what an
+//     absent or unknown value means) is tickets assigned to the caller or to one
+//     of their groups; "assigned_to_me" is the first half of that and
+//     "my_groups" the second; "unassigned" (the Available view) is tickets with
+//     neither a group nor a person; "all" and "visible" are every ticket the
+//     caller can see. "all" is administrators only, and "unassigned" is
+//     administrators and staff while the available_queue_roles setting lists
+//     staff (403 "only admins can use this scope" otherwise). A staff member
+//     with scope enforcement on gets what the scope admits for "mine", which is
+//     why it does not narrow them; the other queues are applied as named. A
+//     requester always gets their own tickets.
 //   - limit and offset (pageParams).
 //
 // reporter_id, requester and assignee_group_id ignore scope: naming who or what
@@ -122,18 +128,20 @@ func (s *Server) handleListTickets(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// A group filter names which tickets, so scope does not apply to it, and
-	// neither do the refusals scope carries. Without enforcement any staff
-	// member may name any group, as they always could.
-	namesWho := f.ReporterID != nil || f.Requester != "" || f.AssigneeGroupID != nil
-	queue := ticket.QueueAny
-	if !namesWho {
-		scope := strings.TrimSpace(r.URL.Query().Get("scope"))
-		if (scope == "unassigned" || scope == "all") && a.Role != user.RoleAdmin {
-			Error(w, http.StatusForbidden, "forbidden", "only admins can use this scope")
-			return
-		}
-		queue = queueFor(scope, vis)
+	// The queue, and whether this caller may open it. ResolveQueue is the one
+	// rule, shared with MCP's list_tickets: a request that names who it wants
+	// (reporter_id, requester, assignee_group_id) is not on one of the four
+	// older queues, and without enforcement any staff member may name any group,
+	// as they always could. An absent, empty or unknown scope is "mine".
+	scope, ok := ticket.ParseScope(r.URL.Query().Get("scope"))
+	if !ok {
+		scope = ticket.ScopeMine
+	}
+	f.Visibility = vis
+	queue, err := ticket.ResolveQueue(scope, f, a.Role, s.AvailableQueueAllowed(ctx, a))
+	if err != nil {
+		writeFilterError(w, err)
+		return
 	}
 
 	// Refusing only RoleUser was not enough. With scope enforced, the default
@@ -156,7 +164,6 @@ func (s *Server) handleListTickets(w http.ResponseWriter, r *http.Request) {
 	}
 
 	f.ActorID = a.UserID
-	f.Visibility = vis
 	f.Queue = queue
 	f.IncludeInternal = ticket.IncludeInternalFor(a.Role)
 	f.Limit, f.Offset = pageParams(r)
@@ -207,27 +214,6 @@ func writeReplySearchHeaders(w http.ResponseWriter, f ticket.Filter, m ticket.Re
 	if m.IndexBuilding {
 		w.Header().Set("X-Reply-Index", "building")
 	}
-}
-
-// queueFor is the queue a scope names for a caller of this role.
-//
-// A requester has no queues: their tickets are the ones they reported, which
-// visibility already says. Staff with scope enforcement on get the whole of
-// what the scope admits whatever they ask for, because an unassigned ticket in
-// a category their groups cover is theirs to pick up and no queue of "mine"
-// would show it. Everyone else: "mine" is the default, and a value this does
-// not know is "mine" too, as it always was.
-func queueFor(scope string, vis ticket.Visibility) ticket.Queue {
-	if vis == ticket.VisibilityReporter || vis == ticket.VisibilityScoped {
-		return ticket.QueueAny
-	}
-	switch scope {
-	case "unassigned":
-		return ticket.QueueUnassigned
-	case "all", "visible":
-		return ticket.QueueAny
-	}
-	return ticket.QueueMine
 }
 
 // canSearchRequesters says whether the caller may send the free-text

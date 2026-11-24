@@ -60,6 +60,11 @@ type meUser struct {
 	// APIKeyMaxLifetimeYears is the longest a new key may live: 1 to 5, or -1
 	// for no limit (#450). The create forms cap the expiry with it.
 	APIKeyMaxLifetimeYears int `json:"api_key_max_lifetime_years"`
+	// CanUseAvailableQueue is whether the Available view (scope=unassigned) is
+	// open to this person (#676): an administrator always, staff while the
+	// available_queue_roles setting lists them, a requester never. Always
+	// present, so a client can tell false from an old server.
+	CanUseAvailableQueue bool `json:"can_use_available_queue"`
 	// SLAEnabled is whether SLA tracking is on, for staff and administrators
 	// only: the ticket list offers the SLA filter and sort only while it is.
 	// Absent for a requester, who is never shown anything about SLA, and when
@@ -87,6 +92,7 @@ type emailNotifications struct {
 func (s *Server) meView(ctx context.Context, u user.User) meUser {
 	v := meUser{User: u, APIKeyMaxLifetimeYears: s.adminSvc.APIKeyMaxLifetimeYears(ctx)}
 	v.CanCreateAPIKeys = u.Role == user.RoleAdmin || (u.Role == user.RoleStaff && s.adminSvc.StaffCanCreateAPIKeys(ctx))
+	v.CanUseAvailableQueue = s.adminSvc.AvailableQueueAllowed(ctx, string(u.Role))
 	if u.Role == user.RoleUser {
 		return v
 	}
