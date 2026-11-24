@@ -297,7 +297,7 @@ ln -sfn "$(brew --prefix)/opt/docker-buildx/bin/docker-buildx" ~/.docker/cli-plu
 <table class="param-table">
   <thead><tr><th>Variable</th><th>Default</th><th>Description</th></tr></thead>
   <tbody>
-    <tr><td><code>CLAMAV_ADDR</code></td><td>unset</td><td>Address of a ClamAV daemon: <code>tcp://host:3310</code> or <code>unix:///path/to/clamd.sock</code>. When unset, attachments are not scanned. In Docker Compose, set it in <code>.env</code> together with <code>COMPOSE_PROFILES=antivirus</code>; see <a href="#virus-scanning">Virus scanning</a> under Quick start. An administrator can change the address under <em>Admin → System → File Attachments → Malware scanning</em> without a restart. No clamd change is needed with the shipped image; an older or tuned clamd must allow the per-file upload limit (<code>attachment_max_mb</code>, 25 MB by default).</td></tr>
+    <tr><td><code>CLAMAV_ADDR</code></td><td>unset</td><td>Address of a ClamAV daemon: <code>tcp://host:3310</code> or <code>unix:///path/to/clamd.sock</code>. When unset, attachments are not scanned. In Docker Compose, set it in <code>.env</code> together with <code>COMPOSE_PROFILES=antivirus</code>; see <a href="#virus-scanning">Virus scanning</a> under Quick start. An administrator can change the address under <em>Admin → System → File Attachments → Malware scanning</em> without a restart. No clamd change is needed with the shipped image; an older or tuned clamd must allow the per-file upload limit (<code>attachment_max_mb</code>, 25 MB by default; see <a href="attachment-security.html#attach-settings">Attachment Security</a>).</td></tr>
   </tbody>
 </table>
 <p>Once an address is set, the scan policy defaults to <code>required</code>: an upload is refused with <code>503</code> and a <code>Retry-After</code> header while the scanner cannot be reached. Administrators can change the policy under <em>Admin → System → File Attachments → Malware scanning</em>. See <a href="admin-guide.html#admin-attachments">Admin Guide: Attachments</a>.</p>
@@ -344,7 +344,7 @@ ln -sfn "$(brew --prefix)/opt/docker-buildx/bin/docker-buildx" ~/.docker/cli-plu
     <strong>Configure email</strong> (optional). Set <code>SMTP_HOST</code> and <code>SMTP_FROM</code> (both are needed) and any other SMTP variables, then restart. See <a href="#config-email">Email (SMTP)</a>.
   </li>
   <li>
-    <strong>Configure SLA policies</strong> (optional). Turn on SLA tracking under <em>Admin → System → Features</em>, then set response and resolution targets per priority or category on the same SLA tab. See <a href="admin-guide.html#admin-sla">Admin Guide: SLA policies</a>.
+    <strong>Configure SLA policies</strong> (optional). Turn on SLA tracking under <em>Admin → System → Features → SLA</em>, then set response and resolution targets in the policies that appear below the switch (they show only while SLA tracking is on). See <a href="admin-guide.html#admin-sla">Admin Guide: SLA policies</a>.
   </li>
   <li>
     <strong>Set up SSO</strong> (optional). Configure SAML or OIDC under <em>Admin → System → Authentication</em>, in the SAML and OIDC sections. OIDC is reloaded without a restart. See <a href="authentication.html#auth-saml">Authentication: SAML 2.0</a>.
