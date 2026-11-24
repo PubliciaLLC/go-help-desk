@@ -285,6 +285,38 @@ export const MARKDOWN_REPLIES = [
   { ...REPLIES[0], body: `A [reply link](${REPLY_URL}) and\n\n- one\n- two\n\n> quoted ${REPLY_URL}`, body_format: 'markdown' },
 ]
 
+// #675: what GET /dashboard answers. One attention row has a 300-character
+// subject with no break point, the shape that widens a page that does not wrap it.
+export const LONG_SUBJECT = 'Q'.repeat(300)
+
+const trendDays = Array.from({ length: 30 }, (_, i) => ({
+  date: new Date(Date.UTC(2026, 9, 26 + i)).toISOString().slice(0, 10),
+  created: 1 + (i % 5),
+  resolved: i % 4,
+}))
+
+export const DASHBOARD_STAFF = {
+  queues: [
+    { key: 'assigned_to_me', count: 4 },
+    { key: 'my_groups', count: 11 },
+    { key: 'sla_breached', count: 1 },
+    { key: 'sla_at_risk', count: 2 },
+    { key: 'awaiting_my_reply', count: 3 },
+  ],
+  attention: [
+    { reason: 'breached', since: '2026-11-21T09:14:03Z', ticket: { ...TICKETS[0], subject: LONG_SUBJECT } },
+    { reason: 'at_risk', since: '2026-11-22T09:14:03Z', ticket: TICKETS[1] },
+    { reason: 'reopened', since: '2026-11-24T07:40:11Z', ticket: { ...TICKETS[2], reopen_count: 1 } },
+  ],
+  volume: { tz: 'UTC', days: trendDays },
+}
+
+export const DASHBOARD_REQUESTER = {
+  queues: [{ key: 'my_tickets', count: 6 }],
+  attention: null,
+  volume: null,
+}
+
 export async function mockApi(
   page: Page,
   opts: { me?: object; ticket?: object; replies?: object[] } = {},
@@ -294,6 +326,7 @@ export async function mockApi(
     '/api/v1/me': me,
     '/api/v1/site': { name: 'Go Help Desk', logo_url: '', version: '1.3.0' },
     '/api/v1/statuses': STATUSES,
+    '/api/v1/dashboard': (me as { role?: string }).role === 'user' ? DASHBOARD_REQUESTER : DASHBOARD_STAFF,
     '/api/v1/tickets': TICKETS,
     '/api/v1/categories': CATEGORIES,
     [`/api/v1/tickets/${TICKET_DETAIL.id}`]: opts.ticket ?? TICKET_DETAIL,

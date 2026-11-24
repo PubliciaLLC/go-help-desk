@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { fmtMin, priorityVariant, slaTargetText } from './format'
+import { fmtAgo, fmtMin, priorityVariant, slaTargetText } from './format'
 import type { SLATargetStatus } from '@/api/types'
 
 describe('priorityVariant', () => {
@@ -104,5 +104,38 @@ describe('slaTargetText', () => {
     it.each(cases)('$name', ({ color, met_at, want }) => {
       expect(slaTargetText(target({ color, met_at, remaining_min: 0 }))).toBe(want)
     })
+  })
+})
+
+describe('fmtAgo', () => {
+  const now = new Date('2026-11-24T12:00:00Z')
+  const S = 1000
+  const M = 60 * S
+  const H = 60 * M
+  const D = 24 * H
+  const before = (ms: number) => new Date(now.getTime() - ms).toISOString()
+
+  const cases = [
+    { name: '0 seconds', ms: 0, want: 'just now' },
+    { name: '59 seconds', ms: 59 * S, want: 'just now' },
+    { name: '60 seconds is one minute, singular', ms: 60 * S, want: '1 minute ago' },
+    { name: '2 minutes, plural', ms: 2 * M, want: '2 minutes ago' },
+    { name: '59 minutes 59 seconds floors to 59 minutes', ms: 59 * M + 59 * S, want: '59 minutes ago' },
+    { name: '60 minutes is one hour, singular', ms: 60 * M, want: '1 hour ago' },
+    { name: '61 minutes floors to one hour', ms: 61 * M, want: '1 hour ago' },
+    { name: '23 hours 59 minutes floors to 23 hours', ms: 23 * H + 59 * M, want: '23 hours ago' },
+    { name: '24 hours is one day, singular', ms: 24 * H, want: '1 day ago' },
+    { name: '47 hours floors to one day', ms: 47 * H, want: '1 day ago' },
+    { name: '2 days, plural', ms: 2 * D, want: '2 days ago' },
+    { name: '120 days: no larger unit', ms: 120 * D, want: '120 days ago' },
+    { name: 'the future (clock skew) is just now', ms: -5 * M, want: 'just now' },
+  ]
+
+  it.each(cases)('$name', ({ ms, want }) => {
+    expect(fmtAgo(before(ms), now)).toBe(want)
+  })
+
+  it('defaults now to the current time', () => {
+    expect(fmtAgo(new Date(Date.now() - 3 * H).toISOString())).toBe('3 hours ago')
   })
 })
