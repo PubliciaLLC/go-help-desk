@@ -8,6 +8,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { MFAEnrollForm } from '@/components/MFAEnrollForm'
+import { PasskeyEnrollForm } from '@/components/PasskeyEnrollForm'
 
 // The display name and password are chosen here, not on the signup form
 // (#360, #374): only whoever reads the inbox reaches this page, so only they
@@ -29,6 +30,8 @@ export function VerifyEmailPage() {
   // The verified session owes MFA enrolment (#369); nothing else will answer
   // it until that is done.
   const [mustEnrol, setMustEnrol] = useState(false)
+  // Or a passkey, for a role that must use one (#616).
+  const [mustEnrolPasskey, setMustEnrolPasskey] = useState(false)
 
   // Look the link up first (#370): to show which address this is, to hand a
   // password manager the address, and to say a dead link is dead before a
@@ -68,9 +71,11 @@ export function VerifyEmailPage() {
     }
     setLoading(true)
     try {
-      const { user, mfa_enrollment_needed } = await verifyEmail(token, displayName, password)
+      const { user, mfa_enrollment_needed, passkey_enrollment_needed } = await verifyEmail(token, displayName, password)
       if (mfa_enrollment_needed) {
         setMustEnrol(true)
+      } else if (passkey_enrollment_needed) {
+        setMustEnrolPasskey(true)
       } else {
         setUser(user)
         navigate({ to: '/dashboard' })
@@ -100,11 +105,15 @@ export function VerifyEmailPage() {
       <Card className="w-full max-w-sm">
         <CardHeader>
           <CardTitle className="text-xl">
-            {mustEnrol ? 'Set up two-factor authentication' : 'Finish creating your account'}
+            {mustEnrolPasskey ? 'Register a passkey'
+              : mustEnrol ? 'Set up two-factor authentication'
+              : 'Finish creating your account'}
           </CardTitle>
         </CardHeader>
         <CardContent>
-          {mustEnrol ? (
+          {mustEnrolPasskey ? (
+            <PasskeyEnrollForm onEnrolled={finishSignIn} />
+          ) : mustEnrol ? (
             <MFAEnrollForm onEnrolled={finishSignIn} />
           ) : linkDead ? (
             <div className="space-y-3 text-sm text-gray-700">

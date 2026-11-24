@@ -120,22 +120,9 @@ func (s *Server) handleLocalLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The second-factor gate, after a valid password. There are four answers,
-	// and there used to be two.
-	//
-	//   verify TOTP    — a TOTP enrolment exists
-	//   verify passkey — a passkey is registered and no TOTP is
-	//   enrol         — neither, and this role must have one
-	//   nothing owed  — anything else; the session is fully authenticated
-	//
-	// The two booleans that used to carry this both keyed off u.MFAEnabled,
-	// which is the TOTP column rather than "this account has a second
-	// factor". That was a complete answer while TOTP was the only kind.
-	// Passkeys made it a wrong one: an account with a passkey and no TOTP
-	// read MFAEnabled false, so the server answered "you still need to
-	// enrol" on every sign-in and never once offered the key. It could not
-	// sign in again. There was no third outcome on the wire to say "you have
-	// a factor, use it, and it is not TOTP".
+	// The second-factor gate, after a valid password. What is owed is decided
+	// by auth.SecondStep, which also explains the TOTP-first order and the
+	// stranded refusal.
 	mfaEnabled := s.adminSvc.MFAEnabled(r.Context())
 	// The password was right, so prior failures for this address stop counting.
 	s.resetLoginLimit(r.Context(), loginKey)
@@ -146,44 +133,40 @@ func (s *Server) handleLocalLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// TOTP first when both exist: it is what the account had before, and a
-	// person who enrolled a key alongside it has not asked to stop using the
-	// authenticator they already have. The passkey route is still reachable
-	// directly for anyone who prefers it.
-	mfaNeeded := mfaEnabled && u.MFAEnabled
-	//
-	// Passkeys unavailable (#494): a key the server cannot check is not a
-	// factor, so it is never asked for. An account whose ONLY second factor is
-	// such a key is refused rather than let in on its password alone, or a
-	// stolen password would take over exactly the accounts that chose a
-	// stronger factor. That includes the last administrator: the way back is
-	// an administrator's MFA reset, or reset-factors on the server. The
-	// refusal comes after loginLimiter.Reset, so it never counts as a failed
-	// attempt, and before any session is written.
-	stranded := mfaEnabled && !u.MFAEnabled && passkeys > 0 && !s.passkeysAvailable()
-	if stranded {
+	// auth.SecondStep decides what is owed (it is shared with signup
+	// verification, SAML and OIDC). A stranded account is refused here, after
+	// the limiter reset so it never counts as a failed attempt, and before any
+	// session is written.
+	role := string(u.Role)
+	owed := auth.SecondStep(auth.SignInFacts{
+		MFAOn:           mfaEnabled,
+		Enforced:        s.adminSvc.MFARequiredFor(r.Context(), role),
+		PasskeyRequired: s.passkeyRequiredFor(r.Context(), role),
+		PasskeysUsable:  s.passkeysAvailable(),
+		HasTOTP:         u.MFAEnabled,
+		Passkeys:        int(passkeys),
+	})
+	if owed.Stranded {
 		Error(w, http.StatusForbidden, "passkey_unavailable",
 			"Your passkey can't be used on this server right now. Ask an administrator to reset your sign-in factors.")
 		return
 	}
-	passkeyNeeded := mfaEnabled && !u.MFAEnabled && passkeys > 0
-	mfaEnrollmentNeeded := mfaEnabled && !u.MFAEnabled && passkeys == 0 &&
-		s.adminSvc.MFARequiredFor(r.Context(), string(u.Role))
-	mfaPassed := !mfaNeeded && !passkeyNeeded && !mfaEnrollmentNeeded
 
 	sd := auth.SessionData{
-		UserID:    u.ID,
-		Role:      u.Role,
-		MFAPassed: mfaPassed,
+		UserID:      u.ID,
+		Role:        u.Role,
+		MFAPassed:   owed.Passed(),
+		PasskeyOwed: owed.PasskeyOwed(),
+		PasskeyHeld: owed.PasskeyHeld(),
 
 		MustChangePassword: u.MustChangePassword,
 		// Not the raw flag: see auth.SessionData.PasswordChangeNeedsNoFactor.
-		PasswordChangeNeedsNoFactor: u.MustChangePassword && !mfaNeeded && !passkeyNeeded,
+		PasswordChangeNeedsNoFactor: u.MustChangePassword && !owed.TOTP && !owed.Passkey,
 	}
 	// The limit is chosen here, where we know which factor is owed: five
-	// minutes to type a code, fifteen to install an app and enrol.
-	if !mfaPassed {
-		sd.PendingUntil = auth.PendingDeadline(time.Now(), mfaEnrollmentNeeded)
+	// minutes to type a code, fifteen to install an app or register a key.
+	if !sd.MFAPassed {
+		sd.PendingUntil = auth.PendingDeadline(time.Now(), owed.Enrol || owed.PasskeyEnrol)
 	}
 
 	if err := s.writeSession(w, r, sd); err != nil {
@@ -192,11 +175,12 @@ func (s *Server) handleLocalLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	JSON(w, http.StatusOK, map[string]any{
-		"user":                     u,
-		"mfa_needed":               mfaNeeded,
-		"passkey_needed":           passkeyNeeded,
-		"mfa_enrollment_needed":    mfaEnrollmentNeeded,
-		"password_change_required": u.MustChangePassword,
+		"user":                      u,
+		"mfa_needed":                owed.TOTP,
+		"passkey_needed":            owed.Passkey,
+		"mfa_enrollment_needed":     owed.Enrol,
+		"passkey_enrollment_needed": owed.PasskeyEnrol,
+		"password_change_required":  u.MustChangePassword,
 	})
 }
 
@@ -216,35 +200,6 @@ func passwordResetRequiredMessage(resetByEmail, queued bool) string {
 	}
 	return head + "Ask an administrator to reset it for you. " +
 		"(\"Forgot password\" is not available because this server cannot send email.)"
-}
-
-// samlAuthnMethodsAttr and samlMultipleAuthn are how Entra ID says, in a
-// SAML assertion, that the user completed MFA: the attribute holds
-// multipleauthn only then. For apps other than Salesforce the Entra
-// administrator must add the `amr` optional claim with include_granular_amr,
-// or the attribute is not sent and SSO sign-ins do not count as a proved
-// factor.
-const (
-	samlAuthnMethodsAttr = "http://schemas.microsoft.com/claims/authnmethodsreferences"
-	samlMultipleAuthn    = "http://schemas.microsoft.com/claims/multipleauthn"
-)
-
-// samlAssertedMFA reports whether a SAML assertion's attributes say the user
-// completed a second factor. Anything else fails closed.
-//
-// Looked up under both keys the SAML library can file it under: the
-// attribute's Name, or its FriendlyName when the provider sets one. Entra
-// sends no FriendlyName for this claim; a provider that did would otherwise
-// never count as MFA.
-func samlAssertedMFA(attrs map[string][]string) bool {
-	for _, key := range []string{samlAuthnMethodsAttr, "authnmethodsreferences"} {
-		for _, v := range attrs[key] {
-			if v == samlMultipleAuthn {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 // POST /api/v1/auth/local/logout
@@ -299,18 +254,37 @@ func (s *Server) handleMFAVerify(w http.ResponseWriter, r *http.Request) {
 		handleError(w, err)
 		return
 	}
-	if err := s.writeSession(w, r, auth.SessionData{
-		UserID:         a.UserID,
-		Role:           a.Role,
-		MFAPassed:      true,
-		FactorVerified: true,
-
-		MustChangePassword: a.MustChangePassword,
-	}); err != nil {
+	// Read from the session the sign-in created: whether this sign-in must end
+	// with a passkey is a fact of how it began, never recomputed from the
+	// settings, so a policy change cannot alter a session that exists (#616c).
+	session, _ := s.sessions.Get(r, auth.SessionName)
+	prev, _ := session.Values[auth.SessionDataKey].(auth.SessionData)
+	if err := s.writeSession(w, r, afterTOTP(prev, a)); err != nil {
 		handleError(w, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// afterTOTP is the session a correct TOTP code leaves behind. The code proves
+// a factor (FactorVerified), and passes MFA unless the sign-in owes a passkey.
+// A pending session keeps the deadline it was given: a code does not buy more
+// time to register the key (#452), and a zero deadline would read as expired.
+func afterTOTP(prev auth.SessionData, a *authmw.Actor) auth.SessionData {
+	sd := auth.SessionData{
+		UserID:         a.UserID,
+		Role:           a.Role,
+		MFAPassed:      !prev.PasskeyOwed,
+		FactorVerified: true,
+		PasskeyOwed:    prev.PasskeyOwed,
+		PasskeyHeld:    prev.PasskeyHeld,
+
+		MustChangePassword: a.MustChangePassword,
+	}
+	if !sd.MFAPassed {
+		sd.PendingUntil = prev.PendingUntil
+	}
+	return sd
 }
 
 // POST /api/v1/auth/oauth/token
@@ -536,16 +510,82 @@ func (s *Server) handleSAMLSession(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.writeSession(w, r, auth.SessionData{
-		UserID:         u.ID,
-		Role:           u.Role,
-		MFAPassed:      true, // SAML authentication counts as MFA
-		FactorVerified: samlAssertedMFA(claims.Attributes),
-	}); err != nil {
+	// SAML authentication counts as MFA, except for a role that must use a
+	// passkey and was not given a passkey-grade assertion (#616c).
+	to, err := s.signInSSO(w, r, u,
+		auth.SAMLAssertedMFA(claims.Attributes), auth.SAMLAssertedPasskey(claims.Attributes))
+	if err != nil {
 		handleError(w, err)
 		return
 	}
-	http.Redirect(w, r, "/", http.StatusSeeOther)
+	http.Redirect(w, r, to, http.StatusSeeOther)
+}
+
+// signInSSO writes the session an identity provider's sign-in leaves and
+// returns where to send the browser. Shared by SAML and OIDC.
+//
+// An SSO sign-in counts as having passed MFA, with one exception: a role that
+// must use a passkey (#616c). Unless the provider asserted a passkey-grade
+// sign-in (auth/ssofactor.go) that role has a passkey step after the SSO: use
+// the key it has registered, or register one. The session is then pending
+// (MFAPassed false, PasskeyOwed true) and the browser goes to the login page,
+// which only chooses which step to show; the server enforces it regardless.
+//
+// factorProved is the provider asserting MFA ran; a passkey-grade assertion
+// implies it. Either sets FactorVerified, which is what lets the session add
+// or replace a factor (#333).
+func (s *Server) signInSSO(w http.ResponseWriter, r *http.Request, u user.User, factorProved, passkeyGrade bool) (string, error) {
+	sd := auth.SessionData{
+		UserID:         u.ID,
+		Role:           u.Role,
+		MFAPassed:      true,
+		FactorVerified: factorProved || passkeyGrade,
+	}
+	to := "/"
+
+	role := string(u.Role)
+	if s.passkeyRequiredFor(r.Context(), role) {
+		passkeys, err := s.passkeyStore.CountForUser(r.Context(), u.ID)
+		if err != nil {
+			return "", err
+		}
+		owed := auth.SecondStep(auth.SignInFacts{
+			MFAOn:           true,
+			Enforced:        true,
+			PasskeyRequired: true,
+			PasskeysUsable:  true,
+			HasTOTP:         u.MFAEnabled,
+			Passkeys:        int(passkeys),
+			SSO:             true,
+			SSOFactorProved: factorProved || passkeyGrade,
+			SSOPasskeyGrade: passkeyGrade,
+		})
+		if !owed.Passed() {
+			sd.MFAPassed = false
+			sd.PasskeyOwed = owed.PasskeyOwed()
+			sd.PasskeyHeld = owed.PasskeyHeld()
+			sd.PendingUntil = auth.PendingDeadline(time.Now(), owed.PasskeyEnrol)
+			to = "/login?sso_step=" + ssoStepCode(owed)
+		}
+	}
+
+	if err := s.writeSession(w, r, sd); err != nil {
+		return "", err
+	}
+	return to, nil
+}
+
+// ssoStepCode names the step the login page shows after an SSO sign-in that
+// owes one. The page reads it through an allowlist.
+func ssoStepCode(o auth.Owed) string {
+	switch {
+	case o.Passkey:
+		return "passkey"
+	case o.TOTP:
+		return "verify_then_passkey_enroll"
+	default:
+		return "passkey_enroll"
+	}
 }
 
 // firstNonEmpty returns the first non-blank string from the arguments.

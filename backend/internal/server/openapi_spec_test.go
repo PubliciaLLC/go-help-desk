@@ -1188,3 +1188,28 @@ func stringList(v any) []string {
 	}
 	return out
 }
+
+// The three passkey routes that requirePasskeyNotHeld guards answer 403
+// passkey_required (#616c). The tests above cannot see a refusal a handler
+// makes, so pin that the spec says so.
+func TestOpenAPISpec_PasskeyRequiredIsDocumented(t *testing.T) {
+	doc := loadSpec(t)
+	for _, key := range []string{
+		"POST /api/v1/me/passkeys/register/start",
+		"POST /api/v1/me/passkeys/register/finish",
+		"DELETE /api/v1/me/passkeys/{id}",
+	} {
+		t.Run(key, func(t *testing.T) {
+			o, ok := doc.ops[key]
+			if !ok {
+				t.Fatalf("%s is not in the spec", key)
+			}
+			resps, _ := o.op["responses"].(map[string]any)
+			r403, _ := resps["403"].(map[string]any)
+			desc, _ := r403["description"].(string)
+			if !strings.Contains(desc, "passkey_required") {
+				t.Errorf("403 does not document passkey_required; description: %q", desc)
+			}
+		})
+	}
+}
