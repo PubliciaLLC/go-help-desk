@@ -112,14 +112,15 @@ func (s *Server) handleListCategories(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleCreateCategory(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Name      string `json:"name"`
-		SortOrder int    `json:"sort_order"`
+		Name        string `json:"name"`
+		Description string `json:"description"`
+		SortOrder   int    `json:"sort_order"`
 	}
 	if err := DecodeJSON(r, &body); err != nil {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
 		return
 	}
-	c, err := s.categories.CreateCategory(r.Context(), body.Name, body.SortOrder)
+	c, err := s.categories.CreateCategoryWithDescription(r.Context(), body.Name, body.Description, body.SortOrder)
 	if err != nil {
 		handleError(w, err)
 		return
@@ -153,9 +154,10 @@ func (s *Server) handleUpdateCategory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Name      *string `json:"name"`
-		SortOrder *int    `json:"sort_order"`
-		Active    *bool   `json:"active"`
+		Name        *string `json:"name"`
+		Description *string `json:"description"`
+		SortOrder   *int    `json:"sort_order"`
+		Active      *bool   `json:"active"`
 	}
 	if err := DecodeJSON(r, &body); err != nil {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
@@ -163,6 +165,9 @@ func (s *Server) handleUpdateCategory(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.Name != nil {
 		existing.Name = *body.Name
+	}
+	if body.Description != nil {
+		existing.Description = *body.Description
 	}
 	if body.SortOrder != nil {
 		existing.SortOrder = *body.SortOrder
@@ -174,7 +179,7 @@ func (s *Server) handleUpdateCategory(w http.ResponseWriter, r *http.Request) {
 		handleError(w, err)
 		return
 	}
-	// The saved row, not the edited copy: the name is trimmed on the way in.
+	// The saved row, not the edited copy: the name and description are trimmed on the way in.
 	saved, err := s.categories.GetCategory(r.Context(), existing.ID)
 	if err != nil {
 		handleError(w, err)
@@ -217,14 +222,15 @@ func (s *Server) handleCreateType(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Name      string `json:"name"`
-		SortOrder int    `json:"sort_order"`
+		Name        string `json:"name"`
+		Description string `json:"description"`
+		SortOrder   int    `json:"sort_order"`
 	}
 	if err := DecodeJSON(r, &body); err != nil {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
 		return
 	}
-	tp, err := s.categories.CreateType(r.Context(), catID, body.Name, body.SortOrder)
+	tp, err := s.categories.CreateTypeWithDescription(r.Context(), catID, body.Name, body.Description, body.SortOrder)
 	if err != nil {
 		handleError(w, err)
 		return
@@ -243,9 +249,10 @@ func (s *Server) handleUpdateType(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Name      *string `json:"name"`
-		SortOrder *int    `json:"sort_order"`
-		Active    *bool   `json:"active"`
+		Name        *string `json:"name"`
+		Description *string `json:"description"`
+		SortOrder   *int    `json:"sort_order"`
+		Active      *bool   `json:"active"`
 	}
 	if err := DecodeJSON(r, &body); err != nil {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
@@ -253,6 +260,9 @@ func (s *Server) handleUpdateType(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.Name != nil {
 		existing.Name = *body.Name
+	}
+	if body.Description != nil {
+		existing.Description = *body.Description
 	}
 	if body.SortOrder != nil {
 		existing.SortOrder = *body.SortOrder
@@ -264,7 +274,7 @@ func (s *Server) handleUpdateType(w http.ResponseWriter, r *http.Request) {
 		handleError(w, err)
 		return
 	}
-	// The saved row, not the edited copy: the name is trimmed on the way in.
+	// The saved row, not the edited copy: the name and description are trimmed on the way in.
 	saved, err := s.categories.GetType(r.Context(), existing.ID)
 	if err != nil {
 		handleError(w, err)
@@ -304,14 +314,15 @@ func (s *Server) handleCreateItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Name      string `json:"name"`
-		SortOrder int    `json:"sort_order"`
+		Name        string `json:"name"`
+		Description string `json:"description"`
+		SortOrder   int    `json:"sort_order"`
 	}
 	if err := DecodeJSON(r, &body); err != nil {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
 		return
 	}
-	it, err := s.categories.CreateItem(r.Context(), *p.typ, body.Name, body.SortOrder)
+	it, err := s.categories.CreateItemWithDescription(r.Context(), *p.typ, body.Name, body.Description, body.SortOrder)
 	if err != nil {
 		handleError(w, err)
 		return
@@ -330,9 +341,10 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Name      *string `json:"name"`
-		SortOrder *int    `json:"sort_order"`
-		Active    *bool   `json:"active"`
+		Name        *string `json:"name"`
+		Description *string `json:"description"`
+		SortOrder   *int    `json:"sort_order"`
+		Active      *bool   `json:"active"`
 	}
 	if err := DecodeJSON(r, &body); err != nil {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
@@ -340,6 +352,9 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.Name != nil {
 		existing.Name = *body.Name
+	}
+	if body.Description != nil {
+		existing.Description = *body.Description
 	}
 	if body.SortOrder != nil {
 		existing.SortOrder = *body.SortOrder
@@ -351,7 +366,7 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 		handleError(w, err)
 		return
 	}
-	// The saved row, not the edited copy: the name is trimmed on the way in.
+	// The saved row, not the edited copy: the name and description are trimmed on the way in.
 	saved, err := s.categories.GetItem(r.Context(), existing.ID)
 	if err != nil {
 		handleError(w, err)

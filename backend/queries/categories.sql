@@ -1,11 +1,11 @@
 -- name: CreateCategory :exec
-INSERT INTO categories (id, name, sort_order, active) VALUES ($1, $2, $3, $4);
+INSERT INTO categories (id, name, description, sort_order, active) VALUES ($1, $2, $3, $4, $5);
 
 -- name: GetCategory :one
 SELECT * FROM categories WHERE id = $1;
 
 -- name: UpdateCategory :exec
-UPDATE categories SET name = $2, sort_order = $3, active = $4 WHERE id = $1;
+UPDATE categories SET name = $2, description = $3, sort_order = $4, active = $5 WHERE id = $1;
 
 -- name: DeleteCategory :execrows
 -- Takes the custom-field assignments of the category, of its types and of
@@ -54,13 +54,13 @@ WHERE ($1::boolean = FALSE OR active = TRUE)
 ORDER BY sort_order, name;
 
 -- name: CreateType :exec
-INSERT INTO types (id, category_id, name, sort_order, active) VALUES ($1, $2, $3, $4, $5);
+INSERT INTO types (id, category_id, name, description, sort_order, active) VALUES ($1, $2, $3, $4, $5, $6);
 
 -- name: GetType :one
 SELECT * FROM types WHERE id = $1;
 
 -- name: UpdateType :exec
-UPDATE types SET category_id = $2, name = $3, sort_order = $4, active = $5 WHERE id = $1;
+UPDATE types SET category_id = $2, name = $3, description = $4, sort_order = $5, active = $6 WHERE id = $1;
 
 -- name: DeleteType :execrows
 -- As DeleteCategory: the type's own and its items' field assignments go in the
@@ -97,13 +97,13 @@ WHERE category_id = $1 AND ($2::boolean = FALSE OR active = TRUE)
 ORDER BY sort_order, name;
 
 -- name: CreateItem :exec
-INSERT INTO items (id, type_id, name, sort_order, active) VALUES ($1, $2, $3, $4, $5);
+INSERT INTO items (id, type_id, name, description, sort_order, active) VALUES ($1, $2, $3, $4, $5, $6);
 
 -- name: GetItem :one
 SELECT * FROM items WHERE id = $1;
 
 -- name: UpdateItem :exec
-UPDATE items SET type_id = $2, name = $3, sort_order = $4, active = $5 WHERE id = $1;
+UPDATE items SET type_id = $2, name = $3, description = $4, sort_order = $5, active = $6 WHERE id = $1;
 
 -- name: DeleteItem :execrows
 -- As DeleteCategory: the item's field assignments go in the same statement.
