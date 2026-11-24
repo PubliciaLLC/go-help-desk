@@ -160,6 +160,32 @@ export function localDay(now: Date): string {
   return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`
 }
 
+// The router hands the address over as a record: range=30 arrives as the number
+// 30 and a lone priority as a string, and priority=high&priority=low as an array
+// (or, with the router's own encoding, a JSON list). Anything else is ignored.
+export function kpiSearchFromRecord(rec: Record<string, unknown>): KpiSearch {
+  const p = new URLSearchParams()
+  for (const [k, v] of Object.entries(rec)) {
+    const items = Array.isArray(v) ? v : [v]
+    for (const item of items) {
+      if (typeof item === 'string' || typeof item === 'number') p.append(k, String(item))
+    }
+  }
+  return parseKpiSearch(p)
+}
+
+// A search state as the record the router writes into the address: a repeated
+// priority is a list, everything else a string.
+export function kpiSearchToRecord(s: KpiSearch): Record<string, string | string[]> {
+  const out: Record<string, string | string[]> = {}
+  const p = kpiSearchParams(s)
+  for (const k of new Set(p.keys())) {
+    const all = p.getAll(k)
+    out[k] = k === 'priority' ? all : all[0]
+  }
+  return out
+}
+
 // The request for a search state. `today` is the day in `tz`, from localDay.
 export function toKpiParams(s: KpiSearch, tz: string, today: string): KpiParams {
   const dates =
@@ -189,6 +215,50 @@ export function filterLine(filters: KpiFilters, names: KpiNames): string {
     filters.priority.length ? filters.priority.map((p) => PRIORITY_LABEL[p]).join(', ') : 'All priorities',
     filters.assignee_group_id ? (names.group ?? 'Selected group') : 'All groups',
   ].join(' · ')
+}
+
+// --- period line and file names -----------------------------------------------
+
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+
+// "2026-10-26" as "26 Oct", read as the parts it is made of (a calendar day in
+// the viewer's zone, not an instant).
+function dayMonth(ymd: string): string {
+  const [, m, d] = ymd.split('-').map(Number)
+  return `${d} ${MONTHS[m - 1]}`
+}
+
+const yearOf = (ymd: string): string => ymd.slice(0, 4)
+
+// A range as "26 Oct – 24 Nov 2026". The year closes the range when both ends
+// are in it; across New Year each end says its own. `closingYear` is false for
+// a range whose year the sentence already gave.
+function rangeText(from: string, to: string, closingYear = true): string {
+  if (from === to) return `${dayMonth(to)} ${yearOf(to)}`
+  if (yearOf(from) !== yearOf(to)) return `${dayMonth(from)} ${yearOf(from)} – ${dayMonth(to)} ${yearOf(to)}`
+  return `${dayMonth(from)} – ${dayMonth(to)}${closingYear ? ` ${yearOf(to)}` : ''}`
+}
+
+// The period alone: "26 Oct – 24 Nov 2026".
+export function periodRange(resp: KpiResponse): string {
+  return rangeText(resp.period.from, resp.period.to)
+}
+
+// "26 Oct – 24 Nov 2026, compared with 26 Sep – 25 Oct". The comparison
+// leaves its year out when it is the current period's single year.
+export function periodLine(resp: KpiResponse): string {
+  const cur = resp.period
+  const prev = resp.previous
+  const sameYear = yearOf(cur.from) === yearOf(cur.to) && yearOf(prev.from) === yearOf(cur.to) && yearOf(prev.to) === yearOf(cur.to)
+  const prevText = prev.from === prev.to && sameYear ? dayMonth(prev.to) : rangeText(prev.from, prev.to, !sameYear)
+  return `${periodRange(resp)}, compared with ${prevText}`
+}
+
+// kpis-<from>-to-<to>.csv or .png for the whole board; kpi-<card key>-<from>-to-<to>.png
+// for one card.
+export function kpiFileName(resp: KpiResponse, ext: 'png' | 'csv', card?: KpiCardKey): string {
+  const span = `${resp.period.from}-to-${resp.period.to}`
+  return card ? `kpi-${card}-${span}.${ext}` : `kpis-${span}.${ext}`
 }
 
 // --- CSV -----------------------------------------------------------------------
@@ -304,6 +374,20 @@ export const SLA_OFF_LINE =
   'SLA tracking is off, so new tickets are not timed. These figures cover tickets timed while it was on.'
 
 export type KpiCardKey = 'time_to_resolve' | 'first_response' | 'sla' | 'reopen' | 'volume' | 'backlog' | 'workload'
+
+// The cards in the order the page shows them, and their titles: the page draws
+// a titled box for each before any data has arrived.
+export const KPI_CARD_ORDER: KpiCardKey[] = ['time_to_resolve', 'first_response', 'sla', 'reopen', 'volume', 'backlog', 'workload']
+
+export const KPI_CARD_TITLES: Record<KpiCardKey, string> = {
+  time_to_resolve: 'Time to resolve',
+  first_response: 'First response',
+  sla: 'SLA attainment',
+  reopen: 'Reopen rate',
+  volume: 'Volume',
+  backlog: 'Backlog aging',
+  workload: 'Workload',
+}
 
 export interface KpiFigure {
   label: string

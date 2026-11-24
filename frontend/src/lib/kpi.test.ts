@@ -1,18 +1,26 @@
 import { describe, expect, it } from 'vitest'
 import type { KpiChanges, KpiPeriodMeasures, KpiResponse, MeasureChange } from '@/api/types'
 import {
+  KPI_CARD_ORDER,
+  KPI_CARD_TITLES,
   KPI_MEASURES,
   SLA_OFF_LINE,
   comparisonText,
   filterLine,
   kpiCardModels,
   kpiCsv,
+  kpiFileName,
+  kpiSearchFromRecord,
   kpiSearchParams,
+  kpiSearchToRecord,
   localDay,
   parseKpiSearch,
+  periodLine,
+  periodRange,
   presetRange,
   toKpiParams,
   type KpiMeasure,
+  type KpiSearch,
 } from './kpi'
 
 const measure = (key: keyof KpiChanges): KpiMeasure => {
@@ -793,5 +801,110 @@ describe('kpiCardModels', () => {
     it('does not add it with SLA tracking on', () => {
       expect(kpiCardModels(response()).some((c) => c.lines.includes(SLA_OFF_LINE))).toBe(false)
     })
+  })
+})
+
+describe('periodLine', () => {
+  const withPeriods = (cur: [string, string], prev: [string, string]): KpiResponse => ({
+    ...response(),
+    period: { from: cur[0], to: cur[1], days: 30 },
+    previous: { from: prev[0], to: prev[1], days: 30 },
+  })
+
+  it.each([
+    {
+      name: 'the design example: the year once, on the current period',
+      resp: response(),
+      want: '26 Oct – 24 Nov 2026, compared with 26 Sep – 25 Oct',
+    },
+    {
+      name: 'a previous period in another year says its year',
+      resp: withPeriods(['2026-01-05', '2026-02-03'], ['2025-12-06', '2026-01-04']),
+      want: '5 Jan – 3 Feb 2026, compared with 6 Dec 2025 – 4 Jan 2026',
+    },
+    {
+      name: 'a current period across New Year says both years',
+      resp: withPeriods(['2025-12-20', '2026-01-18'], ['2025-11-20', '2025-12-19']),
+      want: '20 Dec 2025 – 18 Jan 2026, compared with 20 Nov – 19 Dec 2025',
+    },
+    {
+      name: 'one day is one date',
+      resp: withPeriods(['2026-11-24', '2026-11-24'], ['2026-11-23', '2026-11-23']),
+      want: '24 Nov 2026, compared with 23 Nov',
+    },
+  ])('$name', ({ resp, want }) => {
+    expect(periodLine(resp)).toBe(want)
+  })
+})
+
+describe('periodRange', () => {
+  it('is the current period alone', () => {
+    expect(periodRange(response())).toBe('26 Oct – 24 Nov 2026')
+  })
+})
+
+describe('kpiFileName', () => {
+  it.each([
+    { what: 'board png', got: kpiFileName(response(), 'png'), want: 'kpis-2026-10-26-to-2026-11-24.png' },
+    { what: 'csv', got: kpiFileName(response(), 'csv'), want: 'kpis-2026-10-26-to-2026-11-24.csv' },
+    {
+      what: 'a card png',
+      got: kpiFileName(response(), 'png', 'time_to_resolve'),
+      want: 'kpi-time_to_resolve-2026-10-26-to-2026-11-24.png',
+    },
+  ])('$what', ({ got, want }) => {
+    expect(got).toBe(want)
+  })
+})
+
+describe('KPI_CARD_TITLES', () => {
+  it('names the seven cards in the order the page shows them', () => {
+    const models = kpiCardModels(response())
+    expect(KPI_CARD_ORDER).toEqual(models.map((m) => m.key))
+    for (const m of models) expect(KPI_CARD_TITLES[m.key]).toBe(m.title)
+  })
+})
+
+describe('the address as a router search record', () => {
+  const full: KpiSearch = {
+    range: { kind: 'custom', from: '2026-10-01', to: '2026-10-31' },
+    categoryId: 'cat-1',
+    priorities: ['critical', 'low'],
+    groupId: 'grp-1',
+  }
+
+  it('round-trips every part', () => {
+    const rec = kpiSearchToRecord(full)
+    expect(rec).toEqual({
+      from: '2026-10-01',
+      to: '2026-10-31',
+      category_id: 'cat-1',
+      priority: ['critical', 'low'],
+      assignee_group_id: 'grp-1',
+    })
+    expect(kpiSearchFromRecord(rec)).toEqual(full)
+  })
+
+  it('writes a preset as range and nothing else', () => {
+    expect(kpiSearchToRecord({ range: { kind: 'preset', days: 90 }, categoryId: null, priorities: [], groupId: null })).toEqual({
+      range: '90',
+    })
+  })
+
+  // The router parses range=30 into the number 30 and one priority into a string.
+  it('reads what the router hands over: numbers, a lone string, junk', () => {
+    expect(kpiSearchFromRecord({ range: 7, priority: 'high' })).toEqual({
+      range: { kind: 'preset', days: 7 },
+      categoryId: null,
+      priorities: ['high'],
+      groupId: null,
+    })
+    expect(kpiSearchFromRecord({ range: 5, priority: ['nope', 'low'], category_id: 3, from: {} })).toEqual({
+      range: { kind: 'preset', days: 30 },
+      categoryId: '3',
+      priorities: ['low'],
+      groupId: null,
+    })
+    expect(kpiSearchFromRecord({})).toEqual({ range: { kind: 'preset', days: 30 }, categoryId: null, priorities: [], groupId: null })
   })
 })

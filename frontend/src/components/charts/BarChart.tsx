@@ -34,7 +34,10 @@ export function BarChart({ rows, ariaLabel, tone = 'blue', formatValue = String,
 
   const height = rows.length * ROW
   return (
-    <figure>
+    // relative + overflow-hidden: a table keeps its content's width whatever
+    // sr-only says, so a 120-character label would otherwise make the hidden
+    // table, positioned absolutely, widen the document.
+    <figure className="relative overflow-hidden">
       <div className="grid grid-cols-[minmax(0,40%)_minmax(0,1fr)_auto] gap-x-2">
         <div>
           {rows.map((r) => (

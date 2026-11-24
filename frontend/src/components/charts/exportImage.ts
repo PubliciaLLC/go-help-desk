@@ -73,7 +73,7 @@ export function linesFromCharRects(
 // channel of an opaque rgb(r, g, b), such as black's rgb(0, 0, 0), is not one.
 const ZERO_ALPHA = /^(?:(?:rgba|hsla)\([^,)]*,[^,)]*,[^,)]*,|[^/)]*\/)\s*0(?:\.0+)?%?\s*\)$/
 
-function isTransparent(color: string): boolean {
+export function isTransparent(color: string): boolean {
   return color === '' || color === 'transparent' || ZERO_ALPHA.test(color)
 }
 

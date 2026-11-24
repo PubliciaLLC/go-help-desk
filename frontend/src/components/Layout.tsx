@@ -12,7 +12,7 @@ import { VIEW_NAME, type View } from '@/lib/ticketSearch'
 import { BrandLogo } from '@/components/BrandLogo'
 import { Button } from '@/components/ui/button'
 import { TicketIcon, UsersIcon, SettingsIcon, LogOutIcon, HomeIcon, FolderIcon, CircleDotIcon, ShieldIcon, UsersRoundIcon, TagIcon, SlidersIcon, KeyIcon, MessageSquareTextIcon, PlugIcon, WebhookIcon, RouteIcon, MenuIcon,
-  UserIcon, HistoryIcon, MailIcon, ChevronDownIcon, WrenchIcon,
+  UserIcon, HistoryIcon, MailIcon, ChevronDownIcon, WrenchIcon, ChartColumnIcon,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { User } from '@/api/types'
@@ -281,7 +281,7 @@ function TicketViewsNav({ user, onNavigate }: { user: User; onNavigate?: () => v
               className={cn(
                 // As tall as the Admin links (dense, no gap between): four of these
                 // sit in the sidebar beside the admin sections, and the headings
-                // must still fit on a 768-pixel-high screen (admin-nav-sections.spec.ts).
+                // must still fit on an 800-pixel-high screen (admin-nav-sections.spec.ts).
                 'flex items-center rounded-md py-1 pl-10 pr-3 text-sm font-medium transition-colors pointer-coarse:min-h-11',
                 active
                   ? 'bg-blue-50 text-blue-700'
@@ -324,6 +324,9 @@ function SidebarContent({ user, adminNav, branding, onNavigate, onLogout }: Side
           <TicketViewsNav user={user} onNavigate={onNavigate} />
         ) : (
           <NavItem to="/tickets" icon={<TicketIcon className="h-4 w-4" />} label="Tickets" onNavigate={onNavigate} />
+        )}
+        {(user?.role === 'staff' || user?.role === 'admin') && (
+          <NavItem to="/reports" icon={<ChartColumnIcon className="h-4 w-4" />} label="Reports" onNavigate={onNavigate} dense />
         )}
         {user?.role === 'admin' && <AdminSections nav={adminNav} onNavigate={onNavigate} />}
       </nav>
