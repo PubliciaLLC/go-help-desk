@@ -934,14 +934,14 @@ Empty: when every day is zero, the chart's box keeps its height and says "No tic
 
 **Admin health card.** Administrators only. It surfaces four things the app already knows and says nothing more when all is well. It is **frontend only**: it reads the two queries an administrator's page already makes, `GET /admin/security-warnings` (query key `['security-warnings']`, shared with `InsecureConfigBanner`, so no extra request and no extra scanner ping) and `GET /admin/settings` (query key `['admin', 'settings']`, shared with the settings pages). No endpoint, probe or setting is added. A pure function, `adminHealthItems(warnings?, settings?) => HealthItem[]` (`frontend/src/lib/adminHealth.ts`), decides it, in this order:
 
-| Item | Shown when | Severity | Says | Link (after #674; see below) |
+| Item | Shown when | Severity | Says | Link |
 | --- | --- | --- | --- | --- |
 | Update available | `warnings.update` is present (the check is on and found a newer release) | info (blue) | "Version X is available (you run Y)." | the release notes, the URL the banner uses, new tab |
 | SLA alerts off | `settings.sla_enabled === true` and `settings.sla_alerts_enabled === false` (#670) | amber | "SLA tracking is on, but breach and at-risk alerts are off." | `/admin/settings/email`, "Email → Notifications → SLA alerts" |
 | Passkey requirement suspended | `warnings.passkeys.suspended_roles` is a non-empty array (#616) | amber | "The passkey requirement is suspended for <roles>: passkeys are unavailable (<reason>)." | `/admin/settings/authentication`, "Authentication → Multi-factor authentication" |
 | Attachment scanner down | `attachment_scanning.policy !== 'off'` and not `reachable`, the banner's own `scannerDegraded` test | red | "The attachment scanner is unreachable." plus its `effect` sentence | `/admin/settings/attachments`, "File Attachments → Malware scanning" |
 
-Each item carries its link and its place name as data (`HealthItem{id, severity, text, href, place, external}`), so a page that moves is one row to change. **The card is built before #674**: #675 is in #674's base, and #674's task 9 is what retargets the three settings links. The table's Link column is therefore the address each item has **after** #674. In #675's own build the three settings items have `href` `/admin/settings`, because on this branch a settings tab has no address of its own, and `place` is `Features → SLA`, `Authentication → Multi-factor authentication` and `Attachments → Malware scanning` (the tab and section as the Settings page names them at that time; the table's Place column is the wording after #674); the update item's `href` is the release-notes URL either way. #674's task 9 then changes both `href` and `place` of the three to the table's values: SLA alerts off to `/admin/settings/email`, the passkey requirement to `/admin/settings/authentication` and the attachment scanner to `/admin/settings/attachments`, with a test for each target. Because the build order is fixed, the card never carries two link sets chosen at run time: it has the interim links until #674's task 9 and the real ones after it, never both. A key that is absent (a server older than the frontend) shows nothing for its item; the function never infers a problem from a missing field. The card has no Hide: it states what is true now, and the banner's Hide, including "Hide until the next release" for the update, governs only the banner. When there is no item, the card is **one muted line**, "No problems to report.", so an administrator can tell "checked and fine" from "not loaded". If either query has failed, the card says "Health checks could not be loaded." with a Retry button that refetches both; it never says "No problems" on a failure.
+Each item carries its link and its place name as data (`HealthItem{id, severity, text, href, place, external}`), so a page that moves is one row to change. **The card was built after #674**, in the build plan's task 12, once the settings pages and their routes existed, so it has the final addresses from its first line: the three settings items link to `/admin/settings/email`, `/admin/settings/authentication` and `/admin/settings/attachments`, and `place` is the table's wording (the sidebar's, "Page → Section"). A test pins each `href` and each `place`. There was never an interim `/admin/settings` link and nothing is retargeted; the update item's `href` is the release-notes URL. The card reads `warnings.passkeys.suspended_roles` (#616) and `settings.sla_alerts_enabled` (#670), both in this build's base; a server that does not send one shows nothing for its item. A key that is absent (a server older than the frontend) shows nothing for its item; the function never infers a problem from a missing field. The card has no Hide: it states what is true now, and the banner's Hide, including "Hide until the next release" for the update, governs only the banner. When there is no item, the card is **one muted line**, "No problems to report.", so an administrator can tell "checked and fine" from "not loaded". If either query has failed, the card says "Health checks could not be loaded." with a Retry button that refetches both; it never says "No problems" on a failure.
 
 **States.** The status cards keep their own query and spinner. The dashboard query (`['dashboard', tz]`, `staleTime` 60 s, refetched on window focus) feeds the strip, the list and the trend: while it loads, each block shows the existing `Spinner` in a box of its final height (no jump); if it fails, one inline message replaces the three blocks, "The dashboard summary could not be loaded.", with **Retry**, and the status cards and By Client still show.
 
@@ -979,7 +979,7 @@ The dashboard draws `AreaChart` with `labels` the 30 dates, series Created (blue
 
 **Code.** `internal/domain/dashboard` (no HTTP, no SQL): `Cell{Key string; Scope ticket.Scope; Filter ticket.Filter}` and `Cells(role user.Role, slaOn bool) []Cell`, the table above as data; `AttentionReason` (`breached`, `at_risk`, `unassigned`, `reopened`), `PickAttention`, `AttentionLimit`, `ReopenedWindow`. `internal/server/handler_dashboard.go`: `handleGetDashboard`, which for each cell sets `ActorID`, `Visibility` and the queue (`ResolveQueue`) and calls `CountFiltered`, runs the four attention lists for staff and administrators, and the trend. The frontend: `api/dashboard.ts` (`getDashboard(tz?: string)`), the `Dashboard` types in `api/types.ts`, `lib/dashboard.ts` (`QUEUE_CELLS: Record<QueueKey, {label: string; href: string}>`, the six distinct keys of the table, data), `fmtAgo` in `lib/format.ts`, and one component per block under `components/dashboard/` (`QueueStrip`, `NeedsAttention`, `VolumeTrend`, `AdminHealthCard`).
 
-**Build order.** #675 is built on #676's code, not beside it: `ticket.Scope` and its `assigned_to_me` and `my_groups` values, `ticket.ResolveQueue`, `admin.Service.AvailableQueueAllowed`, the `view=` addresses of the ticket list and its per-view offered-filter data in `lib/ticketSearch.ts` are all #676's and none exists on `v1.3.0-beta` today. So every part of #675 that names them (the `dashboard` domain package, the endpoint, the ticket list's `awaiting_reply` control and the dashboard page) is built once #676's code is merged on the 1.3 line. The count query and its drift test, the `awaiting_reply` and `ReopenedAfter` filter (REST and MCP), the trend query with its index, and the chart module do not use any of them and may be built first. The health card additionally needs #616 (`warnings.passkeys`) and #670 (`sla_alerts_enabled`), neither of which is in this branch's base, so **the card (`AdminHealthCard` and `adminHealthItems`, the build plan's task 9) is built on the integration branch that holds #616, #670 and #672, together with #674**, and every other block is built here. It does not wait for #674: #674 is built after #675 and retargets the card's three settings links (see **Admin health card**).
+**Build order.** #675 is built on #676's code, not beside it: `ticket.Scope` and its `assigned_to_me` and `my_groups` values, `ticket.ResolveQueue`, `admin.Service.AvailableQueueAllowed`, the `view=` addresses of the ticket list and its per-view offered-filter data in `lib/ticketSearch.ts` are all #676's and none exists on `v1.3.0-beta` today. So every part of #675 that names them (the `dashboard` domain package, the endpoint, the ticket list's `awaiting_reply` control and the dashboard page) is built once #676's code is merged on the 1.3 line. The count query and its drift test, the `awaiting_reply` and `ReopenedAfter` filter (REST and MCP), the trend query with its index, and the chart module do not use any of them and may be built first. The health card additionally needs #616 (`warnings.passkeys`), #670 (`sla_alerts_enabled`) and the #674 settings pages it links to, none of which is in this branch's base, so **the card (`AdminHealthCard` and `adminHealthItems`, the build plan's task 9) is built after #674, on the integration branch that holds #616, #670, #672 and #674's pages, with the final addresses** (see **Admin health card**), and every other block is built here.
 
 **Upgrade.** Nothing an existing caller sends changes its answer: the endpoint is new, `awaiting_reply` is a new optional filter (a 1.2 server ignores it), MCP's `list_tickets` gains an optional argument, and the list query's `WHERE` gains two clauses that are inert when not asked for. The migration adds one index and changes no data; no setting is added or changes value. The dashboard shows more for every role but loses nothing. A requester sees one number, their open tickets, above their status cards.
 
@@ -999,7 +999,7 @@ The dashboard draws `AreaChart` with `labels` the 30 dates, series Created (blue
 - `awaiting_reply` is a staff and administrator filter only. A requester who sends it is refused like any other staff-only filter (`403`, "awaiting_reply is not available to requesters", through the `requesterRules` row with `requesterOK` false), and a requester's dashboard has no "awaiting my reply" cell. The reason: the clause reads the current role of the newest public reply's author, which a requester is never sent, so letting them filter would disclose, ticket by ticket, whether that author is now staff or an administrator, against the rule that a requester may filter or sort only on what they are sent. Rejected: letting requesters filter and documenting the disclosure (a rule with a written exception is no longer a rule, and the dashboard cell is the only thing that wanted it), and a `requesterThreadKeys` list naming `public_replies` as a source a requester is sent (the replies are sent, but not the role the clause reads, so the row would pass the allowed-list test for the wrong reason).
 - MCP reads `awaiting_reply` with the boolean arguments (`listArgBool`), like `include_closed`. Rejected: a string argument through `listFilterParams` (it would accept `"true"` and refuse `true`, unlike every other boolean on the tool).
 - The relative age is a new `fmtAgo` in `lib/format.ts`, floored to minutes, hours or days. Rejected: `Intl.RelativeTimeFormat` with auto units (it says "last week" and "2 months ago", which is vaguer than a row needs) and a date library.
-- The health card is built after #616 and #670 and before #674. Until #674's task 9 its three settings links point at `/admin/settings` and `place` names the tab; #674's task 9 retargets them to `/admin/settings/email`, `/admin/settings/authentication` and `/admin/settings/attachments`. Rejected: holding the card until #674 merges (the order of the work is fixed the other way: #675 is in #674's base), and two link sets chosen at run time. The interim `/admin/settings` link is accepted because #674's task 9 owns changing it, with a test per target, so it cannot be left behind.
+- The health card is built after #616, #670 and #674, so its three settings links are the final `/admin/settings/email`, `/admin/settings/authentication` and `/admin/settings/attachments` from the start. Rejected: building it before #674 with interim `/admin/settings` links and retargeting them later (a second change to the same three rows, and an address that opens the wrong page in between), and two link sets chosen at run time. The order of the work is: #675's other blocks, then #674's pages, then the card.
 - #675's build starts after #676's code is merged. Rejected: building against #676's open branch (two moving bases) or re-creating its names here.
 - `awaiting_reply` is offered in the page on Assigned to Me and My Group's Tickets only; the API accepts it everywhere for staff and administrators. Rejected: offering it on Search and Available, where it would cost a reply lookup per ticket across the whole desk.
 - A requester gets a strip of one cell (Your tickets) and nothing else new. Rejected: an "Awaiting your reply" cell (it needs the staff-only `awaiting_reply` filter, see above), no new block for requesters (the owner said they see their own tickets' summary), and a trend or attention list of their own few tickets.
@@ -1539,12 +1539,14 @@ and nothing else changes.
 integration branch whose base contains #616, #670, #672, #673, #676, #675 and
 #131, so all five prerequisites above are present, and so are #675 and #131.
 #675 matters here, but **its admin health card is not in this base**: the
-dashboard has the other #675 blocks, and `DashboardPage.tsx` holds only a
-placeholder where the card goes (`AdminHealthCard` and `adminHealthItems` do
-not exist). This build constructs the card after the pages and routes below
-exist (plan task 12), directly with the final `href` and `place` values that
-**Copy that names a place** lists, so there is no interim link set and no
-retargeting step anywhere in #674.
+dashboard has the other #675 blocks, and `DashboardPage.tsx` held only a
+placeholder where the card goes (`AdminHealthCard` and `adminHealthItems` did
+not exist). This build constructed the card after the pages and routes below
+existed (plan task 12), directly with the final `href` and `place` values that
+**Copy that names a place** lists, so there was no interim link set and no
+retargeting step anywhere in #674. `warnings.passkeys.suspended_roles` (#616)
+and `sla_alerts_enabled` (#670), the card's two inputs from those issues, are
+both in this base.
 #131 adds no migration and touches no settings page. The newest migrations in
 the base are 000066 (passkey), 000067 (SLA alerts) and 000068 (the dashboard
 index); #674 adds none.
@@ -1923,26 +1925,26 @@ of these changes to the new name:
 | `EmailNotificationsSection.tsx`, the comment above `SWITCHES` (#670) | from Settings -> Email | from System -> Email |
 | `GuestSizeSlider` description (#673) | set under Attachments | set under System → File Attachments |
 | `AttachmentSizeLimitSection` (#673) | — | names Guest Access as the place of the guest slider |
-| `AdminHealthCard` / `adminHealthItems`, SLA alerts off item (#675) | — (card not built yet) | `href` `/admin/settings/email`, `place` "Email → Notifications → SLA alerts" |
-| same, passkey requirement suspended item (#675) | — (card not built yet) | `href` `/admin/settings/authentication`, `place` "Authentication → Multi-factor authentication" |
-| same, attachment scanner down item (#675) | — (card not built yet) | `href` `/admin/settings/attachments`, `place` "File Attachments → Malware scanning" |
+| `AdminHealthCard` / `adminHealthItems`, SLA alerts off item (#675) | — (new in this build) | `href` `/admin/settings/email`, `place` "Email → Notifications → SLA alerts" |
+| same, passkey requirement suspended item (#675) | — (new in this build) | `href` `/admin/settings/authentication`, `place` "Authentication → Multi-factor authentication" |
+| same, attachment scanner down item (#675) | — (new in this build) | `href` `/admin/settings/attachments`, `place` "File Attachments → Malware scanning" |
 
 The last three rows are the dashboard's health card (#675). They are links, not
-plain-text notices. The card does not exist in this base (see **This build's
-base**), so their "Today" cell is "— (card not built yet)": nothing ships with
-an interim address and nothing is retargeted. **The plan's task 12 builds the
-card once the pages exist, directly with the "After" values**, and tests each
+plain-text notices. The card did not exist in this base (see **This build's
+base**), so their "Today" cell is "— (new in this build)": nothing shipped with
+an interim address and nothing is retargeted. **The plan's task 12 built the
+card once the pages existed, directly with the "After" values**, and tests each
 target (`/admin/settings/email`, `/admin/settings/authentication`,
 `/admin/settings/attachments`) and each `place`. The update item's `href` (the
-release-notes URL) is as the #675 section specifies. The #675 section's own
-text about interim `/admin/settings` links and a retargeting step describes a
-build order that did not happen; task 12 rewrites it to match.
+release-notes URL) is as the #675 section specifies. The #675 section's text
+(**Admin health card**, **Build order** and Decisions) says the card was built
+after #674 with these addresses.
 
 The notices stay plain text. None of them was a link to a settings tab
 before, because a tab had no address, and making them links is not part of
 this issue. The only links into settings today are the template notice (its
 new address is in the table above) and Email's own link to templates, which
-is removed. The admin health card will add three more, but it is built in this
+is removed. The admin health card adds three more, built in this
 branch with their final addresses (see the last three rows of the table
 above), so none of them is ever a link to `/admin/settings`. The links out of
 settings (Open OAuth clients, and the user page's OAuth-clients links) keep

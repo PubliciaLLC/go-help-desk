@@ -112,6 +112,8 @@ beforeEach(() => {
     }
     if (url === '/statuses') return Promise.resolve({ data: STATUSES })
     if (url === '/admin/users') return Promise.resolve({ data: USERS })
+    if (url === '/admin/security-warnings') return Promise.resolve({ data: { insecure_secrets: [], attachment_scanning: { policy: 'off', configured: false, reachable: false, effect: '' } } })
+    if (url === '/admin/settings') return Promise.resolve({ data: { sla_enabled: true, sla_alerts_enabled: true } })
     return Promise.resolve({ data: [] })
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
   }) as any)
@@ -175,12 +177,33 @@ describe('the dashboard blocks per role', () => {
     expect(get).not.toHaveBeenCalledWith('/admin/users', expect.anything())
   })
 
-  it('does not build the admin health card in this release', async () => {
+  it('shows an administrator the health card at the top, above the queue strip', async () => {
     serve({ data: STAFF_DASHBOARD })
     render('admin')
-    await strip('Your queue')
+    const nav = await strip('Your queue')
+    const card = await screen.findByText('No problems to report.')
+    expect(card.compareDocumentPosition(nav) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it.each(['staff', 'user'] as const)('does not show %s the health card, and does not ask for its data', async (role) => {
+    serve({ data: role === 'user' ? REQUESTER_DASHBOARD : STAFF_DASHBOARD })
+    render(role)
+    await screen.findByRole('navigation', { name: role === 'user' ? 'Your tickets' : 'Your queue' })
+    await screen.findByRole('link', { name: /^New \d/ })
     expect(screen.queryByText(/No problems to report/)).toBeNull()
     expect(screen.queryByText(/Health checks/)).toBeNull()
+    const asked = get.mock.calls.map((c: unknown[]) => c[0])
+    expect(asked).not.toContain('/admin/settings')
+    expect(asked).not.toContain('/admin/security-warnings')
+  })
+
+  it('makes no request of its own for the card: the banner and the card share one of each', async () => {
+    serve({ data: STAFF_DASHBOARD })
+    render('admin')
+    await screen.findByText('No problems to report.')
+    const count = (url: string) => get.mock.calls.filter((c: unknown[]) => c[0] === url).length
+    expect(count('/admin/security-warnings')).toBe(1)
+    expect(count('/admin/settings')).toBe(1)
   })
 })
 

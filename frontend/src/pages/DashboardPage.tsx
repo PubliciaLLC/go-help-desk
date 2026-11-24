@@ -7,7 +7,8 @@ import { Layout } from '@/components/Layout'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Spinner } from '@/components/ui/spinner'
-import { QueueStrip } from '@/components/dashboard/QueueStrip'
+import { AdminHealthCard } from '@/components/dashboard/AdminHealthCard'
+import { QueueStrip }from '@/components/dashboard/QueueStrip'
 import { NeedsAttention } from '@/components/dashboard/NeedsAttention'
 import { VolumeTrend } from '@/components/charts'
 import { PlusIcon, UserIcon } from 'lucide-react'
@@ -79,8 +80,7 @@ export function DashboardPage() {
           </Link>
         </div>
 
-        {/* The admin health card goes here (built on the integration branch with
-            #616 and #670; see DESIGN.md, Dashboard, Build order). */}
+        {isAdmin && <AdminHealthCard />}
 
         {summary.isError ? (
           <div role="alert" className="flex flex-wrap items-center gap-3 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">

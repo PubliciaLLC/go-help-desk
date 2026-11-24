@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
-import { getSecurityWarnings, revertEmailTemplate } from '@/api/admin'
+import { revertEmailTemplate, securityWarningsQuery } from '@/api/admin'
 import type { BrokenEmailTemplate } from '@/api/admin'
 import { extractError } from '@/api/client'
 import { ServerNoticeBar, type Notice } from '@/components/ServerNoticeBar'
@@ -63,17 +63,8 @@ function readDismissedUpdate(): string | null {
  * so non-admins never fire a request that 403s.
  */
 export function InsecureConfigBanner({ isAdmin }: InsecureConfigBannerProps) {
-  const { data, refetch } = useQuery({
-    queryKey: ['security-warnings'],
-    queryFn: getSecurityWarnings,
-    enabled: isAdmin,
-    staleTime: 5 * 60 * 1000,
-    // A fixed problem must stop showing within seconds of the admin coming
-    // back to the tab, not after the stale window. Focus and expand are the
-    // only extra requests, which keeps the rate low.
-    refetchOnWindowFocus: 'always',
-    retry: false,
-  })
+  // The options are shared with the dashboard's health card (securityWarningsQuery).
+  const { data, refetch } = useQuery({ ...securityWarningsQuery, enabled: isAdmin })
 
   // #170: the opt-in update check found a newer release. Information, not a
   // problem, so it is an `info` notice, and its Hide outlasts the session: the

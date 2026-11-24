@@ -859,6 +859,22 @@ export async function getSecurityWarnings(): Promise<SecurityWarnings> {
 }
 
 /**
+ * How the security warnings are read, for every page that reads them (the
+ * banner and the dashboard's health card, #675): one key, so one request and
+ * one scanner ping between them.
+ */
+export const securityWarningsQuery = {
+  queryKey: ['security-warnings'],
+  queryFn: getSecurityWarnings,
+  staleTime: 5 * 60 * 1000,
+  // A fixed problem must stop showing within seconds of the admin coming back
+  // to the tab, not after the stale window. Focus and expand are the only
+  // extra requests, which keeps the rate low.
+  refetchOnWindowFocus: 'always' as const,
+  retry: false,
+}
+
+/**
  * The people work can be given to: id and display name only.
  *
  * Staff-readable, unlike `listUsers`, which is `/admin/users` and answers 403
