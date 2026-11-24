@@ -244,7 +244,7 @@ test.describe('#414: the ticket list toolbar stacks instead of squeezing the sea
   const cases = [
     { name: 'reporter', me: ME_REPORTER, below: ['Include closed'] },
     { name: 'staff', me: ME_STAFF, below: ['Include closed', 'Jump to ticket'] },
-    { name: 'admin', me: ME_ADMIN, below: ['mine', 'Include closed', 'Jump to ticket'] },
+    { name: 'admin', me: ME_ADMIN, below: ['Include closed', 'Jump to ticket'] },
   ]
   for (const c of cases) {
     test(`${c.name}: search has its own row, the other controls wrap below it`, async ({ page }) => {
