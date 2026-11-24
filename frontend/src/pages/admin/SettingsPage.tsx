@@ -9,6 +9,9 @@ import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { LifetimeSlider } from '@/components/admin/LifetimeSlider'
 import { GuestSizeSlider } from '@/components/admin/GuestSizeSlider'
 import { BoundedNumberInput } from '@/components/admin/BoundedNumberInput'
+import { Section } from '@/components/admin/Section'
+import { AttachmentSizeLimitSection } from '@/components/admin/AttachmentSizeLimitSection'
+import { shownAttachmentMaxMB } from '@/lib/attachmentLimit'
 import { Input } from '@/components/ui/input'
 import { Select } from '@/components/ui/select'
 import { Spinner } from '@/components/ui/spinner'
@@ -46,15 +49,6 @@ function Toggle({ checked, onChange, label, disabled }: {
         )}
       />
     </button>
-  )
-}
-
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
-  return (
-    <div>
-      <h2 className="mb-3 text-xs font-semibold uppercase tracking-wider text-gray-400">{title}</h2>
-      <div className="divide-y rounded-lg border bg-white">{children}</div>
-    </div>
   )
 }
 
@@ -516,6 +510,7 @@ const TABS: { id: Tab; label: string }[] = [
 function GeneralPanel({
   bool, num, str, has,
   setBool, setNum, setStr,
+  overallMB, guestValue,
   onSave, isPending, error, saved,
 }: {
   bool: (k: string) => boolean
@@ -525,6 +520,10 @@ function GeneralPanel({
   setBool: (k: string, v: boolean) => void
   setNum: (k: string, v: number) => void
   setStr: (k: string, v: string) => void
+  /** The per-file limit as the page shows it (#673). */
+  overallMB: number
+  /** The guest limit as the page shows it, held to overallMB while unsaved. */
+  guestValue: number | undefined
   onSave: () => void
   isPending: boolean
   error: string
@@ -574,12 +573,12 @@ function GeneralPanel({
         </SettingRow>
         <div className="border-t px-5 py-4 space-y-2">
           <div className="text-sm text-gray-500">
-            The largest file a guest may attach. It can never exceed this instance&apos;s own attachment maximum of 25 MB.
+            The largest file a guest may attach. It can never exceed the per-file limit for every upload, {overallMB} MB, set under Attachments.
           </div>
           <GuestSizeSlider
-            value={has('guest_attachment_max_mb') ? num('guest_attachment_max_mb') : undefined}
+            value={guestValue}
             onChange={(v) => setNum('guest_attachment_max_mb', v)}
-            instanceMaxMB={25}
+            instanceMaxMB={overallMB}
             disabled={!bool('guest_submission_enabled') || !bool('guest_attachments_enabled')}
           />
           {!bool('guest_submission_enabled') && (
@@ -1900,8 +1899,9 @@ function EmailPanel({
 }
 
 function AttachmentsPanel({
-  bool, str, strArr, has,
-  setBool, setStr, setStrArr,
+  bool, str, strArr, has, num,
+  setBool, setStr, setStrArr, setNum,
+  guestMB,
   apiKeys, setApiKey, clearedKeys, setClearKey,
   onSave, isPending, error, saved,
 }: {
@@ -1909,9 +1909,13 @@ function AttachmentsPanel({
   str: (k: string) => string
   strArr: (k: string) => string[]
   has: (k: string) => boolean
+  num: (k: string) => number
   setBool: (k: string, v: boolean) => void
   setStr: (k: string, v: string) => void
   setStrArr: (k: string, v: string[]) => void
+  setNum: (k: string, v: number) => void
+  /** The guest's own limit as the page shows it (#673). */
+  guestMB: number
   apiKeys: Record<string, string>
   setApiKey: (k: string, v: string) => void
   clearedKeys: Record<string, boolean>
@@ -2011,6 +2015,13 @@ function AttachmentsPanel({
           </Select>
         </SettingRow>
       </Section>
+
+      <AttachmentSizeLimitSection
+        value={has('attachment_max_mb') ? num('attachment_max_mb') : undefined}
+        onChange={(mb) => setNum('attachment_max_mb', mb)}
+        scanning={scanPolicy !== 'off'}
+        guestMB={guestMB}
+      />
 
       <Section title="Malware scanning">
         {scanning && (
@@ -2204,6 +2215,23 @@ export function SettingsPage() {
   }, [settings])
   /* eslint-enable react-hooks/set-state-in-effect */
 
+  /* The per-file limit as the page shows it (#673): the draft when it is an
+     integer 1 to 100, else 25, the reader's rule. */
+  const overallMB = shownAttachmentMaxMB(local.attachment_max_mb)
+  /* An unsaved guest value is shown and saved as min(draft, overallMB), so the
+     page never shows, and a save never sends, a guest figure the server would
+     refuse, and the "Saved as" note is only ever about a stored value. "Dirty"
+     is the save's own comparison (#394). The draft is not clamped: the overall
+     field reports every keystroke, and typing "10" passes through "1". */
+  const guestDirty = 'guest_attachment_max_mb' in local
+    && JSON.stringify(settings?.guest_attachment_max_mb) !== JSON.stringify(local.guest_attachment_max_mb)
+  const guestDraft = Number(local.guest_attachment_max_mb)
+  const guestValue = 'guest_attachment_max_mb' in local
+    ? (guestDirty ? Math.min(guestDraft, overallMB) : guestDraft)
+    : undefined
+  // The guest reader's rule: none, or outside 1 to 100, is 5.
+  const guestMB = guestValue !== undefined && guestValue >= 1 && guestValue <= 100 ? guestValue : 5
+
   const saveMutation = useMutation({
     mutationFn: async () => {
       /* The dump's "<key>_set" entries are the server describing secrets it
@@ -2218,7 +2246,10 @@ export function SettingsPage() {
            compares equal; a key absent from the dump stringifies to undefined and
            is always sent. */
         if (settings && JSON.stringify(settings[k]) === JSON.stringify(v)) continue
-        patch[k] = v
+        // A guest figure above the per-file limit is refused whole by the
+        // server (#673), and the page shows it held to the limit, so that is
+        // what is sent. The draft itself is not rewritten; see guestValue.
+        patch[k] = k === 'guest_attachment_max_mb' && typeof v === 'number' ? Math.min(v, overallMB) : v
       }
       for (const p of REPUTATION_PROVIDERS) {
         if (!p.keySetting) continue
@@ -2290,6 +2321,7 @@ export function SettingsPage() {
     bool, num, str, strArr, has,
     setBool, setNum, setStr, setStrArr, toggleStrArr,
     apiKeys, setApiKey, clearedKeys, setClearKey,
+    overallMB, guestValue, guestMB,
     onSave: () => saveMutation.mutate(),
     isPending: saveMutation.isPending,
     error: saveError,

@@ -263,6 +263,24 @@ describe('the guest file uploads step', () => {
     await waitFor(() => expect(navigate).toHaveBeenCalledWith({ to: '/dashboard' }))
   })
 
+  // #673: the slider tops out at the stored per-file limit, 25 when none is stored.
+  it.each([
+    ['none stored', GUESTS_ON, '25'],
+    ['40 stored', { ...GUESTS_ON, attachment_max_mb: 40 }, '40'],
+    ['out of range stored', { ...GUESTS_ON, attachment_max_mb: 500 }, '25'],
+  ])('the size slider tops out at the per-file limit (%s)', async (_n, settings, top) => {
+    serve(settings)
+    const user = userEvent.setup()
+    await opened()
+    await toStep5(user)
+    const slider = screen.getByRole('slider') as HTMLInputElement
+    expect(slider.max).toBe(top)
+    expect(Array.from(screen.getByTestId('guest-size-ticks').children).map((c) => c.textContent)).toEqual(['1 MB', `${top} MB`])
+    expect(screen.getByText(
+      `The largest file a guest may attach. It can never exceed the per-file limit for every upload, ${top} MB, set under Attachments.`,
+    )).toBeTruthy()
+  })
+
   it('Skip leaves uploads off: nothing but the seen flag is sent', async () => {
     const patch = serve(GUESTS_ON)
     const user = userEvent.setup()
