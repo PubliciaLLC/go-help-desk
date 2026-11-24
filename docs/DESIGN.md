@@ -2463,7 +2463,7 @@ fails if the page or `main` scrolls sideways, and also if anything sticks out
 past `main`'s right edge without an `overflow-x: auto` box around it, which is
 what an `overflow-hidden` wrapper looks like.
 
-Fourteen compact places still end in an ellipsis, because they are one-line rows or
+Fifteen compact places still end in an ellipsis, because they are one-line rows or
 chips where wrapping would break the row, and none of them is ticket content:
 
 - in the Linked tickets panel, the linked ticket line;
@@ -2473,6 +2473,9 @@ chips where wrapping would break the row, and none of them is ticket content:
 - in the shell, the signed-in email at the foot of the sidebar and the brand
   name in the mobile top bar;
 - on the Dashboard, each client's name and email in the By Client cards;
+- on the Reports page (#131), each bar chart row's label (the Backlog and
+  Workload bars, and the Volume bars by category and priority), with its full
+  text in the `title`;
 - on the Account page, a passkey's label;
 - in the authenticator-app setup, the secret under the QR code;
 - on a ticket, each attachment's SHA-256, cut to its first 12 characters;
