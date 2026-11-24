@@ -1,8 +1,8 @@
 import { useQuery, useMutation, useQueryClient, useMutationState } from '@tanstack/react-query'
 import { Link } from '@tanstack/react-router'
-import { getSettings, updateSettings, getSAMLConfig, saveSAMLConfig, getOIDCConfig, saveOIDCConfig, getSiteConfig, uploadLogo, deleteLogo, listStatuses, listCategories, listSLAPolicies, getSecurityWarnings, createSLAPolicy, updateSLAPolicy, deleteSLAPolicy } from '@/api/admin'
+import { getSAMLConfig, saveSAMLConfig, getOIDCConfig, saveOIDCConfig, getSiteConfig, uploadLogo, deleteLogo, listStatuses, listCategories, listSLAPolicies, getSecurityWarnings, createSLAPolicy, updateSLAPolicy, deleteSLAPolicy } from '@/api/admin'
 import type { Priority, SLAPolicy } from '@/api/types'
-import { extractError, extractErrorCode } from '@/api/client'
+import { extractError } from '@/api/client'
 import { Layout } from '@/components/Layout'
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
@@ -21,7 +21,7 @@ import { useState, useEffect, useRef, useId } from 'react'
 import { fmtMin } from '@/lib/format'
 import { UPDATE_CHECK_LABEL, UPDATE_CHECK_DETAIL } from '@/lib/updateCheck'
 import { Toggle, EmailStatusNote, SettingRow, SaveBar } from '@/pages/admin/settings/primitives'
-import { buildSettingsPatch } from '@/pages/admin/settings/buildSettingsPatch'
+import { useSettingsDraft } from '@/pages/admin/settings/useSettingsDraft'
 
 function SAMLSection() {
   const qc = useQueryClient()
@@ -1979,7 +1979,7 @@ function AttachmentsPanel({
   bool, str, strArr, has, num,
   setBool, setStr, setStrArr, setNum,
   guestMB,
-  apiKeys, setApiKey, clearedKeys, setClearKey,
+  secret, setSecret, secretCleared, setSecretCleared,
   onSave, isPending, error, saved,
 }: {
   bool: (k: string) => boolean
@@ -1993,10 +1993,10 @@ function AttachmentsPanel({
   setNum: (k: string, v: number) => void
   /** The guest's own limit as the page shows it (#673). */
   guestMB: number
-  apiKeys: Record<string, string>
-  setApiKey: (k: string, v: string) => void
-  clearedKeys: Record<string, boolean>
-  setClearKey: (k: string, v: boolean) => void
+  secret: (k: string) => string
+  setSecret: (k: string, v: string) => void
+  secretCleared: (k: string) => boolean
+  setSecretCleared: (k: string, v: boolean) => void
   onSave: () => void
   isPending: boolean
   error: string
@@ -2218,10 +2218,10 @@ function AttachmentsPanel({
             enabled={bool(p.enabledSetting)}
             setEnabled={(v) => setBool(p.enabledSetting, v)}
             keyStored={p.keySetting ? bool(`${p.keySetting}_set`) : false}
-            typedKey={p.keySetting ? (apiKeys[p.keySetting] ?? '') : ''}
-            setTypedKey={(v) => { if (p.keySetting) setApiKey(p.keySetting, v) }}
-            cleared={p.keySetting ? Boolean(clearedKeys[p.keySetting]) : false}
-            setCleared={(v) => { if (p.keySetting) setClearKey(p.keySetting, v) }}
+            typedKey={p.keySetting ? secret(p.keySetting) : ''}
+            setTypedKey={(v) => { if (p.keySetting) setSecret(p.keySetting, v) }}
+            cleared={p.keySetting ? secretCleared(p.keySetting) : false}
+            setCleared={(v) => { if (p.keySetting) setSecretCleared(p.keySetting, v) }}
           />
         ))}
 
@@ -2252,142 +2252,41 @@ function AttachmentsPanel({
 // ── Page ──────────────────────────────────────────────────────────────────────
 
 export function SettingsPage() {
-  const qc = useQueryClient()
   const [activeTab, setActiveTab] = useState<Tab>('general')
-  const [local, setLocal] = useState<Record<string, unknown>>({})
-  const [saveError, setSaveError] = useState('')
-  const [saved, setSaved] = useState(false)
-  // What the server said about a save that went through (the PATCH answers 200
-  // with a warning instead of 204). Kept until the next save, not timed out:
-  // it is something to act on, such as OAuth clients left seeing no tickets.
-  const [saveWarning, setSaveWarning] = useState<{ text: string; aboutClients: boolean } | null>(null)
-
-  /* The reputation API keys are write-only, so none of them is ever in `local`
-     and none travels with an ordinary save. One is sent only when the operator
-     typed it or asked for the stored one to be removed — three blank fields
-     PATCHed as "" would wipe three working keys on an unrelated change, and
-     nothing would report it: the lookups would simply stop.
-
-     Keyed by settings key rather than held as one value, which is the whole
-     point of the change: a shared field would paste one service's key into
-     another's account. */
-  const [apiKeys, setApiKeys] = useState<Record<string, string>>({})
-  const [clearedKeys, setClearedKeys] = useState<Record<string, boolean>>({})
-
-  const { data: settings, isLoading } = useQuery({
-    queryKey: ['admin', 'settings'],
-    queryFn: getSettings,
-  })
-
-  /* The effects below seed local form state from a react-query result. That is
-     the cascading-render pattern react-hooks/set-state-in-effect warns about
-     (https://react.dev/learn/you-might-not-need-an-effect). Suppressed here,
-     not refactored: switching the lint gate on should not also change how the
-     admin forms behave. TODO: derive the state, or remount the form with a key.
-     eslint-disable-next-line is not enough — the rule reports at each setState
-     call, so the whole effect is wrapped. */
-  /* eslint-disable react-hooks/set-state-in-effect */
-  useEffect(() => {
-    if (settings) setLocal(settings)
-  }, [settings])
-  /* eslint-enable react-hooks/set-state-in-effect */
+  const draft = useSettingsDraft()
+  const { bool, num, str, strArr, has, setBool, setNum, setStr, setStrArr, toggleStrArr } = draft
 
   /* The per-file limit as the page shows it (#673): the draft when it is an
      integer 1 to 100, else 25, the reader's rule. */
-  const overallMB = shownAttachmentMaxMB(local.attachment_max_mb)
+  const overallMB = shownAttachmentMaxMB(has('attachment_max_mb') ? num('attachment_max_mb') : undefined)
   /* An unsaved guest value is shown and saved as min(draft, overallMB), so the
      page never shows, and a save never sends, a guest figure the server would
      refuse, and the "Saved as" note is only ever about a stored value. "Dirty"
      is the save's own comparison (#394). The draft is not clamped: the overall
      field reports every keystroke, and typing "10" passes through "1". */
-  const guestDirty = 'guest_attachment_max_mb' in local
-    && JSON.stringify(settings?.guest_attachment_max_mb) !== JSON.stringify(local.guest_attachment_max_mb)
-  const guestDraft = Number(local.guest_attachment_max_mb)
-  const guestValue = 'guest_attachment_max_mb' in local
+  const guestDraft = num('guest_attachment_max_mb')
+  const guestDirty = has('guest_attachment_max_mb')
+    && JSON.stringify(draft.stored?.guest_attachment_max_mb) !== JSON.stringify(guestDraft)
+  const guestValue = has('guest_attachment_max_mb')
     ? (guestDirty ? Math.min(guestDraft, overallMB) : guestDraft)
     : undefined
   // The guest reader's rule: none, or outside 1 to 100, is 5.
   const guestMB = guestValue !== undefined && guestValue >= 1 && guestValue <= 100 ? guestValue : 5
 
-  const saveMutation = useMutation({
-    mutationFn: async () => {
-      /* The dump's "<key>_set" entries are the server describing secrets it
-         will not send, not settings. Sending one back writes a settings row by
-         that name which nothing ever reads. */
-      // Only what the operator changed (#394), with the guest clamp (#673); see
-      // buildSettingsPatch.
-      const patch = buildSettingsPatch(settings, local, apiKeys, clearedKeys)
-      const res = await updateSettings(patch)
-      // The save that turned ticket scope on is the one whose warning is about
-      // OAuth clients; an SSO warning shares the field and gets no such link.
-      return { ...res, aboutClients: patch.ticket_scope_enforced === true }
-    },
-    onSuccess: (res) => {
-      setSaved(true)
-      setSaveError('')
-      setSaveWarning(res.warning ? { text: res.warning, aboutClients: res.aboutClients } : null)
-      // Only on success: a refused save leaves every edit where it was,
-      // including a key typed but not yet accepted.
-      setApiKeys({})
-      setClearedKeys({})
-      setTimeout(() => setSaved(false), 2500)
-      qc.invalidateQueries({ queryKey: ['admin', 'settings'] })
-      qc.invalidateQueries({ queryKey: ['site-config'] })
-      // The scan policy and address feed the banner and the scanner status;
-      // without this a saved "Do not scan" keeps warning for five minutes.
-      qc.invalidateQueries({ queryKey: ['security-warnings'] })
-      // The ticket list reads sla_enabled from /me.
-      qc.invalidateQueries({ queryKey: ['me'] })
-    },
-    onError: (err) =>
-      setSaveError(
-        // The server's text names the raw setting; say what an admin can do.
-        extractErrorCode(err) === 'email_required'
-          ? 'Email is not set up, so signup and guest submission cannot be turned on: both send an email the person needs. Set SMTP_HOST and SMTP_FROM in docker/.env, restart the server, then try again.'
-          : extractError(err),
-      ),
-  })
-
-  function bool(key: string) { return Boolean(local[key]) }
-  // Whether this instance has ever stored a value for the key, as opposed to
-  // what the value is. The difference matters where an unset setting does not
-  // mean the zero value — see the allowed attachment types.
-  function has(key: string) { return key in local }
-  function num(key: string) { return Number(local[key] ?? 0) }
-  function str(key: string) { return String(local[key] ?? '') }
-  function strArr(key: string): string[] {
-    const v = local[key]
-    if (Array.isArray(v)) return v as string[]
-    if (typeof v === 'string' && v) return v.split(',').map((s) => s.trim()).filter(Boolean)
-    return []
-  }
-  function setBool(key: string, v: boolean) { setLocal((s) => ({ ...s, [key]: v })) }
-  function setNum(key: string, v: number) { setLocal((s) => ({ ...s, [key]: v })) }
-  function setStr(key: string, v: string) { setLocal((s) => ({ ...s, [key]: v })) }
-  function setStrArr(key: string, v: string[]) { setLocal((s) => ({ ...s, [key]: v })) }
-  function toggleStrArr(key: string, item: string, checked: boolean) {
-    setLocal((s) => {
-      const current = strArr(key)
-      const next = checked ? [...new Set([...current, item])] : current.filter((x) => x !== item)
-      return { ...s, [key]: next }
-    })
-  }
-
-  function setApiKey(key: string, v: string) { setApiKeys((s) => ({ ...s, [key]: v })) }
-  function setClearKey(key: string, v: boolean) { setClearedKeys((s) => ({ ...s, [key]: v })) }
-
   const panelProps = {
     bool, num, str, strArr, has,
     setBool, setNum, setStr, setStrArr, toggleStrArr,
-    apiKeys, setApiKey, clearedKeys, setClearKey,
+    secret: draft.secret, setSecret: draft.setSecret,
+    secretCleared: draft.secretCleared, setSecretCleared: draft.setSecretCleared,
     overallMB, guestValue, guestMB,
-    onSave: () => saveMutation.mutate(),
-    isPending: saveMutation.isPending,
-    error: saveError,
-    saved,
+    onSave: draft.save,
+    isPending: draft.isPending,
+    error: draft.error,
+    saved: draft.saved,
   }
+  const saveWarning = draft.warning
 
-  if (isLoading) {
+  if (draft.isLoading) {
     return <Layout><div className="flex justify-center py-12"><Spinner /></div></Layout>
   }
 
