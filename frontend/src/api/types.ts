@@ -872,3 +872,105 @@ export interface Dashboard {
   attention: AttentionItem[] | null
   volume: DashboardVolume | null
 }
+
+// --- KPI reports (#131) -----------------------------------------------------
+// GET /reports/kpi, as docs/DESIGN.md "KPI reports" describes it. Every number
+// is the server's; the browser only formats it (lib/kpi.ts).
+
+export type MeasureChangeKind = 'relative' | 'points'
+export type MeasureChangeState = 'change' | 'from_zero' | 'no_previous' | 'no_current'
+
+// The server's period-over-period change for one compared measure. `value` is
+// null for the states that have no number.
+export interface MeasureChange {
+  kind: MeasureChangeKind
+  state: MeasureChangeState
+  value: number | null
+}
+
+export interface KpiPeriodMeasures {
+  created: number
+  resolved: number
+  time_to_resolve: { count: number; median_seconds: number | null; p90_seconds: number | null }
+  first_response: { count: number; median_seconds: number | null }
+  sla: {
+    tracked: number
+    met: number
+    response_met: number
+    resolution_met: number
+    met_rate: number | null
+    response_met_rate: number | null
+    resolution_met_rate: number | null
+  }
+  reopen: { reopened: number; rate: number | null }
+}
+
+// The nine measures a card compares. Keys are the measure names the CSV uses.
+export interface KpiChanges {
+  created: MeasureChange
+  resolved: MeasureChange
+  time_to_resolve_median: MeasureChange
+  time_to_resolve_p90: MeasureChange
+  first_response_median: MeasureChange
+  sla_met_rate: MeasureChange
+  sla_response_met_rate: MeasureChange
+  sla_resolution_met_rate: MeasureChange
+  reopen_rate: MeasureChange
+}
+
+export interface KpiPeriod {
+  from: string // YYYY-MM-DD, local to `tz`
+  to: string
+  days: number
+}
+
+// The filters as the server applied them: ids and the priorities in fixed order.
+export interface KpiFilters {
+  category_id: string | null
+  priority: Priority[]
+  assignee_group_id: string | null
+}
+
+export interface KpiVolume {
+  days: VolumeDay[]
+  by_category: { id: string; name: string; count: number }[]
+  by_priority: { priority: Priority; count: number }[]
+}
+
+export type KpiBucketKey = '0_2' | '3_7' | '8_30' | 'over_30'
+
+export interface KpiBacklog {
+  as_of: string
+  total: number
+  buckets: { key: KpiBucketKey; min_days: number; max_days: number | null; count: number }[]
+}
+
+// A person or a group; both null for the row of tickets with neither.
+export interface KpiNamedCount {
+  id: string | null
+  name: string | null
+  count: number
+}
+
+export interface KpiWorkload {
+  as_of: string
+  total: number
+  by_assignee: KpiNamedCount[]
+  by_group: KpiNamedCount[]
+}
+
+export interface KpiResponse {
+  tz: string
+  period: KpiPeriod
+  previous: KpiPeriod
+  filters: KpiFilters
+  sla_enabled: boolean
+  measures: {
+    current: KpiPeriodMeasures
+    previous: KpiPeriodMeasures
+    change: KpiChanges
+  }
+  volume: KpiVolume
+  backlog: KpiBacklog
+  workload: KpiWorkload
+}

@@ -12,7 +12,7 @@ import { VIEW_NAME, type View } from '@/lib/ticketSearch'
 import { BrandLogo } from '@/components/BrandLogo'
 import { Button } from '@/components/ui/button'
 import { TicketIcon, UsersIcon, SettingsIcon, LogOutIcon, HomeIcon, FolderIcon, CircleDotIcon, ShieldIcon, UsersRoundIcon, TagIcon, SlidersIcon, KeyIcon, MessageSquareTextIcon, PlugIcon, WebhookIcon, RouteIcon, MenuIcon,
-  UserIcon, HistoryIcon, MailIcon, ChevronDownIcon, WrenchIcon,
+  UserIcon, HistoryIcon, MailIcon, ChevronDownIcon, WrenchIcon, ChartColumnIcon,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { User } from '@/api/types'
@@ -198,7 +198,7 @@ function AdminSections({ nav, onNavigate }: { nav: AdminNav; onNavigate?: () => 
         aria-expanded={adminOpen}
         aria-controls={adminPanelId}
         onClick={() => nav.toggle(ADMIN_ID)}
-        className="flex w-full items-center gap-3 rounded-md px-3 py-2 text-sm font-medium text-gray-600 hover:bg-gray-100 hover:text-gray-900 pointer-coarse:min-h-11"
+        className="flex w-full items-center gap-3 rounded-md px-3 py-1 text-sm font-medium text-gray-600 hover:bg-gray-100 hover:text-gray-900 pointer-coarse:min-h-11"
       >
         <WrenchIcon className="h-4 w-4" />
         <span className="flex-1 text-left">Admin</span>
@@ -318,17 +318,24 @@ function SidebarContent({ user, adminNav, branding, onNavigate, onLogout }: Side
         />
       </div>
 
-      <nav className="flex-1 space-y-1 overflow-y-auto p-3">
+      {/* Tight on purpose: the Reports item (#131) is 32px of the 768-pixel
+          budget (admin-nav-sections.spec.ts), paid for by the Admin toggle, the
+          nav's and the footer's padding and the Sign out button being as dense
+          as the links. Touch targets are unchanged (pointer-coarse sizes). */}
+      <nav className="flex-1 space-y-1 overflow-y-auto px-3 py-1">
         <NavItem to="/dashboard" icon={<HomeIcon className="h-4 w-4" />} label="Dashboard" onNavigate={onNavigate} dense />
         {user?.role === 'staff' || user?.role === 'admin' ? (
           <TicketViewsNav user={user} onNavigate={onNavigate} />
         ) : (
           <NavItem to="/tickets" icon={<TicketIcon className="h-4 w-4" />} label="Tickets" onNavigate={onNavigate} />
         )}
+        {(user?.role === 'staff' || user?.role === 'admin') && (
+          <NavItem to="/reports" icon={<ChartColumnIcon className="h-4 w-4" />} label="Reports" onNavigate={onNavigate} dense />
+        )}
         {user?.role === 'admin' && <AdminSections nav={adminNav} onNavigate={onNavigate} />}
       </nav>
 
-      <div className="space-y-1 border-t px-3 py-2">
+      <div className="space-y-0.5 border-t px-3 py-1">
         <div className="px-3 text-xs text-gray-500 truncate" title={user?.email}>{user?.email}</div>
         {/* Your own account, not an admin screen: it sits with the identity
             it belongs to rather than in the nav list above. */}
@@ -339,7 +346,7 @@ function SidebarContent({ user, adminNav, branding, onNavigate, onLogout }: Side
           onNavigate={onNavigate}
           dense
         />
-        <Button variant="ghost" size="sm" className="w-full justify-start gap-2" onClick={onLogout}>
+        <Button variant="ghost" size="sm" className="h-7 w-full justify-start gap-2 pointer-coarse:h-8" onClick={onLogout}>
           <LogOutIcon className="h-4 w-4" />
           Sign out
         </Button>

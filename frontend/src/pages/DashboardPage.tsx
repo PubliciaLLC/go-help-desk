@@ -9,7 +9,7 @@ import { Button } from '@/components/ui/button'
 import { Spinner } from '@/components/ui/spinner'
 import { QueueStrip } from '@/components/dashboard/QueueStrip'
 import { NeedsAttention } from '@/components/dashboard/NeedsAttention'
-import { VolumeTrend } from '@/components/dashboard/VolumeTrend'
+import { VolumeTrend } from '@/components/charts'
 import { PlusIcon, UserIcon } from 'lucide-react'
 
 // The trend counts its days in the viewer's own zone, so a day is a calendar day

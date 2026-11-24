@@ -17,12 +17,14 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/database"
 	"github.com/publiciallc/go-help-desk/backend/internal/dbgen"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/group"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/report"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 )
 
 // Store implements ticket.Store and ticket.StatusStore.
 type Store struct {
 	q            *dbgen.Queries
+	db           *sql.DB // nil: KPI reads on q as it is (see NewWithDB)
 	replyCap     int
 	replyTimeout time.Duration
 }
@@ -68,6 +70,16 @@ func pageInt32(n int) int32 {
 
 func New(q *dbgen.Queries) *Store {
 	return &Store{q: q, replyCap: DefaultReplyCap, replyTimeout: DefaultReplyTimeout}
+}
+
+// NewWithDB is New with the handle KPI opens its read-only snapshot transaction
+// on. Without it (New, which the integration harness uses because it wraps each
+// test in a transaction over the Queries it gives every store) KPI runs on q as
+// it is, in whatever transaction q is bound to; see database.InSnapshot.
+func NewWithDB(q *dbgen.Queries, db *sql.DB) *Store {
+	s := New(q)
+	s.db = db
+	return s
 }
 
 // WithReplyLimits returns a Store with a different reply cap and time limit, for
@@ -921,21 +933,51 @@ func (s *Store) CountFilteredAt(ctx context.Context, f ticket.Filter, now time.T
 	return n, nil
 }
 
+// localToday is the local date of now in tz (LocalToday). A name Postgres does
+// not know (SQLSTATE 22023, invalid_parameter_value) is ticket.ErrUnknownTimeZone.
+// It is the one place that mapping is made: the dashboard's trend and the KPI
+// reports both run it before any query that uses the zone.
+func localToday(ctx context.Context, q *dbgen.Queries, tz string, now time.Time) (report.Day, error) {
+	d, err := q.LocalToday(ctx, dbgen.LocalTodayParams{Now: now, Tz: tz})
+	if err != nil {
+		var pg *pgconn.PgError
+		if errors.As(err, &pg) && pg.Code == "22023" {
+			return report.Day{}, fmt.Errorf("local date in %q: %w", tz, ticket.ErrUnknownTimeZone)
+		}
+		return report.Day{}, fmt.Errorf("reading the local date: %w", err)
+	}
+	// The date comes back as a time at 00:00 UTC, which is what a Day is.
+	return report.Day(d), nil
+}
+
+var _ report.Store = (*Store)(nil)
+
+// Today is the local date of now in tz. It implements report.Store.
+func (s *Store) Today(ctx context.Context, tz string, now time.Time) (report.Day, error) {
+	return localToday(ctx, s.q, tz, now)
+}
+
 // VolumeByDay is the dashboard's trend (#675): for each of the 30 local days in
 // tz ending with the one that contains now, oldest first, the tickets created
 // and the tickets resolved over what f's actor may see. Only f's visibility and
 // actor are used; the visibility parameters come from filterParams, as the
 // list's and the count's do, and the SQL carries the list's own visibility
-// block. tz is only a parameter of AT TIME ZONE, and a name Postgres does not
-// know (SQLSTATE 22023, invalid_parameter_value) is ticket.ErrUnknownTimeZone.
+// block. It is the KPI reports' volume query over the 30 days ending today with
+// no filters. An unknown zone is ticket.ErrUnknownTimeZone.
 func (s *Store) VolumeByDay(ctx context.Context, f ticket.Filter, tz string, now time.Time) ([]ticket.DayVolume, error) {
 	p, err := s.filterParams(ctx, f, now)
 	if err != nil {
 		return nil, err
 	}
+	today, err := localToday(ctx, s.q, tz, now)
+	if err != nil {
+		return nil, fmt.Errorf("volume by day: %w", err)
+	}
 	rows, err := s.q.TicketVolumeByDay(ctx, dbgen.TicketVolumeByDayParams{
 		Tz:                   tz,
-		Now:                  now,
+		FromDay:              today.Add(-29).Time(),
+		ToDay:                today.Time(),
+		Priorities:           []string{},
 		Unrestricted:         p.Unrestricted,
 		ReporterOnly:         p.ReporterOnly,
 		ActorID:              p.ActorID,
@@ -945,10 +987,6 @@ func (s *Store) VolumeByDay(ctx context.Context, f ticket.Filter, tz string, now
 		ScopeTypeCategoryIds: p.ScopeTypeCategoryIds,
 	})
 	if err != nil {
-		var pg *pgconn.PgError
-		if errors.As(err, &pg) && pg.Code == "22023" {
-			return nil, fmt.Errorf("volume by day in %q: %w", tz, ticket.ErrUnknownTimeZone)
-		}
 		return nil, fmt.Errorf("counting ticket volume by day: %w", err)
 	}
 	out := make([]ticket.DayVolume, len(rows))

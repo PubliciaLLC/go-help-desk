@@ -112,12 +112,12 @@ describe('structure', () => {
     }
   })
 
-  it('puts Admin after Dashboard and Tickets, and keeps no Audit Log entry outside it', () => {
+  it('puts Admin after Dashboard, Tickets and Reports, and keeps no Audit Log entry outside it', () => {
     renderAt('/dashboard')
     const nav = document.querySelector('nav') as HTMLElement
     const outside = Array.from(nav.querySelectorAll('a')).filter((a) => !panelOf('Admin').contains(a))
     expect(outside.map((a) => a.textContent)).toEqual([
-      'Dashboard', 'Assigned to Me', "My Group's Tickets", 'Available', 'Search',
+      'Dashboard', 'Assigned to Me', "My Group's Tickets", 'Available', 'Search', 'Reports',
     ])
   })
 
@@ -332,16 +332,19 @@ describe('visibility by role', () => {
   })
 
   // Audit Log is administrators only. Staff have the history on each ticket.
-  it.each(['staff', 'user'] as const)('%s: Dashboard and Tickets, no Admin, no Audit Log', (role) => {
+  it.each(['staff', 'user'] as const)('%s: Dashboard and Tickets (and Reports for staff), no Admin, no Audit Log', (role) => {
     renderAt('/dashboard', role)
 
     // Staff see the Tickets views (#676); a requester keeps the one link.
     const tickets = role === 'staff'
       ? [['Assigned to Me', '/tickets?view=me'], ["My Group's Tickets", '/tickets?view=groups'], ['Search', '/tickets?view=search']]
       : [['Tickets', '/tickets']]
+    // Reports (#131) is for staff and administrators.
+    const reports = role === 'staff' ? [['Reports', '/reports']] : []
     expect(screen.queryAllByRole('link', { hidden: true }).map((a) => [a.textContent, a.getAttribute('href')])).toEqual([
       ['Dashboard', '/dashboard'],
       ...tickets,
+      ...reports,
       ['Your account', '/account'],
     ])
     expect(document.querySelectorAll('[aria-controls]')).toHaveLength(0)

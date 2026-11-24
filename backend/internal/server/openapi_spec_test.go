@@ -218,7 +218,7 @@ func routeOnlyServer(keys map[string]probeKey) *Server {
 		return auth.APIKey{Scopes: k.scopes}, user.User{ID: uuid.New(), Role: k.role}, nil
 	})
 	return New(&config.Config{JWTSecret: probeJWTSecret}, probeSessionStore{}, nil, &ticket.Service{},
-		nil, nil, nil, nil, nil, nil, nil, nil, nil, lookup, probeOAuthClients{}, nil, nil, nil)
+		nil, nil, nil, nil, nil, nil, nil, nil, nil, lookup, probeOAuthClients{}, nil, nil, nil, nil)
 }
 
 var chiParamRegexp = regexp.MustCompile(`\{([^}:]+):[^}]*\}`)

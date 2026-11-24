@@ -207,7 +207,7 @@ test.describe('staff and requesters have no Admin menu and no Audit Log', () => 
       if (who === 'staff') await expect(nav.getByRole('link', { name: 'Assigned to Me', exact: true })).toBeVisible()
       else await expect(nav.getByRole('link', { name: 'Tickets', exact: true })).toBeVisible()
       await expect(nav.getByRole('link')).toHaveText(
-        who === 'staff' ? ['Dashboard', 'Assigned to Me', "My Group's Tickets", 'Search'] : ['Dashboard', 'Tickets'],
+        who === 'staff' ? ['Dashboard', 'Assigned to Me', "My Group's Tickets", 'Search', 'Reports'] : ['Dashboard', 'Tickets'],
       )
       await expect(nav.getByRole('button')).toHaveCount(0)
       await expect(nav.getByRole('link', { name: 'Audit Log' })).toHaveCount(0)

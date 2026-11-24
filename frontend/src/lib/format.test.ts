@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { fmtAgo, fmtMin, priorityVariant, slaTargetText } from './format'
+import { fmtAgo, fmtDuration, fmtMin, priorityVariant, slaTargetText } from './format'
 import type { SLATargetStatus } from '@/api/types'
 
 describe('priorityVariant', () => {
@@ -137,5 +137,27 @@ describe('fmtAgo', () => {
 
   it('defaults now to the current time', () => {
     expect(fmtAgo(new Date(Date.now() - 3 * H).toISOString())).toBe('3 hours ago')
+  })
+})
+
+describe('fmtDuration', () => {
+  // The Reports page reads a duration in whole seconds. Under a minute is
+  // "under 1 min", never "0 min"; minutes drop out once the figure is days.
+  const cases: Array<[string, number, string]> = [
+    ['zero', 0, 'under 1 min'],
+    ['59 seconds', 59, 'under 1 min'],
+    ['60 seconds', 60, '1 min'],
+    ['59 minutes', 59 * 60, '59 min'],
+    ['1 hour', 3600, '1 h'],
+    ['1 hour 1 minute', 3661, '1 h 1 min'],
+    ['23 h 59 min', 23 * 3600 + 59 * 60, '23 h 59 min'],
+    ['1 day', 86400, '1 d'],
+    ['1 day 1 hour', 86400 + 3600, '1 d 1 h'],
+    ['1 day 30 minutes drops the minutes', 86400 + 1800, '1 d'],
+    ['400 days', 400 * 86400, '400 d'],
+  ]
+
+  it.each(cases)('$name', (_name, seconds, want) => {
+    expect(fmtDuration(seconds)).toBe(want)
   })
 })

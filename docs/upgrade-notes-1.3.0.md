@@ -346,6 +346,24 @@ The dashboard gains three blocks. **Your queue** goes above the status cards. **
 - **Awaiting my reply** is a new filter, `awaiting_reply`. It lists the tickets that are not Resolved or Closed and whose newest public message is from the requester's side (no reply yet, a guest's message, or a requester's or follower's), so they wait for the help desk. Internal notes do not count. It is `awaiting_reply=true` on `GET /api/v1/tickets` and `awaiting_reply` on MCP `list_tickets`, for staff and administrators only: a requester who sends it is refused, with `403` "awaiting_reply is not available to requesters". The ticket list offers it on Assigned to Me and My Group's Tickets.
 - **Migration: one index.** The migration builds one index on the tickets table, for the trend. It changes no data and no setting. It is built inside the migration, not concurrently, so on a very large install it holds writes to the tickets table for the seconds it takes to build.
 
+### Reports: KPIs for Resolution, First Response, SLA, Reopens, Backlog, Volume and Workload (#131)
+
+A **Reports** item in the sidebar, between Tickets and Admin, shows how the desk is doing over a period. Staff and administrators see it; a requester has no Reports item and the endpoint answers them `403`. Every number is counted on the server, live, from the tickets already recorded. Nothing new is stored, and there is **no migration and no new setting**.
+
+- **Staff numbers follow ticket scope.** Administrators count every ticket. Staff count the tickets they could open on the ticket list: with `ticket_scope_enforced` on, those reported by them, assigned to them or to one of their groups, or in a category or type their groups cover.
+- **Each measure, in one line.** Volume compares tickets **created** in the period with tickets **resolved** in it. The other period measures count the tickets **finished** in the period: resolved, or closed without ever being resolved.
+  - **Time to resolve**: from creation to finishing, less the time Pending, as a median and a 90th percentile. Time in Resolved before a reopen is included.
+  - **First response**: the median time to the first response, as the SLA measured it, less the time Pending before it.
+  - **SLA attainment**: the share of tracked tickets, those with a current SLA record when they finished (a ticket whose SLA was removed, by a priority change, a reclassification or a reopen, is left out), whose response and resolution targets were both met.
+  - **Reopen rate**: the share of finished tickets that were reopened at least once.
+  - **Backlog**: open tickets by age in whole days since creation, in four buckets: 0 to 2, 3 to 7, 8 to 30 and over 30.
+  - **Workload**: open tickets by assignee and by group, with a row for tickets with no person and one for tickets with no group.
+- **Time to resolve excludes Pending.** Time a ticket spends Pending is not counted, so a ticket held for a customer is not shown as slow.
+- **First response and SLA attainment need SLA tracking.** A ticket is timed only while SLA tracking is on, so these figures cover only tickets timed while it was on. The page says so when tracking is off.
+- **Reopens before 1.3.0 are not counted.** The reopen count was not kept before this release, so the reopen rate counts reopens from 1.3.0 on.
+- **Comparison.** Each figure is set against the previous period of the same length, and that comparison is computed on the server.
+- **CSV and images are made in the browser.** **Download CSV** writes the numbers on screen to a file, and **Download image** (on the whole board or on one card) makes a PNG of the page as the browser laid it out. A phone therefore gives a narrower image than a desktop, and the image is cut and wrapped where the screen does. Nothing is sent to the server for either download.
+
 ### Ticket List: Views in the Sidebar, a Search View and Who May Open Available (#444, #676)
 
 The ticket list's queues are now views in the sidebar, under **Tickets**: **Assigned to Me**, **My Group's Tickets**, **Available** and **Search**. Search is the one view that covers every ticket you can see. Queue views narrow a search to their queue, as they did in 1.2.

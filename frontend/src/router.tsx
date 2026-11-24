@@ -9,6 +9,7 @@ import { LoginPage } from '@/pages/LoginPage'
 import { SetupPage } from '@/pages/SetupPage'
 import { AccountPage } from '@/pages/AccountPage'
 import { DashboardPage } from '@/pages/DashboardPage'
+import { ReportsPage } from '@/pages/ReportsPage'
 import { TicketListPage } from '@/pages/TicketListPage'
 import { NewTicketPage } from '@/pages/NewTicketPage'
 import { TicketDetailPage } from '@/pages/TicketDetailPage'
@@ -36,6 +37,7 @@ import { VerifyEmailPage } from '@/pages/VerifyEmailPage'
 import { ForgotPasswordPage } from '@/pages/ForgotPasswordPage'
 import { ResetPasswordPage } from '@/pages/ResetPasswordPage'
 import { parseTicketSearch } from '@/lib/ticketSearch'
+import { kpiSearchFromRecord, kpiSearchToRecord } from '@/lib/kpi'
 
 async function requireAuth() {
   const { user, setUser } = useAuthStore.getState()
@@ -52,6 +54,13 @@ async function requireAdmin() {
   await requireAuth()
   const { user } = useAuthStore.getState()
   if (user?.role !== 'admin') throw redirect({ to: '/dashboard' })
+}
+
+// Staff and administrators: Reports reads GET /reports/kpi, which answers a
+// requester 403. The nav item is hidden for them; this is the guard.
+async function requireStaff() {
+  await requireAuth()
+  if (useAuthStore.getState().user?.role === 'user') throw redirect({ to: '/dashboard' })
 }
 
 // ── Root ──────────────────────────────────────────────────────────────────────
@@ -110,6 +119,16 @@ const afterUpgradeRoute = createRoute({
     if (!needsAfterUpgrade(await getSettings())) throw redirect({ to: '/dashboard' })
   },
   component: AfterUpgradePage,
+})
+
+// #131: the address holds the whole state of the page (range, dates, filters),
+// so a refresh or a shared link shows the same board.
+const reportsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/reports',
+  beforeLoad: requireStaff,
+  validateSearch: (search: Record<string, unknown>) => kpiSearchToRecord(kpiSearchFromRecord(search)),
+  component: ReportsPage,
 })
 
 const ticketsRoute = createRoute({
@@ -329,6 +348,7 @@ export const router = createRouter({
     resetPasswordRoute,
     dashboardRoute,
     afterUpgradeRoute,
+    reportsRoute,
     submitRoute,
     guestViewRoute,
     guestTrackRoute,

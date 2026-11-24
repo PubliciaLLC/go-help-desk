@@ -62,4 +62,27 @@ describe('VolumeTrend', () => {
     render(<VolumeTrend volume={volume([])} />)
     expect(screen.getByText('No tickets were created or resolved in the last 30 days.')).toBeTruthy()
   })
+
+  it('says what the caller says when it passes its own empty text', () => {
+    render(
+      <VolumeTrend
+        volume={volume(days(() => ({ created: 0, resolved: 0 })))}
+        emptyText="No tickets were created or resolved in this period."
+      />,
+    )
+    expect(screen.getByText('No tickets were created or resolved in this period.')).toBeTruthy()
+    expect(screen.queryByText('No tickets were created or resolved in the last 30 days.')).toBeNull()
+  })
+
+  it('labels the chart with the caller wording when it passes its own', () => {
+    const { container } = render(
+      <VolumeTrend
+        volume={volume(days(() => ({ created: 1, resolved: 1 })))}
+        ariaLabel="Tickets created and resolved per day, 1 Oct to 30 Oct"
+      />,
+    )
+    expect(container.querySelector('svg')!.getAttribute('aria-label')).toBe(
+      'Tickets created and resolved per day, 1 Oct to 30 Oct',
+    )
+  })
 })

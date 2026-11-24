@@ -317,9 +317,93 @@ export const DASHBOARD_REQUESTER = {
   volume: null,
 }
 
+// #131: what GET /reports/kpi answers. One category and one person carry a
+// 120-character name with no break point, the shape that widens a page that
+// does not truncate it.
+export const LONG_CATEGORY = 'C'.repeat(120)
+const kpiDays = Array.from({ length: 30 }, (_, i) => ({
+  date: new Date(Date.UTC(2026, 9, 26 + i)).toISOString().slice(0, 10),
+  created: 1 + (i % 5),
+  resolved: i % 4,
+}))
+const change = (kind: 'relative' | 'points', value: number) => ({ kind, state: 'change', value })
+
+export const KPI_RESPONSE = {
+  tz: 'UTC',
+  period: { from: '2026-10-26', to: '2026-11-24', days: 30 },
+  previous: { from: '2026-09-26', to: '2026-10-25', days: 30 },
+  filters: { category_id: null, priority: [], assignee_group_id: null },
+  sla_enabled: true,
+  measures: {
+    current: {
+      created: 84,
+      resolved: 79,
+      time_to_resolve: { count: 79, median_seconds: 52200, p90_seconds: 345600 },
+      first_response: { count: 61, median_seconds: 3900 },
+      sla: { tracked: 61, met: 52, response_met: 57, resolution_met: 54, met_rate: 0.8525, response_met_rate: 0.9344, resolution_met_rate: 0.8852 },
+      reopen: { reopened: 4, rate: 0.0506 },
+    },
+    previous: {
+      created: 72,
+      resolved: 70,
+      time_to_resolve: { count: 70, median_seconds: 55000, p90_seconds: 300000 },
+      first_response: { count: 55, median_seconds: 4200 },
+      sla: { tracked: 55, met: 44, response_met: 50, resolution_met: 48, met_rate: 0.8, response_met_rate: 0.9091, resolution_met_rate: 0.8727 },
+      reopen: { reopened: 0, rate: 0 },
+    },
+    change: {
+      created: change('relative', 0.1667),
+      resolved: change('relative', 0.1286),
+      time_to_resolve_median: change('relative', -0.0509),
+      time_to_resolve_p90: change('relative', 0.152),
+      first_response_median: change('relative', -0.0714),
+      sla_met_rate: change('points', 0.0532),
+      sla_response_met_rate: change('points', 0.0253),
+      sla_resolution_met_rate: change('points', 0.0125),
+      reopen_rate: change('points', 0.0506),
+    },
+  },
+  volume: {
+    days: kpiDays,
+    by_category: [
+      { id: 'cat-long', name: LONG_CATEGORY, count: 31 },
+      { id: 'cat-1', name: 'Hardware', count: 20 },
+    ],
+    by_priority: [
+      { priority: 'critical', count: 2 },
+      { priority: 'high', count: 9 },
+      { priority: 'medium', count: 60 },
+      { priority: 'low', count: 13 },
+    ],
+  },
+  backlog: {
+    as_of: '2026-11-24T10:15:00Z',
+    total: 42,
+    buckets: [
+      { key: '0_2', min_days: 0, max_days: 2, count: 17 },
+      { key: '3_7', min_days: 3, max_days: 7, count: 11 },
+      { key: '8_30', min_days: 8, max_days: 30, count: 10 },
+      { key: 'over_30', min_days: 31, max_days: null, count: 4 },
+    ],
+  },
+  workload: {
+    as_of: '2026-11-24T10:15:00Z',
+    total: 42,
+    by_assignee: [
+      { id: 'u-staff', name: 'Sam Staff', count: 9 },
+      { id: 'u-long', name: LONG_CATEGORY, count: 7 },
+      { id: null, name: null, count: 6 },
+    ],
+    by_group: [
+      { id: 'g1', name: 'Service Desk', count: 30 },
+      { id: null, name: null, count: 3 },
+    ],
+  },
+}
+
 export async function mockApi(
   page: Page,
-  opts: { me?: object; ticket?: object; replies?: object[] } = {},
+  opts: { me?: object; ticket?: object; replies?: object[]; kpi?: object; categories?: object[] } = {},
 ) {
   const me = opts.me ?? ME_STAFF
   const byPath: Record<string, unknown> = {
@@ -328,7 +412,8 @@ export async function mockApi(
     '/api/v1/statuses': STATUSES,
     '/api/v1/dashboard': (me as { role?: string }).role === 'user' ? DASHBOARD_REQUESTER : DASHBOARD_STAFF,
     '/api/v1/tickets': TICKETS,
-    '/api/v1/categories': CATEGORIES,
+    '/api/v1/categories': opts.categories ?? CATEGORIES,
+    '/api/v1/reports/kpi': opts.kpi ?? KPI_RESPONSE,
     [`/api/v1/tickets/${TICKET_DETAIL.id}`]: opts.ticket ?? TICKET_DETAIL,
     [`/api/v1/tickets/${LINKED_TICKET.id}`]: LINKED_TICKET,
     [`/api/v1/tickets/${TICKET_DETAIL.id}/attachments`]: ATTACHMENTS,
