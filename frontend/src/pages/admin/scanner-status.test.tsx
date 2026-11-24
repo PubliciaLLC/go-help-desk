@@ -6,6 +6,7 @@ import { api } from '@/api/client'
 import { useAuthStore } from '@/store/auth'
 vi.mock('@tanstack/react-router', () => ({
   useRouterState: () => ({ location: { pathname: '/admin/settings' } }),
+  useBlocker: () => ({ status: 'idle' }),
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   Link: ({ to, children, ...rest }: any) => (
     <a href={to} {...rest}>
@@ -14,7 +15,7 @@ vi.mock('@tanstack/react-router', () => ({
   ),
 }))
 
-import { SettingsPage } from './SettingsPage'
+import { AttachmentSettingsPage } from './settings/AttachmentSettingsPage'
 
 // #459: Settings -> Attachments shows what the scanner is doing, from the
 // same endpoint as the banner, so an administrator can see the state without
@@ -44,9 +45,9 @@ async function openAttachments(scanning: unknown) {
     return Promise.resolve({ data: [] })
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
   }) as any)
-  renderWithQuery(<SettingsPage />)
-  await screen.findByRole('heading', { name: 'Settings' })
-  await userEvent.click(screen.getByRole('button', { name: /attachments/i }))
+  renderWithQuery(<AttachmentSettingsPage />)
+  await screen.findByRole('heading', { name: 'File Attachments' })
+  await waitFor(() => expect(screen.queryByRole('status', { name: 'Loading' })).toBeNull())
 }
 
 describe('saving settings refreshes the scanner status', () => {

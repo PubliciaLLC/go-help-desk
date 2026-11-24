@@ -12,11 +12,12 @@ import { useAuthStore } from '@/store/auth'
 
 vi.mock('@tanstack/react-router', () => ({
   useRouterState: () => ({ location: { pathname: '/admin/settings' } }),
+  useBlocker: () => ({ status: 'idle' }),
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   Link: ({ to, children, ...rest }: any) => <a href={to} {...rest}>{children}</a>,
 }))
 
-import { SettingsPage } from './SettingsPage'
+import { PrivacySettingsPage } from './settings/PrivacySettingsPage'
 
 beforeEach(() => {
   vi.restoreAllMocks()
@@ -44,8 +45,9 @@ describe('the Available queue Save inside the Settings page', () => {
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
     }) as any)
 
-    renderWithQuery(<SettingsPage />)
-    await screen.findByRole('heading', { name: 'Settings' })
+    renderWithQuery(<PrivacySettingsPage />)
+    await screen.findByRole('heading', { name: 'Privacy' })
+    await waitFor(() => expect(screen.queryByRole('status', { name: 'Loading' })).toBeNull())
 
     const row = screen.getByText('Limit staff to their group scope').parentElement!.parentElement!
     const toggle = within(row).getByRole('switch')

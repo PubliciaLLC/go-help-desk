@@ -11,6 +11,7 @@ import { useAuthStore } from '@/store/auth'
 
 vi.mock('@tanstack/react-router', () => ({
   useRouterState: () => ({ location: { pathname: '/admin/settings' } }),
+  useBlocker: () => ({ status: 'idle' }),
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   Link: ({ to, children, ...rest }: any) => (
     <a href={to} {...rest}>
@@ -19,7 +20,7 @@ vi.mock('@tanstack/react-router', () => ({
   ),
 }))
 
-import { SettingsPage } from './SettingsPage'
+import { EmailSettingsPage } from './settings/EmailSettingsPage'
 
 function serve(settings: Record<string, unknown>) {
   vi.spyOn(api, 'get').mockImplementation(((url: string) => {
@@ -48,9 +49,9 @@ beforeEach(() => {
 afterEach(() => vi.restoreAllMocks())
 
 async function openEmailTab() {
-  renderWithQuery(<SettingsPage />)
-  await screen.findByRole('heading', { name: 'Settings' })
-  await userEvent.click(screen.getByRole('button', { name: 'Email' }))
+  renderWithQuery(<EmailSettingsPage />)
+  await screen.findByRole('heading', { name: 'Email' })
+  await waitFor(() => expect(screen.queryByRole('status', { name: 'Loading' })).toBeNull())
 }
 
 const NAMES = ['Tickets assigned to me', "Activity on tickets I'm assigned to or follow", "My groups' tickets", 'SLA alerts']
@@ -63,7 +64,6 @@ describe('Settings -> Email', () => {
   it('has an Email tab with one override per switch, four in all', async () => {
     await openEmailTab()
     expect(screen.getAllByRole('combobox', { name: /administrator override$/ })).toHaveLength(4)
-    await openEmailTab()
     for (const name of NAMES) expect(overrideSelect(name)).toBeTruthy()
   })
 

@@ -12,6 +12,7 @@ import { useAuthStore } from '@/store/auth'
 
 vi.mock('@tanstack/react-router', () => ({
   useRouterState: () => ({ location: { pathname: '/admin/settings' } }),
+  useBlocker: () => ({ status: 'idle' }),
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   Link: ({ to, children, ...rest }: any) => (
     <a href={to} {...rest}>
@@ -20,7 +21,7 @@ vi.mock('@tanstack/react-router', () => ({
   ),
 }))
 
-import { SettingsPage } from './SettingsPage'
+import { AuthenticationSettingsPage } from './settings/AuthenticationSettingsPage'
 
 const XML = '<?xml version="1.0"?>\n<EntityDescriptor entityID="https://idp.example.com"/>'
 const XML2 = '<EntityDescriptor entityID="https://other.example.com"/>'
@@ -61,9 +62,9 @@ afterEach(() => vi.restoreAllMocks())
 
 async function openSAML() {
   const user = userEvent.setup()
-  renderWithQuery(<SettingsPage />)
-  await screen.findByRole('heading', { name: 'Settings' })
-  await user.click(screen.getByRole('button', { name: 'Authentication' }))
+  renderWithQuery(<AuthenticationSettingsPage />)
+  await screen.findByRole('heading', { name: 'Authentication' })
+  await waitFor(() => expect(screen.queryByRole('status', { name: 'Loading' })).toBeNull())
   await screen.findByRole('button', { name: 'Save SAML config' })
   return user
 }

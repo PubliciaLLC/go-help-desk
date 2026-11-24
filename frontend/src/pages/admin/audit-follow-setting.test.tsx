@@ -10,6 +10,7 @@ import { useAuthStore } from '@/store/auth'
 
 vi.mock('@tanstack/react-router', () => ({
   useRouterState: () => ({ location: { pathname: '/admin/settings' } }),
+  useBlocker: () => ({ status: 'idle' }),
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   Link: ({ to, children, ...rest }: any) => (
     <a href={to} {...rest}>
@@ -18,7 +19,7 @@ vi.mock('@tanstack/react-router', () => ({
   ),
 }))
 
-import { SettingsPage } from './SettingsPage'
+import { PrivacySettingsPage } from './settings/PrivacySettingsPage'
 
 beforeEach(() => {
   useAuthStore.setState({
@@ -40,8 +41,9 @@ async function renderSettings(settings: Record<string, unknown>) {
   }) as any)
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const patch = vi.spyOn(api, 'patch').mockResolvedValue({ data: undefined } as any)
-  renderWithQuery(<SettingsPage />)
-  await screen.findByRole('heading', { name: 'Settings' })
+  renderWithQuery(<PrivacySettingsPage />)
+  await screen.findByRole('heading', { name: 'Privacy' })
+  await waitFor(() => expect(screen.queryByRole('status', { name: 'Loading' })).toBeNull())
   return patch
 }
 

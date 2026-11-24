@@ -48,6 +48,7 @@ import { useAuthStore } from '@/store/auth'
 
 vi.mock('@tanstack/react-router', () => ({
   useRouterState: () => ({ location: { pathname: '/admin/settings' } }),
+  useBlocker: () => ({ status: 'idle' }),
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   Link: ({ to, children, ...rest }: any) => (
     <a href={to} {...rest}>
@@ -56,7 +57,7 @@ vi.mock('@tanstack/react-router', () => ({
   ),
 }))
 
-import { SettingsPage } from './SettingsPage'
+import { AttachmentSettingsPage } from './settings/AttachmentSettingsPage'
 
 // ── Fixtures ──────────────────────────────────────────────────────────────────
 
@@ -176,16 +177,9 @@ async function renderSettings(settings: Record<string, unknown> = SETTINGS) {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const patch = vi.spyOn(api, 'patch').mockResolvedValue({ data: undefined } as any)
 
-  renderWithQuery(<SettingsPage />)
-  await screen.findByRole('heading', { name: 'Settings' })
-
-  // Asserted rather than queried straight through getByRole, so that a page
-  // with nowhere to put these settings fails saying so.
-  const tab = screen
-    .queryAllByRole('button')
-    .find((b) => /attachment/i.test(b.textContent ?? ''))
-  expect(tab, 'the Settings page offers no way to reach the attachment settings').toBeTruthy()
-  await userEvent.click(tab!)
+  renderWithQuery(<AttachmentSettingsPage />)
+  await screen.findByRole('heading', { name: 'File Attachments' })
+  await waitFor(() => expect(screen.queryByRole('status', { name: 'Loading' })).toBeNull())
 
   return patch
 }

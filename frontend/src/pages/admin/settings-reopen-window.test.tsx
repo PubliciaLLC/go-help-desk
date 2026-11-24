@@ -12,6 +12,7 @@ import { useAuthStore } from '@/store/auth'
 
 vi.mock('@tanstack/react-router', () => ({
   useRouterState: () => ({ location: { pathname: '/admin/settings' } }),
+  useBlocker: () => ({ status: 'idle' }),
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   Link: ({ to, children, ...rest }: any) => (
     <a href={to} {...rest}>
@@ -20,7 +21,7 @@ vi.mock('@tanstack/react-router', () => ({
   ),
 }))
 
-import { SettingsPage } from './SettingsPage'
+import { GeneralSettingsPage } from './settings/GeneralSettingsPage'
 
 beforeEach(() => {
   useAuthStore.setState({
@@ -45,8 +46,9 @@ beforeEach(() => {
 
 describe('the reopen window setting', () => {
   it('says it is also when the ticket closes and becomes read-only', async () => {
-    renderWithQuery(<SettingsPage />)
-    await screen.findByRole('heading', { name: 'Settings' })
+    renderWithQuery(<GeneralSettingsPage />)
+    await screen.findByRole('heading', { name: 'General' })
+    await waitFor(() => expect(screen.queryByRole('status', { name: 'Loading' })).toBeNull())
 
     expect(screen.getByText('Reopen window and auto-close')).toBeTruthy()
     const help = screen.getByText(/also when the ticket closes/i)
@@ -55,8 +57,9 @@ describe('the reopen window setting', () => {
   })
 
   it('says what 0 means: closed and read-only on the next sweep, not "off"', async () => {
-    renderWithQuery(<SettingsPage />)
-    await screen.findByRole('heading', { name: 'Settings' })
+    renderWithQuery(<GeneralSettingsPage />)
+    await screen.findByRole('heading', { name: 'General' })
+    await waitFor(() => expect(screen.queryByRole('status', { name: 'Loading' })).toBeNull())
 
     const help = screen.getByText(/also when the ticket closes/i)
     expect(help.textContent).toMatch(/Set to 0 for no reopening/i)
@@ -73,8 +76,9 @@ describe('the closed-ticket reopen policy setting', () => {
   }
 
   it('defaults to off when nothing is stored, and offers the three values', async () => {
-    renderWithQuery(<SettingsPage />)
-    await screen.findByRole('heading', { name: 'Settings' })
+    renderWithQuery(<GeneralSettingsPage />)
+    await screen.findByRole('heading', { name: 'General' })
+    await waitFor(() => expect(screen.queryByRole('status', { name: 'Loading' })).toBeNull())
 
     const select = policySelect()
     expect(select.value).toBe('off')
@@ -86,8 +90,9 @@ describe('the closed-ticket reopen policy setting', () => {
   })
 
   it('says what each value means and that requesters can never reopen', async () => {
-    renderWithQuery(<SettingsPage />)
-    await screen.findByRole('heading', { name: 'Settings' })
+    renderWithQuery(<GeneralSettingsPage />)
+    await screen.findByRole('heading', { name: 'General' })
+    await waitFor(() => expect(screen.queryByRole('status', { name: 'Loading' })).toBeNull())
 
     const help = screen.getByText(/Whether a Closed ticket can be reopened at all/i)
     expect(help.textContent).toMatch(/Off \(the default\)/)
@@ -105,16 +110,18 @@ describe('the closed-ticket reopen policy setting', () => {
       return Promise.resolve({ data: [] })
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
     }) as any)
-    renderWithQuery(<SettingsPage />)
-    await screen.findByRole('heading', { name: 'Settings' })
+    renderWithQuery(<GeneralSettingsPage />)
+    await screen.findByRole('heading', { name: 'General' })
+    await waitFor(() => expect(screen.queryByRole('status', { name: 'Loading' })).toBeNull())
     expect(policySelect().value).toBe('staff_admin')
   })
 
   it('sends the chosen value on save', async () => {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const patch = vi.spyOn(api, 'patch').mockResolvedValue({ data: undefined } as any)
-    renderWithQuery(<SettingsPage />)
-    await screen.findByRole('heading', { name: 'Settings' })
+    renderWithQuery(<GeneralSettingsPage />)
+    await screen.findByRole('heading', { name: 'General' })
+    await waitFor(() => expect(screen.queryByRole('status', { name: 'Loading' })).toBeNull())
 
     await userEvent.selectOptions(policySelect(), 'admin')
     await userEvent.click(screen.getByRole('button', { name: /save changes/i }))

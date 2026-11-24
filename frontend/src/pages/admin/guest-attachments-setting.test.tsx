@@ -10,10 +10,14 @@ import { useAuthStore } from '@/store/auth'
 
 vi.mock('@tanstack/react-router', () => ({
   useRouterState: () => ({ location: { pathname: '/admin/settings' } }),
+  useBlocker: () => ({ status: 'idle' }),
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   Link: ({ to, children, ...rest }: any) => <a href={to} {...rest}>{children}</a>,
 }))
 
+import { AttachmentSettingsPage } from './settings/AttachmentSettingsPage'
+import { GuestAccessSettingsPage } from './settings/GuestAccessSettingsPage'
+// Only the cross-page block at the end still renders the tabbed page. See there.
 import { SettingsPage } from './SettingsPage'
 
 beforeEach(() => {
@@ -26,7 +30,7 @@ beforeEach(() => {
 })
 afterEach(() => vi.restoreAllMocks())
 
-async function renderSettings(settings: Record<string, unknown>) {
+function stubSettings(settings: Record<string, unknown>) {
   vi.spyOn(api, 'get').mockImplementation(((url: string) => {
     if (url === '/admin/settings') return Promise.resolve({ data: settings })
     if (url === '/admin/security-warnings') return Promise.resolve({ data: { insecure_secrets: [] } })
@@ -35,14 +39,34 @@ async function renderSettings(settings: Record<string, unknown>) {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
   }) as any)
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const patch = vi.spyOn(api, 'patch').mockResolvedValue({ data: undefined } as any)
-  renderWithQuery(<SettingsPage />)
-  await screen.findByRole('heading', { name: 'Settings' })
+  return vi.spyOn(api, 'patch').mockResolvedValue({ data: undefined } as any)
+}
+
+async function waitLoaded() {
+  await waitFor(() => expect(screen.queryByRole('status', { name: 'Loading' })).toBeNull())
+}
+
+async function renderSettings(settings: Record<string, unknown>) {
+  const patch = stubSettings(settings)
+  renderWithQuery(<GuestAccessSettingsPage />)
+  await screen.findByRole('heading', { name: 'Guest Access' })
+  await waitLoaded()
+  return patch
+}
+
+async function renderAttachments(settings: Record<string, unknown>) {
+  const patch = stubSettings(settings)
+  renderWithQuery(<AttachmentSettingsPage />)
+  await screen.findByRole('heading', { name: 'File Attachments' })
+  await waitLoaded()
   return patch
 }
 
 const toggle = () => screen.getByRole('switch', { name: /guests may attach files/i }) as HTMLButtonElement
 const slider = () => screen.getByRole('slider', { name: /largest file a guest may attach/i }) as HTMLInputElement
+const overall = () => screen.getByRole('spinbutton', { name: /largest file anyone may attach/i }) as HTMLInputElement
+const save = () => screen.getAllByRole('button', { name: /save changes/i }).at(-1)!
+const ON = { guest_submission_enabled: true, guest_attachments_enabled: true }
 
 describe('the guest attachments settings', () => {
   it('is off by default and the slider starts at 5 MB', async () => {
@@ -115,21 +139,9 @@ describe('the guest attachments settings', () => {
   })
 })
 
-// #673: the guest slider stops at the per-file limit, and the two controls
-// share one draft on this page.
+// #673: the guest slider stops at the per-file limit. The slider's top is the
+// stored per-file limit (Guest Access cannot edit it).
 describe('the guest size slider and the per-file limit', () => {
-  const overall = () => screen.getByRole('spinbutton', { name: /largest file anyone may attach/i }) as HTMLInputElement
-  const tab = (name: string) => screen.getByRole('button', { name })
-  const save = () => screen.getAllByRole('button', { name: /save changes/i }).at(-1)!
-  const ON = { guest_submission_enabled: true, guest_attachments_enabled: true }
-
-  async function typeOverall(n: string) {
-    await userEvent.click(tab('Attachments'))
-    await userEvent.clear(overall())
-    await userEvent.type(overall(), n)
-    await userEvent.click(tab('General'))
-  }
-
   it('tops out at the stored per-file limit, or 25 when none is stored, with the two ends as ticks', async () => {
     await renderSettings({ ...ON, attachment_max_mb: 40 })
     expect(slider().max).toBe('40')
@@ -154,22 +166,6 @@ describe('the guest size slider and the per-file limit', () => {
     expect(screen.getByRole('note').textContent).toMatch(/^Saved as 20 MB\. Every upload is limited to 10 MB/)
   })
 
-  it('raises the slider top in the same render when the per-file limit is typed, before saving', async () => {
-    await renderSettings({ ...ON, attachment_max_mb: 10 })
-    expect(slider().max).toBe('10')
-    await typeOverall('40')
-    expect(slider().max).toBe('40')
-  })
-
-  it('does not send a stored guest value the administrator never touched', async () => {
-    const patch = await renderSettings({ ...ON, attachment_max_mb: 25, guest_attachment_max_mb: 20 })
-    await typeOverall('10')
-    expect(slider().value).toBe('10')
-    await userEvent.click(save())
-    await waitFor(() => expect(patch).toHaveBeenCalled())
-    expect(patch.mock.calls.at(-1)![1]).toEqual({ attachment_max_mb: 10 })
-  })
-
   it('sends attachment_max_mb only when it changed', async () => {
     const patch = await renderSettings({ ...ON, attachment_max_mb: 25, guest_attachment_max_mb: 5 })
     await userEvent.click(toggle())
@@ -177,10 +173,87 @@ describe('the guest size slider and the per-file limit', () => {
     await waitFor(() => expect(patch).toHaveBeenCalled())
     expect(patch.mock.calls.at(-1)![1]).not.toHaveProperty('attachment_max_mb')
   })
+})
+
+describe('the File size section on the File Attachments page', () => {
+  it('follows Uploads, and its guest line reads the stored guest value', async () => {
+    await renderAttachments({ attachment_max_mb: 10, guest_attachment_max_mb: 20 })
+    const headings = screen.getAllByRole('heading', { level: 2 }).map((h) => h.textContent)
+    expect(headings.indexOf('File size')).toBe(headings.indexOf('Uploads') + 1)
+    expect(overall().value).toBe('10')
+    expect(screen.getByTestId('guest-limit-line').textContent).toBe(
+      'Guests: up to 10 MB. Their own limit is 20 MB; this one is lower, so it applies.',
+    )
+  })
+
+  it('shows 25 and the 5 MB guest default when nothing is stored', async () => {
+    await renderAttachments({})
+    expect(overall().value).toBe('25')
+    expect(screen.getByTestId('guest-limit-line').textContent).toBe('Guests: up to 5 MB.')
+  })
+
+  it.each([
+    ['required', true],
+    ['permissive', true],
+    ['off', false],
+  ])('shows the scanner hint above 25 only while scanning (%s)', async (policy, shown) => {
+    await renderAttachments({ attachment_max_mb: 50, attachment_scan_policy: policy })
+    expect(!!screen.queryByText(/your virus scanner must accept files this large/i)).toBe(shown)
+  })
+
+  it('saves the limit under its setting name', async () => {
+    const patch = await renderAttachments({ attachment_max_mb: 25 })
+    await userEvent.clear(overall())
+    await userEvent.type(overall(), '60')
+    await userEvent.click(save())
+    await waitFor(() => expect(patch).toHaveBeenCalled())
+    expect(patch.mock.calls.at(-1)![1]).toEqual({ attachment_max_mb: 60 })
+  })
+})
+
+// NOT MOVED in task 6. These tests need an unsaved edit on Guest Access and an
+// unsaved edit on File Attachments to be visible to each other, and to be saved
+// by one Save. That is the tabbed SettingsPage's single shared draft. DESIGN.md
+// (#674) gives each page its own draft and makes the Guest slider's top the
+// stored per-file limit, so these assertions describe behaviour the design
+// removes. They keep rendering SettingsPage until the owner decides how they
+// are rewritten or dropped.
+describe('the guest size slider and the per-file limit on the tabbed page (not moved)', () => {
+  const tab = (name: string) => screen.getByRole('button', { name })
+
+  async function renderTabbed(settings: Record<string, unknown>) {
+    const patch = stubSettings(settings)
+    renderWithQuery(<SettingsPage />)
+    await screen.findByRole('heading', { name: 'Settings' })
+    return patch
+  }
+
+  async function typeOverall(n: string) {
+    await userEvent.click(tab('Attachments'))
+    await userEvent.clear(overall())
+    await userEvent.type(overall(), n)
+    await userEvent.click(tab('General'))
+  }
+
+  it('raises the slider top in the same render when the per-file limit is typed, before saving', async () => {
+    await renderTabbed({ ...ON, attachment_max_mb: 10 })
+    expect(slider().max).toBe('10')
+    await typeOverall('40')
+    expect(slider().max).toBe('40')
+  })
+
+  it('does not send a stored guest value the administrator never touched', async () => {
+    const patch = await renderTabbed({ ...ON, attachment_max_mb: 25, guest_attachment_max_mb: 20 })
+    await typeOverall('10')
+    expect(slider().value).toBe('10')
+    await userEvent.click(save())
+    await waitFor(() => expect(patch).toHaveBeenCalled())
+    expect(patch.mock.calls.at(-1)![1]).toEqual({ attachment_max_mb: 10 })
+  })
 
   describe('an unsaved guest value above an unsaved per-file limit', () => {
     async function draggedTo20() {
-      const patch = await renderSettings({ ...ON, attachment_max_mb: 25, guest_attachment_max_mb: 5 })
+      const patch = await renderTabbed({ ...ON, attachment_max_mb: 25, guest_attachment_max_mb: 5 })
       fireEvent.change(slider(), { target: { value: '20' } })
       expect(slider().value).toBe('20')
       return patch
@@ -212,45 +285,4 @@ describe('the guest size slider and the per-file limit', () => {
       expect(screen.getByTestId('guest-limit-line').textContent).toBe('Guests: up to 10 MB.')
     })
   })
-
-  describe('the File size section on the Attachments tab', () => {
-    it('follows Uploads, and its guest line reads the stored guest value', async () => {
-      await renderSettings({ attachment_max_mb: 10, guest_attachment_max_mb: 20 })
-      await userEvent.click(tab('Attachments'))
-      const headings = screen.getAllByRole('heading', { level: 2 }).map((h) => h.textContent)
-      expect(headings.indexOf('File size')).toBe(headings.indexOf('Uploads') + 1)
-      expect(overall().value).toBe('10')
-      expect(screen.getByTestId('guest-limit-line').textContent).toBe(
-        'Guests: up to 10 MB. Their own limit is 20 MB; this one is lower, so it applies.',
-      )
-    })
-
-    it('shows 25 and the 5 MB guest default when nothing is stored', async () => {
-      await renderSettings({})
-      await userEvent.click(tab('Attachments'))
-      expect(overall().value).toBe('25')
-      expect(screen.getByTestId('guest-limit-line').textContent).toBe('Guests: up to 5 MB.')
-    })
-
-    it.each([
-      ['required', true],
-      ['permissive', true],
-      ['off', false],
-    ])('shows the scanner hint above 25 only while scanning (%s)', async (policy, shown) => {
-      await renderSettings({ attachment_max_mb: 50, attachment_scan_policy: policy })
-      await userEvent.click(tab('Attachments'))
-      expect(!!screen.queryByText(/your virus scanner must accept files this large/i)).toBe(shown)
-    })
-
-    it('saves the limit under its setting name', async () => {
-      const patch = await renderSettings({ attachment_max_mb: 25 })
-      await userEvent.click(tab('Attachments'))
-      await userEvent.clear(overall())
-      await userEvent.type(overall(), '60')
-      await userEvent.click(save())
-      await waitFor(() => expect(patch).toHaveBeenCalled())
-      expect(patch.mock.calls.at(-1)![1]).toEqual({ attachment_max_mb: 60 })
-    })
-  })
 })
-

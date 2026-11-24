@@ -3,6 +3,7 @@ import { screen, waitFor, within, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { AxiosError } from 'axios'
 import type { QueryClient } from '@tanstack/react-query'
+import type { ReactElement } from 'react'
 import { renderWithQuery } from '@/test/render'
 import { api } from '@/api/client'
 import { useAuthStore } from '@/store/auth'
@@ -26,11 +27,13 @@ import { useAuthStore } from '@/store/auth'
 
 vi.mock('@tanstack/react-router', () => ({
   useRouterState: () => ({ location: { pathname: '/admin/settings' } }),
+  useBlocker: () => ({ status: 'idle' }),
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   Link: ({ to, children, ...rest }: any) => <a href={to} {...rest}>{children}</a>,
 }))
 
-import { SettingsPage } from './SettingsPage'
+import { FeaturesSettingsPage } from './settings/FeaturesSettingsPage'
+import { GeneralSettingsPage } from './settings/GeneralSettingsPage'
 
 const POLICY = {
   id: 'p1',
@@ -97,10 +100,15 @@ const savesAnswered = (qc: QueryClient) =>
 
 const rowOf = (name: string) => screen.getByText(name).closest('tr') as HTMLElement
 
+// Draws another page into the tree the SLA page was rendered in: the way a test
+// leaves Features now that each settings page is its own route.
+let rerenderPage: (ui: ReactElement) => void
+
 async function renderSLA() {
-  const { queryClient } = renderWithQuery(<SettingsPage />)
-  await screen.findByRole('heading', { name: 'Settings' })
-  await userEvent.click(screen.getByRole('button', { name: 'Features' }))
+  const { queryClient, rerender } = renderWithQuery(<FeaturesSettingsPage />)
+  rerenderPage = rerender
+  await screen.findByRole('heading', { name: 'Features' })
+  await waitFor(() => expect(screen.queryByRole('status', { name: 'Loading' })).toBeNull())
   await screen.findByText('Critical outage')
   return queryClient
 }
@@ -590,7 +598,7 @@ describe('the SLA policy form', () => {
 
   // The async-save state lives in react-query's mutation cache, not in the
   // section, so one save settling cannot disturb another and nothing is lost
-  // when the section unmounts (tab switch).
+  // when the section unmounts (leaving the page).
   describe('saves in flight are independent of each other and of the section (#672)', () => {
     const apiError = (message: string) =>
       new AxiosError('Request failed', 'ERR_BAD_REQUEST', undefined, undefined, {
@@ -612,11 +620,11 @@ describe('the SLA policy form', () => {
       await userEvent.click(screen.getByRole('button', { name: 'Save' }))
     }
 
-    // Leaving the Features tab unmounts the SLA section; coming back mounts a new one.
+    // Leaving the Features page unmounts the SLA section; coming back mounts a new one.
     async function leaveAndReturn() {
-      await userEvent.click(screen.getByRole('button', { name: 'General' }))
+      rerenderPage(<GeneralSettingsPage />)
       await waitFor(() => expect(screen.queryByRole('button', { name: '+ Add policy' })).toBeNull())
-      await userEvent.click(screen.getByRole('button', { name: 'Features' }))
+      rerenderPage(<FeaturesSettingsPage />)
       await screen.findByRole('button', { name: '+ Add policy' })
     }
 
@@ -757,12 +765,12 @@ describe('the SLA policy form', () => {
       vi.spyOn(api, 'post').mockReturnValue(d.promise as never)
       const qc = await renderSLA()
       await addPolicyNamed('Brand new')
-      await userEvent.click(screen.getByRole('button', { name: 'General' }))
+      rerenderPage(<GeneralSettingsPage />)
       await waitFor(() => expect(screen.queryByRole('button', { name: '+ Add policy' })).toBeNull())
 
       d.reject(apiError('nope'))
       await waitFor(() => expect(saveStatuses(qc)).toEqual(['error']))
-      await userEvent.click(screen.getByRole('button', { name: 'Features' }))
+      rerenderPage(<FeaturesSettingsPage />)
 
       const alert = await screen.findByRole('alert')
       expect(alert.textContent).toContain("Saving 'Brand new' failed: nope")
@@ -777,7 +785,7 @@ describe('the SLA policy form', () => {
       await renderSLA()
       await editRowTo('Critical outage', 'Major outage')
       await leaveAndReturn()
-      expect(within(rowOf('Major outage')).getByText('Saving…')).toBeTruthy()
+      await waitFor(() => expect(within(rowOf('Major outage')).getByText('Saving…')).toBeTruthy())
 
       d.reject(apiError('boom'))
       const alert = await screen.findByRole('alert')

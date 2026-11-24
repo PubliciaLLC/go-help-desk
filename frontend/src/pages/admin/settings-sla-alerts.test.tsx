@@ -11,6 +11,7 @@ import { useAuthStore } from '@/store/auth'
 
 vi.mock('@tanstack/react-router', () => ({
   useRouterState: () => ({ location: { pathname: '/admin/settings' } }),
+  useBlocker: () => ({ status: 'idle' }),
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   Link: ({ to, children, ...rest }: any) => (
     <a href={to} {...rest}>
@@ -19,7 +20,7 @@ vi.mock('@tanstack/react-router', () => ({
   ),
 }))
 
-import { SettingsPage } from './SettingsPage'
+import { EmailSettingsPage } from './settings/EmailSettingsPage'
 
 function serve(settings: Record<string, unknown>) {
   vi.spyOn(api, 'get').mockImplementation(((url: string) => {
@@ -47,9 +48,9 @@ beforeEach(() => {
 afterEach(() => vi.restoreAllMocks())
 
 async function openFeatures() {
-  renderWithQuery(<SettingsPage />)
-  await screen.findByRole('heading', { name: 'Settings' })
-  await userEvent.click(screen.getByRole('button', { name: 'Features' }))
+  renderWithQuery(<EmailSettingsPage />)
+  await screen.findByRole('heading', { name: 'Email' })
+  await waitFor(() => expect(screen.queryByRole('status', { name: 'Loading' })).toBeNull())
 }
 
 const alerts = () => screen.getByRole('switch', { name: 'SLA alerts' }) as HTMLButtonElement
