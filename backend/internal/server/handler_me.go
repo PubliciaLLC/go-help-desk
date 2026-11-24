@@ -97,8 +97,6 @@ func (s *Server) meView(ctx context.Context, u user.User) meUser {
 		v.SLAEnabled = &on
 	}
 	ov := s.adminSvc.StaffEmailOverrides(ctx)
-	// The SLA override has its own accessor (see admin.StaffEmailSLAOverride).
-	ov.SLA = s.adminSvc.StaffEmailSLAOverride(ctx)
 	prefs := notification.StaffPrefs{Assigned: u.EmailNotifyAssigned, Activity: u.EmailNotifyActivity, Group: u.EmailNotifyGroup, SLA: u.EmailNotifySLA}
 	state := func(sw notification.StaffSwitch) switchState {
 		return switchState{Enabled: ov.Allows(sw, prefs), Forced: ov.Forced(sw)}

@@ -860,30 +860,27 @@ func (s *Service) ReputationRefreshInterval(ctx context.Context) time.Duration {
 }
 
 // StaffEmailOverrides reads the administrator's override of each staff-email
-// switch (#441). Read on every call, never cached, so a change applies to the
-// next email. Unset, unreadable or unrecognised is "user": the person's own
-// switch, never a forced one.
+// switch (#441, and SLA alerts, #670). Read on every call, never cached, so a
+// change applies to the next email. Unset, unreadable or unrecognised is
+// "user": the person's own switch, never a forced one. Every field is filled,
+// so a caller can hand the struct straight to Allows without topping it up.
 func (s *Service) StaffEmailOverrides(ctx context.Context) notification.StaffOverrides {
-	mode := func(key string) notification.OverrideMode {
-		v, err := s.GetString(ctx, key)
-		if err != nil || !notification.ValidOverrideMode(v) {
-			return notification.OverrideUser
-		}
-		return notification.OverrideMode(v)
-	}
 	return notification.StaffOverrides{
-		Assigned: mode(KeyStaffEmailAssignedOverride),
-		Activity: mode(KeyStaffEmailActivityOverride),
-		Group:    mode(KeyStaffEmailGroupOverride),
+		Assigned: s.overrideMode(ctx, KeyStaffEmailAssignedOverride),
+		Activity: s.overrideMode(ctx, KeyStaffEmailActivityOverride),
+		Group:    s.overrideMode(ctx, KeyStaffEmailGroupOverride),
+		SLA:      s.overrideMode(ctx, KeyStaffEmailSLAOverride),
 	}
 }
 
-// StaffEmailSLAOverride is the administrator's override of the SLA-alerts
-// switch (#670), read the way StaffEmailOverrides reads the other three. It is
-// its own accessor, not a field of StaffEmailOverrides, because that struct is
-// the three-switch shape the existing callers and tests compare whole.
+// StaffEmailSLAOverride is the SLA-alerts field of StaffEmailOverrides, for the
+// caller that wants only that one.
 func (s *Service) StaffEmailSLAOverride(ctx context.Context) notification.OverrideMode {
-	v, err := s.GetString(ctx, KeyStaffEmailSLAOverride)
+	return s.overrideMode(ctx, KeyStaffEmailSLAOverride)
+}
+
+func (s *Service) overrideMode(ctx context.Context, key string) notification.OverrideMode {
+	v, err := s.GetString(ctx, key)
 	if err != nil || !notification.ValidOverrideMode(v) {
 		return notification.OverrideUser
 	}

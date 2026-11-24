@@ -115,6 +115,14 @@ func TestMigration067_UpgradedInstallStartsOff(t *testing.T) {
 	v, ok = settingValue067(t, ctx, tx, "staff_email_sla_override")
 	require.True(t, ok)
 	require.Equal(t, `"off"`, v)
+
+	// The person who existed before the column did reads it as on: the
+	// per-user switch is a preference, and only the admin override holds
+	// SLA mail back on an upgrade.
+	var notify bool
+	require.NoError(t, tx.QueryRowContext(ctx,
+		`SELECT email_notify_sla FROM users LIMIT 1`).Scan(&notify))
+	require.True(t, notify, "an account that predates the column reads email_notify_sla = true")
 }
 
 // A service account is not a person, so it does not make an install an upgrade.
