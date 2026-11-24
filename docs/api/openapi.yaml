@@ -4382,7 +4382,7 @@ paths:
         who made a change is never emailed about it.
 
         People only: a signed-in session. An API key or OAuth client is refused
-        with 403 session_required, because following is a personal choice and a
+        with 403 session_required, because following is a person's act and a
         script acting for someone is not them. A service user cannot follow
         either.
 
@@ -4454,7 +4454,9 @@ paths:
         Staff and administrators only (second factor required). Staff always
         see the current followers of a ticket they can see; no setting hides
         them. Oldest follow first. An account that has been deleted is left
-        out. A reporting user gets 403 forbidden on a ticket they can see, and
+        out. Each follower is a user_id, a display_name and a created_at; the
+        list does not say who added them (the ticket's audit does). A reporting user
+        gets 403 forbidden on a ticket they can see, and
         404 on one they cannot. The id is a UUID or a tracking number.
         A ticket the caller may not see answers 404 not_found, the same answer as a
         ticket that does not exist, and never 403, so tracking numbers cannot be
@@ -4480,6 +4482,115 @@ paths:
                 type: array
                 items:
                   $ref: '#/components/schemas/TicketFollower'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/TicketNotFound'
+  /api/v1/tickets/{id}/followers/{userId}:
+    parameters:
+      - $ref: '#/components/parameters/TicketRef'
+      - name: userId
+        in: path
+        required: true
+        description: The id of the staff member or administrator to add or remove.
+        schema:
+          type: string
+          format: uuid
+    put:
+      operationId: addTicketFollower
+      summary: Add somebody else as a follower of a ticket.
+      description: |
+        Staff and administrators only, in a signed-in session (second factor required).
+        The caller adds another staff member or administrator as a follower; adding
+        yourself is the same as PUT /tickets/{id}/follow. People only: an API key or
+        OAuth client is refused with 403 session_required, as for following, because
+        choosing who hears about a ticket is a person's act and a script acting for
+        someone is not them.
+
+        The person added must be an active staff member or administrator who is not a
+        service account, else 422 follower_not_eligible (that includes an id that is
+        nobody, a deleted or disabled account, a service account and a reporting
+        user, and the answer does not say which). They must also be able to see the
+        ticket, under ticket scope enforcement (ticket_scope_enforced), else 422
+        follower_cannot_view_ticket. A userId that is not a UUID is 400 bad_request.
+
+        Adding somebody who already follows answers 204 and changes nothing. A first
+        add is audited as followed with the caller as actor and the person added in
+        follower_user_id, and raises ticket.followed (ActorID is the caller, user_id
+        is the person added), which only a webhook that lists it by name receives.
+        The person added is not emailed. Whether they can still see the ticket is
+        checked again each time follower email is sent, as for any follower.
+        The id is a UUID or a tracking number.
+        A ticket the caller may not see answers 404 not_found, the same answer as a
+        ticket that does not exist, and never 403, so tracking numbers cannot be
+        probed. A 403 from the handler (application/json) means the ticket is
+        visible but the action is refused. Of the text/plain 403s from the auth
+        middleware, mfa_required and insufficient_scope are decided before the
+        ticket is looked up and say nothing about it; the role refusal
+        (forbidden) is decided after it.
+      tags: ['Tickets']
+      x-ghd-handler: handleAddFollower
+      security:
+        - sessionCookie: []
+      x-ghd-roles: [admin, staff]
+      x-ghd-mfa: true
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '400':
+          description: "`bad_request`: userId is not a UUID."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/TicketNotFound'
+        '422':
+          description: "`follower_not_eligible`: that account cannot follow a ticket (not an active staff member or administrator). `follower_cannot_view_ticket`: that person cannot see this ticket."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    delete:
+      operationId: removeTicketFollower
+      summary: Remove a follower from a ticket.
+      description: |
+        Staff and administrators only, in a signed-in session (second factor required).
+        Removes any follower, whoever added them. As for adding, an API key or OAuth
+        client is refused with 403 session_required. Answers 204 whether or not the
+        person was following, and for an id that is nobody. Removing somebody who
+        followed is audited as unfollowed with the caller as actor and the person
+        removed in follower_user_id, and then raises ticket.unfollowed (opt-in by
+        name). Removing yourself is the same as DELETE /tickets/{id}/follow. The id is
+        a UUID or a tracking number.
+        A ticket the caller may not see answers 404 not_found, the same answer as a
+        ticket that does not exist, and never 403, so tracking numbers cannot be
+        probed. A 403 from the handler (application/json) means the ticket is
+        visible but the action is refused. Of the text/plain 403s from the auth
+        middleware, mfa_required and insufficient_scope are decided before the
+        ticket is looked up and say nothing about it; the role refusal
+        (forbidden) is decided after it.
+      tags: ['Tickets']
+      x-ghd-handler: handleRemoveFollower
+      security:
+        - sessionCookie: []
+      x-ghd-roles: [admin, staff]
+      x-ghd-mfa: true
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '400':
+          description: "`bad_request`: userId is not a UUID."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':

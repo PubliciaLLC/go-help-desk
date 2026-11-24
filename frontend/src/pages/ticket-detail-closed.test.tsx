@@ -119,7 +119,8 @@ describe('a closed ticket', () => {
 
     await userEvent.click(screen.getByRole('button', { name: 'Create follow-up' }))
 
-    await waitFor(() => expect(screen.getByRole('status').textContent).toContain('TKT-0002'))
+    // More than one live region is on the page (the followers panel has its own).
+    await waitFor(() => expect(screen.getAllByRole('status').map((s) => s.textContent).join(' ')).toContain('TKT-0002'))
     expect(post).toHaveBeenCalledWith(`/tickets/${TICKET_ID}/follow-up`, {})
     // Once is enough: a second click would open a second ticket.
     expect((screen.getByRole('button', { name: 'Create follow-up' }) as HTMLButtonElement).disabled).toBe(true)

@@ -18,7 +18,7 @@ var searchSpellings = []string{
 	"active", "assignee_group_id", "assignee_user_id", "assignment_id",
 	"category_id", "client_name", "closed_reopen_policy", "credential_replaced",
 	"enabled", "events", "expires_at",
-	"field_name", "field_type", "filter", "follow_up_of", "forced_reopen",
+	"field_name", "field_type", "filter", "follow_up_of", "follower_user_id", "forced_reopen",
 	"host", "id", "internal", "item_id", "max_length",
 	"key_linked", "keys_revoked", "node_deleted", "on_behalf", "option_value", "os_user", "owner_user_id",
 	"passkey_id", "passkeys_removed", "payload_format", "position", "previous_sla_record_id", "previous_user_id", "priority",

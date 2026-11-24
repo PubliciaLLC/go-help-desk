@@ -181,6 +181,16 @@ export async function followTicket(ticketId: string): Promise<void> {
   await api.put(`/tickets/${seg(ticketId)}/follow`)
 }
 
+// #695: add or remove somebody else. A 422 on the add says why they cannot
+// follow (follower_not_eligible, follower_cannot_view_ticket).
+export async function addTicketFollower(ticketId: string, userId: string): Promise<void> {
+  await api.put(`/tickets/${seg(ticketId)}/followers/${seg(userId)}`)
+}
+
+export async function removeTicketFollower(ticketId: string, userId: string): Promise<void> {
+  await api.delete(`/tickets/${seg(ticketId)}/followers/${seg(userId)}`)
+}
+
 export async function unfollowTicket(ticketId: string): Promise<void> {
   await api.delete(`/tickets/${seg(ticketId)}/follow`)
 }

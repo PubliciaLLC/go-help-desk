@@ -253,7 +253,10 @@ const redactedPlaceholder = "[redacted]"
 var shownKeys = map[string]bool{
 	"id": true, "statusid": true, "priority": true,
 	"assigneeuserid": true, "assigneegroupid": true, "followupof": true,
-	"forcedreopen": true, "closedreopenpolicy": true,
+	// Whose follow an added or removed follower is, when somebody else did it
+	// (#695): an id.
+	"followeruserid": true,
+	"forcedreopen":   true, "closedreopenpolicy": true,
 	// A reclassification (1.3.0 audit D3): the ticket's category, type and item,
 	// as ids.
 	"categoryid": true, "typeid": true, "itemid": true,
