@@ -28,6 +28,12 @@ func allEventShapes() []notification.Event {
 			out = append(out, notification.Event{Type: typ, TicketID: uuid.New(), TrackingNumber: "GHD-1", Recipient: "a@example.com", StaffReason: r})
 		}
 	}
+	for _, typ := range []notification.EventType{notification.EventStaffSLABreached, notification.EventStaffSLAAtRisk} {
+		for _, r := range []notification.StaffSwitch{notification.SwitchActivity, notification.SwitchGroup, notification.SwitchFollow} {
+			out = append(out, notification.Event{Type: typ, TicketID: uuid.New(), TrackingNumber: "GHD-1", Recipient: "a@example.com", StaffReason: r,
+				SLA: &notification.SLAAlert{Breached: []notification.SLATarget{notification.SLATargetResponse}}})
+		}
+	}
 	return out
 }
 
@@ -204,7 +210,7 @@ func TestValidate_TheSubjectFollowsTheSameRules(t *testing.T) {
 
 // ── the registry ─────────────────────────────────────────────────────────────
 
-func TestRegistry_HasEighteenContentTemplatesAndTwoShells(t *testing.T) {
+func TestRegistry_HasTwentyFourContentTemplatesAndTwoShells(t *testing.T) {
 	var content, shells []string
 	for _, d := range Templates() {
 		if d.Shell {
@@ -213,7 +219,7 @@ func TestRegistry_HasEighteenContentTemplatesAndTwoShells(t *testing.T) {
 			content = append(content, d.Name)
 		}
 	}
-	require.Len(t, content, 18)
+	require.Len(t, content, 24)
 	require.Equal(t, []string{"_header", "_footer"}, shells)
 }
 
@@ -273,12 +279,19 @@ func TestRegistry_VariableSetsArePinned(t *testing.T) {
 	} {
 		want[n] = []string{"TicketURL", "TrackingNumber"}
 	}
+	// The six SLA mails (#670) are given the status too.
+	for _, n := range []string{
+		"staff_sla_breached", "staff_sla_breached_group", "staff_sla_breached_follow",
+		"staff_sla_at_risk", "staff_sla_at_risk_group", "staff_sla_at_risk_follow",
+	} {
+		want[n] = []string{"SLAStatus", "TicketURL", "TrackingNumber"}
+	}
 	for _, def := range Templates() {
 		got := def.VarNames()
 		sort.Strings(got)
 		require.Equal(t, want[def.Name], got, def.Name)
 	}
-	require.Len(t, want, 20)
+	require.Len(t, want, 26)
 }
 
 // The data the dispatcher actually hands a template has exactly the variables

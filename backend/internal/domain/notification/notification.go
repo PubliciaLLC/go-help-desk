@@ -70,6 +70,12 @@ const (
 	EventStaffRequesterReplied EventType = "staff.requester_replied"
 	EventStaffReopened         EventType = "staff.reopened"
 
+	// EventStaffSLABreached and EventStaffSLAAtRisk are the mail a staff member
+	// gets from an sla.breached or sla.at_risk event (#670), made the same way
+	// and, like the three above, never webhook events.
+	EventStaffSLABreached EventType = "staff.sla_breached"
+	EventStaffSLAAtRisk   EventType = "staff.sla_at_risk"
+
 	// EventSLABreached and EventSLAAtRisk are raised only by the SLA sweep
 	// (#670), at most one per ticket per pass: the sweep has just stamped a
 	// breach, or a target reaching 80%. Their Payload carries targets (and

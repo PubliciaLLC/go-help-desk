@@ -115,6 +115,11 @@ type StaffCandidate struct {
 	UserID uuid.UUID
 	Prefs  StaffPrefs
 	Reason StaffSwitch
+	// Switch is the preference that decides whether the person is mailed.
+	// Empty means Reason, which is every candidate but an SLA alert's (#670):
+	// there the reason (assignee, group, follower) still picks the template and
+	// the send-time check, and the SLA switch alone picks the preference.
+	Switch StaffSwitch
 	// Mail is the staff.* event the person would be mailed with, so a person
 	// who qualifies for several kinds of one change keeps the mail of the
 	// first that passes (#506). Unused by the switch rule.
@@ -146,7 +151,11 @@ func StaffRecipients(cands []StaffCandidate, actor *uuid.UUID, ov StaffOverrides
 		if actor != nil && c.UserID == *actor {
 			continue
 		}
-		if !ov.Allows(c.Reason, c.Prefs) {
+		sw := c.Switch
+		if sw == "" {
+			sw = c.Reason
+		}
+		if !ov.Allows(sw, c.Prefs) {
 			continue
 		}
 		seen[c.UserID] = true

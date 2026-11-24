@@ -160,7 +160,7 @@ func (f *StaffFanout) Dispatch(ctx context.Context, ev notification.Event) error
 		out = append(out, notification.Event{
 			Type: r.Mail, TicketID: ev.TicketID, ActorID: ev.ActorID,
 			TrackingNumber: ev.TrackingNumber, OccurredAt: ev.OccurredAt,
-			StaffUserID: &r.UserID, StaffReason: r.Reason,
+			StaffUserID: &r.UserID, StaffReason: r.Reason, SLA: ev.SLA,
 		})
 	}
 	var err error
@@ -185,6 +185,9 @@ type candidate struct {
 	id     uuid.UUID
 	reason notification.StaffSwitch
 	mail   notification.EventType
+	// sw is the switch that decides, when it is not the reason: the SLA switch
+	// for an SLA alert (#670). Empty means the reason.
+	sw notification.StaffSwitch
 }
 
 // holders is who holds the ticket as of the change, read off the ticket state
@@ -218,7 +221,7 @@ func (f *StaffFanout) candidates(ctx context.Context, ev notification.Event) ([]
 	if slices.Contains(kinds, notification.EventTicketAssigned) {
 		called = true
 		if assignee != nil {
-			cands = append(cands, candidate{*assignee, notification.SwitchAssigned, notification.EventStaffAssigned})
+			cands = append(cands, candidate{id: *assignee, reason: notification.SwitchAssigned, mail: notification.EventStaffAssigned})
 		}
 		gm, err := f.groupMembers(ctx, ev, notification.SwitchGroup, notification.EventStaffAssigned)
 		if err != nil {
@@ -263,7 +266,36 @@ func (f *StaffFanout) candidates(ctx context.Context, ev notification.Event) ([]
 		}
 		cands = append(cands, rr...)
 	}
+
+	if mail, ok := slaMail(kinds); ok {
+		called = true
+		// The reply rule's people (the assignee; the group while nobody holds
+		// the ticket; followers), under the SLA switch alone, which replaces the
+		// Activity and Group switches for these two events (#670). The reason
+		// stays what it was, because it picks the template variant and the
+		// send-time check. The sweep acts, not a person, so nobody is skipped.
+		rr, err := f.replyRule(ctx, ev, mail)
+		if err != nil {
+			return nil, false, err
+		}
+		for i := range rr {
+			rr[i].sw = notification.SwitchSLA
+		}
+		cands = append(cands, rr...)
+	}
 	return cands, called, nil
+}
+
+// slaMail is the staff mail an SLA event calls for. The sweep raises one SLA
+// event per change; if a change somehow held both, the breach is the one told.
+func slaMail(kinds []notification.EventType) (notification.EventType, bool) {
+	switch {
+	case slices.Contains(kinds, notification.EventSLABreached):
+		return notification.EventStaffSLABreached, true
+	case slices.Contains(kinds, notification.EventSLAAtRisk):
+		return notification.EventStaffSLAAtRisk, true
+	}
+	return "", false
 }
 
 // replyRule is who is a candidate for a requester's reply and for a reopen,
@@ -272,7 +304,7 @@ func (f *StaffFanout) replyRule(ctx context.Context, ev notification.Event, mail
 	assignee, _ := holders(ev)
 	var cands []candidate
 	if assignee != nil {
-		cands = append(cands, candidate{*assignee, notification.SwitchActivity, mail})
+		cands = append(cands, candidate{id: *assignee, reason: notification.SwitchActivity, mail: mail})
 	} else {
 		gm, err := f.groupMembers(ctx, ev, notification.SwitchGroup, mail)
 		if err != nil {
@@ -317,7 +349,7 @@ func (f *StaffFanout) followerCandidates(ctx context.Context, ev notification.Ev
 	out := make([]candidate, 0, len(ids))
 	for _, id := range ids {
 		if !left[id] {
-			out = append(out, candidate{id, notification.SwitchFollow, mail})
+			out = append(out, candidate{id: id, reason: notification.SwitchFollow, mail: mail})
 		}
 	}
 	return out, nil
@@ -334,7 +366,7 @@ func (f *StaffFanout) groupMembers(ctx context.Context, ev notification.Event, r
 	}
 	out := make([]candidate, len(members))
 	for i, m := range members {
-		out[i] = candidate{m, reason, mail}
+		out[i] = candidate{id: m, reason: reason, mail: mail}
 	}
 	return out, nil
 }
@@ -367,8 +399,10 @@ func (f *StaffFanout) recipients(ctx context.Context, ev notification.Event, can
 			continue
 		}
 		eligible = append(eligible, notification.StaffCandidate{
-			UserID: u.ID, Reason: c.reason, Mail: c.mail,
-			Prefs: notification.StaffPrefs{Assigned: u.EmailNotifyAssigned, Activity: u.EmailNotifyActivity, Group: u.EmailNotifyGroup},
+			UserID: u.ID, Reason: c.reason, Switch: c.sw, Mail: c.mail,
+			Prefs: notification.StaffPrefs{
+				Assigned: u.EmailNotifyAssigned, Activity: u.EmailNotifyActivity, Group: u.EmailNotifyGroup, SLA: u.EmailNotifySLA,
+			},
 		})
 	}
 	// "Nobody is mailed about their own action" does not apply to an assignment
