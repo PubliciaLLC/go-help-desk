@@ -10,7 +10,7 @@ import { InsecureConfigBanner } from './InsecureConfigBanner'
 // saml_enabled is on and SAML is not loaded").
 
 const QUIET = { insecure_secrets: [], attachment_scanning: { policy: 'off', configured: false, reachable: false, effect: '' } }
-const TITLE = 'Staff and users cannot sign in: SAML is required but not set up'
+const TITLE = 'Staff and users cannot sign in: SAML is required but is not working'
 
 function mockWarnings(extra: Record<string, unknown>) {
   const payload: { current: Record<string, unknown> } = { current: { ...QUIET, ...extra } }
@@ -35,24 +35,38 @@ describe('the SAML required but not loaded notice', () => {
     expect(screen.getByRole('button', { name: /details/i })).toBeTruthy()
   })
 
+  // The whole paragraph, word for word: docs/DESIGN.md quotes the same text.
+  const AFTER =
+    'Until that is fixed their password sign-in is refused and the login page has no SAML button. ' +
+    'Administrators can still sign in with a password. ' +
+    'Open System → Authentication → SAML to fix it, or turn off "Require SAML for staff and users" there. ' +
+    'This goes away by itself once SAML is loaded or the switch is off.'
   const reasons = [
-    { reason: 'incomplete', says: 'metadata, the certificate or the private key is missing' },
-    { reason: 'not_loaded', says: 'metadata could not be loaded' },
+    {
+      reason: 'incomplete',
+      paragraph:
+        '"Require SAML for staff and users" is on, so staff and users can sign in only with SAML, but ' +
+        "the identity provider's metadata, the certificate or the private key is missing. " +
+        AFTER,
+    },
+    {
+      reason: 'not_loaded',
+      paragraph:
+        '"Require SAML for staff and users" is on, so staff and users can sign in only with SAML, but ' +
+        "SAML could not be loaded: the identity provider's metadata could not be fetched or was refused, " +
+        'or the certificate and private key do not work together. ' +
+        'The server tries again every hour, and saving the SAML configuration tries again now. ' +
+        AFTER,
+    },
   ]
-  it.each(reasons)('says what to do and links to the Authentication page for reason $reason', async ({ reason, says }) => {
+  it.each(reasons)('says what is wrong and what to do, in full, for reason $reason', async ({ reason, paragraph }) => {
     mockWarnings({ saml_required_not_loaded: { reason } })
     renderWithQuery(<InsecureConfigBanner isAdmin />)
 
     fireEvent.click(await screen.findByRole('button', { name: /details/i }))
-    const text = screen.getByRole('region', { name: 'Server notices' }).textContent ?? ''
-    expect(text).toContain('Require SAML for staff and users')
-    expect(text).toContain(says)
-    expect(text).toContain('password sign-in is refused')
-    expect(text).toContain('Administrators can still sign in with a password')
-    expect(text).toContain('turn off')
-    expect(text).toContain('goes away by itself')
     const link = screen.getByRole('link', { name: /System → Authentication → SAML/ })
     expect(link.getAttribute('href')).toBe('/admin/settings/authentication')
+    expect(link.closest('p')?.textContent).toBe(paragraph)
   })
 
   it('counts with the other problems', async () => {
@@ -81,9 +95,11 @@ describe('the SAML required but not loaded notice', () => {
 
     // Same problem, still hidden.
     const before = vi.mocked(api.get).mock.calls.length
-    renderWithQuery(<InsecureConfigBanner isAdmin />)
+    const second = renderWithQuery(<InsecureConfigBanner isAdmin />)
     await waitFor(() => expect(vi.mocked(api.get).mock.calls.length).toBeGreaterThan(before))
+    await new Promise((r) => setTimeout(r, 20))
     expect(screen.queryByRole('region', { name: 'Server notices' })).toBeNull()
+    second.unmount()
 
     // A different state of the problem is a new notice.
     payload.current = { ...QUIET, saml_required_not_loaded: { reason: 'not_loaded' } }

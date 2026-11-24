@@ -118,6 +118,9 @@ function SAMLSection() {
       qc.invalidateQueries({ queryKey: ['admin', 'saml'] })
       // The same save changed the saml_* settings the page's dump carries.
       qc.invalidateQueries({ queryKey: ['admin', 'settings'] })
+      // Whether SAML is loaded decides the "SAML is required but is not working"
+      // notice in the server problems bar; it must not wait for a refocus.
+      qc.invalidateQueries({ queryKey: ['security-warnings'] })
     },
     onError: (err) => setSaveError(extractError(err)),
   })

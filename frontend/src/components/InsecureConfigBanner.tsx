@@ -372,7 +372,13 @@ export function InsecureConfigBanner({ isAdmin }: InsecureConfigBannerProps) {
     })
   }
   if (samlRequired) {
-    const title = 'Staff and users cannot sign in: SAML is required but not set up'
+    const title = 'Staff and users cannot sign in: SAML is required but is not working'
+    // Both causes are in the sentence, because the server cannot tell which one
+    // a metadata URL that did not answer was. The retry is the hourly refresh.
+    const cause =
+      samlRequired.reason === 'incomplete'
+        ? "the identity provider's metadata, the certificate or the private key is missing."
+        : "SAML could not be loaded: the identity provider's metadata could not be fetched or was refused, or the certificate and private key do not work together. The server tries again every hour, and saving the SAML configuration tries again now."
     notices.push({
       id: 'saml-required-not-loaded',
       severity: 'failure',
@@ -382,17 +388,14 @@ export function InsecureConfigBanner({ isAdmin }: InsecureConfigBannerProps) {
         <>
           <p className="font-semibold">{title}</p>
           <p className="mt-1">
-            &quot;Require SAML for staff and users&quot; is on, so staff and users can sign in only with SAML, but{' '}
-            {samlRequired.reason === 'incomplete'
-              ? "the identity provider's metadata, the certificate or the private key is missing"
-              : "the identity provider's metadata could not be loaded"}
-            . Until that is fixed their password sign-in is refused and the login page has no SAML button.
-            Administrators can still sign in with a password.{' '}
+            &quot;Require SAML for staff and users&quot; is on, so staff and users can sign in only with SAML, but {cause}{' '}
+            Until that is fixed their password sign-in is refused and the login page has no SAML button. Administrators
+            can still sign in with a password.{' '}
             <a className="font-medium underline" href="/admin/settings/authentication">
               Open System → Authentication → SAML
             </a>{' '}
-            to finish setting SAML up, or turn off &quot;Require SAML for staff and users&quot; there. This goes away by
-            itself once SAML is loaded or the switch is off.
+            to fix it, or turn off &quot;Require SAML for staff and users&quot; there. This goes away by itself once SAML
+            is loaded or the switch is off.
           </p>
         </>
       ),

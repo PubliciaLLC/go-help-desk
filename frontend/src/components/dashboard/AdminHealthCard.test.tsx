@@ -88,7 +88,9 @@ describe('AdminHealthCard', () => {
     expect(await screen.findByText('Version 1.3.1 is available (you run 1.3.0).')).toBeTruthy()
     expect(screen.getByText('SLA tracking is on, but breach and at-risk alerts are off.')).toBeTruthy()
     expect(screen.getByText(/The passkey requirement is suspended for admin/)).toBeTruthy()
-    expect(screen.getByText('SAML sign-in is required for staff and users, but SAML is not set up, so they cannot sign in.')).toBeTruthy()
+    expect(
+      screen.getByText('SAML is required for staff and users but is not working, so they cannot sign in. Administrators can still sign in with a password.'),
+    ).toBeTruthy()
     expect(screen.getByText(/The attachment scanner is unreachable\. Uploads are refused\./)).toBeTruthy()
     expect(screen.queryByText('No problems to report.')).toBeNull()
 

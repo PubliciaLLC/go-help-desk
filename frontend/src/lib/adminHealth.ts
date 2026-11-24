@@ -69,7 +69,7 @@ export function adminHealthItems(
     items.push({
       id: 'saml-required-not-loaded',
       severity: 'red',
-      text: 'SAML sign-in is required for staff and users, but SAML is not set up, so they cannot sign in.',
+      text: 'SAML is required for staff and users but is not working, so they cannot sign in. Administrators can still sign in with a password.',
       href: '/admin/settings/authentication',
       place: 'Authentication → SAML',
       external: false,

@@ -7,7 +7,7 @@ import { mockAdminApi } from './mock'
 // health card (docs/DESIGN.md, SAML, "A server problem while saml_enabled is on
 // and SAML is not loaded"). Every backend call is mocked.
 
-const TITLE = 'Staff and users cannot sign in: SAML is required but not set up'
+const TITLE = 'Staff and users cannot sign in: SAML is required but is not working'
 
 const QUIET = {
   insecure_secrets: [],
@@ -33,12 +33,16 @@ test.describe('at 320px', () => {
     expect(await page.evaluate(() => document.documentElement.scrollWidth), 'the page scrolls sideways at 320px').toBeLessThanOrEqual(320)
   })
 
-  test('the health card lists it, red, with a link to the SAML section', async ({ page }) => {
+  test('the health card lists it, in red, with a link to the SAML section', async ({ page }) => {
     await mockAdminApi(page, { short: true, warnings: PROBLEM })
     await page.goto('/dashboard')
 
     const card = page.getByRole('region', { name: 'Health' })
-    await expect(card).toContainText('SAML sign-in is required for staff and users, but SAML is not set up, so they cannot sign in.')
+    await expect(card).toContainText(
+      'SAML is required for staff and users but is not working, so they cannot sign in. Administrators can still sign in with a password.',
+    )
+    // Red: something is broken now.
+    await expect(card.getByRole('listitem')).toHaveClass(/border-red-200/)
     const link = card.getByRole('link', { name: 'Authentication → SAML' })
     await expect(link).toHaveAttribute('href', '/admin/settings/authentication')
 
@@ -47,15 +51,37 @@ test.describe('at 320px', () => {
   })
 })
 
-test('it goes away by itself once the server stops reporting it', async ({ page }) => {
+// Saving the fix is what clears it: no refocus, no Details click, no reload.
+test('it goes away by itself when Save SAML config loads SAML', async ({ page }) => {
   await mockAdminApi(page, { short: true, warnings: PROBLEM })
-  await page.goto('/dashboard')
+  await page.route('**/api/v1/admin/saml', async (route) => {
+    if (route.request().method() !== 'PUT') return route.fallback()
+    // SAML loads: from now on the server stops reporting the problem.
+    await page.route('**/api/v1/admin/security-warnings', (r) => r.fulfill({ json: QUIET }))
+    await route.fulfill({ status: 204, body: '' })
+  })
+  await page.goto('/admin/settings/authentication')
   const bar = page.getByRole('region', { name: 'Server notices' })
   await expect(bar).toContainText(TITLE)
 
-  // SAML loaded (or the switch turned off) meanwhile: the next read has no field.
-  await page.route('**/api/v1/admin/security-warnings', (route) => route.fulfill({ json: QUIET }))
-  await page.getByRole('button', { name: /details/i }).click()
+  await page.getByRole('button', { name: 'Save SAML config' }).click()
+
+  await expect(bar).toHaveCount(0)
+})
+
+test('it goes away by itself when the page Save turns the requirement off', async ({ page }) => {
+  await mockAdminApi(page, { short: true, warnings: PROBLEM, settings: { saml_enabled: true } })
+  await page.route('**/api/v1/admin/settings', async (route) => {
+    if (route.request().method() !== 'PATCH') return route.fallback()
+    await page.route('**/api/v1/admin/security-warnings', (r) => r.fulfill({ json: QUIET }))
+    await route.fulfill({ status: 204, body: '' })
+  })
+  await page.goto('/admin/settings/authentication')
+  const bar = page.getByRole('region', { name: 'Server notices' })
+  await expect(bar).toContainText(TITLE)
+
+  await page.getByRole('switch', { name: 'Require SAML for staff and users' }).click()
+  await page.getByRole('button', { name: 'Save changes' }).last().click()
 
   await expect(bar).toHaveCount(0)
 })
