@@ -8,8 +8,15 @@ import { Button } from '@/components/ui/button'
 // assigned). Self-contained: it reads the settings dump and writes only
 // available_queue_roles, so it can sit in any settings section. Administrators
 // are always in; the stored value only decides Staff.
+//
+// It keeps its own query key. The Settings page holds the same dump as a
+// page-wide draft and replaces the draft whenever the dump changes, so a save
+// here that refetched the page's query would discard every other unsaved edit
+// on the page. The page's own save invalidates the parent key, which still
+// reaches this one.
 
 const KEY = 'available_queue_roles'
+const QUERY_KEY = ['admin', 'settings', KEY]
 
 /** The stored roles. A missing or damaged value reads as admins only, which is
  *  what the server enforces too. */
@@ -21,7 +28,7 @@ function storedStaff(settings: Record<string, unknown> | undefined): boolean {
 export function AvailableQueueSection() {
   const qc = useQueryClient()
   const { data: settings, isLoading } = useQuery({
-    queryKey: ['admin', 'settings'],
+    queryKey: QUERY_KEY,
     queryFn: getSettings,
   })
   // null: the box shows what is stored. A value: the operator has changed it
@@ -37,7 +44,7 @@ export function AvailableQueueSection() {
     onSuccess: () => {
       setDraft(null)
       setError('')
-      qc.invalidateQueries({ queryKey: ['admin', 'settings'] })
+      qc.invalidateQueries({ queryKey: QUERY_KEY, exact: true })
       qc.invalidateQueries({ queryKey: ['me'] })
     },
     onError: (err) => setError(extractError(err)),

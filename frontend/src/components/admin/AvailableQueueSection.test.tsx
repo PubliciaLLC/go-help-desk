@@ -96,7 +96,9 @@ describe('AvailableQueueSection', () => {
     expect(await screen.findByText('available_queue_roles may list only admin and staff')).toBeTruthy()
   })
 
-  it('invalidates the me and settings queries after a successful save', async () => {
+  // Not the page's ['admin','settings'] query: refetching that one would make
+  // the Settings page drop its unsaved edits.
+  it('invalidates the me query and its own settings query after a successful save, not the page-wide one', async () => {
     settingsAre({})
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     vi.spyOn(api, 'patch').mockResolvedValue({ data: undefined } as any)
@@ -107,7 +109,10 @@ describe('AvailableQueueSection', () => {
     await userEvent.click(screen.getByRole('button', { name: /^save$/i }))
 
     await waitFor(() => expect(invalidate).toHaveBeenCalledWith({ queryKey: ['me'] }))
-    await waitFor(() => expect(invalidate).toHaveBeenCalledWith({ queryKey: ['admin', 'settings'] }))
+    await waitFor(() =>
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: ['admin', 'settings', 'available_queue_roles'], exact: true }),
+    )
+    expect(invalidate).not.toHaveBeenCalledWith({ queryKey: ['admin', 'settings'] })
   })
 
   it('shows the enforcement sentence only while ticket scope enforcement is on', async () => {
