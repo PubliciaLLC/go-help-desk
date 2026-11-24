@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { getSettings, updateSettings } from '@/api/admin'
 import { extractError, extractErrorCode } from '@/api/client'
@@ -69,24 +69,30 @@ export function useSettingsDraft(): SettingsDraft {
      Keyed by settings key rather than held as one value, which is the whole
      point: a shared field would paste one service's key into another's
      account. */
+  // The keys the operator has edited since the draft was last seeded or saved.
+  const edited = useRef(new Set<string>())
+
   const [secrets, setSecrets] = useState<Record<string, string>>({})
   const [cleared, setCleared] = useState<Record<string, boolean>>({})
 
   const query = useQuery({ queryKey: SETTINGS_KEY, queryFn: getSettings })
   const settings = query.data
 
-  /* The effects below seed local form state from a react-query result. That is
-     the cascading-render pattern react-hooks/set-state-in-effect warns about
-     (https://react.dev/learn/you-might-not-need-an-effect). Suppressed here,
-     not refactored: switching the lint gate on should not also change how the
-     admin forms behave. TODO: derive the state, or remount the form with a key.
-     eslint-disable-next-line is not enough — the rule reports at each setState
-     call, so the whole effect is wrapped. */
-  /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
-    if (settings) setLocal(settings)
+    if (!settings) return
+    // Fresh data wins for every key the operator has not touched. A key they
+    // edited keeps their value until a save clears the mark (see `set`), so a
+    // refetch from elsewhere (a section's own save, the window regaining
+    // focus) cannot undo an unsaved edit and with it whatever the page showed
+    // only while that edit stood.
+    const keep = edited.current
+    setLocal((s) => {
+      if (s === null || keep.size === 0) return settings
+      const kept: Record<string, unknown> = {}
+      for (const k of keep) if (k in s) kept[k] = s[k]
+      return { ...settings, ...kept }
+    })
   }, [settings])
-  /* eslint-enable react-hooks/set-state-in-effect */
 
   const draft = local ?? {}
 
@@ -111,6 +117,8 @@ export function useSettingsDraft(): SettingsDraft {
       // including a key typed but not yet accepted.
       setSecrets({})
       setCleared({})
+      // The edits are saved: the fresh dump, awaited below, replaces the draft.
+      edited.current.clear()
       setTimeout(() => setSaved(false), 2500)
       qc.invalidateQueries({ queryKey: ['site-config'] })
       // The scan policy and address feed the banner and the scanner status;
@@ -131,7 +139,10 @@ export function useSettingsDraft(): SettingsDraft {
       ),
   })
 
-  function set(key: string, v: unknown) { setLocal((s) => ({ ...s, [key]: v })) }
+  function set(key: string, v: unknown) {
+    edited.current.add(key)
+    setLocal((s) => ({ ...s, [key]: v }))
+  }
 
   const dirty = !saveMutation.isPending
     && Object.keys(buildSettingsPatch(settings, draft, secrets, cleared)).length > 0
@@ -152,6 +163,7 @@ export function useSettingsDraft(): SettingsDraft {
     setStr: set,
     setStrArr: set,
     toggleStrArr: (key, item, checked) => {
+      edited.current.add(key)
       setLocal((s) => {
         const current = asStrArr((s ?? {})[key])
         const next = checked ? [...new Set([...current, item])] : current.filter((x) => x !== item)

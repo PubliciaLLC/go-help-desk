@@ -194,6 +194,66 @@ describe('useSettingsDraft', () => {
     expect(result.current.dirty).toBe(false)
   })
 
+  it('keeps an unsaved edit when the dump is refetched', async () => {
+    const { result, queryClient } = setup()
+    await loaded(result)
+    act(() => result.current.setBool('sla_enabled', true))
+    // Something else changed on the server, as a section's own save does.
+    dump = { ...dump, ticket_scope_enforced: true }
+    await act(async () => { await queryClient.invalidateQueries({ queryKey: ['admin', 'settings'] }) })
+    await waitFor(() => expect(result.current.stored?.ticket_scope_enforced).toBe(true))
+    expect(result.current.bool('sla_enabled')).toBe(true)
+    expect(result.current.dirty).toBe(true)
+  })
+
+  it('lets a key that was not edited follow a refetch', async () => {
+    const { result, queryClient } = setup()
+    await loaded(result)
+    act(() => result.current.setBool('sla_enabled', true))
+    dump = { ...dump, ticket_scope_enforced: true, allowed: ['.png'] }
+    await act(async () => { await queryClient.invalidateQueries({ queryKey: ['admin', 'settings'] }) })
+    await waitFor(() => expect(result.current.bool('ticket_scope_enforced')).toBe(true))
+    expect(result.current.strArr('allowed')).toEqual(['.png'])
+  })
+
+  it('keeps an edited array entry across a refetch too', async () => {
+    const { result, queryClient } = setup()
+    await loaded(result)
+    act(() => result.current.toggleStrArr('allowed', '.txt', true))
+    dump = { ...dump, ticket_scope_enforced: true }
+    await act(async () => { await queryClient.invalidateQueries({ queryKey: ['admin', 'settings'] }) })
+    await waitFor(() => expect(result.current.bool('ticket_scope_enforced')).toBe(true))
+    expect(result.current.strArr('allowed')).toEqual(['.pdf', '.txt'])
+  })
+
+  it('clears the edited marks after a successful save, so the next refetch is followed', async () => {
+    const { result, queryClient } = setup()
+    await loaded(result)
+    act(() => result.current.setBool('sla_enabled', true))
+    act(() => result.current.save())
+    await waitFor(() => expect(result.current.saved).toBe(true))
+    expect(result.current.dirty).toBe(false)
+    // The server now says something else about the key that was saved.
+    dump = { ...dump, sla_enabled: false }
+    await act(async () => { await queryClient.invalidateQueries({ queryKey: ['admin', 'settings'] }) })
+    await waitFor(() => expect(result.current.stored?.sla_enabled).toBe(false))
+    expect(result.current.bool('sla_enabled')).toBe(false)
+    expect(result.current.dirty).toBe(false)
+  })
+
+  it('keeps the edited marks when the save is refused', async () => {
+    const { result, queryClient } = setup()
+    await loaded(result)
+    patchSpy.mockRejectedValueOnce(refusal('invalid', 'nope'))
+    act(() => result.current.setBool('sla_enabled', true))
+    act(() => result.current.save())
+    await waitFor(() => expect(result.current.error).not.toBe(''))
+    dump = { ...dump, ticket_scope_enforced: true }
+    await act(async () => { await queryClient.invalidateQueries({ queryKey: ['admin', 'settings'] }) })
+    await waitFor(() => expect(result.current.stored?.ticket_scope_enforced).toBe(true))
+    expect(result.current.bool('sla_enabled')).toBe(true)
+  })
+
   it('renders with an empty draft when the read fails', async () => {
     vi.spyOn(api, 'get').mockRejectedValue(new Error('down'))
     const { result } = setup()

@@ -9,6 +9,31 @@ import { Input } from '@/components/ui/input'
 import { cn } from '@/lib/utils'
 import type { SettingsDraft } from '@/pages/admin/settings/useSettingsDraft'
 
+// A value to read out to someone else, with a button that puts it on the
+// clipboard. Says "Copied" only once the write has gone through.
+function CopyValue({ label, value }: { label: string; value: string }) {
+  const [copied, setCopied] = useState(false)
+  if (!value) return null
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(value)
+    } catch {
+      return
+    }
+    setCopied(true)
+    setTimeout(() => setCopied(false), 2000)
+  }
+  return (
+    <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:gap-3">
+      <span className="text-xs font-medium text-gray-500 sm:w-20 sm:shrink-0">{label}</span>
+      <code className="min-w-0 flex-1 font-mono text-xs text-gray-700 wrap-anywhere">{value}</code>
+      <Button type="button" variant="outline" size="sm" aria-label={`Copy ${label}`} onClick={copy}>
+        {copied ? 'Copied' : 'Copy'}
+      </Button>
+    </div>
+  )
+}
+
 function SAMLSection() {
   const qc = useQueryClient()
   const certFileRef = useRef<HTMLInputElement>(null)
@@ -82,29 +107,22 @@ function SAMLSection() {
 
   if (isLoading) return <div className="py-4 text-center text-sm text-gray-400">Loading…</div>
 
-  const spMetadataURL = saml?.sp_metadata_url ?? ''
-
   return (
     <div className="space-y-4 px-5 py-4">
-      <div className="flex flex-wrap items-center gap-3">
-        <span className={cn(
-          'inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium',
-          saml?.configured ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-600'
-        )}>
-          {saml?.configured ? 'Configured' : 'Not configured'}
-        </span>
-        {saml?.configured && (
-          <span className="text-xs text-gray-500">
-            SP metadata:{' '}
-            <button
-              className="font-mono text-left text-blue-600 underline decoration-dotted hover:decoration-solid wrap-anywhere"
-              onClick={() => navigator.clipboard.writeText(spMetadataURL)}
-              title="Copy to clipboard"
-            >
-              {spMetadataURL}
-            </button>
-          </span>
-        )}
+      <span className={cn(
+        'inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium',
+        saml?.configured ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-600'
+      )}>
+        {saml?.configured ? 'Configured' : 'Not configured'}
+      </span>
+
+      {/* What the identity provider is told about this server. Shown before
+          SAML is configured too: the IdP is usually set up first, and these are
+          what it asks for. */}
+      <div className="space-y-2">
+        <p className="text-sm font-medium text-gray-700">Give these to your identity provider</p>
+        <CopyValue label="Entity ID" value={saml?.sp_metadata_url ?? ''} />
+        <CopyValue label="ACS URL" value={saml?.sp_acs_url ?? ''} />
       </div>
 
       <fieldset className="space-y-2">
@@ -216,20 +234,24 @@ export function SAMLSettingsSection({ draft }: { draft: SettingsDraft }) {
   return (
     <Section title="SAML">
       <div>
-        <SettingRow
-          label="Enable SAML login"
-          description="Authenticate users via your SAML 2.0 identity provider (Okta, Azure AD, Google Workspace). Admins always retain local login as a failsafe."
-        >
-          <Toggle checked={bool('saml_enabled')} onChange={(v) => setBool('saml_enabled', v)} />
-        </SettingRow>
-        {bool('saml_enabled') && (
-          <div className="border-t bg-gray-50">
-            <div className="px-5 pt-3 pb-0">
-              <p className="text-xs font-medium uppercase tracking-wider text-gray-400">SAML configuration</p>
-            </div>
-            <SAMLSection />
+        <div className="bg-gray-50">
+          <div className="px-5 pt-3 pb-0">
+            <p className="text-xs font-medium uppercase tracking-wider text-gray-400">SAML configuration</p>
           </div>
-        )}
+          <SAMLSection />
+        </div>
+        <div className="border-t">
+          <SettingRow
+            label="Require SAML for staff and users"
+            description='SAML is switched on by "Save SAML config" above, not by this switch. This switch only turns off password sign-in for staff and users (administrators keep password sign-in). Saved by Save changes, not by Save SAML config.'
+          >
+            <Toggle
+              label="Require SAML for staff and users"
+              checked={bool('saml_enabled')}
+              onChange={(v) => setBool('saml_enabled', v)}
+            />
+          </SettingRow>
+        </div>
       </div>
     </Section>
   )

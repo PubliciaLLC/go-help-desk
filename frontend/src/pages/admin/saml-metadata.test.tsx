@@ -36,6 +36,7 @@ beforeEach(() => {
     metadata_xml: XML,
     cert_pem: CERT,
     sp_metadata_url: 'https://hd.example.com/api/v1/auth/saml/metadata',
+    sp_acs_url: 'https://hd.example.com/api/v1/auth/saml/acs',
   }
   useAuthStore.setState({
     user: {
@@ -49,7 +50,7 @@ beforeEach(() => {
     },
   })
   vi.spyOn(api, 'get').mockImplementation(((url: string) => {
-    if (url === '/admin/settings') return Promise.resolve({ data: { saml_enabled: true } })
+    if (url === '/admin/settings') return Promise.resolve({ data: { saml_enabled: false } })
     if (url === '/admin/saml') return Promise.resolve({ data: samlConfig })
     if (url === '/admin/security-warnings') return Promise.resolve({ data: { insecure_secrets: [] } })
     if (url === '/site') return Promise.resolve({ data: {} })
