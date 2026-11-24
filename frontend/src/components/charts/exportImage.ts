@@ -68,8 +68,13 @@ export function linesFromCharRects(
     .filter((l) => l.text.trim() !== '')
 }
 
+// Only an alpha of zero is transparent. The alpha is the fourth comma argument
+// of rgba()/hsla() or what follows "/" in the space-separated form; the last
+// channel of an opaque rgb(r, g, b), such as black's rgb(0, 0, 0), is not one.
+const ZERO_ALPHA = /^(?:(?:rgba|hsla)\([^,)]*,[^,)]*,[^,)]*,|[^/)]*\/)\s*0(?:\.0+)?%?\s*\)$/
+
 function isTransparent(color: string): boolean {
-  return color === '' || color === 'transparent' || /(,\s*|\/\s*)0(\.0+)?\s*\)$/.test(color)
+  return color === '' || color === 'transparent' || ZERO_ALPHA.test(color)
 }
 
 function noLayout(r: DOMRect): boolean {

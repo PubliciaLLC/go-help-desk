@@ -290,6 +290,31 @@ describe('readBoxes', () => {
     expect(readBoxes(root, measure)).toEqual([])
   })
 
+  it.each([
+    ['rgb(0, 0, 0)', true],
+    ['rgb(255, 255, 0)', true],
+    ['rgb(255, 165, 0)', true],
+    ['rgba(0, 0, 0, 1)', true],
+    ['rgba(0, 0, 0, 0.5)', true],
+    ['rgb(0 0 0 / 0.5)', true],
+    ['color(srgb 0 0 0 / 0.2)', true],
+    ['rgba(0, 0, 0, 0)', false],
+    ['rgba(0, 0, 0, 0.0)', false],
+    ['rgb(0 0 0 / 0)', false],
+    ['rgb(0 0 0 / 0%)', false],
+    ['color(srgb 0 0 0 / 0)', false],
+    ['transparent', false],
+    ['', false],
+  ])('paints background and border colour %j: %s', (color, painted) => {
+    const root = setup(
+      '<div id="root"><p id="p"></p></div>',
+      { root: { left: 0, top: 0, width: 100, height: 100 }, p: { left: 0, top: 0, width: 100, height: 20 } },
+      { p: { 'background-color': color, 'border-top-width': '2px', 'border-top-color': color } },
+    )
+    const kinds = readBoxes(root, measure).map((b) => b.kind)
+    expect(kinds).toEqual(painted ? ['fill', 'border'] : [])
+  })
+
   it('skips .sr-only, [data-export=skip] and visibility:hidden subtrees', () => {
     const root = setup(
       '<div id="root"><table class="sr-only" id="t"><tbody><tr><td>hidden table</td></tr></tbody></table>' +
