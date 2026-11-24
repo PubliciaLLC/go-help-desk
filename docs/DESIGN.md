@@ -8,8 +8,8 @@ Open-source, self-hosted help desk system inspired by HESK, with local, SAML and
 
 | Version | Scope |
 |---------|-------|
-| **v1** | Core ticketing (linked tickets, follow-ups from Closed tickets, auto-assignment, optional SLA tracking), local + SAML + OIDC auth, self-service signup, guest submission, MFA (TOTP or passkey), custom fields, CTI-linked group management, canned responses, full-text search (Postgres FTS), attachments with malware scanning and hash-reputation lookup, admin audit view with retention, REST API, MCP interface, email + webhook notifications delivered through a database outbox (with Slack/Teams/Discord/JIRA payload formats and per-hook ticket filters), Docker deployment |
-| **v1.4** | ITSM ticket types (Incident/SR/Problem/Change), Impact × Urgency priority matrix, default ticket type per CTI (#135); incident management (#408); monitoring events (#411); operational reporting (#131); asset reference (#415); continual improvement (#405); suppliers (#406); relationship management (#407) |
+| **v1** | Core ticketing (KPI reports, linked tickets, follow-ups from Closed tickets, auto-assignment, optional SLA tracking), local + SAML + OIDC auth, self-service signup, guest submission, MFA (TOTP or passkey), custom fields, CTI-linked group management, canned responses, full-text search (Postgres FTS), attachments with malware scanning and hash-reputation lookup, admin audit view with retention, REST API, MCP interface, email + webhook notifications delivered through a database outbox (with Slack/Teams/Discord/JIRA payload formats and per-hook ticket filters), Docker deployment |
+| **v1.4** | ITSM ticket types (Incident/SR/Problem/Change), Impact × Urgency priority matrix, default ticket type per CTI (#135); incident management (#408); monitoring events (#411); operational reporting beyond the 1.3 KPI reports: scheduled reports, channel and agent cuts (#131); asset reference (#415); continual improvement (#405); suppliers (#406); relationship management (#407) |
 | **v2** | Plugin system (1st/3rd-party, sandboxed, admin UI install); plugin runtime (#416); Snipe-IT reference plugin (#403) |
 | **v3** | Knowledge base, custom admin-defined roles |
 | **v4** | Multi-tenancy / SaaS, plugin registry |
@@ -921,6 +921,8 @@ GROUP BY d ORDER BY d;
 
 The created arm is served by `tickets_created_at_idx`. The resolved arm needs an index of its own, added by a migration (the next free number when it lands: `000068` if #616's `000066` and #670's `000067` are in first): `CREATE INDEX IF NOT EXISTS tickets_done_at_idx ON tickets ((COALESCE(resolved_at, closed_at)))`, and `DROP INDEX IF EXISTS tickets_done_at_idx` down. It is built inside the migration, not concurrently, as `000021` built its ticket indexes: one btree on the tickets table takes seconds at a million rows, and the migration runs before the server answers. It changes no data.
 
+KPI reports (#131) generalise this query to any date range and three filters (see **KPI reports**, SQL); the dashboard then passes the 30 days ending `LocalToday` and no filters, so what it shows does not change.
+
 Empty: when every day is zero, the chart's box keeps its height and says "No tickets were created or resolved in the last 30 days." Under it, a legend with each series' 30-day total ("Created 84", "Resolved 79").
 
 **The list query's `WHERE` is the one rule, and a test keeps it so.** Counting needs SQL that sqlc cannot share, so it is copied and the copies are pinned:
@@ -1023,6 +1025,240 @@ The dashboard draws `AreaChart` with `labels` the 30 dates, series Created (blue
 - *MCP*: `list_tickets` with `awaiting_reply: true` lists what REST lists for the same staff caller, a requester sending it is refused in REST's words, and `false` lists what no argument lists; the string `"true"`, a number and an object are refused with "invalid awaiting_reply"; the tool schema declares it a boolean.
 - *Frontend*: `geometry.ts` (`niceCeiling` at 0, 1, 7, 10, 11, 999; points for one, two and thirty values; paths for none); `AreaChart` renders one area and line per series, the hidden table with every value, the empty text, and throws on a length mismatch; `lib/dashboard.ts`: for every cell, `toApiParams(parseTicketSearch(link))` gives exactly the table's parameters (the table above, copied into the Go test and this one); `QueueStrip` per role, the SLA cells' colours at zero and above, links; `fmtAgo` at 0 s, 59 s, 60 s, 61 min, 23 h 59 min, 24 h, 1 day and 2 days, 120 days and a future instant (singular and plural each); `NeedsAttention` rows, badges, "opened …" from `since` and "reopened …" from `since` on a reopened row, wrapping subject and the empty text; `VolumeTrend` totals and empty; the page per role shows the right blocks and keeps the status cards and By Client; the failure message and Retry; `adminHealthItems` table over each item present, absent and with keys missing, each item's `place` and `href` as they are in #675's build (`/admin/settings` and the interim places above for the three settings items, the release-notes URL for the update; #674's task 9 changes the three and its tests assert the table's addresses and places); the card's quiet line and its failure state; the ticket list parses, shows, clears and sends `awaiting_reply` for staff, offers it only on Assigned to Me and My Group's Tickets, and drops it from a requester's request.
 - *e2e*: the dashboard at 375 px and 1280 px for an administrator, a staff member and a requester, with a 300-character subject in the attention list: no horizontal scroll, the strip's cells at least 44 px tall on a touch profile.
+
+### KPI reports
+
+([#131](https://github.com/PubliciaLLC/go-help-desk/issues/131), 1.3.x; owner decisions 2026-11-23.) A **Reports** page shows staff and administrators how the desk is doing over a period: how long tickets take to resolve and to get a first response, how many met their SLA, how many came back, how old the open work is, how much arrived and who holds it. It reads what is already captured (`tickets`, `sla_records`); **nothing new is recorded and no table is added**. Every number is computed on the server, live, by set-based SQL; the browser formats and draws. Scheduled and emailed reports are not part of it (they stay in v1.4 with the rest of #131's original list).
+
+**One rule for who sees what.** The page is for staff and administrators; a requester has no Reports item and the endpoint answers them `403`. Every query carries the ticket list's visibility block (the one between `-- visibility: begin` and `-- visibility: end`, #675), filled from `Server.TicketVisibility` exactly as `GET /tickets` fills it, so a number counts only tickets the caller could open:
+
+| Caller | `ticket_scope_enforced` off | `ticket_scope_enforced` on |
+| --- | --- | --- |
+| Administrator | every ticket | every ticket |
+| Staff | every ticket (they can open every ticket) | the tickets their scope admits: reported by them, assigned to them or one of their groups, or in a Category/Type their groups cover |
+| Requester | `403` | `403` |
+
+There is no second definition of scope and no report-only permission. A staff member in no group with enforcement on sees almost nothing, as on the ticket list. The workload card names the people and groups holding the visible tickets; staff can already read every assignable name (`GET /staff`), so nothing new is disclosed.
+
+**Status of the dependencies.** Pause is built (#127: `tickets.sla_paused_seconds`, `pending_since`, the Pending status), so time to resolve can exclude it. `source_channel` is built (#130, migration `000056`), but the owner's list of volume cuts is category and priority, so a channel cut is not part of this (out of scope, below). The SLA sweep runs (#126). The KPI queries need `tickets_done_at_idx` and the `TicketVolumeByDay` query from #675; #131 adds no migration.
+
+**Definitions.** Two populations, and every measure names which one it reads:
+
+- **Finished in the period**: tickets whose `COALESCE(resolved_at, closed_at)` (the *finish instant*, the expression the dashboard's resolved series and `tickets_done_at_idx` use) falls in the period. That is the current resolution: a ticket resolved, reopened and not yet resolved again is not finished; one resolved and later closed finished when it was resolved; one closed without being resolved finished when it was closed. A ticket that is reopened leaves the period it had finished in and counts in the period it finishes again, so a past period's numbers can change; the audit trail is not read for history (a second source, pruned by retention), as for the dashboard.
+- **Open now**: tickets whose finish instant is NULL. By the invariant migration `000028` repaired and every status door keeps (Resolved has `resolved_at`, Closed has `closed_at`, every other status has neither), this is exactly "not in the Resolved or Closed system status", and it is served by `tickets_done_at_idx` (a btree indexes NULL). A store test holds the two definitions equal on its fixture.
+
+The period measures:
+
+| Measure | Population | Definition |
+| --- | --- | --- |
+| **Created** | tickets created in the period | `count(*)` of `created_at` in the period |
+| **Resolved** | finished in the period | `count(*)` |
+| **Time to resolve**, median and 90th percentile | finished in the period | per ticket, `finish instant − created_at − sla_paused_seconds`, in seconds, floored at 0. **Pending time is excluded**: every Pending interval is closed by the move out of Pending, so a finished ticket's `sla_paused_seconds` is the whole of its time Pending and `pending_since` is NULL (it is not read). **Time in Resolved before a reopen is included**: the requester's problem was not solved then. The clock starts at creation, not at the last reopen, and SLA records are not read, so it does not depend on SLA tracking. `percentile_cont(0.5)` and `percentile_cont(0.9)`, rounded to whole seconds |
+| **Time to first response**, median | finished in the period, with an SLA first response on the ticket's original clock | per ticket, the frozen reading `sla_records.response_elapsed_at_met_seconds` of its earliest `first_response_at` among its records whose clock runs from creation (`started_at IS NULL`; a re-match copies both the stamp and the reading, so any of them gives the same answer). That is the number the SLA judged: the time to the first public staff reply, or to the resolution when nothing came first (#219), minus time Pending before it. A record a reopen started (`started_at` set) times the response to the reopen, not to the ticket, and is not read. A ticket without such a record does not count; the card says the measure needs SLA tracking |
+| **SLA attainment** | finished in the period that have **any** SLA record, current or superseded (*tracked*) | **met**: no record of the ticket carries `response_breached_at` or `resolution_breached_at`. **Breached**: any record does. Reading every record, not only the current one, is what stops a reopen's clean clock hiding a breach before it. Response met and resolution met are the same test on one stamp each. For a finished ticket both targets have been judged (a response, or the resolution counting as one, and the resolution are each stamped when recorded, whether or not the toggle is on), so the stamps are final. A ticket with no record is neither met nor breached: it is not in the denominator. Rate = met / tracked |
+| **Reopen rate** | finished in the period | tickets with `reopen_count > 0` / resolved. A share of tickets, so it is between 0 and 100%. `reopen_count` has no backfill (migration `000047`): reopens before 1.3.0 are not counted, which the upgrade notes say |
+
+The snapshot measures ignore the period (they are "now") and honour the filters:
+
+| Measure | Definition |
+| --- | --- |
+| **Backlog aging** | open tickets by age, `floor((now − created_at) / 24 h)` whole days, in four buckets: **0–2**, **3–7**, **8–30** and **over 30** days. The owner's "30+" is read as "more than 30", so the buckets do not overlap. Age is from creation, not from a reopen. Pending tickets are included: they are open work |
+| **Workload** | open tickets counted per assignee person (`assignee_user_id`) and, separately, per assignee group (`assignee_group_id`). A ticket with a person and a group counts once in each list. The tickets with no person are one row of the person list ("Nobody"), those with no group one row of the group list ("No group"); there is no third "unassigned" figure |
+
+**Filters** narrow every measure, the snapshots included, and are ANDed with visibility, on the ticket's **current** values (a ticket moved from Hardware to Network counts as Network): `category_id` (one; the category and everything under it), `priority` (repeatable, at most four, the list's values), `assignee_group_id` (one; the current group). An id that names nothing matches nothing (zeros, not `404`), as on the list.
+
+**Period and comparison.** A period is two local dates, `from` and `to`, inclusive, in the caller's time zone `tz` (validated exactly as `GET /dashboard` validates it). It runs from local midnight at the start of `from` to local midnight at the end of `to`, so a change to or from summer time is still whole days. At most **366 days**; that is the upper bound on what one request scans. The **previous period** is always computed: the same number of days ending the day before `from`. Every period measure comes back for both; the snapshot measures and the breakdowns come back for the current period only.
+
+**The endpoint.** `GET /api/v1/reports/kpi`, mounted beside `/staff` with `RequireRole(admin, staff)`, `RequireMFA` and `RequireResource(tickets)`, so an API key or OAuth client needs `tickets:read` (it can list the same tickets already). Query parameters: `tz`, `from`, `to`, `category_id`, `priority`, `assignee_group_id`; anything else is ignored, as on the list.
+
+- `from` and `to`: `YYYY-MM-DD`. Both absent: the last 30 days ending today in `tz`. One without the other: `400 bad_request` "from and to go together". A malformed date: "invalid from" / "invalid to". `from` after `to`: "from must not be after to". More than 366 days: "the range is longer than 366 days". A `to` after today is allowed; its days count zero. "Today" is read from Postgres, the only place that knows `tz` (`LocalToday`, below), so the server needs no time zone database.
+- `category_id`, `assignee_group_id`: a UUID or `400` "invalid category_id" / "invalid assignee_group_id". `priority`: one of the four, or `400` "invalid priority"; more than four values: "too many priority values".
+- The response:
+
+```json
+{
+  "tz": "Europe/London",
+  "period":   {"from": "2026-10-26", "to": "2026-11-24", "days": 30},
+  "previous": {"from": "2026-09-26", "to": "2026-10-25", "days": 30},
+  "filters":  {"category_id": null, "priority": [], "assignee_group_id": null},
+  "sla_enabled": true,
+  "measures": {
+    "current": {
+      "created": 84,
+      "resolved": 79,
+      "time_to_resolve": {"count": 79, "median_seconds": 52200, "p90_seconds": 345600},
+      "first_response":  {"count": 61, "median_seconds": 3900},
+      "sla": {"tracked": 61, "met": 52, "response_met": 57, "resolution_met": 54,
+              "met_rate": 0.8525, "response_met_rate": 0.9344, "resolution_met_rate": 0.8852},
+      "reopen": {"reopened": 4, "rate": 0.0506}
+    },
+    "previous": { "…": "the same shape" }
+  },
+  "volume": {
+    "days": [{"date": "2026-10-26", "created": 3, "resolved": 2}, "… one per day, oldest first"],
+    "by_category": [{"id": "…", "name": "Hardware", "count": 31}, "…"],
+    "by_priority": [{"priority": "critical", "count": 2}, {"priority": "high", "count": 9},
+                    {"priority": "medium", "count": 60}, {"priority": "low", "count": 13}]
+  },
+  "backlog": {
+    "as_of": "2026-11-24T10:15:00Z",
+    "total": 42,
+    "buckets": [{"key": "0_2", "min_days": 0, "max_days": 2, "count": 17},
+                {"key": "3_7", "min_days": 3, "max_days": 7, "count": 11},
+                {"key": "8_30", "min_days": 8, "max_days": 30, "count": 10},
+                {"key": "over_30", "min_days": 31, "max_days": null, "count": 4}]
+  },
+  "workload": {
+    "as_of": "2026-11-24T10:15:00Z",
+    "total": 42,
+    "by_assignee": [{"id": "…", "name": "Ada Lovelace", "count": 9}, "…", {"id": null, "name": null, "count": 6}],
+    "by_group":    [{"id": "…", "name": "Service Desk", "count": 30}, "…", {"id": null, "name": null, "count": 3}]
+  }
+}
+```
+
+  Counts are integers. A median or percentile is `null` when its `count` is 0. A rate is a fraction between 0 and 1 rounded to four places, computed on the server, and `null` when its denominator is 0; the counts it came from are sent beside it. `by_priority` always has the four priorities, in that order, zeros included. `by_category`, `by_assignee` and `by_group` hold only rows above zero, largest first, then by name; the `null` row (no person, no group) is last whatever its count. Names are the current names, of deleted and disabled people and archived categories too (their tickets still exist). `backlog.buckets` always has the four, in order. `filters` echoes what was applied (`priority` sorted in the fixed order). `sla_enabled` is the toggle as now (read failure: `false`), sent so the page can say why the SLA figures are thin; the figures are computed either way from the records that exist.
+- Errors: `401`/`403` as for `GET /tickets`, `403` for a requester; the `400`s above and the dashboard's two `tz` messages; a store failure is `500 internal_error` for the whole response. Nothing is cached on the server.
+
+**SQL.** All queries live in `queries/tickets.sql` under a `-- KPI reports (#131)` heading, each carrying the visibility block between its markers, so `TestSQL_DashboardQueriesShareTheListRule` (which compares every block in that file with the list query's) covers them with no change. Every query takes the visibility parameters, `tz`, and the three filters as `sqlc.narg(category_id)`, `sqlc.arg(priorities)::text[]` (`cardinality(...) = 0` is unfiltered) and `sqlc.narg(assignee_group_id)`, written as the list writes them. A period's instants come from its dates in one CTE, `w`: `since_at = (from_day::timestamp) AT TIME ZONE tz` and `until_at = ((to_day + 1)::timestamp) AT TIME ZONE tz`, and every range test is `>= since_at AND < until_at`.
+
+- `LocalToday :one`: `SELECT (sqlc.arg(now)::timestamptz AT TIME ZONE sqlc.arg(tz)::text)::date`. Run first; an unknown zone (SQLSTATE `22023`) maps to `ticket.ErrUnknownTimeZone` here, before anything else runs. The dashboard handler uses it too (below).
+- `TicketVolumeByDay` (#675) is **generalised**, not copied: it takes `from_day` and `to_day` in place of "the 30 days ending `now`", and the three filters. Its arms, its `generate_series(from_day, to_day, '1 day')` and its zeros are otherwise unchanged. The dashboard passes `LocalToday − 29` to `LocalToday` and no filters, so its trend is what it was and its tests still pass. One query means "created on a day" and "resolved on a day" have one definition, and the volume card's daily series sums to its headline counts (a test holds `sum(days.created) == measures.current.created` and the same for resolved).
+- `KPIPeriod :one`, run once per period (current and previous): the created count from the `created_at` range (`tickets_created_at_idx`), and every finished-population measure from the finish-instant range (`tickets_done_at_idx`), in one statement:
+
+```sql
+-- name: KPIPeriod :one
+WITH w AS (…), created AS (
+  SELECT count(*) AS n FROM tickets t, w
+  WHERE <visibility> AND <filters> AND t.created_at >= w.since_at AND t.created_at < w.until_at
+), done AS (
+  SELECT GREATEST(0, EXTRACT(EPOCH FROM COALESCE(t.resolved_at, t.closed_at) - t.created_at)::bigint
+                     - t.sla_paused_seconds) AS resolve_s,
+         t.reopen_count > 0 AS reopened,
+         s.tracked, s.response_breached, s.resolution_breached, s.first_response_s
+  FROM tickets t CROSS JOIN w
+  CROSS JOIN LATERAL (
+    SELECT count(*) > 0 AS tracked,
+           COALESCE(bool_or(r.response_breached_at IS NOT NULL), false)   AS response_breached,
+           COALESCE(bool_or(r.resolution_breached_at IS NOT NULL), false) AS resolution_breached,
+           (array_agg(r.response_elapsed_at_met_seconds ORDER BY r.first_response_at, r.id)
+              FILTER (WHERE r.started_at IS NULL AND r.first_response_at IS NOT NULL
+                        AND r.response_elapsed_at_met_seconds IS NOT NULL))[1] AS first_response_s
+    FROM sla_records r WHERE r.ticket_id = t.id          -- every record, superseded included
+  ) s
+  WHERE <visibility> AND <filters>
+    AND COALESCE(t.resolved_at, t.closed_at) >= w.since_at
+    AND COALESCE(t.resolved_at, t.closed_at) <  w.until_at
+)
+SELECT (SELECT n FROM created)::bigint                                        AS created,
+       count(*)::bigint                                                       AS resolved,
+       round(percentile_cont(0.5) WITHIN GROUP (ORDER BY resolve_s))::bigint  AS resolve_median,
+       round(percentile_cont(0.9) WITHIN GROUP (ORDER BY resolve_s))::bigint  AS resolve_p90,
+       count(first_response_s)::bigint                                        AS first_response_count,
+       round(percentile_cont(0.5) WITHIN GROUP (ORDER BY first_response_s))::bigint AS first_response_median,
+       count(*) FILTER (WHERE tracked)::bigint                                AS sla_tracked,
+       count(*) FILTER (WHERE tracked AND NOT response_breached AND NOT resolution_breached)::bigint AS sla_met,
+       count(*) FILTER (WHERE tracked AND NOT response_breached)::bigint      AS sla_response_met,
+       count(*) FILTER (WHERE tracked AND NOT resolution_breached)::bigint    AS sla_resolution_met,
+       count(*) FILTER (WHERE reopened)::bigint                               AS reopened
+FROM done;
+```
+
+  `percentile_cont` ignores NULLs and returns NULL over no rows, which is the `null` the response sends. The lateral is one `sla_records_ticket_idx` lookup per finished ticket. Percentiles need every value, so this is not incremental; at the 366-day cap on a desk finishing 1,000 tickets a day it sorts 366,000 integers, which Postgres does in memory in well under a second.
+- `KPICreatedByCategory :many` (`t.category_id, c.name, count(*)` over the created range, joined to `categories`, `GROUP BY` both, ordered count descending then name) and `KPICreatedByPriority :many` (`t.priority, count(*)`); Go puts the priorities into their fixed order with zeros.
+- `KPIOpenByAge :many`: `LEAST(floor(EXTRACT(EPOCH FROM sqlc.arg(now) - t.created_at) / 86400), 31)::int AS age_days, count(*)` over open tickets (`COALESCE(t.resolved_at, t.closed_at) IS NULL`), grouped by it: at most 32 rows. The bucket bounds are Go data (`report.BacklogBuckets`) applied to those rows, so they are written down once.
+- `KPIOpenByAssignee :many` (`t.assignee_user_id, u.display_name, count(*)`, `LEFT JOIN users`) and `KPIOpenByGroup :many` (`t.assignee_group_id, g.name, count(*)`, `LEFT JOIN groups`) over open tickets. The `NULL` key is a row like any other.
+
+All of a request's queries run in **one read-only `REPEATABLE READ` transaction** (`Store.KPI`), so the numbers on the page are one snapshot: the daily series sums to the headline, and the workload total equals the backlog total, even while tickets are being written.
+
+**Code.** `internal/domain/report` (no HTTP, no SQL):
+
+- `Day` is a calendar date (`time.Time` at 00:00 UTC; only the date means anything) with `ParseDay(s string) (Day, error)` and `Add(n int) Day`. `Period{From, To Day}` with `Days() int` and `Previous() Period`.
+- `Query{TZ string; From, To *Day; CategoryID *uuid.UUID; Priorities []ticket.Priority; GroupID *uuid.UUID}` and `ParseQuery(q url.Values) (Query, error)`, whose errors are `*ticket.FilterError` so the handler maps them to `400` as it maps the list's. `(Query) Period(today Day) (Period, error)`: the default, the order check and `MaxDays` (366); `DefaultDays` (30).
+- `BacklogBucket{Key string; MinDays int; MaxDays *int}`, `BacklogBuckets` (the four, as data), and `Buckets(rows []AgeCount) []BucketCount`; `Rate(n, d int64) *float64`; `PriorityOrder` (critical, high, medium, low); the result types `KPI`, `Measures`, `Volume`, `Backlog`, `Workload`.
+- `Store` (`KPI(ctx, Request) (Raw, error)`, implemented by `ticketstore`) and `Service.KPI(ctx, Request) (KPI, error)`, which turns the raw rows into the result (buckets, rates, priority order, ordering). `Request` carries `ActorID`, `Visibility`, the query, both periods and `Now`. The server holds `*report.Service`, like its other services.
+
+`internal/server/handler_reports.go`: `handleGetKPI` parses the query, resolves visibility with `Server.TicketVisibility`, asks the store for today (`LocalToday`; the store method `Today(ctx, tz, now)`), resolves the period, reads `SLAEnabled`, calls `KPI` and writes the JSON above.
+
+**The page.** `/reports`, the sidebar item **Reports** (a bar-chart icon) between Tickets and Admin, shown to staff and administrators; a requester who opens the address is sent to the dashboard. The address holds the state, so a refresh or a shared link shows the same board: `range=7|30|90` (default 30), or `from` and `to` for a custom range, plus `category_id`, `priority`, `assignee_group_id`. The browser turns a preset into dates from its own today, and always sends `tz` (`Intl.DateTimeFormat().resolvedOptions().timeZone`).
+
+- **Header**: "Reports", a line naming the period and its comparison ("26 Oct – 24 Nov 2026, compared with 26 Sep – 25 Oct"), and **Download CSV** and **Download image** (the whole board).
+- **Controls**: a segmented choice 7 days / 30 days / 90 days / Custom; Custom shows two native date inputs and **Apply** (the server's `400` message shows under them). Three selects: Category (top-level categories, "Any category"), Priority ("Any priority" and the four), Group ("Any group"), from the lookups the ticket list's filter panel uses. Changing one updates the address and refetches.
+- **Cards**, in this order, each with a title, the figure, its comparison and a per-card **Download image** button (an icon button with `aria-label` "Download <card title> as an image"):
+  1. *Time to resolve*: the median large, the 90th percentile beside it, "79 tickets resolved".
+  2. *First response*: the median, "61 tickets with an SLA first response".
+  3. *SLA attainment*: met rate as a percentage, then response and resolution rates, "61 tickets tracked".
+  4. *Reopen rate*: the percentage, "4 of 79 resolved tickets had been reopened".
+  5. *Volume*: Created and Resolved totals with comparisons; the daily chart; created by priority and by category as bar charts.
+  6. *Backlog aging*: the total open and a bar chart of the four buckets ("Now", no comparison).
+  7. *Workload*: two bar charts, by person and by group ("Now", no comparison), each the ten largest rows with **Show all (N)** when there are more.
+- **Comparison**: under each period figure, the change from the previous period, from a data table in `lib/kpi.ts` (`KPI_MEASURES: {key, label, unit: 'count'|'seconds'|'rate', better: 'lower'|'higher'|'neutral'}[]`). Counts and durations show the relative change ("▲ 12%"), rates the difference in points ("▼ 3.1 pts"); green when the change is in the `better` direction, red when against it, grey for neutral (Created, Resolved) and for no change. When the previous value is `null` or 0 it says "No data for the previous period". The full sentence is in the text for a screen reader ("up 12% from the previous period").
+- **Durations** are written by a new `fmtDuration(seconds: number): string` in `lib/format.ts`: under a minute "under 1 min"; under an hour "N min"; under a day "N h M min" (minutes dropped when 0); otherwise "N d M h" (hours dropped when 0). Percentages: one decimal place.
+- **Empty and SLA-off states**: each card says what it lacks instead of showing zeros or dashes: "No tickets were resolved in this period." (Time to resolve, Reopen rate), "No ticket resolved in this period had an SLA first response." (First response), "No ticket resolved in this period was tracked by an SLA." (SLA attainment), "No tickets were created or resolved in this period." (the volume chart), "No open tickets." (Backlog, Workload). While `sla_enabled` is false, the First response and SLA attainment cards add one muted line, "SLA tracking is off (Admin → Settings → Features), so new tickets are not timed. These figures cover tickets timed while it was on." The line names the place; it is not a link, so it does not depend on the settings addresses of #674.
+- **States**: the query key is `['reports', 'kpi', params]`, `staleTime` 60 s; while loading each card shows the existing `Spinner` in a box of its final height; a failure replaces the cards with "The reports could not be loaded." and **Retry**; the controls stay.
+
+**Charts** reuse `frontend/src/components/charts/` (#675), additively:
+
+- The volume chart **is** the dashboard's `VolumeTrend`, moved from `components/dashboard/` into `components/charts/` and re-exported from `index.ts`, with two optional props, `emptyText` and `ariaLabel`, whose defaults are the dashboard's own wording, so the dashboard is unchanged. The Reports page passes "No tickets were created or resolved in this period." and "Tickets created and resolved per day, <period>". With 366 days it draws 366 points; the x labels are still the first and last only.
+- `AreaChart` gains an optional `svgRef?: React.Ref<SVGSVGElement>` (for the image export) and forwards it to its `<svg>`.
+- `BarChart.tsx` (new): `{rows: {key: string; label: string; value: number}[]; ariaLabel: string; tone?: ChartTone; formatValue?: (n: number) => string; emptyText?: string; svgRef?: React.Ref<SVGSVGElement>}`. A two-column grid: labels in HTML on the left, one-line and truncated with the full label in `title` (it is a chart row; this is the fifteenth place on the ellipsis list in **Small screens**, and the e2e check covers it), the value in HTML on the right, and between them **one** `<svg>` with `viewBox="0 0 100 {rows × 28}"`, `preserveAspectRatio="none"`, one `<rect>` per row 28 px apart (height 18, width `value / max × 100`, `max` the largest value, `fill="currentColor"`), so every bar lines up with its HTML row at any width. No text in the SVG, as for `AreaChart`. An `sr-only` table carries every row.
+
+**CSV export.** Built in the browser from the response the page is showing, by a pure function `kpiCsv(resp: KpiResponse, names: KpiNames): string` in `lib/kpi.ts` (`names` resolves the filter ids to labels). It formats numbers the server computed and computes nothing. RFC 4180, CRLF line ends, a UTF-8 byte order mark (so spreadsheet programs read names correctly), one header and long rows, `measure,key,label,current,previous,unit`:
+
+- the context first: `period_from`, `period_to`, `previous_from`, `previous_to`, `tz`, `filter_category`, `filter_priority`, `filter_group` (value in `label`);
+- every period measure with both values (`created`, `resolved`, `time_to_resolve_median`, `time_to_resolve_p90`, `time_to_resolve_count`, `first_response_median`, `first_response_count`, `sla_tracked`, `sla_met`, `sla_response_met`, `sla_resolution_met`, `sla_met_rate`, `sla_response_met_rate`, `sla_resolution_met_rate`, `reopened`, `reopen_rate`), durations in seconds and rates as fractions, so the file is data and not formatting, an empty cell for `null`;
+- then the current period's rows: `created_by_day` and `resolved_by_day` (key the date), `created_by_category` (key the id, label the name), `created_by_priority`, `backlog` (key the bucket), `workload_person` and `workload_group` (every row, not only the ten shown; the `null` row's key is empty and its label "Nobody" / "No group").
+
+A label that begins with `=`, `+`, `-`, `@`, a tab or a carriage return is prefixed with `'`, so a category called `=HYPERLINK(…)` is text in a spreadsheet, not a formula. The file is `kpis-<from>-to-<to>.csv`, saved with `saveBlob` (below).
+
+**Image export.** A PNG per card and one of the whole board, drawn from the **same SVG elements** the page shows, with no image library. Each card's content is data before it is markup: a pure `kpiCardModels(resp): KpiCardModel[]` (`lib/kpi.ts`) gives each card its `key`, `title`, figures (`{label, value, comparison?, tone}`), lines and chart rows, and the card component renders that model. The image is painted from the same model and the card's live `<svg>` elements (the `svgRef`s), in `components/charts/exportImage.ts`:
+
+1. `inlineSvg(svg: SVGSVGElement, widthPx: number, heightPx: number): string`. Clone the element; walk the original and the clone together and copy onto each cloned element, as attributes, the computed `fill`, `fill-opacity`, `stroke`, `stroke-width`, `stroke-opacity`, `opacity` and `vector-effect` (computed values are resolved colours, so `currentColor` and the Tailwind tone classes become `rgb(…)`); remove every `class` and `style`; set `xmlns`, and `width` and `height` to the target pixels, keeping `viewBox` and `preserveAspectRatio="none"`. Serialise with `XMLSerializer` and return `data:image/svg+xml;charset=utf-8,` plus the `encodeURIComponent` of it. **No font or stylesheet is inlined, because the SVG has no text**: that is #675's rule for these charts, and it is what makes this step small. A `data:` URL, not a `blob:` URL, because the CSP allows `img-src 'self' data:` and nothing else.
+2. `layoutCard(model, widthPx, measure): DrawOp[]` and `layoutBoard(models, header, measure): DrawOp[]` are pure: they place the text (title 16 px semibold; figures 28 px; comparisons and lines 12 px; a context line on every image with the period, the comparison period and the filters, so one card out of context still says what it shows), the bars' and chart's images at the sizes the SVG was inlined at, and the HTML labels of each bar row at the row's 28 px offsets. `measure(text, font)` is passed in (the canvas's `measureText` in the browser, a fixed-width fake in tests); a line that does not fit is cut with "…". `DrawOp` is `{kind: 'text', x, y, text, font, color, align} | {kind: 'image', x, y, w, h, src} | {kind: 'rect', x, y, w, h, color}`. A card is 600 CSS px wide; the board is two columns of cards 24 px apart under a header ("<site name> reports", the context line, "Created <local date and time>"), in the page's order, Workload as it is shown (ten rows, or all if expanded).
+3. `paintPng(ops, size, theme): Promise<Blob>`: wait for `document.fonts.ready`; load each image (`new Image()`, `src` the data URL, `await img.decode()`); make a canvas at the layout's size × 2 (× 1 if either side would exceed 16,384 px); fill the background; run the ops (`fillText` with `font` built from the card's computed `font-family`, so the canvas writes in the font the page uses: today `system-ui, -apple-system, sans-serif`, and a web font later would be used once the document has loaded it); `canvas.toBlob(…, 'image/png')`. `theme` (`background`, `text`, `muted`, `border`, and the five tone colours) is read from computed styles of the card and of hidden tone swatches, so a dark page gives a dark image.
+
+The file is `kpi-<card key>-<from>-to-<to>.png`, or `kpis-<from>-to-<to>.png` for the board, saved by `saveBlob(blob, filename)` (new, `lib/saveFile.ts`: an object URL on a temporary `<a download>`, clicked, removed, and revoked). Nothing is sent to the server.
+
+**Failure**: an image that fails to decode, a `toBlob` that yields `null`, or a `SecurityError` from a tainted canvas (an SVG image without `foreignObject` does not taint a canvas in current Chrome, Firefox or Safari, but the code does not assume it) rejects the promise; the button then shows, beside itself, "The image could not be created in this browser. Download the CSV for the same numbers." No file is saved. While the image is being made the button is disabled with `aria-busy`.
+
+**Layout.** One column below `md`, two from `md`, three from `xl`, the Volume and Workload cards spanning the full row from `md`. The controls wrap: the segmented choice on its own line, the custom dates stacked below `sm`, the three selects one per line below `sm` and in a row from `sm`. Every button, including each card's image button, is at least 44 px on a coarse pointer. Bar labels truncate; nothing else in a card does (titles and lines wrap). Nothing scrolls sideways at 320 px.
+
+**API documents.** `docs/api/openapi.yaml`: `GET /reports/kpi` with its parameters, the response schema above (`backlog.buckets[].key` an enum of the four keys, `by_priority[].priority` the priority enum, the nullable fields marked), the `400`s and `403`. The MCP tools table is unchanged. `docs/upgrade-notes-1.3.0.md`, under New features: "Reports: KPIs for Resolution, First Response, SLA, Reopens, Backlog, Volume and Workload (#131)", saying who sees it, that staff numbers follow ticket scope, how each measure is defined in one line, that time to resolve excludes Pending, that first response and SLA attainment need SLA tracking, that reopens before 1.3.0 are not counted, and that the CSV and the images are made in the browser. Nothing under Breaking changes. **Upgrade**: no migration, no setting, no change to any existing request or response; the dashboard's trend is the same. The roadmap table lists KPI reports under v1 and operational reporting's remainder (scheduled reports, channel and agent cuts, the later measures) under v1.4.
+
+**Build order.** #131 is built after #675's SQL and chart parts are merged on the 1.3 line: `tickets_done_at_idx`, `TicketVolumeByDay`, the visibility markers and their drift test, `ticket.ErrUnknownTimeZone` and the `tz` validation, and `components/charts/` with `VolumeTrend`. It does not need #676 or the dashboard's other blocks.
+
+**Out of scope.** Scheduled or emailed reports (they need the notification outbox and a schedule; v1.4); cuts by channel, agent, item or type, and per-policy SLA tables; drill-down from a figure or a bar to the ticket list; saved or custom reports; trends of the snapshot measures (no history is kept); an MCP tool; the later measures #131 lists (CSAT, escalations, vendor wait); a rollup table.
+
+**Decisions taken without the owner.** Each can be overturned in one line.
+
+- Staff see Reports, counting only what `ticket_scope_enforced` lets them open (every ticket while it is off). Rejected: administrators only (the owner's constraint names staff numbers), and staff restricted to their own tickets (a third visibility rule).
+- Live queries in one read-only repeatable-read transaction, capped at 366 days. Rejected: a rollup table (premature; it would need its own correctness story for reopens and re-matches).
+- Every period measure reads the tickets **finished** in the period (by `COALESCE(resolved_at, closed_at)`), so one card's numbers describe the same tickets. Rejected: first responses that happened in the period (needs an index on `sla_records` and mixes populations) and tickets created in the period (a recent period would show only the fast ones).
+- Time to resolve is creation to the finish instant minus `sla_paused_seconds`, time in Resolved before a reopen included. Rejected: wall-clock (measures the requester's latency), from the last reopen (the flattering number the issue warns against), and the SLA's frozen resolution reading (needs SLA records, and restarts on reopen).
+- Time to first response is the SLA's frozen reading on the ticket's original clock, which follows the owner's note that it depends on SLA records. Rejected: the first public staff reply from `ticket_replies` (works without SLA, but cannot subtract the Pending time before it, because the pause total is not kept per instant).
+- SLA attainment counts a ticket as met only if none of its records, superseded included, carries a breach stamp; tickets with no record are left out. Rejected: the current record only (a reopen's clean clock would hide the earlier breach).
+- Reopen rate is the share of finished tickets with `reopen_count > 0`. Rejected: reopen events from `ticket_status_history` over resolutions (history is incomplete before 1.1.1, per `000028`, and needs a new index) and `sum(reopen_count)` over resolved (can exceed 100%).
+- "30+" is "over 30 days"; age counts whole 24-hour days from creation; Pending tickets are in the backlog. Rejected: local calendar days (depends on the viewer), age from the last reopen.
+- Workload is two independent lists, with "Nobody" and "No group" as ordinary rows. Rejected: a separate "unassigned" figure (the Available view's definition belongs to #676's views).
+- Filters apply to current values, one category, repeatable priority, one group, with the list's parameter names. Rejected: values as they were when the ticket was created (needs history), multi-select categories and groups.
+- The comparison is always the immediately preceding period of equal length and is always shown. Rejected: a toggle, year-on-year.
+- Rates come from the server with their counts. Rejected: dividing in the browser (the owner's rule).
+- CSV is made in the browser from the JSON on screen, formulas neutralised. Rejected: a server `?format=csv` (a second response format to document and test for the same numbers).
+- PNG: inline the chart SVG's computed paint into a `data:` URL, draw it on a canvas with the text painted by `fillText` from the same card model. Rejected: wrapping the card's HTML in a `foreignObject` (pixel-exact but taints the canvas in Safari and needs every stylesheet inlined), a library (the owner's rule), and `blob:` images (blocked by the CSP).
+- The volume card reuses the dashboard's `VolumeTrend` and its query, generalised to a date range and filters. Rejected: a second component and a second query with their own definitions of "created on a day".
+- No MCP tool. Rejected: a `kpi_report` tool nobody has asked for.
+- The SLA-off line names the settings place and does not link. Rejected: a link to #674's Features address, which would tie this to #674's merge.
+- Sidebar label **Reports**, route `/reports`, endpoint `/reports/kpi`. Rejected: "KPIs" (the page will hold scheduled reports later).
+
+**Tests.**
+
+- *SQL text*: `TestSQL_DashboardQueriesShareTheListRule` passes with the KPI queries in `tickets.sql` and fails if any of their visibility blocks differs by one character.
+- *Postgres, store* (`ticketstore`), one fixture, `now` fixed: **time to resolve** for a ticket with no pause, one with two closed Pending intervals (exactly subtracted), one resolved then reopened then resolved (time in Resolved counted), one closed without resolution (ends at `closed_at`), one resolved and later closed (ends at `resolved_at`), one reopened and open (not counted), a negative raw value floored at 0; median and p90 against hand-computed values for odd and even counts; **first response** from the frozen reading, the earliest of two original-clock records, a reopen-started record ignored, a ticket without records not counted, `null` median on no rows; **SLA** met, response breached only, resolution breached only, a breach on a superseded record with a clean current one (breached), no record (not tracked), tracked with only a superseded record; **reopen rate** with `reopen_count` 0 and 2; **periods**: a ticket created and finished at 23:30 local on the last day counts in `Europe/London` and in `America/New_York` across 1 November 2026, the instant `until_at` itself is outside, the previous period is disjoint; **filters**: category (and its types), each priority and two together, group, an unknown id (zeros); **visibility**: administrator, unscoped staff, scoped staff (nothing outside scope in any measure, snapshot or breakdown), the same staff with enforcement off (the wider numbers); **open now** equals "status not Resolved or Closed" on the fixture; **backlog** at 0, 2, 3, 7, 8, 30 and 31 days (boundaries); **workload** with person and group, person only, group only, neither, a deleted assignee's name; **one snapshot**: the daily series sums to `created` and `resolved`, workload total equals backlog total; `TicketVolumeByDay` for the dashboard's arguments returns what #675's tests expect; `LocalToday` across midnight in two zones and `ErrUnknownTimeZone`; a plan check in the style of `planRecorder` (`ticketstore_reply_search_test.go`) on a 20,000-ticket fixture that the finished arm uses `tickets_done_at_idx`, the created arm `tickets_created_at_idx` and the open queries `tickets_done_at_idx`.
+- *Domain* (`report`): `ParseQuery` per parameter (valid, malformed, five priorities, one date without the other); `Period` default 30 days ending today, a 366-day range accepted, 367 refused, `from` after `to` refused, `from == to` (one day); `Previous` for 1, 7, 30 and 366 days and across a month and a leap day; `Buckets` over ages 0 to 31; `Rate` with a zero denominator (`nil`) and rounding to four places; `Service.KPI` orders priorities with zeros, sorts rows by count then name with the `null` row last.
+- *REST, Postgres*: the response's shape and keys for an administrator and for staff; a requester `403`; an API key with and without `tickets:read`; every `400` message; with enforcement on, a scoped staff member's numbers exclude a ticket outside their scope that an administrator's include; `sla_enabled` follows the toggle and the SLA figures are still computed while it is off; `filters` echoes the request.
+- *openapi*: the spec test lists `GET /reports/kpi` with its handler and its roles.
+- *Frontend*: `fmtDuration` at 0, 59 s, 60 s, 59 min, 1 h, 1 h 1 min, 23 h 59 min, 1 d, 1 d 1 h, 400 d; the comparison per `better` direction, for `null`, 0 and equal previous values, and its screen-reader sentence; `parseKpiSearch`/`toKpiParams` round trips for each preset, a custom range and every filter, and a preset's dates from a fixed today; `kpiCsv`: header, CRLF, BOM, quoting of a comma, a quote and a newline, the formula prefix for each of the six leading characters, empty cells for `null`, every workload row present; `kpiCardModels` per card including each empty text and the SLA-off line; `BarChart` (one rect per row aligned to 28 px, widths relative to the largest, the hidden table, the empty text, the `title` on a truncated label); `AreaChart` forwards `svgRef`; `VolumeTrend` with and without the new props renders the dashboard's text by default; `inlineSvg` (no `class` or `style` left, colours resolved from a stubbed computed style, `xmlns`, size, `viewBox` kept, a `data:image/svg+xml` URL); `layoutCard` and `layoutBoard` with the fake `measure` (positions, the "…" cut, the context line on every card, Workload rows as shown); the export button's busy and failure states with a rejecting painter; the page per role (requester redirected), the sidebar item for staff and admin only, loading, failure with Retry, a custom-range `400` shown under the dates.
+- *e2e*: Reports at 375 px and 1280 px for an administrator and a staff member, with a 120-character category name: no horizontal scroll, buttons at least 44 px on a touch profile; **Download image** for one card and for the board in Chromium yields a PNG (signature and dimensions checked) and **Download CSV** a file whose header row is as specified; the same image download under the production CSP (`e2e-csp`), so a CSP that blocks the `data:` image fails the build.
 
 ### Linked Tickets
 
