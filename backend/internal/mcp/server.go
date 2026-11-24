@@ -661,6 +661,7 @@ func (s *Server) registerTools() {
 		mcpgo.WithString("status_id", mcpgo.Description("Only tickets in this status UUID (see list_statuses). Kept for existing callers; status_ids takes several")),
 		mcpgo.WithArray("status_ids", mcpgo.WithStringItems(), mcpgo.MaxItems(ticket.MaxRepeated), mcpgo.Description("Only tickets in any of these status UUIDs, at most 20 (see list_statuses). May be combined with status_id")),
 		mcpgo.WithBoolean("include_closed", mcpgo.Description("false leaves out the Closed status. Ignored when a status is named (default true)")),
+		mcpgo.WithBoolean("awaiting_reply", mcpgo.Description("true: only tickets that are not Resolved or Closed and whose newest public message is from the requester's side (the requester, a guest, or a follower who is a requester), so they are waiting for the help desk. Internal notes are not counted. false is the same as leaving it out. Staff and administrators only: a requester sending true is refused")),
 		mcpgo.WithAny("priority", mcpgo.Description("Only tickets at this priority, or at any of these in a JSON array (at most 20): critical|high|medium|low"), stringOrStringArray(ticket.MaxRepeated)),
 		mcpgo.WithString("category_id", mcpgo.Description("Only tickets in this category UUID, including every type and item under it (see list_categories)")),
 		mcpgo.WithString("type_id", mcpgo.Description("Only tickets of this type UUID")),
@@ -1309,7 +1310,7 @@ func listQuery(args map[string]any) (url.Values, error) {
 			q.Set(key, v)
 		}
 	}
-	for _, key := range []string{"search_replies", "include_closed"} {
+	for _, key := range []string{"search_replies", "include_closed", "awaiting_reply"} {
 		v, err := listArgBool(args, key)
 		if err != nil {
 			return nil, err

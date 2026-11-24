@@ -3406,6 +3406,17 @@ paths:
           schema:
             type: string
             enum: [nobody, me, others]
+        - name: awaiting_reply
+          in: query
+          required: false
+          description: >-
+            true or false (absent and false are the same). true keeps the tickets that are not Resolved or
+            Closed and whose newest public message is the requester's side (no reply yet, a guest, or an
+            author who is not staff or an administrator), so they wait for the help desk. Internal notes are
+            not read. Any other value is 400 bad_request, "invalid awaiting_reply". Staff and administrators
+            (403 for a reporting user sending true, "awaiting_reply is not available to requesters").
+          schema:
+            type: boolean
         - name: status_id
           in: query
           required: false

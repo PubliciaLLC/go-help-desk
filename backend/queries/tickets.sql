@@ -467,6 +467,22 @@ WHERE
        OR (sqlc.arg(held_by)::text = 'me' AND t.assignee_user_id = sqlc.arg(actor_id)::uuid)
        OR (sqlc.arg(held_by)::text = 'others' AND t.assignee_user_id IS NOT NULL
            AND t.assignee_user_id <> sqlc.arg(actor_id)::uuid))
+  -- awaiting_reply (#675): not Resolved or Closed, and the newest public reply
+  -- is not the help desk's (no reply, a guest reply with no author, or an
+  -- author who is a requester, all wait for staff). The author's role is read
+  -- whether or not the account is soft-deleted, on purpose: no deleted_at test.
+  -- Internal notes are never read. Staff and administrators only: the gate is
+  -- Filter.AllowedFor, not this clause.
+  AND (NOT sqlc.arg(awaiting_reply)::bool OR (
+    t.status_id IS DISTINCT FROM (SELECT s.id FROM statuses s WHERE s.name = 'Closed'   AND s.kind = 'system')
+    AND t.status_id IS DISTINCT FROM (SELECT s.id FROM statuses s WHERE s.name = 'Resolved' AND s.kind = 'system')
+    AND NOT COALESCE((SELECT u.role IN ('admin', 'staff')
+                      FROM ticket_replies r LEFT JOIN users u ON u.id = r.author_id
+                      WHERE r.ticket_id = t.id AND NOT r.internal
+                      ORDER BY r.created_at DESC, r.id DESC LIMIT 1), false)))
+  -- reopened_after (#675): server-set, the dashboard's recently reopened
+  -- window. NULL is not filtered, and a never-reopened ticket has no instant.
+  AND (sqlc.narg(reopened_after)::timestamptz IS NULL OR t.last_reopened_at >= sqlc.narg(reopened_after)::timestamptz)
   AND (sqlc.narg(reporter_id)::uuid IS NULL OR t.reporter_user_id = sqlc.narg(reporter_id)::uuid)
   -- requester_pattern is '%' || LIKE-escaped text || '%', built in the store.
   -- It matches the ticket's guest fields and the reporting account's name and
@@ -709,6 +725,22 @@ WHERE
        OR (sqlc.arg(held_by)::text = 'me' AND t.assignee_user_id = sqlc.arg(actor_id)::uuid)
        OR (sqlc.arg(held_by)::text = 'others' AND t.assignee_user_id IS NOT NULL
            AND t.assignee_user_id <> sqlc.arg(actor_id)::uuid))
+  -- awaiting_reply (#675): not Resolved or Closed, and the newest public reply
+  -- is not the help desk's (no reply, a guest reply with no author, or an
+  -- author who is a requester, all wait for staff). The author's role is read
+  -- whether or not the account is soft-deleted, on purpose: no deleted_at test.
+  -- Internal notes are never read. Staff and administrators only: the gate is
+  -- Filter.AllowedFor, not this clause.
+  AND (NOT sqlc.arg(awaiting_reply)::bool OR (
+    t.status_id IS DISTINCT FROM (SELECT s.id FROM statuses s WHERE s.name = 'Closed'   AND s.kind = 'system')
+    AND t.status_id IS DISTINCT FROM (SELECT s.id FROM statuses s WHERE s.name = 'Resolved' AND s.kind = 'system')
+    AND NOT COALESCE((SELECT u.role IN ('admin', 'staff')
+                      FROM ticket_replies r LEFT JOIN users u ON u.id = r.author_id
+                      WHERE r.ticket_id = t.id AND NOT r.internal
+                      ORDER BY r.created_at DESC, r.id DESC LIMIT 1), false)))
+  -- reopened_after (#675): server-set, the dashboard's recently reopened
+  -- window. NULL is not filtered, and a never-reopened ticket has no instant.
+  AND (sqlc.narg(reopened_after)::timestamptz IS NULL OR t.last_reopened_at >= sqlc.narg(reopened_after)::timestamptz)
   AND (sqlc.narg(reporter_id)::uuid IS NULL OR t.reporter_user_id = sqlc.narg(reporter_id)::uuid)
   -- requester_pattern is '%' || LIKE-escaped text || '%', built in the store.
   -- It matches the ticket's guest fields and the reporting account's name and

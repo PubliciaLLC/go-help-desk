@@ -946,6 +946,8 @@ func countParams(p dbgen.ListTicketsFilteredParams) dbgen.CountTicketsFilteredPa
 		AssigneeUserID:       p.AssigneeUserID,
 		AssigneeGroupID:      p.AssigneeGroupID,
 		HeldBy:               p.HeldBy,
+		AwaitingReply:        p.AwaitingReply,
+		ReopenedAfter:        p.ReopenedAfter,
 		ReporterID:           p.ReporterID,
 		RequesterPattern:     p.RequesterPattern,
 		CreatedAfter:         p.CreatedAfter,
@@ -978,6 +980,8 @@ func (s *Store) filterParams(ctx context.Context, f ticket.Filter, now time.Time
 		Queue:         queueName(f.Queue),
 		HeldBy:        string(f.HeldBy),
 		ExcludeClosed: f.ExcludeClosed,
+		AwaitingReply: f.AwaitingReply,
+		ReopenedAfter: database.NullTime(f.ReopenedAfter),
 		// Arrays are never nil: the SQL guard is cardinality(), and an absent
 		// filter is an empty array, not a NULL one.
 		StatusIds:      f.AllStatusIDs(),
