@@ -814,10 +814,17 @@ func (s *Server) handleListPublicCategories(w http.ResponseWriter, r *http.Reque
 
 // categoryIsActive is false only for a category that exists and is archived. One
 // that does not exist reads as active: its list is empty anyway, and an unknown
-// id is not told apart from an empty one.
-func (s *Server) categoryIsActive(ctx context.Context, id uuid.UUID) bool {
+// id is not told apart from an empty one. Any other failure is returned, so the
+// caller answers 500 rather than serving children of a parent it could not check.
+func (s *Server) categoryIsActive(ctx context.Context, id uuid.UUID) (bool, error) {
 	c, err := s.categories.GetCategory(ctx, id)
-	return err != nil || c.Active
+	if errors.Is(err, category.ErrNotFound) {
+		return true, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return c.Active, nil
 }
 
 // handleListPublicTypes returns only active types for a category.
@@ -830,9 +837,16 @@ func (s *Server) handleListPublicTypes(w http.ResponseWriter, r *http.Request) {
 	staff := catalogueIsFullyVisible(r)
 	// Archiving does not cascade, so an archived category's types are still
 	// active. Anyone but staff is offered nothing under a retired parent.
-	if !staff && !s.categoryIsActive(r.Context(), catID) {
-		JSON(w, http.StatusOK, []category.Type{})
-		return
+	if !staff {
+		active, err := s.categoryIsActive(r.Context(), catID)
+		if err != nil {
+			handleError(w, err)
+			return
+		}
+		if !active {
+			JSON(w, http.StatusOK, []category.Type{})
+			return
+		}
 	}
 	types, err := s.categories.ListTypes(r.Context(), catID, !staff)
 	if err != nil {
@@ -853,10 +867,25 @@ func (s *Server) handleListPublicItems(w http.ResponseWriter, r *http.Request) {
 	if !staff {
 		// The category in the path is not looked up (see the OpenAPI note), so the
 		// type's own category is the one that counts.
-		if tp, err := s.categories.GetType(r.Context(), typeID); err == nil &&
-			(!tp.Active || !s.categoryIsActive(r.Context(), tp.CategoryID)) {
-			JSON(w, http.StatusOK, []category.Item{})
+		tp, err := s.categories.GetType(r.Context(), typeID)
+		switch {
+		case errors.Is(err, category.ErrNotFound):
+			// No such type: the list below is empty.
+		case err != nil:
+			handleError(w, err)
 			return
+		default:
+			active := tp.Active
+			if active {
+				if active, err = s.categoryIsActive(r.Context(), tp.CategoryID); err != nil {
+					handleError(w, err)
+					return
+				}
+			}
+			if !active {
+				JSON(w, http.StatusOK, []category.Item{})
+				return
+			}
 		}
 	}
 	items, err := s.categories.ListItems(r.Context(), typeID, !staff)

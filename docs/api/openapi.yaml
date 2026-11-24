@@ -1438,8 +1438,10 @@ paths:
         Returns the types of the category. Archived types are included for the
         same callers as in the category list (a staff or administrator session
         that has passed MFA, an API key owned by staff or an administrator, any
-        OAuth client); everyone else gets active ones only, and none at all while the category is archived. An
-        unknown category gives an empty array. Same callers as the category list.
+        OAuth client); everyone else gets active ones only, and none at all while the category is archived (so a
+        requester's page can no longer resolve the type name of a ticket in an archived category). An
+        unknown category gives an empty array; a failed lookup of the category is a 500. Same callers as the
+        category list.
       tags: ['Catalogue']
       x-ghd-handler: handleListPublicTypes
       security:
@@ -1491,7 +1493,8 @@ paths:
         has passed MFA, an API key owned by staff or an administrator, any OAuth
         client); everyone else gets active ones only, and none at all while the type or its category is archived.
         The category in the path is not looked up, so an item list is returned for any category id that is sent. An
-        unknown type gives an empty array. Same callers as the category list.
+        unknown type gives an empty array; a failed lookup of the type or its category is a 500. Same callers as the
+        category list.
       tags: ['Catalogue']
       x-ghd-handler: handleListPublicItems
       security:

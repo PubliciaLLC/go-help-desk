@@ -106,7 +106,13 @@ changes for an instance until an administrator writes one.
   calling the route. An **archived** entry is not served to anyone but staff and
   administrators, and neither are the children of an archived parent (archiving
   does not cascade, so the lists check the parent: a guest or requester gets an
-  empty list under an archived category or type). The admin form says all of
+  empty list under an archived category or type; a failed lookup of the parent
+  is a `500`, not an unfiltered list). The visible effect: a requester's view of a
+  ticket whose category (or type) was archived later no longer shows its type and
+  item names (the category already showed a dash), and the filter chips of a
+  requester filtering by an archived category lose their type and item names the
+  same way (`useFilterLookups`); staff, administrators and the reclassify card
+  are unchanged. The admin form says all of
   this. **Decision (kept, not filtered):** type and item descriptions are not
   withheld from the anonymous routes. The rule is one sentence and the same as
   for names (a guest can already read every active type and item *name*); a

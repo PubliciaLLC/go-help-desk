@@ -62,11 +62,11 @@ describe('mostSpecificDescription', () => {
   // The server strips both, and so does this, so what the form accepts the
   // server does not refuse for length.
   it('trims the same set as the server: a byte order mark and a next-line character too', () => {
-    expect(trimDescription('﻿ a \u0085')).toBe('a')
-    expect(trimDescription('   a  ')).toBe('a')
-    expect(trimDescription(' a ﻿ b ')).toBe('a ﻿ b') // only at the ends
-    expect(mostSpecificDescription({ description: '\u0085﻿' })).toBe('')
-    expect(isDescriptionTooLong('﻿' + 'a'.repeat(500) + '\u0085')).toBe(false)
+    expect(trimDescription('\uFEFF a \u0085')).toBe('a')
+    expect(trimDescription('\u00A0\u2003 a \u2028')).toBe('a')
+    expect(trimDescription(' a \uFEFF b ')).toBe('a \uFEFF b') // only at the ends
+    expect(mostSpecificDescription({ description: '\u0085\uFEFF' })).toBe('')
+    expect(isDescriptionTooLong('\uFEFF' + 'a'.repeat(500) + '\u0085')).toBe(false)
     expect(isDescriptionTooLong('a'.repeat(501))).toBe(true)
   })
 
