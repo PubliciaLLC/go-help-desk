@@ -211,7 +211,12 @@ function SAMLSection() {
           {certPEM && <span title={certPEM} className="text-xs text-gray-500 truncate max-w-xs font-mono">{certPEM.split('\n')[0]}…</span>}
         </div>
         <input ref={certFileRef} type="file" accept=".pem,.crt,.cer" className="hidden"
-          onChange={(e) => { const f = e.target.files?.[0]; if (f) readFile(f, setCertPEM) }} />
+          onChange={(e) => {
+            const f = e.target.files?.[0]
+            if (f) readFile(f, setCertPEM)
+            // So the same file can be chosen again after an edit.
+            e.target.value = ''
+          }} />
         {certPEM && (
           <textarea rows={4}
             className="mt-1 w-full max-w-lg rounded border border-gray-300 p-2 font-mono text-xs text-gray-600"
@@ -229,7 +234,11 @@ function SAMLSection() {
           {keyPEM && <span className="text-xs text-gray-500 font-mono">{keyPEM.split('\n')[0]}…</span>}
         </div>
         <input ref={keyFileRef} type="file" accept=".pem,.key" className="hidden"
-          onChange={(e) => { const f = e.target.files?.[0]; if (f) readFile(f, setKeyPEM) }} />
+          onChange={(e) => {
+            const f = e.target.files?.[0]
+            if (f) readFile(f, setKeyPEM)
+            e.target.value = ''
+          }} />
         {keyPEM && (
           <textarea rows={4}
             className="mt-1 w-full max-w-lg rounded border border-gray-300 p-2 font-mono text-xs text-gray-600"
