@@ -21,6 +21,7 @@ func TestOutboxRecord_CoversEveryEventField(t *testing.T) {
 	}
 	notStored := map[string]string{
 		"GuestToken": "a raw credential; created by the worker at send time instead",
+		"Placement":  "names, read when a Slack or Teams message is built and never kept; the row holds ids (Ticket)",
 	}
 	et := reflect.TypeOf(Event{})
 	for i := range et.NumField() {

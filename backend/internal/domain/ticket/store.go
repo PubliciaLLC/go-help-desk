@@ -75,6 +75,10 @@ type Store interface {
 	// the type — the pairings the foreign keys only enforce at the INSERT,
 	// which is after the tracking number has been taken.
 	CTIIsCoherent(ctx context.Context, categoryID uuid.UUID, typeID, itemID *uuid.UUID) (bool, error)
+	// PlacementNames reads the names behind a ticket state's classification and
+	// holder, for a chat message: one statement, "" for a level that is not set
+	// or whose row is gone.
+	PlacementNames(ctx context.Context, st notification.TicketState) (notification.Placement, error)
 	// ArchivedCTINode names the first archived level among the ids given
 	// ("category", "type" or "item"), or "" when none is; a nil id is not
 	// checked. It is how "nobody newly picks an archived node" is decided.

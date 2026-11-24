@@ -546,6 +546,12 @@ type Querier interface {
 	// the token is never copied into the outbox.
 	GetPendingRegistrationByID(ctx context.Context, id uuid.UUID) (PendingRegistration, error)
 	GetPendingRegistrationByToken(ctx context.Context, token uuid.UUID) (PendingRegistration, error)
+	// The names behind a ticket's classification and holder, for a Slack or Teams
+	// ticket.created message: one statement, one round trip, whatever is set. A
+	// NULL id, a row that is gone and a deleted account all read as '' and the
+	// caller leaves that level out. An assignee's name is the display name only,
+	// and a deleted account has none to show.
+	GetPlacementNames(ctx context.Context, arg GetPlacementNamesParams) (GetPlacementNamesRow, error)
 	GetPlugin(ctx context.Context, id string) (Plugin, error)
 	// The count in a key's live window, without counting an attempt. No row back
 	// (never used, or its window has ended) means nothing has been spent.
