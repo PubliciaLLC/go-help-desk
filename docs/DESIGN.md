@@ -565,7 +565,7 @@ The ticket list includes a live search bar with a 300 ms debounce:
 - Results are fetched as you type, with no minimum length. Fetching is shown inline with a spinner.
 - **Staff and admin** can submit the form to perform a direct **tracking number / UUID jump** — navigates immediately to the ticket if found, or shows an inline error.
 - Users only see results from their own tickets.
-- **Staff and admin** searches cover **every ticket the viewer can see**, whatever queue is selected: all tickets, or, for staff with `ticket_scope_enforced` on, only what their scope admits (the same rule as everywhere else, not a second definition). The results area says "Searching all tickets you can see", and a one-click chip, "Only <queue>" (for example "Only my tickets", "Only unassigned"), narrows the search to the selected queue; clicking the chip again widens it. The label shows on every queue; the chip is not offered on an administrator's All queue, which is already everything. Spaces alone count as an empty box, and the chip resets to off when the box is cleared or the queue changes, so every new search starts wide. With an empty search box the queue behaves as it always did. The page sends `scope=visible` for the wide search (see **List filters**).
+- **Staff and admin** search **every ticket the viewer can see** from the **Search** view of the ticket list: all tickets, or, for staff with `ticket_scope_enforced` on, only what their scope admits (the same rule as everywhere else, not a second definition). The results area says "Searching all tickets you can see". The page sends `scope=visible` for it (see **List filters**). On the three queue views (Assigned to Me, My Group's Tickets, Available) text and filters narrow **within** that queue. Until #676 a search on any queue widened to everything visible and an "Only <queue>" chip narrowed it back; the Search view replaces both (see **Ticket list views**).
 - **Reply search** (`search_replies=true` with text in `q`; off unless asked for, on by default in the page). A ticket also matches when **one** reply holds every word of the search, each as a prefix as above. Words found in different replies, or one in a reply and one in the subject, do not combine. **Staff and admin search public replies and internal notes; a requester, and any role not recognised, searches public replies only**, and is never shown an excerpt of an internal note, even on a ticket that matched by its subject. Which replies are searched comes from the viewer's role on the server and nothing in a request can change it. A ticket found through a reply carries `reply_match` (`reply_id`, `internal`, `created_at`, a snippet of the reply's own text with each matched word wrapped in U+0002 and U+0003, never an author). A ticket that matches on its own subject or description ranks ahead of one that matches only through a reply. A reply is searched, and excerpted, on its **first 50,000 characters** (the limit on a new reply; older replies may be longer), so words after that in a very long reply are not found.
   - **How it is stored.** `ticket_replies.body_tsv` is a nullable `tsvector` that a trigger fills on insert and on an update of `body`. Migration 000062 only adds the column and the trigger, which rewrites nothing, so it is instant at any size. A background job in the running server fills the column for the replies that already exist, in small batches, and then builds the two indexes the search needs (a GIN index on `body_tsv` and a btree on `created_at DESC`) with `CREATE INDEX CONCURRENTLY`, which blocks no write; it gives that session a larger `maintenance_work_mem` (256 MB, raised and never lowered). An invalid index left by an earlier failed build is dropped first. The job holds one pooled connection throughout and a second during each index build, and a row it cannot index (it computes the column from the first 50,000 characters, so this should not happen) gets an empty column and a log line instead of stopping the fill. One server at a time does it (an advisory lock) and a restart carries on.
   - **Until the indexes are valid** a search that asks for replies is answered from subject, description and ticket number only. It is skipped, not run as a scan of every reply. The response says so (`X-Replies-Searched: false` and `X-Reply-Index: building`; MCP adds a second text block; the page shows "Reply search is still being prepared").
@@ -591,6 +591,7 @@ Multi-value filters (`status_id`, `priority`, `source_channel`) are repeated key
 | `include_closed` | `true` (the default) or `false`, which leaves out the Closed system status. Ignored when `status_id` is given | everyone |
 | `source_channel` | `web`, `api`, `mcp`, `guest` or `phone` (repeatable) | staff and admin |
 | `sla` | `breached` or `at_risk`, the same buckets the list's indicator shows. `400` while SLA tracking is off, so an empty list is never mistaken for "nothing is breached" | staff and admin |
+| `held_by` | who personally holds the ticket, relative to the caller: `nobody` (no assignee user), `me` (the caller is the assignee user) or `others` (an assignee user who is not the caller). One value. Applies on every queue; it is how the three filters of **My Group's Tickets** are sent (see **Ticket list views**) | staff and admin |
 
 **A requester may filter or sort only on what they are sent.** A requester's tickets go through the allowed list (see **What a requester sees of a ticket**). Filtering or sorting on a field they are never sent would read it: narrowing `updated_after` step by step would show the minute staff last touched a ticket. So a filter outside the list above's "everyone" rows is `403 forbidden` ("<param> is not available to requesters"), and a test holds each rule to the allowed list.
 
@@ -605,16 +606,182 @@ Multi-value filters (`status_id`, `priority`, `source_channel`) are repeated key
 **Queue (`scope`).** The handler turns `scope` into a queue and ANDs it with everything else:
 
 - `scope=mine`, the default, is the tickets assigned to the caller or to any of their groups. With scope enforcement on, staff get everything their scope admits instead, so an unassigned ticket in a covered category is not invisible to the people who should pick it up. A reporting user always gets their own tickets.
-- `scope=unassigned` (no assignee user or group) and `scope=all` are **admin only** (`403` otherwise).
-- `scope=visible`: every ticket the caller can see. This is what a search with text in the box sends unless the "Only <queue>" chip is on.
+- `scope=assigned_to_me` (#676): the tickets whose assignee user is the caller, whatever group they are in.
+- `scope=my_groups` (#676): the tickets whose assignee group is one of the caller's groups, whoever personally holds them.
+- `scope=unassigned` (no assignee user or group; the **Available** view): administrators, and staff while `available_queue_roles` lists `staff` (`403` otherwise; see **Ticket list views**). Admin only before #676.
+- `scope=all` is **admin only** (`403` otherwise).
+- `scope=visible`: every ticket the caller can see. This is what the ticket list's Search view sends.
 - Any other value is `mine`.
-- `reporter_id`, `requester` and `assignee_group_id` name which tickets, so the queue is "any" and `scope` is not consulted (and its admin-only refusals do not apply). Before 1.3.0 the first of `reporter_id`, `assignee_group_id` and `scope` present won and the rest were ignored; now they all apply, so `reporter_id` together with `assignee_group_id` is both, where the group used to be dropped.
+- `reporter_id`, `requester` and `assignee_group_id` name which tickets, so for `mine`, `unassigned`, `all` and `visible` the queue is "any" and `scope` is not consulted (and its refusals do not apply). Before 1.3.0 the first of `reporter_id`, `assignee_group_id` and `scope` present won and the rest were ignored; now they all apply, so `reporter_id` together with `assignee_group_id` is both, where the group used to be dropped. `assigned_to_me` and `my_groups` are always applied and ANDed with those three like any other filter.
+
+The exact rules for the two new values, the Available queue under scope enforcement, and MCP are in **Ticket list views**, next.
 
 A search on the `mine` queue is ranked by relevance like every other search. It used to merge one query per group in Go and stayed newest first. No ticket appears or disappears from `mine` because of this, only the order of a search's results changes.
 
-The ticket list page offers the scope as Mine / Unassigned / All buttons to administrators, an "Include closed" toggle (Closed tickets are hidden unless it is on), and a status filter, and pages 50 at a time.
+The ticket list page offers its queues as views in the sidebar (see **Ticket list views**; until #676 they were Mine / Unassigned / All buttons for administrators), an "Include closed" toggle (Closed tickets are hidden unless it is on), and a status filter, and pages 50 at a time.
 
 **Bulk status change.** On a desktop-width screen staff and admin can tick tickets in the list and apply one status to all of them. There is no bulk endpoint: the page sends one `PATCH /tickets/{id}` per ticket, so each goes through the same transition rules and authorisation as a single change and some can be refused (a move out of a Closed ticket, for one). The page then reports "n of m updated, k refused: reason" and leaves the refused tickets selected. Bulk selection does not exist on a phone (see Small screens).
+
+### Ticket list views
+
+([#676](https://github.com/PubliciaLLC/go-help-desk/issues/676), 1.3.x; owner decisions 2026-11-23.) The Tickets item in the sidebar has its own views, replacing the Mine / Unassigned / All toggle that only administrators had. Until now `scope=mine` was the **union** of "assigned to me" and "assigned to one of my groups", so there was no queue of what one person holds and no queue of what a group holds. Two scope values add them, one filter splits the group queue three ways, and a setting decides who may open the queue of tickets that nobody holds. **`mine` keeps its meaning** in REST and MCP; nothing an existing caller sends changes its answer.
+
+**Four views.**
+
+| View | What it lists | Request the page sends | Who sees it |
+| --- | --- | --- | --- |
+| **Assigned to Me** (the default) | tickets whose assignee user is me | `scope=assigned_to_me` | staff and admin |
+| **My Group's Tickets** | tickets whose assignee group is one of mine, narrowed by one of three filters | `scope=my_groups`, plus `held_by` | staff and admin |
+| **Available** | tickets with no assignee group **and** no assignee user | `scope=unassigned` | admin always; staff while `available_queue_roles` lists `staff` |
+| **Search** | every ticket I can see (the `all` queue, for an administrator) | `scope=visible` | staff and admin |
+
+A requester has no views: their Tickets item is the list of their own tickets, as before, and the page sends what it sent before.
+
+**How a ticket is classified.** A ticket has at most one assignee group (`assignee_group_id`) and at most one assignee user (`assignee_user_id`), set independently. Each view tests only the column it names, so a ticket assigned to both a group and a person is in **every** view whose test it passes, and in no view by elimination. For a viewer V who is in groups G1 and G2:
+
+| Assignee group | Assignee user | Assigned to Me | My Group's Tickets (`held_by`) | Available | `mine` (unchanged) |
+| --- | --- | --- | --- | --- | --- |
+| none | none | | | yes | |
+| none | V | yes | | | yes |
+| none | someone else | | | | |
+| G1 | none | | yes (`nobody`) | | yes |
+| G1 | V | yes | yes (`me`) | | yes |
+| G1 | someone else | | yes (`others`) | | yes |
+| G3, not one of V's | none | | | | |
+| G3, not one of V's | V | yes | | | yes |
+| G3, not one of V's | someone else | | | | |
+
+"Someone else" is any account that is not V, whether or not it is a member of the ticket's group, and a disabled or deleted account still assigned is someone else. A person in several groups sees, in My Group's Tickets, the union of every group's tickets; a ticket has one group, so it appears once. A person in no group has an empty My Group's Tickets, an administrator included; nothing special-cases it. `assigned_to_me ∪ my_groups = mine` for every viewer, and a test holds it.
+
+**The new scope values.** `GET /api/v1/tickets` accepts two more values of `scope` (see **List filters**):
+
+- `scope=assigned_to_me`: `t.assignee_user_id = caller`.
+- `scope=my_groups`: `t.assignee_group_id = ANY(caller's groups)`, the caller's group ids read just before the query as the store already does for `mine` (`mine_group_ids`).
+
+Both are open to staff and administrators. A requester who sends either gets their own tickets, as for `mine` (a requester has no queues; their visibility is already the answer). Unlike the four older values, these two are **always applied**: `reporter_id`, `requester` and `assignee_group_id` narrow them like any other filter and do not replace them. The older values keep yielding to those three exactly as they do today, which is a compatibility rule from 1.2 and not one the new values need: a group picked inside My Group's Tickets must narrow it, never silently widen to a group the viewer is not in.
+
+**The three group filters: `held_by`.** One new filter parameter, parsed by `ticket.ParseListFilter` like every other, staff and administrators only (`403` "held_by is not available to requesters"), one value, `400` "invalid held_by" for any other value:
+
+| `held_by` | Matches | Page label |
+| --- | --- | --- |
+| absent | no restriction | All |
+| `nobody` | `t.assignee_user_id IS NULL` | Group queue |
+| `me` | `t.assignee_user_id = caller` | Assigned to me |
+| `others` | `t.assignee_user_id IS NOT NULL AND t.assignee_user_id <> caller` | Assigned to others |
+
+It is relative to the caller, so it needs no account id and a page can send it without knowing its own. It is an ordinary filter, ANDed with the queue and everything else, and it means the same on every queue (`held_by=nobody` on Search is "every ticket I can see that no person holds"). On My Group's Tickets the three values partition the queue. `held_by=me` matches what `assignee_user_id=<my id>` matches without needing the id; both may be sent together and both apply.
+
+**Who may open Available: `available_queue_roles`.** The owner ruling is that unassigned tickets are not inherently admin-only.
+
+- **The setting.** `available_queue_roles`, a JSON array of role names, the same shape as `mfa_enforced_roles`. Accepted values are `admin` and `staff`; any other value (`user` included: a requester has no queues) is `400 bad_request` "available_queue_roles may list only admin and staff", and a value that is not an array of strings is `400` as for every typed setting. `[]` is accepted. Duplicates are harmless and stored as sent. Roles are a fixed set of three until v3's custom roles, which will extend the accepted values.
+- **Administrators always.** The rule is `role == admin OR role is listed`, so an administrator's access does not depend on what is stored. The settings control shows Administrators ticked and disabled and sends `["admin","staff"]` or `["admin"]`, so the stored value reads as what is in force.
+- **Default: admins only.** The key is absent on every install, fresh or upgraded, and absent reads as `[]`. So is a stored value that cannot be read or parsed: the reader fails closed. There is **no migration** and nothing changes on upgrade.
+- **Session-only.** It is in `admin.AuthCriticalKeys`, with `ticket_scope_enforced`, so an API key or OAuth client that sends it is `403 session_required`: widening who sees which tickets is a permission change, and a leaked key must not make it.
+- **Domain.** `admin.KeyAvailableQueueRoles`, listed in `KnownKeys`; `Service.AvailableQueueRoles(ctx) []string` (a missing or damaged row reads as none); `Service.AvailableQueueAllowed(ctx, role string) bool`. One function decides it for REST, MCP, `/me` and the sidebar.
+- **Machine credentials** take the role they act as: an API key its owner's, an OAuth client its service user's (staff). So ticking Staff opens `scope=unassigned` to an OAuth client too, as it opens it to every staff member.
+
+**`403` for Available.** `scope=unassigned` from a role the rule does not allow is `403 forbidden`, "the unassigned queue is not open to your role" (it used to say "only admins can use this scope", which stops being true once Staff is ticked). `scope=all` is unchanged: administrators only, `403` "only admins can use this scope". As before, neither refusal applies when `reporter_id`, `requester` or `assignee_group_id` is present, because those requests are not on a queue.
+
+**Scope enforcement.** Visibility is never widened by a queue: every queue is ANDed with what the caller may see.
+
+| Queue | Staff, `ticket_scope_enforced` off | Staff, `ticket_scope_enforced` on | Administrator |
+| --- | --- | --- | --- |
+| `assigned_to_me`, `my_groups` | the queue | the queue (every such ticket is already in scope: it is assigned to them or to their group) | the queue |
+| `unassigned` (if allowed) | every available ticket | the available tickets their scope admits: in a Category/Type one of their groups covers, or reported by them | every available ticket |
+| `mine` (unchanged) | assigned to them or their groups | everything their scope admits | assigned to them or their groups |
+| `visible` | every ticket | everything their scope admits | every ticket |
+
+So with **Limit staff to their group scope** on, a ticked staff member's Available view is the unassigned tickets in their area, which is what **Groups & Scope** asks for (an unassigned ticket in a covered category must not be invisible to a covered staff member). A staff member in no group sees only the unassigned tickets they reported. In code, `queueFor`'s collapse of every queue to "any" for scoped staff stays for `mine` alone; the other values are applied as listed.
+
+**One resolution for REST and MCP.** The scope-to-queue rule moves from the handler into the domain, beside `AllowedFor`:
+
+- `ticket.Scope` (`mine`, `assigned_to_me`, `my_groups`, `unassigned`, `all`, `visible`) and `ticket.ParseScope(string) (Scope, bool)`, which trims and reports an unknown or empty value as not ok.
+- `ticket.QueueAssignedToMe` and `ticket.QueueMyGroups` join `Queue`.
+- `ticket.ResolveQueue(scope Scope, f Filter, role user.Role, availableOK bool) (Queue, error)`, called after `f.Visibility` is set. It returns the queue, or a `*FilterError` of kind `FilterForbidden` with the two messages above, so REST answers it through `writeFilterError` and MCP through its usual error path, in the same words. It reads `f.ReporterID`, `f.Requester` and `f.AssigneeGroupID` for the yielding rule and `f.Visibility` for the requester and scoped-staff rules. It is pure and table-tested over every scope, role, visibility and named-set combination.
+- REST: `scope` absent, empty or unknown is `mine`, as always. MCP: see below.
+
+**MCP `list_tickets`.** Two new arguments, through the same parser and the same `ResolveQueue`:
+
+- `scope`: a string, one of the six values. **Absent or null means `visible`**, which is what the tool has always listed, so an existing caller's answer is unchanged. An unknown value, an empty string or any other JSON type is refused ("invalid scope"): this tool never skips an argument (owner decision, 2026-11-12). `unassigned` and `all` are refused in REST's words for a role that may not use them.
+- `held_by`: a string, as in REST, read with the other string filters (`listFilterParams`).
+
+The tool needs the Available rule, so `mcp.Authorizer`, the one interface that already answers MCP's visibility questions, gains `AvailableQueueAllowed(ctx context.Context, a *authmw.Actor) bool`; `server.Server` implements it from `admin.Service.AvailableQueueAllowed`, and `deniedAuthorizer` answers false. The tool's other rule stays: a staff member outside a group may still name it in `assignee_group_id`, because it can only narrow what their scope admits.
+
+**What the page needs to know: `/me`.** `GET /api/v1/me` carries `can_use_available_queue` (boolean, always present, the same shape as `can_create_api_keys`): true for an administrator, true for staff while `staff` is listed, false for a requester. The sidebar and the list read it; Settings makes the `me` query stale when it saves the setting. Until `/me` has answered, a staff member's sidebar shows no Available item (an administrator's always does).
+
+**Sidebar, per role.** For staff and administrators the Tickets item becomes a fixed group, not collapsible (it is the screen people use most, and four links fit): a label "Tickets" with the ticket icon, not itself a link, and indented links under it, in this order:
+
+| Role | Under Tickets |
+| --- | --- |
+| Administrator | Assigned to Me, My Group's Tickets, Available, Search |
+| Staff, `staff` listed | Assigned to Me, My Group's Tickets, Available, Search |
+| Staff, not listed | Assigned to Me, My Group's Tickets, Search |
+| Requester | none: Tickets stays one link to their tickets, as now |
+
+Each link is `/tickets?view=<view>`. A link is current (`aria-current="page"`, the active colour) when the path is `/tickets` and its `view` matches; on a ticket's own page none is. The group is a `role="group"` labelled by the "Tickets" label. The Admin sections below it are unchanged.
+
+**Addresses.** The page keeps its whole search in the address, as before, and adds `view` (`me`, `groups`, `available`, `search`) and `held_by` (kept only with `view=groups`). **The page always writes `view`**, so an address without one is a link made before #676 or by hand, and is translated once, replacing the history entry rather than adding one:
+
+| Address without `view` | Becomes | Why |
+| --- | --- | --- |
+| text or any filter in it (for example the dashboard's `?status=<id>`) | `view=search`, keeping them | before #676 a staff search that narrowed covered everything visible: this is the view that still does |
+| `scope=all` | `view=search` | Search is the administrator's All queue |
+| `scope=unassigned` | `view=available` | the same queue |
+| `scope=mine`, or nothing | `view=me` | the default view; no view equals the old union |
+
+The `scope` key is dropped in the rewrite; the API `scope` is derived from the view and never read from the address again. An address naming a view the viewer may not use (`view=available` for staff the setting leaves out, from an administrator's shared link) is replaced by `view=me`, with no error shown. A requester's `view`, `scope` and `held_by` are dropped. The translation is a pure function in `lib/ticketSearch.ts`, run after `/me` has answered (the list already waits for it). The dashboard's links keep working through the first row; #675 gives its queue strip explicit views.
+
+**On each view.**
+
+- **Text and filters narrow within the view.** The "Only <queue>" chip and the widening of a search to everything visible are retired: the Search view is the wide search. A tracking number or UUID submitted from the box still jumps to the ticket from any view.
+- **Filters offered** (a per-view list, data in `lib/ticketSearch.ts`): Assigned to Me leaves out Assignee (it is always me). Available leaves out Assignee and Group (always empty for this queue) and Requester (with it present, `unassigned` yields to the named set under the 1.2 rule and would list tickets that are not available). My Group's Tickets and Search offer every filter. A filter the view does not offer is neither shown as a chip nor sent, even if the address carries it.
+- **My Group's Tickets** shows a four-way choice under the toolbar, **All / Group queue / Assigned to me / Assigned to others**, buttons with `aria-pressed`, writing `held_by` (All removes it) and resetting the page.
+- **Search** with an empty box and no filter lists every ticket the viewer can see, newest first: for an administrator, the old All queue.
+- **The heading** is the view's name; a requester's is "Tickets".
+- **Empty states**, when the box and filters are empty: Assigned to Me "No tickets are assigned to you." My Group's Tickets: All "No tickets are assigned to your groups.", Group queue "No group tickets are waiting for someone to take them.", Assigned to me "None of your groups' tickets are assigned to you.", Assigned to others "None of your groups' tickets are held by a teammate." Available "No tickets are waiting without a group or a person." Search "No tickets yet." With text or a filter, every view says "No tickets match your search.", as now.
+- **Bulk status change**, sorting, paging, the SLA column and "Include closed" are the same on every view.
+
+**Small screens.** The views are in the navigation drawer below `md`, the same `SidebarContent` as the desktop sidebar, so the two cannot drift; each link is at least 44 px tall on a coarse pointer and closes the drawer when followed. The My Group's Tickets choice wraps rather than scrolls, its buttons at least 44 px tall on a coarse pointer. At 320 px nothing scrolls sideways (an e2e test pins it for the drawer and for the My Group's Tickets toolbar).
+
+**The setting's control.** `AvailableQueueSection` (`frontend/src/components/admin/AvailableQueueSection.tsx`) is self-contained: it reads `GET /admin/settings`, writes only `available_queue_roles` with `PATCH /admin/settings`, shows the server's refusal inline, and invalidates the `me` query on success. Heading "Available queue"; one sentence, "Who can open the Available view: tickets with no group and no person assigned."; checkboxes **Administrators** (ticked, disabled, "always") and **Staff**; and, while `ticket_scope_enforced` is on, "With Limit staff to their group scope on, staff see only the available tickets in their groups' categories." Until the settings re-organisation (#674) places it, it sits under **Settings → General → Ticket visibility**, after "Limit staff to their group scope".
+
+**Upgrade.** Nothing changes for an API or MCP caller: every value it can send today means what it meant, MCP's default listing is unchanged, and Available stays admin-only until an administrator ticks Staff. The page changes: the default view is Assigned to Me, which no longer includes group tickets (they are in My Group's Tickets); a staff member's search no longer covers everything visible unless it is made from Search; and old addresses are translated as above. There is no post-upgrade wizard step, because no setting changes value. The upgrade notes say so.
+
+**API documents.** `docs/api/openapi.yaml`: `scope` on `GET /tickets` lists the six values with the table of who may use them and the 403 wording; `held_by` is added as a query parameter; `can_use_available_queue` is added to the `/me` schema; `available_queue_roles` is added to the admin settings schema, marked session-only. The MCP tools table (see **MCP Interface**) lists `scope` and `held_by` for `list_tickets`. `docs/upgrade-notes-1.3.0.md` gains a section with the setting, its default, that it is session-only, and the page changes above.
+
+**Out of scope.** Per-person saved views, counts beside the sidebar links (the dashboard's queue strip, #675, is where counts go), choosing one of my groups from the sidebar, and custom roles in the setting (v3).
+
+**Decisions taken without the owner.** Each can be overturned in one line.
+
+- Available is `scope=unassigned`, not a new `scope=available`: one queue, one name. Rejected: a synonym.
+- The new values are named `assigned_to_me` and `my_groups`. Rejected: `me` and `groups`, too close to `mine`.
+- The three group filters are one general filter, `held_by=nobody|me|others`, valid on every queue. Rejected: three sub-scopes, or a parameter that is `400` outside `my_groups`; both are special cases of a filter that has one meaning everywhere.
+- `assigned_to_me` and `my_groups` are always applied, even with `reporter_id`, `requester` or `assignee_group_id`; the four older values keep yielding to those as now. Rejected: one yielding rule for all six, which would make a group filter widen My Group's Tickets to a group the viewer is not in.
+- Under scope enforcement a staff member's `mine` still means everything their scope admits; only the new values are narrow. Rejected: narrowing `mine`, a breaking change.
+- The setting is a role list with `admin` implicit and always allowed, accepting only `admin` and `staff`. Rejected: a boolean (the owner asked for the role-list pattern), and accepting `user` (a requester has no queues).
+- No migration: the absent key reads as admins only. Rejected: seeding `[]` as `passkey_required_roles` does, which costs a migration number and changes nothing.
+- The setting is session-only (`AuthCriticalKeys`). Rejected: automatable, since it widens who sees tickets, the family `ticket_scope_enforced` is in.
+- The `403` text for `scope=unassigned` becomes "the unassigned queue is not open to your role"; the code and status are unchanged, and `scope=all` keeps its text. Rejected: keeping "only admins can use this scope", untrue once Staff is ticked.
+- MCP `list_tickets` gains `scope`, defaulting to `visible`, and refuses an unknown value. Rejected: no `scope` (no parity), or a default of `mine` (would change every existing caller's answer).
+- `/me` carries `can_use_available_queue`, always present. Rejected: the page reading the setting (staff cannot read settings) or guessing from a `403`.
+- Queue views narrow within the queue and the "Only <queue>" chip is retired; Search is the wide search. Rejected: keeping the widening on every view, which makes a queue stop being that queue the moment something is typed, and gives two ways to do what Search does.
+- Search with an empty box lists every visible ticket. Rejected: an empty prompt for staff, when the API already answers it and staff without enforcement can see every ticket anyway.
+- The address carries a page `view`, always written, and an address without one is translated once. Rejected: reusing `scope` for views, since views and API scopes do not map one to one (Search is `visible`, Assigned to Me is not `mine`).
+- `?scope=mine` becomes Assigned to Me. Rejected: My Group's Tickets; neither equals the old union, and the default is the least surprising.
+- A view the viewer may not use falls back to Assigned to Me silently. Rejected: showing the `403`, which would greet a colleague's shared link with an error.
+- Available offers no Assignee, Group or Requester filter, and Assigned to Me no Assignee filter. Rejected: offering them, which gives an always-empty list or, for Requester, one that leaves the queue.
+- Tickets is a fixed group in the sidebar for staff and administrators. Rejected: a collapsible section like Admin, which hides the most used links.
+- No post-upgrade wizard step. Rejected: a step for a setting whose value does not change.
+- Until #674, the control sits under Settings → General → Ticket visibility. Rejected: waiting for #674, which would leave the setting reachable only through the API.
+
+**Tests.**
+
+- *Postgres, store* (`internal/database`): one fixture with every row of the classification table for a viewer in two groups, plus a ticket in a third group; `assigned_to_me`, `my_groups` and `unassigned` return exactly their rows; `assigned_to_me ∪ my_groups = mine`; each `held_by` value on `my_groups` returns exactly its rows and the three partition the queue; `held_by` on `any` and on `assigned_to_me`; a viewer in no group gets an empty `my_groups`; scoped visibility (`VisibilityScoped`) with `unassigned` returns only the unassigned tickets in a covered category or type, or reported by the viewer, and with the new queues returns the same as unscoped; the queues combine with a text search, `status_id` and `assignee_group_id`; the scale test's plan check covers `assigned_to_me` and `my_groups`.
+- *Domain*: `ParseListFilter` reads each `held_by` value and refuses others (`400`); `AllowedFor` refuses `held_by` to a requester and the requester-rule test covers the new row; `ParseScope` over every value, empty and unknown; `ResolveQueue` table over scope × role (user, staff, admin) × visibility × `availableOK` × a named set present or not, including that `unassigned` and `all` refusals do not apply with a named set and that the new values are not replaced by one; `admin.Service.AvailableQueueAllowed` for each role with the key absent, `[]`, `["staff"]`, `["admin"]` and a damaged value.
+- *REST, Postgres*: `scope=unassigned` as staff is `403` with the key absent and `200` with `["staff"]`, with enforcement off (every available ticket) and on (only the covered ones); as an administrator `200` whatever is stored; as a requester `403` whatever is stored; `scope=all` as ticked staff is still `403`; `scope=assigned_to_me` and `my_groups` with enforcement on and off; a requester sending them gets their own tickets; `held_by` as a requester is `403`; an unknown `scope` is still `mine`; `PATCH /admin/settings` accepts `[]`, `["admin"]`, `["admin","staff"]`, refuses `["user"]`, `["root"]`, `"staff"` and `null` with `400`, and answers an API key `403 session_required`; `/me` carries `can_use_available_queue` for each role and setting.
+- *MCP*: `scope` absent is the same listing as before (`visible`); each value gives the same tickets as REST for the same caller and setting (parity test over the store fixture); `unassigned` refused for unticked staff in REST's words; an unknown value, `""` and a number are refused; `held_by` passes through and is refused to a requester; `deniedAuthorizer` refuses `unassigned`.
+- *Frontend*: the address translation table row by row, including `view=available` for unticked staff and a requester's address; `toApiParams` per view (the scope sent, `held_by` only on `groups`, the filters each view leaves out); the sidebar per role and setting, the current link, and the Available link hidden until `/me` answers; the My Group's Tickets choice writes `held_by`; each empty state; `AvailableQueueSection` loads, shows Administrators ticked and disabled, saves `["admin","staff"]` and `["admin"]`, shows a refusal, and shows the enforcement sentence only while enforcement is on.
+- *e2e at 320 px*: the drawer lists the views per role and nothing scrolls sideways; the My Group's Tickets toolbar wraps without horizontal scroll.
 
 ### Linked Tickets
 
@@ -756,7 +923,7 @@ did.
 
 Scope does two separate jobs: it can restrict what staff see, and it routes new tickets.
 
-**Visibility: `ticket_scope_enforced`, off by default.** Set under **Admin → Settings → General → Ticket visibility** ("Limit staff to their group scope"). With it **off**, every staff member can open every ticket, which is how every release before it behaved and why it is not on by default: switching it on during an upgrade would hide tickets from people mid-conversation. (Staff's default ticket list still shows the tickets assigned to them or their groups.) With it **on**, a staff member sees a ticket if they reported it, are assigned it, one of their groups is assigned it, or it falls in a Category/Type a group of theirs covers. That is the union of two readings that both applied (a ticket in your area that nobody has picked up is visible, and so is one assigned to you outside your usual area), and staff can take any action on tickets they can see. Administrators always see everything and a reporting user sees their own. One rule serves REST, MCP and a ticket's own audit feed (`ticket.CanView`, `CanViewTicket`/`TicketVisibility`). Staff in no group see almost nothing, so turn it on once groups and their scopes are configured.
+**Visibility: `ticket_scope_enforced`, off by default.** Set under **Admin → Settings → General → Ticket visibility** ("Limit staff to their group scope"). With it **off**, every staff member can open every ticket, which is how every release before it behaved and why it is not on by default: switching it on during an upgrade would hide tickets from people mid-conversation. (Staff's ticket list still opens on the tickets assigned to them; see **Ticket list views**.) With it **on**, a staff member sees a ticket if they reported it, are assigned it, one of their groups is assigned it, or it falls in a Category/Type a group of theirs covers. That is the union of two readings that both applied (a ticket in your area that nobody has picked up is visible, and so is one assigned to you outside your usual area), and staff can take any action on tickets they can see. Administrators always see everything and a reporting user sees their own. One rule serves REST, MCP and a ticket's own audit feed (`ticket.CanView`, `CanViewTicket`/`TicketVisibility`). Staff in no group see almost nothing, so turn it on once groups and their scopes are configured.
 
 **Routing: auto-assignment.** A newly created ticket is routed once, at creation, by the first rule that matches (the assignment is made by the system, so its audit entry has no actor):
 
@@ -2955,7 +3122,7 @@ Exposes help desk operations as an MCP server for AI tool integration, over two 
 | Tool | Who may call it | Notes |
 |------|-----------------|-------|
 | `get_ticket` | any signed-in user | By UUID or tracking number. Returns the reply thread and linked tickets; internal notes are omitted for reporting users. `include_replies` (default `true`): `false` returns the ticket alone, without replies or links. Staff and administrators also get the ticket's `custom_fields` (field id, name, type, options, retired options, value), left out when it has none (#627); a reporting user is never given them here. |
-| `list_tickets` | any signed-in user | The filters of `GET /api/v1/tickets` (see **List filters**), through the same parser and the same check, so the same values are accepted and the same callers are refused, in the same words (one exception: a requester who sends `assignee_group_id` is told "assignee_group_id is not available to requesters" here, where REST says "users cannot list group tickets"): `q`, `search_replies`, `reporter_id`, `requester`, `created_after`, `created_before`, `updated_after`, `updated_before`, `priority`, `category_id`, `type_id`, `item_id`, `assignee_user_id`, `assignee_group_id`, `status_id`, `status_ids`, `include_closed`, `source_channel`, `sla`, `sort` and `order`. Lists are JSON arrays (`status_ids`, `source_channel`, and `priority`, which is still accepted as a single string), at most 20 values each (a longer list is refused before any work is done on it), ORed. `status_id` (one) is kept for existing callers and may be combined with `status_ids`. A requester is refused the filters and sorts outside their allowed list ("<param> is not available to requesters"), and `requester` free text from an API key or OAuth client needs `requester_search:read` ("this credential does not carry the requester_search:read scope"); a session needs no scope. `sla`, and `sort` by `sla`, are refused while SLA tracking is off. An argument of the wrong JSON type (`limit` and `offset` included), an unknown value, or an unknown `sort` or `order` is refused with a message, never skipped (owner decision, 2026-11-12), and is not logged as a server error. Whether a reply search may match internal notes comes from the caller's role; there is no argument for it. The listing is every ticket the caller may see, as it has always been here (REST's `scope=visible`), not REST's default queue of tickets assigned to the caller, and `assignee_group_id` is not refused to a staff member who is outside the group, because it can only narrow what their scope already admits. `limit` defaults to 20 and is clamped to 100; `offset` pages the full result set. |
+| `list_tickets` | any signed-in user | The filters of `GET /api/v1/tickets` (see **List filters**), through the same parser and the same check, so the same values are accepted and the same callers are refused, in the same words (one exception: a requester who sends `assignee_group_id` is told "assignee_group_id is not available to requesters" here, where REST says "users cannot list group tickets"): `q`, `search_replies`, `reporter_id`, `requester`, `created_after`, `created_before`, `updated_after`, `updated_before`, `priority`, `category_id`, `type_id`, `item_id`, `assignee_user_id`, `assignee_group_id`, `status_id`, `status_ids`, `include_closed`, `source_channel`, `sla`, `held_by`, `sort` and `order`, plus `scope` (#676: absent means `visible`, what this tool has always listed; the other values and their refusals are REST's, through the same `ticket.ResolveQueue`, and an unknown value is refused; see **Ticket list views**). Lists are JSON arrays (`status_ids`, `source_channel`, and `priority`, which is still accepted as a single string), at most 20 values each (a longer list is refused before any work is done on it), ORed. `status_id` (one) is kept for existing callers and may be combined with `status_ids`. A requester is refused the filters and sorts outside their allowed list ("<param> is not available to requesters"), and `requester` free text from an API key or OAuth client needs `requester_search:read` ("this credential does not carry the requester_search:read scope"); a session needs no scope. `sla`, and `sort` by `sla`, are refused while SLA tracking is off. An argument of the wrong JSON type (`limit` and `offset` included), an unknown value, or an unknown `sort` or `order` is refused with a message, never skipped (owner decision, 2026-11-12), and is not logged as a server error. Whether a reply search may match internal notes comes from the caller's role; there is no argument for it. With no `scope` the listing is every ticket the caller may see, as it has always been here (REST's `scope=visible`), not REST's default queue of tickets assigned to the caller, and `assignee_group_id` is not refused to a staff member who is outside the group, because it can only narrow what their scope already admits. `limit` defaults to 20 and is clamped to 100; `offset` pages the full result set. |
 | `list_attachments` | any signed-in user | `ticket_id` is a UUID or tracking number; a ticket the caller may not see answers the same "not found" as one that does not exist. Metadata for each file: `id`, `filename`, `mime_type`, `size_bytes`, `created_at`, `detected_mime`, `sha256`, `virus_name`, `mismatch` and `quarantined` (`virus_name` is set). `mismatch` is `null` for a file that predates the inspection, which is not the same as `false`. **No file content** (attachments are download-only) and **no reputation lookup**: that spends the operator's provider allowance, so it stays in the web interface. |
 | `list_categories` | any signed-in user | The Category/Type/Item tree, nested, for filling in CTI. Active entries only; `include_inactive: true` adds retired ones, for staff and administrators only, as on the REST catalogue; for anyone else the flag is ignored and they get active entries (no error). |
 | `list_statuses` | any signed-in user | The statuses this instance defines. |
@@ -3184,7 +3351,7 @@ Four more things are off limits to a machine credential, for the same reason:
   address and policy, allowed types, infected and mismatch handling, the
   reputation toggles, keys and refresh interval); and audit retention, staff
   visibility of change history and whether requester names are masked in audit
-  views; who may create API keys (`staff_can_create_api_keys`) and how long a new one may live (`api_key_max_lifetime_years`, #450); and who sees tickets and who is handed them (`ticket_scope_enforced`, `auto_assign_group_id`, `auto_assign_user_ids`, #450): a key that could switch scope enforcement off, or point auto-assign at an account it controls, would widen what that account sees or is given.
+  views; who may create API keys (`staff_can_create_api_keys`) and how long a new one may live (`api_key_max_lifetime_years`, #450); and who sees tickets and who is handed them (`ticket_scope_enforced`, `auto_assign_group_id`, `auto_assign_user_ids`, #450; `available_queue_roles`, #676): a key that could switch scope enforcement off, or point auto-assign at an account it controls, would widen what that account sees or is given.
   Ordinary configuration such as the site name
   stays automatable.
 - **Verifying a second factor** (`POST /auth/local/mfa/verify` and
