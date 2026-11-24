@@ -195,4 +195,58 @@ describe('creating with a description', () => {
     await userEvent.click(add)
     expect(post).not.toHaveBeenCalled()
   })
+
+  // The ticket forms in this browser read the public lists, which hold the text.
+  it.each([
+    { what: 'category', key: 'public-categories' },
+    { what: 'type', key: 'public-types' },
+    { what: 'item', key: 'public-items' },
+  ])('a new $what refreshes the public list the forms read', async ({ what, key }) => {
+    mockApi()
+    const { queryClient } = renderWithQuery(<CategoriesPage />)
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries')
+    if (what === 'category') {
+      await userEvent.click(await screen.findByRole('button', { name: /new category/i }))
+      await userEvent.type(screen.getByPlaceholderText('Category name'), 'Network')
+    } else {
+      await userEvent.click(within(await rowOf('Hardware')).getByRole('button', { name: 'Expand' }))
+      await screen.findByText('Laptop')
+      if (what === 'type') {
+        await userEvent.click(screen.getByRole('button', { name: /add type/i }))
+        await userEvent.type(screen.getByPlaceholderText('Type name'), 'Desktop')
+      } else {
+        await userEvent.click(within(await rowOf('Laptop')).getByRole('button', { name: 'Expand' }))
+        await screen.findByText('Battery')
+        await userEvent.click(screen.getByRole('button', { name: /add item/i }))
+        await userEvent.type(screen.getByPlaceholderText('Item name'), 'Charger')
+      }
+    }
+    await userEvent.click(screen.getByRole('button', { name: 'Add' }))
+    await waitFor(() => expect(invalidate).toHaveBeenCalledWith({ queryKey: [key] }))
+  })
+})
+
+describe('the edit box follows the row', () => {
+  it('shows another administrator’s edit when the row is refetched and nothing here was typed', async () => {
+    mockApi()
+    const { queryClient } = renderWithQuery(<CategoriesPage />)
+    await userEvent.click(within(await rowOf('Hardware')).getByRole('button', { name: 'Expand' }))
+    const box = (await screen.findByLabelText(/^description/i)) as HTMLTextAreaElement
+    expect(box.value).toBe('Category text')
+
+    queryClient.setQueryData(['admin', 'categories'], [{ ...CAT, description: 'Edited elsewhere' }])
+    await waitFor(() => expect(box.value).toBe('Edited elsewhere'))
+  })
+
+  it('keeps what is being typed when the row changes under it', async () => {
+    mockApi()
+    const { queryClient } = renderWithQuery(<CategoriesPage />)
+    await userEvent.click(within(await rowOf('Hardware')).getByRole('button', { name: 'Expand' }))
+    const box = (await screen.findByLabelText(/^description/i)) as HTMLTextAreaElement
+    await userEvent.type(box, ' plus mine')
+
+    queryClient.setQueryData(['admin', 'categories'], [{ ...CAT, description: 'Edited elsewhere' }])
+    await screen.findByText('Hardware')
+    expect(box.value).toBe('Category text plus mine')
+  })
 })

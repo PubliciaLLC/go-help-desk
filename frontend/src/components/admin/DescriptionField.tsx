@@ -1,7 +1,16 @@
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
-import { CTI_DESCRIPTION_MAX, isDescriptionTooLong } from '@/lib/ctiDescription'
+import { CTI_DESCRIPTION_MAX, isDescriptionTooLong, trimDescription } from '@/lib/ctiDescription'
 import { charCount } from '@/lib/fieldLimits'
+
+// Quoted verbatim in docs/DESIGN.md (Descriptions -> Admin). Public means public:
+// the catalogue routes serve every ACTIVE category, type and item to anyone while
+// guest submission is on, and to any signed-in user always, whatever the level.
+const DESCRIPTION_HINT =
+  'Shown beneath the Category / Type / Item chooser on the new-ticket form, the guest form (categories only) and ' +
+  'the reclassify card on a ticket. Plain text, no formatting; line breaks are kept. This text is public: while ' +
+  'guest submission is on, anyone can read the description of every active category, type and item, and any ' +
+  'signed-in user can read them at any time. Do not put anything here you would not put on a public web page.'
 
 /**
  * The optional Description of a category, type or item (create and edit).
@@ -19,7 +28,8 @@ export function DescriptionField({
   value: string
   onChange: (value: string) => void
 }) {
-  const count = charCount(value)
+  // The trimmed text, as the limit is applied to it.
+  const count = charCount(trimDescription(value))
   const over = isDescriptionTooLong(value)
   const hintId = `${id}-hint`
   return (
@@ -38,9 +48,7 @@ export function DescriptionField({
       />
       <div className="flex flex-wrap items-start justify-between gap-x-3 gap-y-1 text-xs">
         <p id={hintId} className="min-w-0 flex-1 text-gray-500 wrap-anywhere">
-          Shown beneath the Category / Type / Item chooser on the new-ticket form. Plain text, no formatting; line
-          breaks are kept. Anyone who can pick this entry can read it, including visitors on the guest form when
-          guest submission is on.
+          {DESCRIPTION_HINT}
         </p>
         <span className={over ? 'font-medium text-red-600' : 'text-gray-500'}>
           {count} / {CTI_DESCRIPTION_MAX}

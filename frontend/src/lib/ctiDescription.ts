@@ -7,9 +7,17 @@ import { charCount } from '@/lib/fieldLimits'
 // The server's limit, in characters (not bytes, not UTF-16 units).
 export const CTI_DESCRIPTION_MAX = 500
 
+// Trims what the server trims. String.trim() and Go's strings.TrimSpace disagree
+// on two characters: trim() strips U+FEFF (byte order mark) and keeps U+0085
+// (next line), TrimSpace the reverse. The server strips both, so this does, and a
+// text counted here is counted the same there.
+export function trimDescription(value: string): string {
+  return value.replace(/^[\s\u0085\uFEFF]+|[\s\u0085\uFEFF]+$/g, '')
+}
+
 // What the server will refuse: more than 500 characters once trimmed.
 export function isDescriptionTooLong(value: string): boolean {
-  return charCount(value.trim()) > CTI_DESCRIPTION_MAX
+  return charCount(trimDescription(value)) > CTI_DESCRIPTION_MAX
 }
 
 // Anything with an optional description: a Category, a TicketType or a
@@ -32,7 +40,7 @@ export function mostSpecificDescription(
   item?: Described | null,
 ): string {
   for (const level of [item, type, category]) {
-    const text = level?.description?.trim()
+    const text = trimDescription(level?.description ?? '')
     if (text) return text
   }
   return ''

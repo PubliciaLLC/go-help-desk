@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { mostSpecificDescription, CTI_DESCRIPTION_MAX } from './ctiDescription'
+import { mostSpecificDescription, trimDescription, isDescriptionTooLong, CTI_DESCRIPTION_MAX } from './ctiDescription'
 
 // One state per level: not chosen, chosen with no description, chosen with one.
 type State = 'none' | 'bare' | 'text'
@@ -56,6 +56,18 @@ describe('mostSpecificDescription', () => {
 
   it('returns the text as it is, markup included: it is shown as text, never parsed', () => {
     expect(mostSpecificDescription({ description: '<b>x</b>\n**y**' })).toBe('<b>x</b>\n**y**')
+  })
+
+  // JS trim() strips U+FEFF and keeps U+0085; Go's TrimSpace does the opposite.
+  // The server strips both, and so does this, so what the form accepts the
+  // server does not refuse for length.
+  it('trims the same set as the server: a byte order mark and a next-line character too', () => {
+    expect(trimDescription('﻿ a \u0085')).toBe('a')
+    expect(trimDescription('   a  ')).toBe('a')
+    expect(trimDescription(' a ﻿ b ')).toBe('a ﻿ b') // only at the ends
+    expect(mostSpecificDescription({ description: '\u0085﻿' })).toBe('')
+    expect(isDescriptionTooLong('﻿' + 'a'.repeat(500) + '\u0085')).toBe(false)
+    expect(isDescriptionTooLong('a'.repeat(501))).toBe(true)
   })
 
   it('has the same limit as the server', () => {

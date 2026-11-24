@@ -37,6 +37,24 @@ describe('DescriptionField', () => {
     expect(screen.getByText('3 / 500')).toBeDefined()
   })
 
+  it('says everything about who can read it: every active entry is public while guest submission is on', () => {
+    render(<Harness />)
+    const hint = document.getElementById('d-hint')!.textContent!
+    expect(hint).toMatch(/new-ticket form/i)
+    expect(hint).toMatch(/guest form/i)
+    expect(hint).toMatch(/reclassif/i)
+    expect(hint).toMatch(/public/i)
+    expect(hint).toMatch(/any signed-in user/i)
+    // The old wording implied only someone who could pick the entry could read it.
+    expect(hint).not.toMatch(/can pick this/i)
+  })
+
+  it('counts the trimmed text, as the limit does: padding is not counted', () => {
+    render(<Harness initial={' '.repeat(10) + 'a'.repeat(500) + '\n\n'} />)
+    expect(screen.getByText('500 / 500')).toBeDefined()
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
   it('counts characters, not UTF-16 units or bytes', () => {
     render(<Harness initial={'😀'.repeat(500)} />)
     expect(screen.getByText('500 / 500')).toBeDefined()

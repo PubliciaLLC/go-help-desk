@@ -29,7 +29,7 @@ import { Input } from '@/components/ui/input'
 import { Spinner } from '@/components/ui/spinner'
 import { TOUCH_SIZE, ROW_BTN } from '@/components/admin/touchTargets'
 import { DescriptionField } from '@/components/admin/DescriptionField'
-import { isDescriptionTooLong } from '@/lib/ctiDescription'
+import { isDescriptionTooLong, trimDescription } from '@/lib/ctiDescription'
 import {
   ChevronRightIcon, ChevronDownIcon, PlusIcon, TrashIcon,
   GripVerticalIcon, PencilIcon, CheckIcon, XIcon, UsersRoundIcon, SlidersIcon,
@@ -217,16 +217,24 @@ function DescriptionEditor({
 }) {
   const qc = useQueryClient()
   const [draft, setDraft] = useState(value)
+  // The row can change under an open box (another administrator's edit, a refetch).
+  // A box nothing has been typed in follows it; one being typed in is left alone.
+  // Derived while rendering, from the value the last render saw.
+  const [seen, setSeen] = useState(value)
+  if (seen !== value) {
+    setSeen(value)
+    if (trimDescription(draft) === trimDescription(seen)) setDraft(value)
+  }
   const mutation = useMutation({
     mutationFn: () => save(draft),
     onSuccess: () => {
       // What the server stored is trimmed; show that, so the box and the row agree.
-      setDraft((d) => d.trim())
+      setDraft((d) => trimDescription(d))
       onSaved()
       invalidatePublicCatalogue(qc)
     },
   })
-  const unchanged = draft.trim() === value.trim()
+  const unchanged = trimDescription(draft) === trimDescription(value)
 
   return (
     <form
@@ -739,6 +747,7 @@ function SortableTypeRow({
       setItemDescription('')
       setAddingItem(false)
       qc.invalidateQueries({ queryKey: ['admin', 'items', categoryId, type.id] })
+      invalidatePublicCatalogue(qc)
     },
   })
 
@@ -911,6 +920,7 @@ function SortableCategoryRow({ cat }: { cat: Category }) {
       setTypeDescription('')
       setAddingType(false)
       qc.invalidateQueries({ queryKey: ['admin', 'types', cat.id] })
+      invalidatePublicCatalogue(qc)
     },
   })
 
@@ -1063,6 +1073,7 @@ export function CategoriesPage() {
       setAddingCategory(false)
       setFormError('')
       qc.invalidateQueries({ queryKey: ['admin', 'categories'] })
+      invalidatePublicCatalogue(qc)
     },
     onError: (err) => setFormError(extractError(err)),
   })
