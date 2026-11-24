@@ -1,6 +1,5 @@
 import { Section } from '@/components/admin/Section'
 import { SettingRow, Toggle } from '@/pages/admin/settings/primitives'
-import { AvailableQueueSection } from '@/components/admin/AvailableQueueSection'
 import type { SettingsDraft } from '@/pages/admin/settings/useSettingsDraft'
 
 export function TicketVisibilitySection({ draft }: { draft: SettingsDraft }) {
@@ -16,7 +15,6 @@ export function TicketVisibilitySection({ draft }: { draft: SettingsDraft }) {
           onChange={(v) => setBool('ticket_scope_enforced', v)}
         />
       </SettingRow>
-      <AvailableQueueSection />
     </Section>
   )
 }

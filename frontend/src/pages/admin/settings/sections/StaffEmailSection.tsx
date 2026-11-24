@@ -27,7 +27,7 @@ export const STAFF_EMAIL_SWITCHES:{ key: string; name: string; help: string }[] 
   {
     key: 'staff_email_sla_override',
     name: 'SLA alerts',
-    help: 'A target on a ticket assigned to a person, on a group ticket nobody has taken yet, or on a ticket a person follows is breached or at risk. Needs SLA alerts turned on under Features.',
+    help: 'A target on a ticket assigned to a person, on a group ticket nobody has taken yet, or on a ticket a person follows is breached or at risk. Needs SLA alerts turned on below.',
   },
 ]
 

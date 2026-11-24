@@ -10,6 +10,7 @@ import { TicketsSection } from '@/pages/admin/settings/sections/TicketsSection'
 import { SubmissionsSection } from '@/pages/admin/settings/sections/SubmissionsSection'
 import { TicketLifecycleSection } from '@/pages/admin/settings/sections/TicketLifecycleSection'
 import { TicketVisibilitySection } from '@/pages/admin/settings/sections/TicketVisibilitySection'
+import { AvailableQueueSection } from '@/components/admin/AvailableQueueSection'
 import { AuditLogSettingsSection } from '@/pages/admin/settings/sections/AuditLogSettingsSection'
 import { UpdatesSection } from '@/pages/admin/settings/sections/UpdatesSection'
 import { PrivacyMaskSection } from '@/pages/admin/settings/sections/PrivacyMaskSection'
@@ -55,6 +56,7 @@ const PANELS: Record<Tab, Part[]> = {
     SubmissionsSection,
     TicketLifecycleSection,
     TicketVisibilitySection,
+    AvailableQueueSection,
     AuditLogSettingsSection,
     UpdatesSection,
     PrivacyMaskSection,

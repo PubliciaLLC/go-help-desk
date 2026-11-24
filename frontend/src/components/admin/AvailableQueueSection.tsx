@@ -3,11 +3,13 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { getSettings, updateSettings } from '@/api/admin'
 import { extractError } from '@/api/client'
 import { Button } from '@/components/ui/button'
+import { Section } from '@/components/admin/Section'
 
-// #676: who may open the Available view (tickets with no group and no person
+// #676, #674: who may open the Available view (tickets with no group and no person
 // assigned). Self-contained: it reads the settings dump and writes only
 // available_queue_roles, so it can sit in any settings section. Administrators
-// are always in; the stored value only decides Staff.
+// are always in; the stored value only decides Staff. It is a Section of its own
+// (#674: the Privacy page lists it after Ticket visibility).
 //
 // It keeps its own query key. The Settings page holds the same dump as a
 // page-wide draft and replaces the draft whenever the dump changes, so a save
@@ -51,57 +53,58 @@ export function AvailableQueueSection() {
   })
 
   return (
-    <div className="px-5 py-4">
-      <h3 className="text-sm font-medium text-gray-900">Available queue</h3>
-      <p className="mt-0.5 text-sm text-gray-500">
-        Who can open the Available view: tickets with no group and no person assigned.
-      </p>
-
-      <div className="mt-3 flex flex-col gap-2">
-        <label className="flex items-center gap-1.5 select-none text-sm text-gray-700">
-          <input
-            type="checkbox"
-            className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-            checked
-            disabled
-          />
-          Administrators <span className="text-gray-400">always</span>
-        </label>
-        <label className="flex items-center gap-1.5 cursor-pointer select-none text-sm text-gray-700">
-          <input
-            type="checkbox"
-            className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
-            checked={staff}
-            disabled={!settings}
-            onChange={(e) => setDraft(e.target.checked)}
-          />
-          Staff
-        </label>
-      </div>
-
-      {enforced && (
-        <p className="mt-3 text-sm text-gray-500">
-          With Limit staff to their group scope on, staff see only the available tickets in their
-          groups&apos; categories. Tick Staff if your staff pick up new tickets themselves: otherwise
-          they find them only through Search.
+    <Section title="Available queue">
+      <div className="px-5 py-4">
+        <p className="text-sm text-gray-500">
+          Who can open the Available view: tickets with no group and no person assigned.
         </p>
-      )}
 
-      {error && <p role="alert" className="mt-3 text-sm text-red-600">{error}</p>}
+        <div className="mt-3 flex flex-col gap-2">
+          <label className="flex items-center gap-1.5 select-none text-sm text-gray-700">
+            <input
+              type="checkbox"
+              className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+              checked
+              disabled
+            />
+            Administrators <span className="text-gray-400">always</span>
+          </label>
+          <label className="flex items-center gap-1.5 cursor-pointer select-none text-sm text-gray-700">
+            <input
+              type="checkbox"
+              className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+              checked={staff}
+              disabled={!settings}
+              onChange={(e) => setDraft(e.target.checked)}
+            />
+            Staff
+          </label>
+        </div>
 
-      <div className="mt-3">
-        <Button
-          type="button"
-          size="sm"
-          disabled={!settings || save.isPending}
-          onClick={() => {
-            setError('')
-            save.mutate()
-          }}
-        >
-          Save
-        </Button>
+        {enforced && (
+          <p className="mt-3 text-sm text-gray-500">
+            With Limit staff to their group scope on, staff see only the available tickets in their
+            groups&apos; categories. Tick Staff if your staff pick up new tickets themselves: otherwise
+            they find them only through Search.
+          </p>
+        )}
+
+        {error && <p role="alert" className="mt-3 text-sm text-red-600">{error}</p>}
+
+        <div className="mt-3">
+          <Button
+            type="button"
+            size="sm"
+            disabled={!settings || save.isPending}
+            onClick={() => {
+              setError('')
+              save.mutate()
+            }}
+          >
+            Save
+          </Button>
+        </div>
       </div>
-    </div>
+    </Section>
   )
 }
