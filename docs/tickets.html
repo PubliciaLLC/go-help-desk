@@ -810,7 +810,7 @@
 <p><strong>Reports</strong> shows how the desk is doing over a period: how long tickets take to resolve and to get a first response, how many met their SLA, how many came back, how old the open work is, how much arrived and who holds it. Staff and administrators see the <em>Reports</em> item in the sidebar, between Tickets and Admin. A requester has no Reports item, and opening the address sends them to the dashboard.</p>
 
 <img src="../screenshots/48-reports.png" alt="Reports page for the last 30 days compared with the 30 days before: time to resolve, first response, SLA attainment and reopen rate with their changes, a created-and-resolved chart, open tickets by age, and open tickets by assignee and by group" width="2880" loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
-<p style="margin:0.4rem 0 1.25rem;font-size:0.85rem;color:var(--muted);">Reports for the last 30 days. Every figure except Backlog and Workload is compared with the previous period of the same length.</p>
+<p style="margin:0.4rem 0 1.25rem;font-size:0.85rem;color:var(--muted);">Reports for the last 30 days. Every period total and rate is compared with the previous period of the same length. Backlog, Workload and the volume breakdowns show the current period only.</p>
 
 <h3 id="tickets-reports-measures">What each card measures</h3>
 <table>
@@ -836,7 +836,7 @@
 <h3 id="tickets-reports-period">Period, comparison and filters</h3>
 <ul>
   <li><strong>The period</strong> is the last 7, 30 or 90 days (30 by default), or a custom range of dates. A custom range is at most 366 days. Dates are in your own time zone, as your browser reports it.</li>
-  <li><strong>Every figure except Backlog and Workload is compared with the previous period</strong>: the same number of days, ending the day before the period starts. A change is shown as a percentage, or in points for a rate, and is coloured by whether the direction is better or worse. When there is no data in the previous period, the card says so.</li>
+  <li><strong>Every period total and rate is compared with the previous period</strong>: the same number of days, ending the day before the period starts. A change is shown as a percentage, or in points for a rate, and is coloured by whether the direction is better or worse. When there is no data in the previous period, the card says so. <strong>Backlog, Workload and the breakdowns of volume by category and by priority show the current period only</strong>, with no comparison.</li>
   <li><strong>Filters</strong> narrow every card: <em>Category</em> (a top-level category, with everything under it), <em>Priority</em> and <em>Group</em>. They apply to a ticket's current values, so a ticket moved from Hardware to Network counts as Network.</li>
   <li><strong>The address holds the state.</strong> A refresh, or a link sent to a colleague, shows the same board, within what that person may see.</li>
 </ul>
