@@ -6,6 +6,14 @@
 # last because they file a ticket, archive a category and change settings, which
 # would show in the older shots.
 #
+# The extras seed also files the history the dashboard (02) and Reports (48)
+# need: two months of tickets with SLA tracking, one breached and one at risk.
+# The API cannot backdate, so one step in between moves those tickets in time
+# with SQL (frontend/scripts/screenshots/backdate.sql, against the screenshot
+# database only). The order is: capture 15, seed, capture 01 to 28, seed the
+# extras, backdate, capture 02 and 29 and later. The older shots are taken
+# before any history exists, so they look as they always did.
+#
 #   ./scripts/screenshots.sh                    build, seed and capture into a new output directory
 #   ./scripts/screenshots.sh --publish DIR      also copy the shots this run wrote into DIR/screenshots/
 #                                               (DIR is a checkout of the web branch)
@@ -261,7 +269,7 @@ preflight() {
   if [ -n "$(git -C "$root" status --porcelain -- backend/internal/ui/dist/index.html)" ]; then
     die "backend/internal/ui/dist/index.html has uncommitted changes. The run restores that file with git checkout, which would discard them. Commit or stash them first."
   fi
-  for f in fake-clamd.mjs fake-smtp.mjs seed.mjs capture.mjs; do
+  for f in fake-clamd.mjs fake-smtp.mjs seed.mjs capture.mjs backdate.sql; do
     [ -f "$shots/$f" ] || die "missing $shots/$f"
   done
   if [ -z "$chromium" ]; then
@@ -609,6 +617,19 @@ seed_extras() {
   run_logged "$out/seed.log" node_seed --extras
 }
 
+# Screenshot tooling only: moves the history that seed.mjs --extras filed back in
+# time, so the dashboard has a trend and Reports has a period to compare with
+# (see backdate.sql, which also refuses any database not named ghd_screenshots*).
+# Runs after the extras seed and before the extras capture: the shots taken
+# before it (01 to 28, and 15) never see it. A shot that shows a ticket's dates
+# or the counts of the whole instance is taken after it.
+backdate() {
+  step "backdating the seeded history in $db"
+  [[ "$db" =~ ^ghd_screenshots[A-Za-z0-9_]*$ ]] || die "refusing to backdate a database not named ghd_screenshots*: $db"
+  [ -s "$out/history.json" ] || die "seed.mjs --extras wrote no $out/history.json"
+  run_logged "$out/seed.log" pgadmin -d "$db" -f "$shots/backdate.sql" -v spec="$(cat "$out/history.json")"
+}
+
 # The run's manifest is the union of the three phases. It is what --publish and
 # the report read; png/ may hold shots from earlier runs that this one did not write.
 merge_manifest() {
@@ -725,7 +746,7 @@ main() {
 
   # Each run starts from a clean record, so seed.json, the logs, the manifest
   # and the report describe this run only. PNGs are kept when --only is given.
-  rm -f "$out/seed.json" "$out/capture.log" "$out/seed.log" "$out/report.txt" "$out/manifest.txt" "$out/build.log"
+  rm -f "$out/seed.json" "$out/history.json" "$out/capture.log" "$out/seed.log" "$out/report.txt" "$out/manifest.txt" "$out/build.log"
   if [ -z "$only" ]; then rm -f "$out/png"/*.png; fi
 
   if [ -z "$password" ]; then password="$(run_secret)"; fi
@@ -743,6 +764,7 @@ main() {
   seed
   capture main
   seed_extras
+  backdate
   capture extras
   merge_manifest
   optimise
