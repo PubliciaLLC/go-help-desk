@@ -1796,7 +1796,7 @@ type TicketVolumeByDayRow struct {
 // tz, ending with the day that contains now, the tickets created and the tickets
 // resolved. The visibility block is the list's, copied into both arms and pinned
 // to it by TestSQL_DashboardQueriesShareTheListRule. The resolved arm is served
-// by tickets_done_at_idx (000066), the created arm by tickets_created_at_idx.
+// by tickets_done_at_idx (000068), the created arm by tickets_created_at_idx.
 // tz is only ever a parameter of AT TIME ZONE; a name Postgres does not know
 // fails with SQLSTATE 22023, which the store maps to ErrUnknownTimeZone.
 func (q *Queries) TicketVolumeByDay(ctx context.Context, arg TicketVolumeByDayParams) ([]TicketVolumeByDayRow, error) {

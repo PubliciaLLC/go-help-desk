@@ -10,14 +10,14 @@ import (
 )
 
 const (
-	migration066Up   = "migrations/000066_tickets_done_at_index.up.sql"
-	migration066Down = "migrations/000066_tickets_done_at_index.down.sql"
+	migration068Up   = "migrations/000068_tickets_done_at_index.up.sql"
+	migration068Down = "migrations/000068_tickets_done_at_index.down.sql"
 )
 
-// Migration 000066 adds the index the dashboard's volume trend reads its
+// Migration 000068 adds the index the dashboard's volume trend reads its
 // resolved arm through (#675). Down, up, up again, verbatim, inside a
 // transaction that is rolled back.
-func TestMigration066_TicketsDoneAtIndex(t *testing.T) {
+func TestMigration068_TicketsDoneAtIndex(t *testing.T) {
 	db, closeDB := testutil.NewDB(t)
 	defer closeDB()
 	ctx := context.Background()
@@ -32,13 +32,13 @@ func TestMigration066_TicketsDoneAtIndex(t *testing.T) {
 	}
 	require.True(t, exists(), "the migration has run in the test database")
 
-	execMigrationFile(t, ctx, tx, migration066Down, nil)
+	execMigrationFile(t, ctx, tx, migration068Down, nil)
 	require.False(t, exists(), "down drops the index")
-	execMigrationFile(t, ctx, tx, migration066Down, nil) // IF EXISTS: harmless on a database without it
+	execMigrationFile(t, ctx, tx, migration068Down, nil) // IF EXISTS: harmless on a database without it
 
-	execMigrationFile(t, ctx, tx, migration066Up, nil)
+	execMigrationFile(t, ctx, tx, migration068Up, nil)
 	require.True(t, exists(), "up creates the index")
-	execMigrationFile(t, ctx, tx, migration066Up, nil) // IF NOT EXISTS: harmless on a database that has it
+	execMigrationFile(t, ctx, tx, migration068Up, nil) // IF NOT EXISTS: harmless on a database that has it
 	require.True(t, exists())
 
 	// The index is on the expression the trend filters by, so the planner can

@@ -4,9 +4,8 @@
 -- without being resolved. The created arm is served by tickets_created_at_idx
 -- (000021); this is the same for the other column pair.
 --
--- Numbering: 000066 was the next free number on the branch this was written on.
--- Other open branches also add migrations (#616, #670), so a renumber may be
--- needed at merge; the content does not depend on the number.
+-- Numbering: written as 000066 and renumbered to 000068 when it was merged with
+-- #616 (000066) and #670 (000067); the content does not depend on the number.
 --
 -- Built inside the migration, not concurrently, as 000021 built its ticket
 -- indexes: one btree on the tickets table takes seconds at a million rows, holds
