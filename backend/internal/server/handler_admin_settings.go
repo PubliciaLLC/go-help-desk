@@ -1424,11 +1424,18 @@ type samlRequiredStatus struct {
 	Reason string `json:"reason"`
 }
 
-// samlRequiredNotLoadedWarning is the standing form of the warning a save gives
-// (samlRequiredButNotLoadedWarning): nil unless saml_enabled is on while SAML is
-// not loaded.
+// samlRequiredNotLoaded is the one definition of the hazard: saml_enabled
+// ("Require SAML for staff and users") is on while SAML is not loaded. The
+// save-time warning (samlRequiredButNotLoadedWarning) and the standing
+// security warning below both ask it.
+func (s *Server) samlRequiredNotLoaded(ctx context.Context) bool {
+	return s.adminSvc.SAMLEnabled(ctx) && !s.samlReachableNow()
+}
+
+// samlRequiredNotLoadedWarning is the standing form of the warning a save gives:
+// nil unless samlRequiredNotLoaded.
 func (s *Server) samlRequiredNotLoadedWarning(ctx context.Context) *samlRequiredStatus {
-	if !s.adminSvc.SAMLEnabled(ctx) || s.samlReachableNow() {
+	if !s.samlRequiredNotLoaded(ctx) {
 		return nil
 	}
 	if !samlFieldsLookConfigured(s.storedSAMLSettings(ctx)) {

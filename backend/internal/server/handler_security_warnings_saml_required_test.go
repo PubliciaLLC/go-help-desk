@@ -3,6 +3,7 @@ package server_test
 import (
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -13,6 +14,17 @@ import (
 // once. So GET /admin/security-warnings carries it for as long as it is true
 // (docs/DESIGN.md, SAML, "A server problem while saml_enabled is on and SAML is
 // not loaded").
+
+// brokenIdP is a metadata URL that answers 500, so a save of it stores the
+// settings and SAML does not load. Local, so the tests do not depend on DNS.
+func brokenIdP(t *testing.T) string {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		http.Error(w, "down", http.StatusInternalServerError)
+	}))
+	t.Cleanup(srv.Close)
+	return srv.URL
+}
 
 // samlRequiredNotLoaded returns the field as the endpoint sends it: nil when it
 // is absent, never a JSON null.
@@ -43,7 +55,7 @@ func TestGetSecurityWarnings_SAMLRequiredNotLoaded(t *testing.T) {
 			name: "enabled, the key is missing", enabled: true, wantReason: "incomplete",
 			setup: func(t *testing.T, sess *session) {
 				res, body := sess.send(t, http.MethodPatch, "/api/v1/admin/settings", map[string]any{
-					"saml_metadata_url": "https://idp.test/metadata", "saml_cert_pem": validSAMLCert,
+					"saml_metadata_url": brokenIdP(t), "saml_cert_pem": validSAMLCert,
 				})
 				require.Contains(t, []int{http.StatusOK, http.StatusNoContent}, res.StatusCode, "body: %s", body)
 			},
@@ -53,7 +65,7 @@ func TestGetSecurityWarnings_SAMLRequiredNotLoaded(t *testing.T) {
 			name: "enabled, metadata fails to load", enabled: true, wantReason: "not_loaded",
 			setup: func(t *testing.T, sess *session) {
 				res, body := sess.send(t, http.MethodPut, "/api/v1/admin/saml", map[string]any{
-					"metadata_url": "https://idp.test/metadata", "cert_pem": validSAMLCert, "key_pem": validSAMLKey,
+					"metadata_url": brokenIdP(t), "cert_pem": validSAMLCert, "key_pem": validSAMLKey,
 				})
 				require.Equal(t, http.StatusOK, res.StatusCode, "a save that did not load answers a warning; body: %s", body)
 			},
@@ -73,7 +85,7 @@ func TestGetSecurityWarnings_SAMLRequiredNotLoaded(t *testing.T) {
 			name: "disabled, metadata fails to load",
 			setup: func(t *testing.T, sess *session) {
 				res, body := sess.send(t, http.MethodPut, "/api/v1/admin/saml", map[string]any{
-					"metadata_url": "https://idp.test/metadata", "cert_pem": validSAMLCert, "key_pem": validSAMLKey,
+					"metadata_url": brokenIdP(t), "cert_pem": validSAMLCert, "key_pem": validSAMLKey,
 				})
 				require.Equal(t, http.StatusOK, res.StatusCode, "body: %s", body)
 			},
@@ -135,14 +147,17 @@ func TestGetSecurityWarnings_SAMLRequiredNotLoadedIsForAdministratorsOnly(t *tes
 	enableSAML(t, sess)
 	require.NotNil(t, samlRequiredNotLoaded(t, sess), "precondition")
 
-	for name, resp := range map[string]*http.Response{
-		"anonymous": h.rawGet(t, "/api/v1/admin/security-warnings", nil),
-		"requester": h.doAsUser(t, http.MethodGet, "/api/v1/admin/security-warnings", nil),
-		"staff":     h.do(t, http.MethodGet, "/api/v1/admin/security-warnings", nil),
+	for name, c := range map[string]struct {
+		resp *http.Response
+		want int
+	}{
+		"anonymous": {h.rawGet(t, "/api/v1/admin/security-warnings", nil), http.StatusUnauthorized},
+		"requester": {h.doAsUser(t, http.MethodGet, "/api/v1/admin/security-warnings", nil), http.StatusForbidden},
+		"staff":     {h.do(t, http.MethodGet, "/api/v1/admin/security-warnings", nil), http.StatusForbidden},
 	} {
-		raw, err := io.ReadAll(resp.Body)
+		raw, err := io.ReadAll(c.resp.Body)
 		require.NoError(t, err)
-		require.Contains(t, []int{http.StatusUnauthorized, http.StatusForbidden}, resp.StatusCode, name)
+		require.Equal(t, c.want, c.resp.StatusCode, name)
 		require.NotContains(t, string(raw), "saml_required_not_loaded", name)
 	}
 
