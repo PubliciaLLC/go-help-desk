@@ -100,16 +100,16 @@ test.describe('the headings fit with headroom to spare, notice bar showing', () 
           expect(box.y + box.height, `${name} is below the window`).toBeLessThanOrEqual(height)
           headroom[name] = navBottom - (box.y + box.height)
         }
-        if (p.open === 'System') {
-          // The one section too tall for every screen: System's nine links
-          // can run past the bottom of the nav, which scrolls. Its fallback
-          // (DESIGN.md, #674) asserts the current link instead, and NavItem
-          // brings that link into view on arrival.
+        if (p.open === 'System' && height === 768) {
+          // The one case DESIGN.md (#674, Sidebar) allows to relax: System's
+          // nine links can run past the bottom of the nav at 768, which
+          // scrolls. The assertion for it is that the current link is fully
+          // in view, and NavItem brings that link into view on arrival. At
+          // every other height, System keeps the full last-link assertion.
           await expect(nav.getByRole('link', { name: 'General', exact: true }), 'current link is not fully in view')
             .toBeInViewport({ ratio: 1 })
         } else {
-          // The last thing in the nav: a link, when the section open is not
-          // System.
+          // The last thing in the nav is a link.
           const lastLinkBottom = await nav.evaluate((el) =>
             Math.max(...Array.from(el.querySelectorAll('a')).filter((a) => a.getClientRects().length > 0).map((a) => a.getBoundingClientRect().bottom)),
           )
