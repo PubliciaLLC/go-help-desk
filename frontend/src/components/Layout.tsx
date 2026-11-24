@@ -37,7 +37,7 @@ function NavItem({ to, icon, label, onNavigate, dense }: NavItemProps) {
       onClick={onNavigate}
       className={cn(
         'flex items-center gap-3 rounded-md px-3 text-sm font-medium transition-colors',
-        dense ? 'py-1.5 pointer-coarse:py-2' : 'py-2',
+        dense ? 'py-1 pointer-coarse:py-2' : 'py-2',
         active
           ? 'bg-blue-50 text-blue-700'
           : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900'
@@ -224,7 +224,7 @@ function AdminSections({ nav, onNavigate }: { nav: AdminNav; onNavigate?: () => 
                 {s.label}
                 <ChevronDownIcon className={cn('h-4 w-4 transition-transform', !open && '-rotate-90')} />
               </button>
-              <div id={panelId} role="group" aria-labelledby={headingId} hidden={!open} className="ml-2 space-y-1">
+              <div id={panelId} role="group" aria-labelledby={headingId} hidden={!open} className="ml-2">
                 {s.items.map((i) => (
                   <NavItem key={i.to} to={i.to} icon={i.icon} label={i.label} onNavigate={onNavigate} dense />
                 ))}
@@ -264,11 +264,11 @@ function TicketViewsNav({ user, onNavigate }: { user: User; onNavigate?: () => v
 
   return (
     <div>
-      <div id={labelId} className="flex items-center gap-3 px-3 py-1.5 text-sm font-medium text-gray-600">
+      <div id={labelId} className="flex items-center gap-3 px-3 py-1 text-sm font-medium text-gray-600">
         <TicketIcon className="h-4 w-4" />
         Tickets
       </div>
-      <div role="group" aria-labelledby={labelId} className="space-y-1">
+      <div role="group" aria-labelledby={labelId}>
         {shown.map((v) => {
           const active = currentView === v
           return (
@@ -279,9 +279,10 @@ function TicketViewsNav({ user, onNavigate }: { user: User; onNavigate?: () => v
               onClick={onNavigate}
               aria-current={active ? 'page' : undefined}
               className={cn(
-                // As tall as the Admin links (dense): four of these sit in the
-                // sidebar beside the admin sections, and the headings must still fit.
-                'flex items-center rounded-md py-1.5 pl-10 pr-3 text-sm font-medium transition-colors pointer-coarse:min-h-11',
+                // As tall as the Admin links (dense, no gap between): four of these
+                // sit in the sidebar beside the admin sections, and the headings
+                // must still fit on a 768-pixel-high screen (admin-nav-sections.spec.ts).
+                'flex items-center rounded-md py-1 pl-10 pr-3 text-sm font-medium transition-colors pointer-coarse:min-h-11',
                 active
                   ? 'bg-blue-50 text-blue-700'
                   : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900'
@@ -318,7 +319,7 @@ function SidebarContent({ user, adminNav, branding, onNavigate, onLogout }: Side
       </div>
 
       <nav className="flex-1 space-y-1 overflow-y-auto p-3">
-        <NavItem to="/dashboard" icon={<HomeIcon className="h-4 w-4" />} label="Dashboard" onNavigate={onNavigate} />
+        <NavItem to="/dashboard" icon={<HomeIcon className="h-4 w-4" />} label="Dashboard" onNavigate={onNavigate} dense />
         {user?.role === 'staff' || user?.role === 'admin' ? (
           <TicketViewsNav user={user} onNavigate={onNavigate} />
         ) : (
@@ -327,7 +328,7 @@ function SidebarContent({ user, adminNav, branding, onNavigate, onLogout }: Side
         {user?.role === 'admin' && <AdminSections nav={adminNav} onNavigate={onNavigate} />}
       </nav>
 
-      <div className="border-t p-3 space-y-2">
+      <div className="space-y-1 border-t px-3 py-2">
         <div className="px-3 text-xs text-gray-500 truncate" title={user?.email}>{user?.email}</div>
         {/* Your own account, not an admin screen: it sits with the identity
             it belongs to rather than in the nav list above. */}
@@ -336,6 +337,7 @@ function SidebarContent({ user, adminNav, branding, onNavigate, onLogout }: Side
           icon={<UserIcon className="h-4 w-4" />}
           label="Your account"
           onNavigate={onNavigate}
+          dense
         />
         <Button variant="ghost" size="sm" className="w-full justify-start gap-2" onClick={onLogout}>
           <LogOutIcon className="h-4 w-4" />
