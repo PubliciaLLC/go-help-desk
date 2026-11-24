@@ -96,8 +96,8 @@ test('the list fits at 320px', async ({ page }) => {
 
 test('the editor is one column, its buttons wrap, and the preview sits below it', async ({ page }) => {
   await mockTemplates(page)
-  // The old address still works (#674 redirects it) and lands on the Templates tab.
-  await page.goto('/admin/settings/email/templates?t=ticket_created')
+  // The old address still works: #674 redirects it to the Templates tab, keeping ?t=.
+  await page.goto('/admin/email-templates?t=ticket_created')
   await expect(page).toHaveURL(/\/admin\/settings\/email\/templates\?t=ticket_created$/)
   const body = page.getByLabel('Body')
   await expect(body).toBeVisible()

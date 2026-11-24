@@ -72,7 +72,9 @@ function cardOf(page, title) {
 
 function sectionOf(page, title) {
   // Settings Section: <div><h2>title</h2><div class="rounded-lg border">…</div></div>
-  return page.getByRole('heading', { name: title, exact: true }).locator('xpath=..')
+  // Level 2 only: the page's own h1 can carry the same words (the Privacy page's
+  // h1 "Privacy" and its Privacy section), which would make the locator match twice.
+  return page.getByRole('heading', { level: 2, name: title, exact: true }).locator('xpath=..')
 }
 
 // Data waits throw on timeout: a missing row is a FAIL, never a silent capture.
