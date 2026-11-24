@@ -596,6 +596,26 @@ func TestSAMLSignIn_LegacyTwins(t *testing.T) {
 		require.Empty(t, e.row(t, local).SAMLSubject)
 	})
 
+	t.Run("a deleted local twin in other capitals does not block the exact deleted SAML row", func(t *testing.T) {
+		for _, localOlder := range []bool{true, false} {
+			t.Run(fmt.Sprintf("local older: %v", localOlder), func(t *testing.T) {
+				e := newSAMLEnv(t)
+				localAge, samlAge := 48*time.Hour, time.Hour
+				if !localOlder {
+					localAge, samlAge = samlAge, localAge
+				}
+				local := insert(t, e, "M57@Example.com", "user", "", localAge, true)
+				samlRow := insert(t, e, "m57@example.com", "user", "old", samlAge, true)
+
+				got, err := e.signIn("persistent-m57", "m57@example.com", "Twin")
+				require.NoError(t, err)
+				require.Equal(t, "deleted-"+samlRow.String()+"@invalid", e.row(t, samlRow).Email, "the exact SAML row was released")
+				require.NotContains(t, []uuid.UUID{local, samlRow}, got.ID)
+				require.Equal(t, "M57@Example.com", e.row(t, local).Email, "the local twin is never written")
+			})
+		}
+	})
+
 	t.Run("two deleted twins: a deleted local row keeps blocking whichever is older", func(t *testing.T) {
 		for _, localOlder := range []bool{true, false} {
 			t.Run(fmt.Sprintf("local older: %v", localOlder), func(t *testing.T) {
@@ -613,4 +633,48 @@ func TestSAMLSignIn_LegacyTwins(t *testing.T) {
 			})
 		}
 	})
+}
+
+// The known-subject refresh must not write an address whose only change is
+// case. A live SAML row 'Pm@Example.com' beside a deleted row holding exactly
+// 'pm@example.com' (legacy data): the first sign-in relinks the live row, and
+// every later one finds it by subject. Writing the lower-cased address then
+// collided with the deleted row on the unique index, and the person got
+// email_taken for good after one working sign-in.
+func TestSAMLSignIn_RefreshDoesNotRewriteTheCaseOfTheAddress(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		deletedSAML bool
+	}{{"deleted local twin", false}, {"deleted SAML twin", true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := newCommittedSAMLEnv(t)
+			live, dead := uuid.New(), uuid.New()
+			subject := ""
+			if tc.deletedSAML {
+				subject = "old"
+			}
+			e.exec(t, `INSERT INTO users (id, email, display_name, role, saml_subject) VALUES ($1, 'Pm@Example.com', 'Pm', 'user', 'dead-transient')`, live)
+			e.exec(t, `INSERT INTO users (id, email, display_name, role, saml_subject, deleted_at) VALUES ($1, 'pm@example.com', 'Old', 'user', $2, now())`, dead, subject)
+
+			for i := range 3 {
+				got, err := e.signIn("persistent-pm", "pm@example.com", "Pm")
+				require.NoError(t, err, "sign-in %d", i+1)
+				require.Equal(t, live, got.ID)
+			}
+			require.Equal(t, "Pm@Example.com", e.row(t, live).Email, "the stored spelling is kept")
+		})
+	}
+}
+
+// A real change of address still syncs.
+func TestSAMLSignIn_RefreshStillSyncsAChangedAddress(t *testing.T) {
+	e := newSAMLEnv(t)
+	first, err := e.signIn("persistent-moves", uniqueAddr("before"), "Mover")
+	require.NoError(t, err)
+	after := uniqueAddr("after")
+
+	got, err := e.signIn("persistent-moves", after, "Mover")
+	require.NoError(t, err)
+	require.Equal(t, first.ID, got.ID)
+	require.Equal(t, after, e.row(t, first.ID).Email)
 }

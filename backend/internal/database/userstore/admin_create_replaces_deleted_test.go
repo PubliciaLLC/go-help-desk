@@ -253,4 +253,13 @@ func TestAdminCreate_ReleasesEveryDeletedTwinAndAuditsEach(t *testing.T) {
 		require.NotNil(t, released, "every released row is audited")
 		require.Equal(t, got.ID.String(), released.After["replaced_by_user_id"])
 	}
+	newEntries, err := e.audit.ListByEntity(e.ctx, "user", got.ID, 10, 0)
+	require.NoError(t, err)
+	var previous []any
+	for _, en := range newEntries {
+		if en.Action == "replaced_deleted_user" {
+			previous = append(previous, en.After["previous_user_id"])
+		}
+	}
+	require.ElementsMatch(t, []any{a.String(), b.String()}, previous, "the new row names each row it replaced")
 }

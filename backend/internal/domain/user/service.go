@@ -1104,7 +1104,14 @@ func (s *Service) upsertSAMLOnce(ctx context.Context, samlSubject, email, displa
 			// The parsed form is stored, not the input: ValidateEmail strips
 			// brackets and needless quotes, and storing "<a@b>" verbatim made
 			// an account that could only be signed into by typing the brackets.
-			if addr, err := ValidateEmail(email); err == nil {
+			//
+			// An address that differs from the stored one only in case is not
+			// a change: the stored spelling stays. Rows from before addresses
+			// were lower-cased can be mixed case, and writing the lower-cased
+			// form could collide on the (case-sensitive) unique index with a
+			// deleted row that holds exactly that spelling, which would turn
+			// every later sign-in into email_taken.
+			if addr, err := ValidateEmail(email); err == nil && !strings.EqualFold(addr, u.Email) {
 				u.Email = addr
 			}
 		}
