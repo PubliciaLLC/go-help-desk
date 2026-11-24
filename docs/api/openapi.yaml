@@ -1644,7 +1644,7 @@ paths:
                     format: int64
                     description: |
                       The per-file limit that applies to a guest: the lower of
-                      guest_attachment_max_mb and the instance-wide 25 MB maximum.
+                      guest_attachment_max_mb and the per-file limit, attachment_max_mb (25 MB by default).
                       Present only while guest_attachments_enabled is true. Public,
                       like the flag; disclosing the limit was accepted.
                   guest_attachment_uploads_per_hour:
@@ -5642,10 +5642,17 @@ paths:
           5) and guest_attachment_uploads_per_hour an integer from 1 to 30 (default
           3). Anything else, including null, a string and a fraction, is refused
           with bad_request, and nothing is stored.
-        - guest_attachment_max_mb must be an integer from 1 to 100 (megabytes).
-          0, 101 or more, negatives, a fraction, a string and null are refused
+        - attachment_max_mb must be an integer from 1 to 100 (megabytes, 25 by
+          default). 0, 101 or more, negatives, a fraction, a string and null are
+          refused with bad_request, and nothing is stored. It is session only.
+          Lowering it below a stored guest value is accepted; the guest is then
+          held to the new limit until either setting changes.
+        - guest_attachment_max_mb must be an integer from 1 to attachment_max_mb,
+          judged against the limit as this body leaves it (the body's own
+          attachment_max_mb when it carries one, else the stored one). 0, anything
+          above that limit, negatives, a fraction, a string and null are refused
           with bad_request, and nothing is stored. Unset reads as 5. A guest is
-          held to the lower of it and the instance-wide 25 MB maximum.
+          held to the lower of it and the per-file limit.
         - api_key_max_lifetime_years must be the integer 1, 2, 3, 4 or 5 (years), or
           -1 for no limit ("Never"). 0, 6 or more, anything below -1, a fraction, a
           string and null are refused with bad_request, and nothing is stored. Unset
@@ -5712,7 +5719,7 @@ paths:
         oidc_redirect_url, mfa_enabled, mfa_enforced_roles, allowed_email_domains,
         self_signup_enabled, open_registration_enabled, closed_reopen_policy,
         audit_mask_requester_names, guest_submission_enabled,
-        guest_attachments_enabled, guest_attachment_max_mb,
+        guest_attachments_enabled, attachment_max_mb, guest_attachment_max_mb,
         guest_attachment_max_per_ticket, guest_attachment_uploads_per_hour,
         attachment_scan_address, attachment_scan_policy, attachment_allowed_types,
         attachment_infected_handling, attachment_mismatch_handling,
@@ -5889,12 +5896,12 @@ paths:
         Authenticated by the guest token alone. The token names the ticket, so no
         ticket id appears in the path. The request is the same multipart upload as
         uploadAttachment, with the same checks, scanning, quarantine and wrapping,
-        and the instance-wide 25 MB cap. A stored file raises ticket.attachment_added
+        and the per-file limit, attachment_max_mb (25 MB by default). A stored file raises ticket.attachment_added
         with no actor and no email. Three things are specific to guests.
         Attaching is off unless an administrator has turned on
         guest_attachments_enabled (#445): then the route answers the generic
         404, byte-identical to a bad link. A guest's per-file limit is
-        guest_attachment_max_mb (default 5), never above the 25 MB cap. Two more
+        guest_attachment_max_mb (default 5), never above the per-file limit, attachment_max_mb (25 MB by default). Two more
         limits follow the token and lifecycle checks: a ticket holds at most
         guest_attachment_max_per_ticket guest-uploaded files (409
         guest_attachment_limit) and one link may upload
@@ -6045,17 +6052,17 @@ paths:
       operationId: uploadAttachment
       summary: Upload a file to a ticket.
       description: |
-        Multipart upload of one file in the field file, up to 25 MB. The checks run
+        Multipart upload of one file in the field file, up to the per-file limit, attachment_max_mb (25 MB by default). The checks run
         in this order.
-        1. The body is capped at 25 MB plus 1 MB for the multipart framing, and a
-           file part that declares more than 25 MB is refused (413 too_large). A body
+        1. The body is capped at the per-file limit plus 1 MB for the multipart framing, and a
+           file part that declares more than the per-file limit is refused (413 too_large). A body
            that is not multipart, or has no file field, is 400 bad_request.
         2. The name must be valid UTF-8, contain no NUL, no control or
            text-direction characters, and be at most 255 bytes (400 invalid_filename).
         3. The extension must be in the instance's allowed list
            (attachment_allowed_types). The default is .pdf, .docx, .xlsx, .txt, .log,
            .jpg, .jpeg, .png and .bmp (415 unsupported_type).
-        4. The bytes are read (413 too_large over 25 MB), hashed (SHA-256) and their
+        4. The bytes are read (413 too_large over the per-file limit), hashed (SHA-256) and their
            type is detected. For an extension in that default set, content that
            contradicts the name is recorded as a mismatch (mismatch true).
         5. The scanner runs unless the scan policy is off. An infected file is
@@ -6135,7 +6142,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
         '413':
-          description: The file is over 25 MB, or the body is over the cap that includes multipart framing (too_large).
+          description: The file is over the per-file limit, attachment_max_mb (25 MB by default), or the body is over the cap that includes multipart framing (too_large).
           content:
             application/json:
               schema:
@@ -11315,6 +11322,14 @@ components:
             staff and administrators, and only when the setting could be read: absent means unknown, not off.
             A requester never gets it, and it is not on the public GET /site. The ticket list offers the sla
             filter and sort only while it is true; both answer 400 while it is false.
+        attachment_max_bytes:
+          type: integer
+          format: int64
+          description: >-
+            The largest file any upload may be, in bytes (attachment_max_mb, #673), so
+            the browser can refuse one before sending it. Always present on GET /me for
+            a signed-in person, and absent from a machine credential's /me. The login
+            response's user does not carry it; read it from GET /me.
         email_notifications:
           type: object
           description: |
@@ -12095,6 +12110,15 @@ components:
         guest_submission_enabled:
           type: boolean
           description: Whether anonymous guests may submit tickets. Session only.
+        attachment_max_mb:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 25
+          description: |
+            The largest file any upload may be, in megabytes (#673). Default 25,
+            which is what every install had before this setting. Session only.
+            A guest's limit (guest_attachment_max_mb) may not exceed it.
         guest_attachments_enabled:
           type: boolean
           description: |
@@ -12120,9 +12144,9 @@ components:
           minimum: 1
           maximum: 100
           description: |
-            A guest's per-file maximum in megabytes (#445). Default 5. The
-            instance-wide 25 MB maximum still applies and wins where lower.
-            Session only.
+            A guest's per-file maximum in megabytes (#445), from 1 to
+            attachment_max_mb. Default 5. The guest is held to the lower of this
+            and attachment_max_mb (25 MB by default). Session only.
         sla_enabled:
           type: boolean
           description: Whether SLA tracking is on.

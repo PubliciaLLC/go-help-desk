@@ -42,7 +42,7 @@ services:
     # clamav/clamav publishes linux/amd64 only. Pinned rather than left to
     # the host, so enabling this on an arm64 machine (Apple Silicon) runs it
     # under emulation instead of failing the image pull outright — a signature
-    # scan of a 25 MB upload is not a hot path, so the emulation cost is one
+    # scan of an upload is not a hot path, so the emulation cost is one
     # this profile can afford.
     platform: linux/amd64
     restart: unless-stopped
