@@ -871,3 +871,201 @@ SELECT d::date AS day, COALESCE(sum(e.created), 0)::bigint AS created, COALESCE(
 FROM w, generate_series(w.from_day::timestamp, w.to_day::timestamp, interval '1 day') AS d
 LEFT JOIN events e ON e.day = d::date
 GROUP BY d ORDER BY d;
+
+-- name: KPIPeriod :one
+-- The period measures of one period, current or previous (#131, DESIGN.md "KPI
+-- reports", SQL): the tickets created in it, and every measure of the tickets
+-- that finished in it, in one statement. The created arm is served by
+-- tickets_created_at_idx, the finished arm by tickets_done_at_idx (000066); the
+-- lateral is one sla_records_ticket_idx lookup per finished ticket. A ticket is
+-- tracked when one of its records is current, but the breach flags read every
+-- record of it, superseded ones included, so a reopen's clean clock cannot hide
+-- an earlier breach. Percentiles ignore NULLs and are NULL over no rows; sqlc
+-- cannot type a nullable aggregate, so they come back as 0 there and the store
+-- reads "no rows" from the count beside each (resolved, first_response_count). The
+-- visibility block is the list's, pinned to it by
+-- TestSQL_DashboardQueriesShareTheListRule; the three filters are the list's,
+-- on the ticket's current values.
+WITH w AS (
+  -- since_at is the instant from_day begins in tz, until_at the instant the day
+  -- after to_day begins: every range test is >= since_at AND < until_at.
+  SELECT (sqlc.arg(from_day)::date)::timestamp AT TIME ZONE sqlc.arg(tz)::text AS since_at,
+         ((sqlc.arg(to_day)::date + 1)::timestamp) AT TIME ZONE sqlc.arg(tz)::text AS until_at
+), created AS (
+  SELECT count(*) AS n
+  FROM tickets t, w
+  WHERE
+  -- visibility: begin
+  (
+    sqlc.arg(unrestricted)::bool
+    OR (
+      sqlc.arg(reporter_only)::bool
+      AND t.reporter_user_id = sqlc.arg(actor_id)::uuid
+    )
+    OR (
+      NOT sqlc.arg(unrestricted)::bool
+      AND NOT sqlc.arg(reporter_only)::bool
+      AND (
+        t.reporter_user_id = sqlc.arg(actor_id)::uuid
+        OR t.assignee_user_id = sqlc.arg(actor_id)::uuid
+        OR t.assignee_group_id = ANY(sqlc.arg(scope_group_ids)::uuid[])
+        OR t.category_id = ANY(sqlc.arg(scope_category_ids)::uuid[])
+        OR (t.type_id = ANY(sqlc.arg(scope_type_ids)::uuid[])
+            AND (t.category_id, t.type_id) IN (SELECT c.id, ty.id
+                FROM unnest(sqlc.arg(scope_type_category_ids)::uuid[]) WITH ORDINALITY AS c(id, n)
+                JOIN unnest(sqlc.arg(scope_type_ids)::uuid[]) WITH ORDINALITY AS ty(id, n) ON ty.n = c.n))
+      )
+    )
+  )
+  -- visibility: end
+  AND (sqlc.narg(category_id)::uuid IS NULL OR t.category_id = sqlc.narg(category_id)::uuid)
+  AND (cardinality(sqlc.arg(priorities)::text[]) = 0 OR t.priority = ANY(sqlc.arg(priorities)::text[]))
+  AND (sqlc.narg(assignee_group_id)::uuid IS NULL OR t.assignee_group_id = sqlc.narg(assignee_group_id)::uuid)
+  AND t.created_at >= w.since_at AND t.created_at < w.until_at
+), done AS (
+  SELECT GREATEST(0, EXTRACT(EPOCH FROM COALESCE(t.resolved_at, t.closed_at) - t.created_at)::bigint
+                     - t.sla_paused_seconds) AS resolve_s,
+         t.reopen_count > 0 AS reopened,
+         s.tracked, s.response_breached, s.resolution_breached, s.first_response_s
+  FROM tickets t
+  CROSS JOIN w
+  CROSS JOIN LATERAL (
+    SELECT count(*) FILTER (WHERE r.superseded_at IS NULL) > 0 AS tracked,
+           COALESCE(bool_or(r.response_breached_at IS NOT NULL), false) AS response_breached,
+           COALESCE(bool_or(r.resolution_breached_at IS NOT NULL), false) AS resolution_breached,
+           (array_agg(r.response_elapsed_at_met_seconds ORDER BY r.first_response_at, r.id)
+              FILTER (WHERE r.started_at IS NULL AND r.first_response_at IS NOT NULL
+                        AND r.response_elapsed_at_met_seconds IS NOT NULL))[1] AS first_response_s
+    FROM sla_records r
+    WHERE r.ticket_id = t.id
+  ) s
+  WHERE
+  -- visibility: begin
+  (
+    sqlc.arg(unrestricted)::bool
+    OR (
+      sqlc.arg(reporter_only)::bool
+      AND t.reporter_user_id = sqlc.arg(actor_id)::uuid
+    )
+    OR (
+      NOT sqlc.arg(unrestricted)::bool
+      AND NOT sqlc.arg(reporter_only)::bool
+      AND (
+        t.reporter_user_id = sqlc.arg(actor_id)::uuid
+        OR t.assignee_user_id = sqlc.arg(actor_id)::uuid
+        OR t.assignee_group_id = ANY(sqlc.arg(scope_group_ids)::uuid[])
+        OR t.category_id = ANY(sqlc.arg(scope_category_ids)::uuid[])
+        OR (t.type_id = ANY(sqlc.arg(scope_type_ids)::uuid[])
+            AND (t.category_id, t.type_id) IN (SELECT c.id, ty.id
+                FROM unnest(sqlc.arg(scope_type_category_ids)::uuid[]) WITH ORDINALITY AS c(id, n)
+                JOIN unnest(sqlc.arg(scope_type_ids)::uuid[]) WITH ORDINALITY AS ty(id, n) ON ty.n = c.n))
+      )
+    )
+  )
+  -- visibility: end
+  AND (sqlc.narg(category_id)::uuid IS NULL OR t.category_id = sqlc.narg(category_id)::uuid)
+  AND (cardinality(sqlc.arg(priorities)::text[]) = 0 OR t.priority = ANY(sqlc.arg(priorities)::text[]))
+  AND (sqlc.narg(assignee_group_id)::uuid IS NULL OR t.assignee_group_id = sqlc.narg(assignee_group_id)::uuid)
+  AND COALESCE(t.resolved_at, t.closed_at) >= w.since_at
+  AND COALESCE(t.resolved_at, t.closed_at) < w.until_at
+)
+SELECT (SELECT n FROM created)::bigint AS created,
+       count(*)::bigint AS resolved,
+       COALESCE(round(percentile_cont(0.5) WITHIN GROUP (ORDER BY resolve_s)), 0)::bigint AS resolve_median,
+       COALESCE(round(percentile_cont(0.9) WITHIN GROUP (ORDER BY resolve_s)), 0)::bigint AS resolve_p90,
+       count(first_response_s)::bigint AS first_response_count,
+       COALESCE(round(percentile_cont(0.5) WITHIN GROUP (ORDER BY first_response_s)), 0)::bigint AS first_response_median,
+       count(*) FILTER (WHERE tracked)::bigint AS sla_tracked,
+       count(*) FILTER (WHERE tracked AND NOT response_breached AND NOT resolution_breached)::bigint AS sla_met,
+       count(*) FILTER (WHERE tracked AND NOT response_breached)::bigint AS sla_response_met,
+       count(*) FILTER (WHERE tracked AND NOT resolution_breached)::bigint AS sla_resolution_met,
+       count(*) FILTER (WHERE reopened)::bigint AS reopened
+FROM done;
+
+-- name: KPICreatedByCategory :many
+-- The tickets created in the period, by category, named as the category is now
+-- (archived ones too: their tickets still exist). Largest first, then by name.
+-- The visibility block and filters are KPIPeriod's.
+WITH w AS (
+  -- since_at is the instant from_day begins in tz, until_at the instant the day
+  -- after to_day begins: every range test is >= since_at AND < until_at.
+  SELECT (sqlc.arg(from_day)::date)::timestamp AT TIME ZONE sqlc.arg(tz)::text AS since_at,
+         ((sqlc.arg(to_day)::date + 1)::timestamp) AT TIME ZONE sqlc.arg(tz)::text AS until_at
+)
+SELECT t.category_id, c.name, count(*)::bigint AS n
+FROM tickets t
+CROSS JOIN w
+JOIN categories c ON c.id = t.category_id
+WHERE
+  -- visibility: begin
+  (
+    sqlc.arg(unrestricted)::bool
+    OR (
+      sqlc.arg(reporter_only)::bool
+      AND t.reporter_user_id = sqlc.arg(actor_id)::uuid
+    )
+    OR (
+      NOT sqlc.arg(unrestricted)::bool
+      AND NOT sqlc.arg(reporter_only)::bool
+      AND (
+        t.reporter_user_id = sqlc.arg(actor_id)::uuid
+        OR t.assignee_user_id = sqlc.arg(actor_id)::uuid
+        OR t.assignee_group_id = ANY(sqlc.arg(scope_group_ids)::uuid[])
+        OR t.category_id = ANY(sqlc.arg(scope_category_ids)::uuid[])
+        OR (t.type_id = ANY(sqlc.arg(scope_type_ids)::uuid[])
+            AND (t.category_id, t.type_id) IN (SELECT c.id, ty.id
+                FROM unnest(sqlc.arg(scope_type_category_ids)::uuid[]) WITH ORDINALITY AS c(id, n)
+                JOIN unnest(sqlc.arg(scope_type_ids)::uuid[]) WITH ORDINALITY AS ty(id, n) ON ty.n = c.n))
+      )
+    )
+  )
+  -- visibility: end
+  AND (sqlc.narg(category_id)::uuid IS NULL OR t.category_id = sqlc.narg(category_id)::uuid)
+  AND (cardinality(sqlc.arg(priorities)::text[]) = 0 OR t.priority = ANY(sqlc.arg(priorities)::text[]))
+  AND (sqlc.narg(assignee_group_id)::uuid IS NULL OR t.assignee_group_id = sqlc.narg(assignee_group_id)::uuid)
+  AND t.created_at >= w.since_at AND t.created_at < w.until_at
+GROUP BY t.category_id, c.name
+ORDER BY n DESC, c.name, t.category_id;
+
+-- name: KPICreatedByPriority :many
+-- The tickets created in the period, by priority: only the priorities that have
+-- tickets are rows; Go puts the four in their fixed order with zeros. The
+-- visibility block and filters are KPIPeriod's.
+WITH w AS (
+  -- since_at is the instant from_day begins in tz, until_at the instant the day
+  -- after to_day begins: every range test is >= since_at AND < until_at.
+  SELECT (sqlc.arg(from_day)::date)::timestamp AT TIME ZONE sqlc.arg(tz)::text AS since_at,
+         ((sqlc.arg(to_day)::date + 1)::timestamp) AT TIME ZONE sqlc.arg(tz)::text AS until_at
+)
+SELECT t.priority, count(*)::bigint AS n
+FROM tickets t, w
+WHERE
+  -- visibility: begin
+  (
+    sqlc.arg(unrestricted)::bool
+    OR (
+      sqlc.arg(reporter_only)::bool
+      AND t.reporter_user_id = sqlc.arg(actor_id)::uuid
+    )
+    OR (
+      NOT sqlc.arg(unrestricted)::bool
+      AND NOT sqlc.arg(reporter_only)::bool
+      AND (
+        t.reporter_user_id = sqlc.arg(actor_id)::uuid
+        OR t.assignee_user_id = sqlc.arg(actor_id)::uuid
+        OR t.assignee_group_id = ANY(sqlc.arg(scope_group_ids)::uuid[])
+        OR t.category_id = ANY(sqlc.arg(scope_category_ids)::uuid[])
+        OR (t.type_id = ANY(sqlc.arg(scope_type_ids)::uuid[])
+            AND (t.category_id, t.type_id) IN (SELECT c.id, ty.id
+                FROM unnest(sqlc.arg(scope_type_category_ids)::uuid[]) WITH ORDINALITY AS c(id, n)
+                JOIN unnest(sqlc.arg(scope_type_ids)::uuid[]) WITH ORDINALITY AS ty(id, n) ON ty.n = c.n))
+      )
+    )
+  )
+  -- visibility: end
+  AND (sqlc.narg(category_id)::uuid IS NULL OR t.category_id = sqlc.narg(category_id)::uuid)
+  AND (cardinality(sqlc.arg(priorities)::text[]) = 0 OR t.priority = ANY(sqlc.arg(priorities)::text[]))
+  AND (sqlc.narg(assignee_group_id)::uuid IS NULL OR t.assignee_group_id = sqlc.narg(assignee_group_id)::uuid)
+  AND t.created_at >= w.since_at AND t.created_at < w.until_at
+GROUP BY t.priority
+ORDER BY n DESC, t.priority;

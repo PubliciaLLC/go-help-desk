@@ -702,6 +702,28 @@ type Querier interface {
 	// database from clock_timestamp(), for the reason UpsertSession spells out: one
 	// clock decides the lifetime, and now() would be the start of the transaction.
 	IssuePasswordResetToken(ctx context.Context, arg IssuePasswordResetTokenParams) error
+	// The tickets created in the period, by category, named as the category is now
+	// (archived ones too: their tickets still exist). Largest first, then by name.
+	// The visibility block and filters are KPIPeriod's.
+	KPICreatedByCategory(ctx context.Context, arg KPICreatedByCategoryParams) ([]KPICreatedByCategoryRow, error)
+	// The tickets created in the period, by priority: only the priorities that have
+	// tickets are rows; Go puts the four in their fixed order with zeros. The
+	// visibility block and filters are KPIPeriod's.
+	KPICreatedByPriority(ctx context.Context, arg KPICreatedByPriorityParams) ([]KPICreatedByPriorityRow, error)
+	// The period measures of one period, current or previous (#131, DESIGN.md "KPI
+	// reports", SQL): the tickets created in it, and every measure of the tickets
+	// that finished in it, in one statement. The created arm is served by
+	// tickets_created_at_idx, the finished arm by tickets_done_at_idx (000066); the
+	// lateral is one sla_records_ticket_idx lookup per finished ticket. A ticket is
+	// tracked when one of its records is current, but the breach flags read every
+	// record of it, superseded ones included, so a reopen's clean clock cannot hide
+	// an earlier breach. Percentiles ignore NULLs and are NULL over no rows; sqlc
+	// cannot type a nullable aggregate, so they come back as 0 there and the store
+	// reads "no rows" from the count beside each (resolved, first_response_count). The
+	// visibility block is the list's, pinned to it by
+	// TestSQL_DashboardQueriesShareTheListRule; the three filters are the list's,
+	// on the ticket's current values.
+	KPIPeriod(ctx context.Context, arg KPIPeriodParams) (KPIPeriodRow, error)
 	ListAPIKeysByUser(ctx context.Context, userID uuid.UUID) ([]ApiKey, error)
 	// key_id NULL lists every key; a value lists that one key. The owner comes
 	// from the same row set so the admin page can show whose each key is.
