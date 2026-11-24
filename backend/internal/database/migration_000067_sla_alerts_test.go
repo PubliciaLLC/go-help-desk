@@ -16,25 +16,65 @@ const (
 	migration067Down = "migrations/000067_sla_alerts.down.sql"
 )
 
-// beginAs067Pre returns a transaction in which 000067 has been rolled back
-// (its columns dropped, its settings rows left alone, as the down step does)
-// and users and settings are empty TEMP copies. The up step then runs verbatim
-// against exactly the data the test seeds, not whatever else the shared test
-// database holds. The caller rolls it back in a defer registered after its
-// closeDB defer: the pool cannot close while a transaction holds a connection.
-func beginAs067Pre(t *testing.T, ctx context.Context, db *sql.DB) *sql.Tx {
+// beginIsolated067 returns a transaction in which users, settings and
+// sla_records are empty TEMP copies of the real tables (same columns and
+// defaults). pg_temp is searched first, so the unqualified table names in the
+// 000067 files resolve to the copies: the migration's ALTER TABLE and INSERT
+// statements, and everything the test seeds, take locks only on objects this
+// transaction owns. Running them against the shared tables would take ACCESS
+// EXCLUSIVE locks on users and sla_records and stall (or deadlock with) every
+// other package testing against the same database.
+//
+// The only touch of the shared tables is the CREATE TABLE ... LIKE, which
+// needs a brief ACCESS SHARE lock to read their shape; lock_timeout makes a
+// wait for that lock fail with an error instead of hanging the suite.
+//
+// If setup fails the transaction is rolled back before the test is failed, so
+// a failure cannot leave a transaction (and its locks) open. On success the
+// caller rolls it back in a defer registered after its closeDB defer: the pool
+// cannot close while a transaction holds a connection, so this is not a
+// t.Cleanup.
+func beginIsolated067(t *testing.T, ctx context.Context, db *sql.DB) *sql.Tx {
 	t.Helper()
 	tx, err := db.BeginTx(ctx, nil)
 	require.NoError(t, err)
+	ok := false
+	defer func() {
+		if !ok {
+			_ = tx.Rollback()
+		}
+	}()
 
-	execMigrationFile(t, ctx, tx, migration067Down, nil)
 	for _, stmt := range []string{
+		`SET LOCAL lock_timeout = '20s'`,
+		`SET LOCAL statement_timeout = '60s'`,
 		`CREATE TEMP TABLE users (LIKE public.users INCLUDING DEFAULTS) ON COMMIT DROP`,
 		`CREATE TEMP TABLE settings (LIKE public.settings INCLUDING ALL) ON COMMIT DROP`,
+		`CREATE TEMP TABLE sla_records (LIKE public.sla_records INCLUDING DEFAULTS) ON COMMIT DROP`,
 	} {
 		_, err := tx.ExecContext(ctx, stmt)
-		require.NoError(t, err)
+		require.NoError(t, err, "isolating 000067's tables: %s", stmt)
 	}
+	ok = true
+	return tx
+}
+
+// beginAs067Pre is beginIsolated067 with 000067 rolled back on the copies (its
+// columns dropped, its settings rows left alone, as the down step does). The
+// up step then runs verbatim against exactly the data the test seeds, not
+// whatever else the shared test database holds. Roll back as for
+// beginIsolated067.
+func beginAs067Pre(t *testing.T, ctx context.Context, db *sql.DB) *sql.Tx {
+	t.Helper()
+	tx := beginIsolated067(t, ctx, db)
+	ok := false
+	defer func() {
+		if !ok {
+			_ = tx.Rollback()
+		}
+	}()
+	execMigrationFile(t, ctx, tx, migration067Down, nil)
+	ok = true
 	return tx
 }
 
@@ -63,10 +103,12 @@ func settingValue067(t *testing.T, ctx context.Context, tx *sql.Tx, key string) 
 
 func columnExists067(t *testing.T, ctx context.Context, tx *sql.Tx, table, column string) bool {
 	t.Helper()
+	// to_regclass resolves through the search_path, so it finds the TEMP copy
+	// beginIsolated067 made, not the shared table.
 	var ok bool
 	require.NoError(t, tx.QueryRowContext(ctx, `SELECT EXISTS (
-		SELECT 1 FROM information_schema.columns
-		WHERE table_schema = current_schema() AND table_name = $1 AND column_name = $2)`,
+		SELECT 1 FROM pg_attribute
+		WHERE attrelid = to_regclass($1) AND attname = $2 AND attnum > 0 AND NOT attisdropped)`,
 		table, column).Scan(&ok))
 	return ok
 }
@@ -172,14 +214,15 @@ func TestMigration067_DownThenUpAgain(t *testing.T) {
 	db, closeDB := testutil.NewDB(t)
 	defer closeDB()
 	ctx := context.Background()
-	tx, err := db.SQL.BeginTx(ctx, nil)
-	require.NoError(t, err)
+	tx := beginIsolated067(t, ctx, db.SQL)
 	defer func() { _ = tx.Rollback() }()
 
+	// The copies take their shape from the shared tables, so these also show
+	// that the migration has run in the test database.
 	require.True(t, columnExists067(t, ctx, tx, "sla_records", "response_at_risk_at"), "the migration has run in the test database")
 	require.True(t, columnExists067(t, ctx, tx, "users", "email_notify_sla"))
 
-	_, err = tx.ExecContext(ctx, `INSERT INTO settings (key, value) VALUES ('sla_alerts_enabled', 'true')
+	_, err := tx.ExecContext(ctx, `INSERT INTO settings (key, value) VALUES ('sla_alerts_enabled', 'true')
 		ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`)
 	require.NoError(t, err)
 
