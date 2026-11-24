@@ -1535,6 +1535,15 @@ if one of them has not landed, because #674 is not started in that state. If
 one of them is dropped instead, its rows are removed from the tables below,
 and nothing else changes.
 
+**This build's base.** The branch for this build is stacked on a local
+integration branch whose base contains #616, #670, #672, #673, #676, #675 and
+#131, so all five prerequisites above are present, and so are #675 and #131.
+#675 matters here: its dashboard health card links three items into settings,
+which the sections below must account for (see **Copy that names a place**).
+#131 adds no migration and touches no settings page. The newest migrations in
+the base are 000066 (passkey), 000067 (SLA alerts) and 000068 (the dashboard
+index); #674 adds none.
+
 #### The pages
 
 Every section that exists once #616, #670, #672, #673 and #676 have landed is
@@ -1909,13 +1918,26 @@ of these changes to the new name:
 | `EmailNotificationsSection.tsx`, the comment above `SWITCHES` (#670) | from Settings -> Email | from System -> Email |
 | `GuestSizeSlider` description (#673) | set under Attachments | set under System → File Attachments |
 | `AttachmentSizeLimitSection` (#673) | — | names Guest Access as the place of the guest slider |
+| `AdminHealthCard` / `adminHealthItems`, SLA alerts off item (#675) | `href` `/admin/settings`, `place` "Features → SLA" | `href` `/admin/settings/email`, `place` "Email → Notifications → SLA alerts" |
+| same, passkey requirement suspended item (#675) | `href` `/admin/settings`, `place` "Authentication → Multi-factor authentication" | `href` `/admin/settings/authentication`, `place` "Authentication → Multi-factor authentication" |
+| same, attachment scanner down item (#675) | `href` `/admin/settings`, `place` "Attachments → Malware scanning" | `href` `/admin/settings/attachments`, `place` "File Attachments → Malware scanning" |
+
+The last three rows are the dashboard's health card (#675). They are links, not
+plain-text notices, and the "Today" column is what #675's own build ships
+(its page and section names at that time). They are the one place the card is
+retargeted: **#674's task 9 owns changing both `href` and `place` of the three
+items**, with a test for each target, because #675 is in this branch's base
+and the card already exists when #674 starts. The update item's `href` (the
+release-notes URL) is not touched.
 
 The notices stay plain text. None of them was a link to a settings tab
 before, because a tab had no address, and making them links is not part of
-this issue. The only links into settings today are the template notice (its
-new address is in the table above) and Email's own link to templates, which
-is removed. The links out of settings (Open OAuth clients, and the user
-page's OAuth-clients links) keep their target. The backend `warning` string
+this issue. The only links into settings before #675 are the template notice
+(its new address is in the table above) and Email's own link to templates,
+which is removed. #675 is in this branch's base, so there are three more: the
+dashboard's admin health card links three items to `/admin/settings` (see the
+last three rows of the table above), and #674's task 9 retargets them. The links out of settings (Open OAuth
+clients, and the user page's OAuth-clients links) keep their target. The backend `warning` string
 is human-readable text, not a code. No test pins it, and its `400`/`200`
 shapes do not change.
 
