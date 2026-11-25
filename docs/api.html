@@ -201,7 +201,6 @@
 <p>The settings a machine credential cannot change are:</p>
 <ul>
   <li><strong>Sign-in:</strong> <code>saml_enabled</code> (<em>Require SAML for staff and users</em>), <code>saml_metadata_url</code>, <code>saml_metadata_xml</code>, <code>saml_cert_pem</code>, <code>saml_key_pem</code>, <code>oidc_enabled</code>, <code>oidc_issuer_url</code>, <code>oidc_client_id</code>, <code>oidc_client_secret</code>, <code>oidc_redirect_url</code>.</li>
-  <li><strong>SAML certificate:</strong> <span class="badge-new">New in 1.3.0</span> <code>PUT /api/v1/admin/saml</code> takes <code>regenerate_cert: true</code> to replace the service-provider certificate and key with a new pair; <code>PATCH /api/v1/admin/settings</code> does not. A save with IdP metadata and no stored pair generates one. <code>cert_pem</code> and <code>key_pem</code> go together or not at all (<code>400 invalid_cert_key</code>). <code>GET /api/v1/admin/saml</code> returns <code>sp_acs_url</code>, <code>cert_not_after</code> and <code>cert_generated</code>, and <code>GET /api/v1/admin/security-warnings</code> returns <code>saml_required_not_loaded</code> while SAML is required but not loaded. Writes to the SAML configuration are session only, like the settings above.</li>
   <li><strong>Second factor:</strong> <code>mfa_enabled</code>, <code>mfa_enforced_roles</code>, <code>passkey_required_roles</code>.</li>
   <li><strong>Accounts:</strong> <code>self_signup_enabled</code>, <code>open_registration_enabled</code>, <code>allowed_email_domains</code>.</li>
   <li><strong>Guests:</strong> <code>guest_submission_enabled</code>, <code>guest_attachments_enabled</code>, <code>guest_attachment_max_mb</code>, <code>guest_attachment_max_per_ticket</code>, <code>guest_attachment_uploads_per_hour</code>.</li>
@@ -214,6 +213,8 @@
   <li><strong>Update check:</strong> <code>update_check_enabled</code>.</li>
   <li><strong>Deprecated, still writable:</strong> <code>attachment_vt_lookup</code>, <code>attachment_vt_api_key</code>, <code>attachment_reputation_provider</code>, <code>attachment_reputation_api_key</code>.</li>
 </ul>
+
+<p><strong>SAML certificate:</strong> <span class="badge-new">New in 1.3.0</span> <code>PUT /api/v1/admin/saml</code> takes <code>regenerate_cert: true</code> to replace the service-provider certificate and key with a new pair; <code>PATCH /api/v1/admin/settings</code> does not. A save with IdP metadata and no stored pair generates one. <code>cert_pem</code> and <code>key_pem</code> go together or not at all (<code>400 invalid_cert_key</code>), and <code>regenerate_cert</code> sent with <code>cert_pem</code> or <code>key_pem</code> is refused the same way. <code>GET /api/v1/admin/saml</code> returns <code>sp_acs_url</code>, <code>cert_not_after</code> and <code>cert_generated</code>, and <code>GET /api/v1/admin/security-warnings</code> returns <code>saml_required_not_loaded</code> while SAML is required but not loaded. Writes to the SAML configuration are session only, like the settings above.</p>
 
 
 <h2 id="api-keys">API keys</h2>
