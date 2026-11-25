@@ -443,7 +443,15 @@ export async function mockCti(page: Page) {
 
 export async function mockApi(
   page: Page,
-  opts: { me?: object; ticket?: object; replies?: object[]; kpi?: object; categories?: object[] } = {},
+  opts: {
+    me?: object
+    ticket?: object
+    replies?: object[]
+    kpi?: object
+    categories?: object[]
+    /** What GET /admin/security-warnings answers; by default the empty list every unknown path gets. */
+    warnings?: object
+  } = {},
 ) {
   const me = opts.me ?? ME_STAFF
   const byPath: Record<string, unknown> = {
@@ -466,6 +474,7 @@ export async function mockApi(
     '/api/v1/staff': ASSIGNABLE_STAFF,
     '/api/v1/groups': [],
     '/api/v1/admin/users': [],
+    ...(opts.warnings ? { '/api/v1/admin/security-warnings': opts.warnings } : {}),
     // An install the post-upgrade wizard has already been through. Without it
     // an administrator opening the dashboard is sent to /after-upgrade, which
     // is not what these layout tests are about (see after-upgrade.spec.ts).
@@ -542,9 +551,15 @@ export const SHORT_USER = { ...LONG_USER, id: 'u-short', email: 'a@b.co', displa
  */
 export async function mockAdminApi(
   page: Page,
-  opts: { short?: boolean; /** Merged over the settings dump, for a page that needs particular stored values. */ settings?: Record<string, unknown> } = {},
+  opts: {
+    short?: boolean
+    /** Merged over the settings dump, for a page that needs particular stored values. */
+    settings?: Record<string, unknown>
+    /** What GET /admin/security-warnings answers (the server problems bar and the dashboard's health card). */
+    warnings?: object
+  } = {},
 ) {
-  await mockApi(page, { me: ME_ADMIN })
+  await mockApi(page, { me: ME_ADMIN, warnings: opts.warnings })
   const n = opts.short ? 'Short' : LONG_NAME
   const d = opts.short ? 'Short' : LONG_DESC
   const u = opts.short ? 'https://x.example.com/h' : LONG_ADMIN_URL

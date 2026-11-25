@@ -262,7 +262,7 @@ func (s *Server) reloadSSOAfterSettings(ctx context.Context, body map[string]jso
 // reloaded, so a body that sets saml_enabled together with a SAML
 // configuration that loads is not warned about.
 func (s *Server) samlRequiredButNotLoadedWarning(ctx context.Context) string {
-	if !s.adminSvc.SAMLEnabled(ctx) || s.samlReachableNow() {
+	if !s.samlRequiredNotLoaded(ctx) {
 		return ""
 	}
 	return "Password sign-in is limited to administrators, but SAML is not loaded: staff and users cannot sign in. " +

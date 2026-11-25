@@ -1290,6 +1290,43 @@ func TestOpenAPISpec_SLAAlertsDocumented(t *testing.T) {
 	}
 }
 
+// TestOpenAPISpec_SAMLRequiredNotLoadedDocumented pins the field the server
+// problems bar and the health card read to tell an administrator that staff and
+// users cannot sign in: an optional object of GET /admin/security-warnings with
+// one required string, reason. It is not in the response's required list (it is
+// absent, not null, while all is well) and is not nullable.
+func TestOpenAPISpec_SAMLRequiredNotLoadedDocumented(t *testing.T) {
+	doc := loadSpec(t)
+	o, ok := doc.ops["GET /api/v1/admin/security-warnings"]
+	if !ok {
+		t.Fatal("GET /api/v1/admin/security-warnings is not in the spec")
+	}
+	resp := specResponse200(o)
+	props, _ := resp["properties"].(map[string]any)
+	field, _ := props["saml_required_not_loaded"].(map[string]any)
+	if field == nil {
+		t.Fatalf("%s: GET /admin/security-warnings does not document saml_required_not_loaded", specFile)
+	}
+	if slices.Contains(stringList(resp["required"]), "saml_required_not_loaded") {
+		t.Error("saml_required_not_loaded is listed as required, but it is absent while all is well")
+	}
+	if field["type"] != "object" || field["nullable"] != nil {
+		t.Errorf("saml_required_not_loaded must be a plain object (absent, never null); got type %v nullable %v", field["type"], field["nullable"])
+	}
+	if got := stringList(field["required"]); !slices.Equal(got, []string{"reason"}) {
+		t.Errorf("saml_required_not_loaded.required = %v, want [reason]", got)
+	}
+	fieldProps, _ := field["properties"].(map[string]any)
+	reason, _ := fieldProps["reason"].(map[string]any)
+	if reason == nil || reason["type"] != "string" {
+		t.Fatalf("saml_required_not_loaded.reason is not a documented string: %v", reason)
+	}
+	got := specEnum(reason)
+	if len(got) != 2 || !got["incomplete"] || !got["not_loaded"] {
+		t.Errorf("saml_required_not_loaded.reason enum = %v, want incomplete and not_loaded", got)
+	}
+}
+
 // ── ticket list views (#676) ───────────────────────────────────────────────
 
 // specParam returns the named query parameter of an operation, or nil.

@@ -5750,6 +5750,28 @@ paths:
                             expires_at:
                               type: string
                               format: date-time
+                  saml_required_not_loaded:
+                    type: object
+                    required: [reason]
+                    description: |
+                      Present only while saml_enabled ("Require SAML for staff and
+                      users") is on and SAML is not loaded: every staff and user
+                      password sign-in is refused (403 saml_required) and the login
+                      page has no SAML button, so they cannot sign in.
+                      Administrators keep password sign-in. Read from live state on
+                      each request, so it is gone as soon as SAML loads or
+                      saml_enabled is turned off, with no restart. Absent while
+                      saml_enabled is off, whatever the SAML settings hold. The
+                      admin UI shows a notice and a health card item.
+                    properties:
+                      reason:
+                        type: string
+                        enum: [incomplete, not_loaded]
+                        description: |
+                          incomplete: the IdP metadata (URL or XML), the certificate
+                          or the private key is not saved. not_loaded: all are saved
+                          and SAML is still not running (the metadata could not be
+                          loaded, or was refused).
                   update:
                     type: object
                     required: [current, latest, url]
