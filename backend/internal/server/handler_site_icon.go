@@ -446,7 +446,9 @@ func (s *Server) handleUploadSiteIcon(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 9 to 11. Decode and render, a few at a time (imageWork); the slot is given
-	// back before the store is touched, so none is held while waiting for a lock.
+	// back before the store is touched, so an upload never holds one while
+	// waiting for a row lock. (A colour change does the reverse, takes its slot
+	// under the lock, which is safe for that reason: see handleUpdateSiteIcon.)
 	background = s.iconBackground(r.Context(), background)
 	files, decodeErr, err := renderIcon(data, kind, cfg, background)
 	if decodeErr != nil {
@@ -490,6 +492,15 @@ func (s *Server) iconBackground(ctx context.Context, sent string) string {
 		return icon.Background
 	}
 	return siteicon.DefaultBackground
+}
+
+// withImageSlot runs fn holding one slot of imageWork, and gives it back
+// however fn ends, a panic included: four leaked slots would stop every image
+// upload on the instance until a restart.
+func withImageSlot(fn func()) {
+	imageWork <- struct{}{}
+	defer func() { <-imageWork }()
+	fn()
 }
 
 // renderIcon decodes the checked upload and makes the eight files. decodeErr is
@@ -556,9 +567,14 @@ func (s *Server) handleUpdateSiteIcon(w http.ResponseWriter, r *http.Request) {
 		if prev.Background == background {
 			return prev, nil, audit.Entry{}, siteicon.ErrUnchanged
 		}
-		imageWork <- struct{}{}
-		files, err := siteicon.Recolour(stored, background)
-		<-imageWork
+		// The slot is taken while the row is locked (the master has to be read
+		// under the lock to be the one the colour is applied to). That cannot
+		// deadlock: whoever holds a slot never waits for a row lock (an upload
+		// gives its slot back before it calls the store). The work is a 512 px
+		// master, a few MB, not an upload's decode.
+		var files siteicon.Files
+		var err error
+		withImageSlot(func() { files, err = siteicon.Recolour(stored, background) })
 		if err != nil {
 			return prev, nil, audit.Entry{}, err
 		}
