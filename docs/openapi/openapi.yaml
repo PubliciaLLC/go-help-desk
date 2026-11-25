@@ -280,7 +280,7 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [configured, live, metadata_url, metadata_xml, cert_pem, sp_metadata_url]
+                required: [configured, live, metadata_url, metadata_xml, cert_pem, sp_metadata_url, sp_acs_url]
                 properties:
                   configured:
                     type: boolean
@@ -308,7 +308,14 @@ paths:
                     description: The service provider certificate in PEM form. Empty when unset.
                   sp_metadata_url:
                     type: string
-                    description: This server's SAML metadata URL, built from the server's base URL.
+                    description: >-
+                      This server's SAML metadata URL, built from the server's base URL. It is the
+                      Entity ID to give the identity provider.
+                  sp_acs_url:
+                    type: string
+                    description: >-
+                      This server's SAML assertion consumer service (ACS) URL, built from the
+                      server's base URL. Give it to the identity provider.
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -371,9 +378,10 @@ paths:
           $ref: '#/components/responses/NoContent'
         '200':
           description: >-
-            Saved, with a warning. The body is {warning}: either the identity
-            provider metadata could not be loaded, or the save would strand some
-            administrators (who are named in the warning).
+            Saved, with a warning. The body is {warning}: the identity
+            provider metadata could not be loaded, the save would strand some
+            administrators (who are named in the warning), or saml_enabled is on and
+            the save leaves SAML not loaded (staff and users cannot sign in).
           content:
             application/json:
               schema:
@@ -568,7 +576,7 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [user, mfa_needed, passkey_needed, mfa_enrollment_needed, password_change_required]
+                required: [user, mfa_needed, passkey_needed, mfa_enrollment_needed, passkey_enrollment_needed, password_change_required]
                 properties:
                   user: {$ref: '#/components/schemas/User'}
                   password_change_required:
@@ -582,7 +590,20 @@ paths:
                     description: True when a passkey is owed. Answer with POST /auth/local/passkey/start and /finish.
                   mfa_enrollment_needed:
                     type: boolean
-                    description: True when the role must enrol a second factor before it is fully signed in.
+                    description: True when the role must enrol a second factor before it is fully signed in. Never true for a role in passkey_required_roles, which enrols a passkey instead.
+                  passkey_enrollment_needed:
+                    type: boolean
+                    description: >-
+                      True when the role is in the passkey_required_roles setting
+                      (while passkeys are available) and the account has no passkey:
+                      register one (POST /me/passkeys/register/start and /finish),
+                      which is what completes the sign-in. When mfa_needed is also
+                      true, verify the TOTP code first (POST /auth/local/mfa/verify,
+                      still 204; it proves a factor but does not pass MFA for such a
+                      role), then register the key. For a role in that setting with a
+                      passkey registered, passkey_needed is true whether or not the
+                      account also holds TOTP. False for every role not in the
+                      setting.
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
@@ -855,7 +876,13 @@ paths:
         GET /auth/oidc/login, and each state is used once. On success the code is
         exchanged, the ID token is verified against the stored nonce, the account
         is matched or provisioned, a new session is started, and the browser is
-        sent to /. A refused sign-in is a redirect to /login?error=<code>, not a
+        sent to /. The exception is a role in the passkey_required_roles setting
+        (#616) when the ID token's amr does not contain fido or hwk: the session is
+        then only half signed in and the browser is sent to
+        /login?sso_step=<code> instead, with the code passkey (use a registered
+        key), passkey_enroll (register one) or verify_then_passkey_enroll (a TOTP
+        code, then register one). The step is enforced by the server whatever the
+        query says. Suspended while passkeys are unavailable. A refused sign-in is a redirect to /login?error=<code>, not a
         JSON body, so the login page can show a fixed message. The codes are:
         invalid_session, invalid_state, idp_error, missing_code, internal_error,
         missing_id_token, invalid_id_token, domain_not_allowed, account_disabled,
@@ -893,11 +920,12 @@ paths:
       responses:
         '303':
           description: >-
-            Signed in, Location is /. Or refused, Location is /login?error=<code>
+            Signed in, Location is /. Or a passkey step is owed, Location is
+            /login?sso_step=<code>. Or refused, Location is /login?error=<code>
             with one of the codes listed in the description.
           headers:
             Location:
-              description: / on success, or /login?error=<code> on refusal.
+              description: / on success, /login?sso_step=<code> when a passkey step is owed, or /login?error=<code> on refusal.
               schema:
                 type: string
         '503':
@@ -1002,8 +1030,10 @@ paths:
         the URL the sign-in began at, normally /api/v1/auth/saml/complete, which
         turns the hand-over into a session. A response that does not verify, an
         IdP-initiated response (this server does not accept one) and any other
-        refusal are answered 403 with the plain body Forbidden. Answers
-        503 when SAML is not configured.
+        refusal are answered 403 with the plain body Forbidden, with one
+        exception: a status error of InvalidNameIDPolicy (the provider cannot
+        issue the persistent NameID this server asks for) is a 303 redirect to
+        /login?error=saml_nameid_format. Answers 503 when SAML is not configured.
       tags: ['Single sign-on']
       x-ghd-handler: handleSAMLACS
       security: []
@@ -1029,6 +1059,13 @@ paths:
               description: Normally /api/v1/auth/saml/complete.
               schema:
                 type: string
+        '303':
+          description: The identity provider answered with InvalidNameIDPolicy (it cannot issue a persistent NameID). Redirects to /login?error=saml_nameid_format.
+          headers:
+            Location:
+              description: /login?error=saml_nameid_format.
+              schema:
+                type: string
         '403':
           description: The assertion did not verify, or the sign-in was not started by this server. Plain text body Forbidden.
           content:
@@ -1048,12 +1085,18 @@ paths:
         Reads the five-minute hand-over cookie set by POST /auth/saml/acs, spends
         it (it is refused from then on, in this browser and on the server, even if
         a copy was kept), matches or provisions the account, starts a new session
-        and redirects to /. If the hand-over cookie is missing, expired or does not
+        and redirects to /, or, for a role in the passkey_required_roles setting
+        (#616) whose assertion is not passkey-grade (authnmethodsreferences with
+        fido or hwk together with the Entra multipleauthn value), to
+        /login?sso_step=passkey, passkey_enroll or verify_then_passkey_enroll with a
+        half-signed-in session. If the hand-over cookie is missing, expired or does not
         verify, the request starts a fresh SAML sign-in instead. A hand-over that was already spent is refused with a redirect to
         /login?error=sso_session_used. Account refusals redirect to
         /login?error=<code>, with the codes domain_not_allowed, account_disabled,
         account_link_refused, email_taken, invalid_assertion, email_not_verified
-        and invalid_email. Answers 503 when SAML is not configured.
+        and invalid_email. Answers 503 when SAML is not configured. An identity
+        provider that cannot issue the persistent NameID this server asks for is
+        refused at the ACS with a redirect to /login?error=saml_nameid_format.
       tags: ['Single sign-on']
       x-ghd-handler: handleSAMLComplete
       security: []
@@ -1076,11 +1119,12 @@ paths:
                 type: string
         '303':
           description: >-
-            Signed in, Location is /. Or refused, Location is /login?error=<code>
+            Signed in, Location is /. Or a passkey step is owed, Location is
+            /login?sso_step=<code>. Or refused, Location is /login?error=<code>
             with one of the codes listed in the description.
           headers:
             Location:
-              description: / on success, or /login?error=<code> on refusal.
+              description: / on success, /login?sso_step=<code> when a passkey step is owed, or /login?error=<code> on refusal.
               schema:
                 type: string
         '500':
@@ -1335,12 +1379,15 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [user, mfa_enrollment_needed]
+                required: [user, mfa_enrollment_needed, passkey_enrollment_needed]
                 properties:
                   user: {$ref: '#/components/schemas/User'}
                   mfa_enrollment_needed:
                     type: boolean
                     description: True when the role must enrol a second factor before it is fully signed in.
+                  passkey_enrollment_needed:
+                    type: boolean
+                    description: True when the role is in the passkey_required_roles setting (while passkeys are available), so the new account must register a passkey before it is fully signed in. mfa_enrollment_needed is then false.
         '400':
           description: >-
             The body is not JSON (bad_request), the display name is blank
@@ -1410,8 +1457,10 @@ paths:
         Returns the types of the category. Archived types are included for the
         same callers as in the category list (a staff or administrator session
         that has passed MFA, an API key owned by staff or an administrator, any
-        OAuth client); everyone else gets active ones only. An unknown category gives an empty array. Same
-        callers as the category list.
+        OAuth client); everyone else gets active ones only, and none at all while the category is archived (so a
+        requester's page can no longer resolve the type name of a ticket in an archived category). An
+        unknown category gives an empty array; a failed lookup of the category is a 500. Same callers as the
+        category list.
       tags: ['Catalogue']
       x-ghd-handler: handleListPublicTypes
       security:
@@ -1461,9 +1510,10 @@ paths:
         Returns the items of the type. Archived items are included for the same
         callers as in the category list (a staff or administrator session that
         has passed MFA, an API key owned by staff or an administrator, any OAuth
-        client); everyone else gets active ones only. The category in the path is not looked up, so an item list is
-        returned for any category id that is sent. An unknown type gives an empty
-        array. Same callers as the category list.
+        client); everyone else gets active ones only, and none at all while the type or its category is archived.
+        The category in the path is not looked up, so an item list is returned for any category id that is sent. An
+        unknown type gives an empty array; a failed lookup of the type or its category is a 500. Same callers as the
+        category list.
       tags: ['Catalogue']
       x-ghd-handler: handleListPublicItems
       security:
@@ -1644,7 +1694,7 @@ paths:
                     format: int64
                     description: |
                       The per-file limit that applies to a guest: the lower of
-                      guest_attachment_max_mb and the instance-wide 25 MB maximum.
+                      guest_attachment_max_mb and the per-file limit, attachment_max_mb (25 MB by default).
                       Present only while guest_attachments_enabled is true. Public,
                       like the flag; disclosing the limit was accepted.
                   guest_attachment_uploads_per_hour:
@@ -2034,6 +2084,82 @@ paths:
           content:
             application/json:
               schema: {$ref: '#/components/schemas/Error'}
+  /api/v1/dashboard:
+    get:
+      operationId: getDashboard
+      summary: Read the dashboard's queue counts, needs-attention list and 30-day trend.
+      description: |
+        The numbers and rows behind the dashboard's blocks (#675). Every count and
+        every row is computed by the same path as GET /tickets: the caller's
+        visibility, the queue, and the list query's own filter, so a number here
+        is the length of the list it links to. With ticket scope enforcement on, a
+        staff member's numbers count only what their scope admits.
+        - queues: the queue strip. A reporting user gets one cell, my_tickets. Staff
+          and administrators get five: assigned_to_me, my_groups, awaiting_my_reply
+          and, while SLA tracking is on, sla_breached and sla_at_risk. The two SLA
+          cells count what is assigned to the caller; they are left out while SLA
+          tracking is off, and a failure to read that setting is treated as off.
+          A count is a plain number, 0 included.
+        - attention: up to five open tickets that want someone, for staff and
+          administrators; null for a reporting user. Each row names one reason and
+          the instant its age is measured from, and carries the ticket exactly as
+          GET /tickets returns it to this caller. The reasons, in order: breached and
+          at_risk (SLA tracking on, oldest first), unassigned (the Available queue
+          rule: administrators, and staff while Staff is ticked under Available),
+          and reopened (reopened in the last 7 days, most recently updated first). A ticket is
+          listed once, under its first reason. since is created_at for the first
+          three reasons and the time it was last reopened for reopened. An empty
+          list means nothing needs attention.
+        - volume: tickets created and resolved per day for the last 30 days, today
+          included, oldest first, counted in the time zone given by tz over every
+          ticket the caller can see; null for a reporting user. A day with nothing
+          is present with zeros. Resolved is resolved_at, or closed_at when the
+          ticket was closed without being resolved.
+        Nothing is cached on the server. A store failure answers 500 for the whole
+        response.
+      tags: ['Tickets']
+      x-ghd-handler: handleGetDashboard
+      security:
+        - sessionCookie: []
+        - apiKey: ['tickets:read']
+        - oauthClient: ['tickets:read']
+      x-ghd-roles: [admin, staff, user]
+      x-ghd-mfa: true
+      parameters:
+        - name: tz
+          in: query
+          required: false
+          description: >-
+            The IANA time zone the trend's days are counted in, for example Europe/London. Absent or empty is
+            UTC. At most 64 bytes of A-Z, a-z, 0-9, _, +, - and /. Any other value is 400 bad_request,
+            "invalid tz"; a name the database does not know is 400 bad_request, "unknown time zone", but only for
+            staff and administrators, the callers who get a trend: a requester runs no trend, so their zone is
+            checked for form only.
+          schema:
+            type: string
+            maxLength: 64
+            pattern: '^[A-Za-z0-9_+/-]*$'
+      responses:
+        '200':
+          description: The dashboard's blocks. attention and volume are null for a reporting user.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Dashboard'
+        '400':
+          description: '`bad_request` with the message "invalid tz" or "unknown time zone" (see the tz parameter).'
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          description: A store failure (`internal_error`) fails the whole response.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
   /api/v1/groups:
     get:
       operationId: listGroupsForAssignment
@@ -2401,12 +2527,12 @@ paths:
       x-ghd-mfa: true
       responses:
         '200':
-          description: The caller's account, or the identity of an OAuth client.
+          description: The caller's account (MeUser), or the identity of an OAuth client.
           content:
             application/json:
               schema:
                 oneOf:
-                  - {$ref: '#/components/schemas/User'}
+                  - {$ref: '#/components/schemas/MeUser'}
                   - type: object
                     required: [machine, role, scopes]
                     properties:
@@ -2613,14 +2739,18 @@ paths:
       summary: Change which staff emails the caller gets.
       description: |
         Staff and administrators only, in a signed-in session (second factor required).
-        Sets the caller's three staff-email switches. Each is optional and only the ones sent change, so two
-        browser tabs cannot undo each other. All three are on for a new account and for every account that
+        Sets the caller's four staff-email switches. Each is optional and only the ones sent change, so two
+        browser tabs cannot undo each other. All four are on for a new account and for every account that
         existed before they were added.
         - email_notify_assigned: a ticket is assigned to me.
         - email_notify_activity: a requester replied on a ticket assigned to me, or a ticket assigned to me
           was reopened; and, for a ticket I follow, it was assigned, replied to or reopened.
         - email_notify_group: a ticket is assigned to a group I belong to, a requester replied on a group
           ticket that nobody personally holds, or a group ticket that nobody personally holds was reopened.
+        - email_notify_sla: an SLA target on a ticket assigned to me, on a group ticket that nobody personally
+          holds, or on a ticket I follow has breached, or has reached 80% of its time. The other three switches
+          do not apply to these alerts. The SLA alerts setting (sla_alerts_enabled) must also be on for
+          any SLA mail to be sent.
         An administrator can force any of these on or off for everyone with the staff_email_*_override
         settings; that wins over what is saved here. The answer's email_notifications says which are forced. Nobody is emailed about their own action whatever the
         switches say. A requester account is never sent staff mail, and an API key or OAuth client has no inbox
@@ -2641,12 +2771,13 @@ paths:
                 email_notify_assigned: {type: boolean}
                 email_notify_activity: {type: boolean}
                 email_notify_group: {type: boolean}
+                email_notify_sla: {type: boolean}
       responses:
         '200':
-          description: The caller's account, with the switches as saved.
+          description: The caller's account (MeUser), with the switches as saved.
           content:
             application/json:
-              schema: {$ref: '#/components/schemas/User'}
+              schema: {$ref: '#/components/schemas/MeUser'}
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
@@ -2844,9 +2975,11 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           description: |
-            Two sources. The authentication middleware refuses a machine credential with session_required, as
+            Three sources. The authentication middleware refuses a machine credential with session_required, as
             text/plain. mfa_required, as application/json, when the account already has a second factor and
-            this session has not proved one.
+            this session has not proved one. passkey_required, as application/json, when the sign-in owes a
+            passkey the account already holds (the role is in passkey_required_roles): that session must use
+            the key it has, and can neither add a passkey nor remove one until it has.
           content:
             text/plain:
               schema: {$ref: '#/components/schemas/Error'}
@@ -2897,9 +3030,11 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           description: |
-            Two sources. The authentication middleware refuses a machine credential with session_required, as
+            Three sources. The authentication middleware refuses a machine credential with session_required, as
             text/plain. mfa_required, as application/json, when the account already has a second factor and
-            this session has not proved one.
+            this session has not proved one. passkey_required, as application/json, when the sign-in owes a
+            passkey the account already holds (the role is in passkey_required_roles): that session must use
+            the key it has, and can neither add a passkey nor remove one until it has.
           content:
             text/plain:
               schema: {$ref: '#/components/schemas/Error'}
@@ -2940,9 +3075,11 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           description: |
-            Two sources. The authentication middleware refuses a machine credential with session_required, as
+            Three sources. The authentication middleware refuses a machine credential with session_required, as
             text/plain. mfa_required, as application/json, when the account already has a second factor and
-            this session has not proved one.
+            this session has not proved one. passkey_required, as application/json, when the sign-in owes a
+            passkey the account already holds (the role is in passkey_required_roles): that session must use
+            the key it has, and can neither add a passkey nor remove one until it has.
           content:
             text/plain:
               schema: {$ref: '#/components/schemas/Error'}
@@ -3014,6 +3151,117 @@ paths:
           $ref: '#/components/responses/TooManyRequests'
         '404':
           $ref: '#/components/responses/NotFound'
+  /api/v1/reports/kpi:
+    get:
+      operationId: getKpiReport
+      summary: Read the KPI report for a period, with its comparison to the period before.
+      description: |
+        Staff and administrators only (second factor required). A requester gets 403.
+        The numbers behind the Reports page (#131), computed live on the server over the tickets the caller can
+        see (the same visibility as GET /tickets: with ticket scope enforcement on, a staff member's numbers
+        count only what their scope admits; an administrator sees every ticket).
+        - period: the days counted, from and to inclusive, in the time zone tz; previous is the period of the
+          same length that ends the day before it begins. With no from and to it is the 30 days ending today in tz.
+        - measures.current and measures.previous: tickets created, tickets resolved, time to resolve (median and
+          90th percentile, in seconds, less time spent Pending), time to first response (median, seconds), SLA
+          attainment and reopens. A median or percentile is null when its count is 0; a rate is a fraction
+          between 0 and 1 rounded to four places, null when its denominator is 0.
+        - measures.change: the period-over-period change of the nine compared measures, always all nine.
+          kind is relative for counts and durations and points for rates; state says which rule applied and
+          value is null unless state is change.
+        - volume: created and resolved per day over the period, oldest first, and the tickets created in
+          the period by category and by priority (always the four priorities, in order).
+        - backlog and workload: the tickets open as of as_of, by age and by the person and the group holding
+          them. They do not depend on from and to. A row with a null id and name is the tickets with no person,
+          or no group, and is last.
+        The filters narrow every figure, the snapshots included. sla_enabled is whether SLA tracking is on
+        now (false when the setting cannot be read); the SLA figures are computed either way from the records
+        that exist. Nothing is cached on the server. A store failure answers 500 for the whole response.
+        The checks run in a fixed order and the first failure answers: tz, then from and to together, from, to,
+        category_id, priority and assignee_group_id, then whether the zone exists, then the length of the range.
+      tags: ['Tickets']
+      x-ghd-handler: handleGetKPI
+      security:
+        - sessionCookie: []
+        - apiKey: ['tickets:read']
+        - oauthClient: ['tickets:read']
+      x-ghd-roles: [admin, staff]
+      x-ghd-mfa: true
+      parameters:
+        - name: tz
+          in: query
+          required: false
+          description: >-
+            The IANA time zone the period's days are counted in, for example Europe/London. Absent or empty is
+            UTC. At most 64 bytes of A-Z, a-z, 0-9, _, +, - and /. Any other value is 400 bad_request,
+            "invalid tz"; a name the database does not know is 400 bad_request, "unknown time zone".
+          schema:
+            type: string
+            maxLength: 64
+            pattern: '^[A-Za-z0-9_+/-]*$'
+        - name: from
+          in: query
+          required: false
+          description: >-
+            First day of the period, YYYY-MM-DD, a date in tz. Goes with to: one without the other is 400
+            "from and to go together"; a malformed date is "invalid from". Both absent is the last 30 days
+            ending today in tz.
+          schema: {type: string, format: date}
+        - name: to
+          in: query
+          required: false
+          description: >-
+            Last day of the period, inclusive, YYYY-MM-DD. A malformed date is 400 "invalid to"; a to before
+            from is "from must not be after to"; a from before 1970-01-01 is "from is too early"; a range of more than 366 days is "the range is longer than
+            366 days". A to after today is allowed; its days count zero.
+          schema: {type: string, format: date}
+        - name: category_id
+          in: query
+          required: false
+          description: Only tickets in this category. Not a UUID is 400 "invalid category_id".
+          schema: {$ref: '#/components/schemas/Uuid'}
+        - name: priority
+          in: query
+          required: false
+          style: form
+          explode: true
+          description: >-
+            Only tickets at these priorities; repeat the parameter for several. A value that is not a
+            priority is 400 "invalid priority"; more than four values is "too many priority values".
+          schema:
+            type: array
+            maxItems: 4
+            items: {$ref: '#/components/schemas/Priority'}
+        - name: assignee_group_id
+          in: query
+          required: false
+          description: Only tickets assigned to this group. Not a UUID is 400 "invalid assignee_group_id".
+          schema: {$ref: '#/components/schemas/Uuid'}
+      responses:
+        '200':
+          description: The report.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/KpiReport'
+        '400':
+          description: >-
+            `bad_request` with the message of the first failed check: "invalid tz", "from and to go together",
+            "invalid from", "invalid to", "invalid category_id", "invalid priority", "too many priority values",
+            "invalid assignee_group_id", "unknown time zone", "from must not be after to" or "the range is
+            longer than 366 days".
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          description: A store failure (`internal_error`) fails the whole response.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
   /api/v1/staff:
     get:
       operationId: listAssignableStaff
@@ -3256,12 +3504,15 @@ paths:
         and an id that names nothing gives an empty list. Repeatable parameters
         (status_id, priority, source_channel) are sent as repeated keys, at most 20
         values each; values of one key are ORed.
-        scope picks the queue and is ANDed with the filters: mine (the default),
-        unassigned and all (admin only), visible (every ticket the caller can see).
-        Any other value is mine. When reporter_id, requester or assignee_group_id
-        is present the queue is "any" and scope is not consulted, so those
-        parameters combine with each other and with every other filter (reporter_id
-        and assignee_group_id together used to drop the group).
+        scope picks the queue and is ANDed with the filters; see the scope
+        parameter for the six values and who may use each (mine is the default;
+        all is administrators only; unassigned is administrators, and staff while
+        available_queue_roles lists staff). Any other value is mine. When
+        reporter_id, requester or assignee_group_id is present, mine, unassigned,
+        all and visible are not consulted and the queue is "any", so those
+        parameters combine with each other and with every other filter
+        (reporter_id and assignee_group_id together used to drop the group);
+        assigned_to_me and my_groups are always applied and narrowed by them.
         q searches by tracking number prefix, subject and description (full-text
         search). With q the results are ordered by relevance first and then newest
         first, on every queue; before 1.3.0 the default listing of an administrator,
@@ -3288,9 +3539,22 @@ paths:
         - name: scope
           in: query
           required: false
-          description: "mine (the default), unassigned, all or visible. unassigned and all are admin only. visible is every ticket the caller can see: every ticket for an admin, or for staff while ticket scope enforcement is off, and the staff scope with it on; a reporting user still gets only their own tickets. Other values are ignored and behave as mine."
+          description: >-
+            The queue. Who may use each:
+            mine (the default): the tickets assigned to the caller or to one of their groups. With ticket scope enforcement on, staff get everything their scope admits instead. Staff and administrators.
+            assigned_to_me: the tickets whose assignee user is the caller, whatever group they are in. Staff and administrators.
+            my_groups: the tickets whose assignee group is one of the caller's groups, whoever holds them. Staff and administrators; held_by splits it three ways.
+            unassigned (the Available queue): the tickets with no assignee group and no assignee user. Administrators always, and staff while available_queue_roles lists staff. Anyone else is refused 403 forbidden, "only admins can use this scope".
+            all: every ticket. Administrators only; anyone else is refused 403 forbidden, "only admins can use this scope".
+            visible (the Search view): every ticket the caller can see. Staff and administrators.
+            A reporting user has no queues: for mine, assigned_to_me, my_groups and visible they get only their own tickets, and for unassigned and all they are refused as above.
+            Yield rule: when reporter_id, requester or assignee_group_id is present, mine, unassigned, all and visible do not apply and do not refuse; the queue is "any". assigned_to_me and my_groups are always applied and narrowed by those filters like any other.
+            Any other value is read as mine; that tolerance is not part of the contract, so send one of these six.
           schema:
             type: string
+            # No enum: the server answers an unknown value as mine, and a client
+            # generated from a closed enum would refuse values the server accepts.
+            # The six values are listed in the description above.
         - name: reporter_id
           in: query
           required: false
@@ -3378,6 +3642,29 @@ paths:
           description: Only tickets assigned to this group. Staff and administrators (403 for a reporting user). Staff must belong to the group when ticket scope enforcement is on.
           schema:
             $ref: '#/components/schemas/Uuid'
+        - name: held_by
+          in: query
+          required: false
+          description: >-
+            Who personally holds the ticket, relative to the caller: nobody (no assignee user), me (the caller
+            is the assignee user) or others (an assignee user who is not the caller). One value; any other value
+            is 400 bad_request, "invalid held_by". Applies on every queue and is ANDed with it; the My Group's
+            Tickets view sends it. Staff and administrators (403 for a reporting user, "held_by is not available
+            to requesters").
+          schema:
+            type: string
+            enum: [nobody, me, others]
+        - name: awaiting_reply
+          in: query
+          required: false
+          description: >-
+            true or false (absent and false are the same). true keeps the tickets that are not Resolved or
+            Closed and whose newest public message is the requester's side (no reply yet, a guest, or an
+            author who is not staff or an administrator), so they wait for the help desk. Internal notes are
+            not read. Any other value is 400 bad_request, "invalid awaiting_reply". Staff and administrators
+            (403 for a reporting user sending true, "awaiting_reply is not available to requesters").
+          schema:
+            type: boolean
         - name: status_id
           in: query
           required: false
@@ -4106,7 +4393,7 @@ paths:
         who made a change is never emailed about it.
 
         People only: a signed-in session. An API key or OAuth client is refused
-        with 403 session_required, because following is a personal choice and a
+        with 403 session_required, because following is a person's act and a
         script acting for someone is not them. A service user cannot follow
         either.
 
@@ -4178,7 +4465,9 @@ paths:
         Staff and administrators only (second factor required). Staff always
         see the current followers of a ticket they can see; no setting hides
         them. Oldest follow first. An account that has been deleted is left
-        out. A reporting user gets 403 forbidden on a ticket they can see, and
+        out. Each follower is a user_id, a display_name and a created_at; the
+        list does not say who added them (the ticket's audit does). A reporting user
+        gets 403 forbidden on a ticket they can see, and
         404 on one they cannot. The id is a UUID or a tracking number.
         A ticket the caller may not see answers 404 not_found, the same answer as a
         ticket that does not exist, and never 403, so tracking numbers cannot be
@@ -4204,6 +4493,115 @@ paths:
                 type: array
                 items:
                   $ref: '#/components/schemas/TicketFollower'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/TicketNotFound'
+  /api/v1/tickets/{id}/followers/{userId}:
+    parameters:
+      - $ref: '#/components/parameters/TicketRef'
+      - name: userId
+        in: path
+        required: true
+        description: The id of the staff member or administrator to add or remove.
+        schema:
+          type: string
+          format: uuid
+    put:
+      operationId: addTicketFollower
+      summary: Add somebody else as a follower of a ticket.
+      description: |
+        Staff and administrators only, in a signed-in session (second factor required).
+        The caller adds another staff member or administrator as a follower; adding
+        yourself is the same as PUT /tickets/{id}/follow. People only: an API key or
+        OAuth client is refused with 403 session_required, as for following, because
+        choosing who hears about a ticket is a person's act and a script acting for
+        someone is not them.
+
+        The person added must be an active staff member or administrator who is not a
+        service account, else 422 follower_not_eligible (that includes an id that is
+        nobody, a deleted or disabled account, a service account and a reporting
+        user, and the answer does not say which). They must also be able to see the
+        ticket, under ticket scope enforcement (ticket_scope_enforced), else 422
+        follower_cannot_view_ticket. A userId that is not a UUID is 400 bad_request.
+
+        Adding somebody who already follows answers 204 and changes nothing. A first
+        add is audited as followed with the caller as actor and the person added in
+        follower_user_id, and raises ticket.followed (ActorID is the caller, user_id
+        is the person added), which only a webhook that lists it by name receives.
+        The person added is not emailed. Whether they can still see the ticket is
+        checked again each time follower email is sent, as for any follower.
+        The id is a UUID or a tracking number.
+        A ticket the caller may not see answers 404 not_found, the same answer as a
+        ticket that does not exist, and never 403, so tracking numbers cannot be
+        probed. A 403 from the handler (application/json) means the ticket is
+        visible but the action is refused. Of the text/plain 403s from the auth
+        middleware, mfa_required and insufficient_scope are decided before the
+        ticket is looked up and say nothing about it; the role refusal
+        (forbidden) is decided after it.
+      tags: ['Tickets']
+      x-ghd-handler: handleAddFollower
+      security:
+        - sessionCookie: []
+      x-ghd-roles: [admin, staff]
+      x-ghd-mfa: true
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '400':
+          description: "`bad_request`: userId is not a UUID."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/TicketNotFound'
+        '422':
+          description: "`follower_not_eligible`: that account cannot follow a ticket (not an active staff member or administrator). `follower_cannot_view_ticket`: that person cannot see this ticket."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    delete:
+      operationId: removeTicketFollower
+      summary: Remove a follower from a ticket.
+      description: |
+        Staff and administrators only, in a signed-in session (second factor required).
+        Removes any follower, whoever added them. As for adding, an API key or OAuth
+        client is refused with 403 session_required. Answers 204 whether or not the
+        person was following, and for an id that is nobody. Removing somebody who
+        followed is audited as unfollowed with the caller as actor and the person
+        removed in follower_user_id, and then raises ticket.unfollowed (opt-in by
+        name). Removing yourself is the same as DELETE /tickets/{id}/follow. The id is
+        a UUID or a tracking number.
+        A ticket the caller may not see answers 404 not_found, the same answer as a
+        ticket that does not exist, and never 403, so tracking numbers cannot be
+        probed. A 403 from the handler (application/json) means the ticket is
+        visible but the action is refused. Of the text/plain 403s from the auth
+        middleware, mfa_required and insufficient_scope are decided before the
+        ticket is looked up and say nothing about it; the role refusal
+        (forbidden) is decided after it.
+      tags: ['Tickets']
+      x-ghd-handler: handleRemoveFollower
+      security:
+        - sessionCookie: []
+      x-ghd-roles: [admin, staff]
+      x-ghd-mfa: true
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '400':
+          description: "`bad_request`: userId is not a UUID."
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -5278,7 +5676,7 @@ paths:
                       a group or is disabled.
                   passkeys:
                     type: object
-                    required: [available, reason]
+                    required: [available, reason, suspended_roles]
                     description: |
                       Whether passkeys can be used. They cannot when BASE_URL is
                       an IP address, a single-label host or a non-ASCII host,
@@ -5291,6 +5689,16 @@ paths:
                       reason:
                         type: string
                         description: Why not, as the passkey library words it. Empty when available.
+                      suspended_roles:
+                        type: array
+                        items: {type: string}
+                        description: |
+                          The roles in passkey_required_roles whose requirement is
+                          not being applied because passkeys are unavailable: their
+                          members may pass MFA with a TOTP code until BASE_URL is
+                          fixed. Always an array. Non-empty only when available is
+                          false, mfa_enabled is on and passkey_required_roles lists
+                          a role. The admin UI shows "Passkey requirement suspended".
                   saml_idp_certificate:
                     type: object
                     required: [expires_at, expired]
@@ -5342,6 +5750,28 @@ paths:
                             expires_at:
                               type: string
                               format: date-time
+                  saml_required_not_loaded:
+                    type: object
+                    required: [reason]
+                    description: |
+                      Present only while saml_enabled ("Require SAML for staff and
+                      users") is on and SAML is not loaded: every staff and user
+                      password sign-in is refused (403 saml_required) and the login
+                      page has no SAML button, so they cannot sign in.
+                      Administrators keep password sign-in. Read from live state on
+                      each request, so it is gone as soon as SAML loads or
+                      saml_enabled is turned off, with no restart. Absent while
+                      saml_enabled is off, whatever the SAML settings hold. The
+                      admin UI shows a notice and a health card item.
+                    properties:
+                      reason:
+                        type: string
+                        enum: [incomplete, not_loaded]
+                        description: |
+                          incomplete: the IdP metadata (URL or XML), the certificate
+                          or the private key is not saved. not_loaded: all are saved
+                          and SAML is still not running (the metadata could not be
+                          loaded, or was refused).
                   update:
                     type: object
                     required: [current, latest, url]
@@ -5618,8 +6048,8 @@ paths:
           invalid_infected_handling, invalid_mismatch_handling,
           invalid_reputation_refresh). Before v1.3.0, null and a non-string were
           refused with bad_request for some of these.
-        - staff_email_assigned_override, staff_email_activity_override and
-          staff_email_group_override take user, on or off; a string outside the list
+        - staff_email_assigned_override, staff_email_activity_override,
+          staff_email_group_override and staff_email_sla_override take user, on or off; a string outside the list
           is refused with invalid_staff_email_override, as are null and a non-string.
         - ticket_prefix is 1 to 8 uppercase letters or digits (invalid_ticket_prefix).
         - audit_retention_days must be an integer of at most 36525. Zero or less
@@ -5642,10 +6072,17 @@ paths:
           5) and guest_attachment_uploads_per_hour an integer from 1 to 30 (default
           3). Anything else, including null, a string and a fraction, is refused
           with bad_request, and nothing is stored.
-        - guest_attachment_max_mb must be an integer from 1 to 100 (megabytes).
-          0, 101 or more, negatives, a fraction, a string and null are refused
+        - attachment_max_mb must be an integer from 1 to 100 (megabytes, 25 by
+          default). 0, 101 or more, negatives, a fraction, a string and null are
+          refused with bad_request, and nothing is stored. It is session only.
+          Lowering it below a stored guest value is accepted; the guest is then
+          held to the new limit until either setting changes.
+        - guest_attachment_max_mb must be an integer from 1 to attachment_max_mb,
+          judged against the limit as this body leaves it (the body's own
+          attachment_max_mb when it carries one, else the stored one). 0, anything
+          above that limit, negatives, a fraction, a string and null are refused
           with bad_request, and nothing is stored. Unset reads as 5. A guest is
-          held to the lower of it and the instance-wide 25 MB maximum.
+          held to the lower of it and the per-file limit.
         - api_key_max_lifetime_years must be the integer 1, 2, 3, 4 or 5 (years), or
           -1 for no limit ("Never"). 0, 6 or more, anything below -1, a fraction, a
           string and null are refused with bad_request, and nothing is stored. Unset
@@ -5682,10 +6119,20 @@ paths:
           and oidc_enabled a boolean; null is refused (bad_request). oidc_redirect_url
           is not type-checked. Enabling OIDC needs an issuer URL, a client id and a
           client secret.
-        - mfa_enabled, ticket_scope_enforced, sla_enabled, self_signup_enabled,
+        - mfa_enabled, ticket_scope_enforced, sla_enabled, sla_alerts_enabled, self_signup_enabled,
           open_registration_enabled and saml_enabled must be booleans;
           reopen_window_days a number of 0 or more; mfa_enforced_roles an array of
-          strings; reopen_target_status_name a string; site_logo_url a string that is
+          strings; passkey_required_roles an array whose elements are each admin,
+          staff or user;
+          a save that newly lists the caller's own role (one the stored list does
+          not already name) is refused with 400 bad_request unless the caller has
+          at least one registered passkey, so that nobody requires a passkey of
+          their own role before showing they can hold one; any other edit is
+          never refused by this check (another role added or removed, the caller's own role
+          removed, an unchanged list), and mfa_enabled does not matter;
+          available_queue_roles an array of admin and staff only (an empty array is
+          accepted; user or any other value is 400 bad_request);
+          reopen_target_status_name a string; site_logo_url a string that is
           empty, an http(s) URL, or a path on this site (starting with a single "/").
           null or any other type is refused (bad_request) and nothing is written.
         - saml_metadata_url and saml_metadata_xml cannot both be non-empty after
@@ -5703,22 +6150,29 @@ paths:
         - If the write leaves some administrators unable to sign in by any method,
           it is applied and the answer is 200 with a warning that names them. If it
           would leave no administrator able to sign in, it is refused with 400.
+        - saml_enabled means "staff and users must use SAML" (administrators keep
+          password sign-in). When, after the write and the reload above,
+          saml_enabled is true and SAML is not loaded, staff and users cannot sign in
+          at all. The write is still applied, and the answer is 200 with a warning
+          to that effect. This is checked only when the body sets saml_enabled or
+          names a SAML metadata, certificate or key field, so a save that removes the
+          SAML configuration while saml_enabled is on says so too.
         Session only: an API key or OAuth client that sends any of the keys below,
         anywhere in the body, is refused with 403 session_required, and nothing is
         written. Every other key is open to a machine credential that has
         settings:write.
         saml_enabled, saml_metadata_url, saml_metadata_xml, saml_cert_pem,
         saml_key_pem, oidc_enabled, oidc_issuer_url, oidc_client_id, oidc_client_secret,
-        oidc_redirect_url, mfa_enabled, mfa_enforced_roles, allowed_email_domains,
+        oidc_redirect_url, mfa_enabled, mfa_enforced_roles, passkey_required_roles, allowed_email_domains,
         self_signup_enabled, open_registration_enabled, closed_reopen_policy,
         audit_mask_requester_names, guest_submission_enabled,
-        guest_attachments_enabled, guest_attachment_max_mb,
+        guest_attachments_enabled, attachment_max_mb, guest_attachment_max_mb,
         guest_attachment_max_per_ticket, guest_attachment_uploads_per_hour,
         attachment_scan_address, attachment_scan_policy, attachment_allowed_types,
         attachment_infected_handling, attachment_mismatch_handling,
         audit_retention_days, staff_can_view_ticket_change_history,
         staff_can_view_follow_audit, staff_can_create_api_keys,
-        api_key_max_lifetime_years, ticket_scope_enforced, auto_assign_group_id,
+        api_key_max_lifetime_years, ticket_scope_enforced, available_queue_roles, auto_assign_group_id,
         auto_assign_user_ids, password_rehash_grace_days, password_rehash_started_at,
         update_check_enabled,
         attachment_vt_lookup, attachment_vt_api_key, attachment_reputation_provider,
@@ -5743,11 +6197,13 @@ paths:
       responses:
         '200':
           description: |
-            The write was applied, with a warning. It is one or both of: the write
+            The write was applied, with a warning. It is one or more of: the write
             leaves some administrators unable to sign in (the warning names them),
-            or it turned ticket_scope_enforced from off to on while some
+            it turned ticket_scope_enforced from off to on while some
             OAuth clients have a service user in no group (the warning names the
-            clients, which will see no tickets). Nothing is refused for either.
+            clients, which will see no tickets), a SAML configuration could not be
+            loaded, or saml_enabled is on while SAML is not loaded (staff and users
+            cannot sign in). Nothing is refused for any of them.
           content:
             application/json:
               schema:
@@ -5765,7 +6221,9 @@ paths:
             bad_request (invalid JSON, a wrong type or null for any typed setting
             above, a negative reopen_window_days, a site_logo_url that is not empty,
             http(s) or a path on this site, an audit retention above the maximum, or
-            a refusal from the SSO guard), readonly_setting, unknown_setting,
+            a refusal from the SSO guard, or a passkey_required_roles that newly
+            lists the caller's own role while the caller has no registered
+            passkey: the message says to register one first), readonly_setting, unknown_setting,
             invalid_closed_reopen_policy, invalid_audit_mask_requester_names,
             invalid_scan_policy, invalid_infected_handling,
             invalid_mismatch_handling, invalid_reputation_refresh,
@@ -5889,12 +6347,12 @@ paths:
         Authenticated by the guest token alone. The token names the ticket, so no
         ticket id appears in the path. The request is the same multipart upload as
         uploadAttachment, with the same checks, scanning, quarantine and wrapping,
-        and the instance-wide 25 MB cap. A stored file raises ticket.attachment_added
+        and the per-file limit, attachment_max_mb (25 MB by default). A stored file raises ticket.attachment_added
         with no actor and no email. Three things are specific to guests.
         Attaching is off unless an administrator has turned on
         guest_attachments_enabled (#445): then the route answers the generic
         404, byte-identical to a bad link. A guest's per-file limit is
-        guest_attachment_max_mb (default 5), never above the 25 MB cap. Two more
+        guest_attachment_max_mb (default 5), never above the per-file limit, attachment_max_mb (25 MB by default). Two more
         limits follow the token and lifecycle checks: a ticket holds at most
         guest_attachment_max_per_ticket guest-uploaded files (409
         guest_attachment_limit) and one link may upload
@@ -6045,17 +6503,17 @@ paths:
       operationId: uploadAttachment
       summary: Upload a file to a ticket.
       description: |
-        Multipart upload of one file in the field file, up to 25 MB. The checks run
+        Multipart upload of one file in the field file, up to the per-file limit, attachment_max_mb (25 MB by default). The checks run
         in this order.
-        1. The body is capped at 25 MB plus 1 MB for the multipart framing, and a
-           file part that declares more than 25 MB is refused (413 too_large). A body
+        1. The body is capped at the per-file limit plus 1 MB for the multipart framing, and a
+           file part that declares more than the per-file limit is refused (413 too_large). A body
            that is not multipart, or has no file field, is 400 bad_request.
         2. The name must be valid UTF-8, contain no NUL, no control or
            text-direction characters, and be at most 255 bytes (400 invalid_filename).
         3. The extension must be in the instance's allowed list
            (attachment_allowed_types). The default is .pdf, .docx, .xlsx, .txt, .log,
            .jpg, .jpeg, .png and .bmp (415 unsupported_type).
-        4. The bytes are read (413 too_large over 25 MB), hashed (SHA-256) and their
+        4. The bytes are read (413 too_large over the per-file limit), hashed (SHA-256) and their
            type is detected. For an extension in that default set, content that
            contradicts the name is recorded as a mismatch (mismatch true).
         5. The scanner runs unless the scan policy is off. An infected file is
@@ -6135,7 +6593,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
         '413':
-          description: The file is over 25 MB, or the body is over the cap that includes multipart framing (too_large).
+          description: The file is over the per-file limit, attachment_max_mb (25 MB by default), or the body is over the cap that includes multipart framing (too_large).
           content:
             application/json:
               schema:
@@ -7918,8 +8376,11 @@ paths:
         password is optional. When present it must be 8 to 72 bytes. An account
         created without a password has no local sign-in until one is set with
         POST /api/v1/admin/users/{id}/password. The email address is trimmed and
-        lowercased. An address that any account holds, deleted accounts included,
-        answers 409 email_taken.
+        lowercased. An address that a live account holds answers 409 email_taken.
+        An address held only by deleted accounts is released and the account is
+        created: the deleted account keeps its id, tickets and history, its
+        address becomes deleted-<id>@invalid and any SAML subject is cleared, in
+        the same transaction, and both rows get an audit entry.
       tags: ['Admin: Users']
       x-ghd-handler: handleCreateUser
       security:
@@ -7981,8 +8442,8 @@ paths:
                 $ref: '#/components/schemas/Error'
         '409':
           description: >-
-            email_taken, with message "that email address is already in use, possibly
-            by a deleted account".
+            email_taken, with message "an account with that email address already
+            exists". A live account holds the address; a deleted one no longer does.
           content:
             application/json:
               schema:
@@ -8774,6 +9235,10 @@ paths:
         ticket.unfollowed never gets it there. Opting in counts from when the hook named
         the event: a change that happened before the hook listed it is never upgraded,
         so a retry after the edit carries no user_id.
+        sla.breached and sla.at_risk have a Payload of targets (a list of "response"
+        and/or "resolution"), policy_id and record_id, and a null ActorID; sla.breached
+        also has at_risk_targets (the same two names) when the pass found the other
+        target at 80%, and omits the key otherwise.
         A hook on "*" (or with no events) does not receive ticket.followed or
         ticket.unfollowed; list them by name to receive them. The secret is write-only. When it is set, each delivery
         carries sha256=<hex HMAC-SHA256 of the body> in the X-GHD-Signature header, and the
@@ -9217,6 +9682,12 @@ paths:
                 name:
                   type: string
                   description: Category name. Trimmed before it is checked.
+                description:
+                  type: string
+                  maxLength: 500
+                  description: >-
+                    Optional description (see the CtiDescription schema). Trimmed; empty or absent means none. More than
+                    500 characters is refused with 400.
                 sort_order:
                   type: integer
                   description: Display order among categories. Defaults to 0.
@@ -9301,6 +9772,12 @@ paths:
                 name:
                   type: string
                   description: New name, trimmed. Absent leaves the name unchanged. An empty or whitespace-only value is refused with 400.
+                description:
+                  type: string
+                  maxLength: 500
+                  description: >-
+                    New description, trimmed. Absent leaves it unchanged; an empty or whitespace-only value clears it.
+                    More than 500 characters is refused with 400.
                 sort_order:
                   type: integer
                   description: New display order. Absent leaves it unchanged.
@@ -9633,6 +10110,12 @@ paths:
                 name:
                   type: string
                   description: Type name, trimmed before it is checked.
+                description:
+                  type: string
+                  maxLength: 500
+                  description: >-
+                    Optional description (see the CtiDescription schema). Trimmed; empty or absent means none. More than
+                    500 characters is refused with 400.
                 sort_order:
                   type: integer
                   description: Display order among this category's types. Defaults to 0.
@@ -9698,6 +10181,12 @@ paths:
                 name:
                   type: string
                   description: New name, trimmed. Absent leaves the name unchanged. An empty or whitespace-only value is refused with 400.
+                description:
+                  type: string
+                  maxLength: 500
+                  description: >-
+                    New description, trimmed. Absent leaves it unchanged; an empty or whitespace-only value clears it.
+                    More than 500 characters is refused with 400.
                 sort_order:
                   type: integer
                   description: New display order. Absent leaves it unchanged.
@@ -10036,6 +10525,12 @@ paths:
                 name:
                   type: string
                   description: Item name, trimmed before it is checked.
+                description:
+                  type: string
+                  maxLength: 500
+                  description: >-
+                    Optional description (see the CtiDescription schema). Trimmed; empty or absent means none. More than
+                    500 characters is refused with 400.
                 sort_order:
                   type: integer
                   description: Display order among this type's items. Defaults to 0.
@@ -10107,6 +10602,12 @@ paths:
                 name:
                   type: string
                   description: New name, trimmed. Absent leaves the name unchanged. An empty or whitespace-only value is refused with 400.
+                description:
+                  type: string
+                  maxLength: 500
+                  description: >-
+                    New description, trimmed. Absent leaves it unchanged; an empty or whitespace-only value clears it.
+                    More than 500 characters is refused with 400.
                 sort_order:
                   type: integer
                   description: New display order. Absent leaves it unchanged.
@@ -11277,10 +11778,68 @@ components:
     Priority:
       type: string
       enum: [critical, high, medium, low]
+    MeUser:
+      description: >-
+        The account GET /me and PATCH /me/email-preferences return for a person: a session, or an API key,
+        which answers with its owner's account. It is User plus the fields only these two answers carry. An
+        OAuth client is not a person and gets the machine object instead, which has none of them.
+      allOf:
+        - {$ref: '#/components/schemas/User'}
+        - type: object
+          required: [can_use_available_queue]
+          properties:
+            api_key_max_lifetime_years:
+              type: integer
+              enum: [1, 2, 3, 4, 5, -1]
+              description: >-
+                The longest a new API key may live, in years, or -1 for no limit (the
+                api_key_max_lifetime_years setting). Present on GET /me and PATCH
+                /me/email-preferences, beside can_create_api_keys.
+            can_create_api_keys:
+              type: boolean
+              description: >-
+                Whether this account may create its own API keys: always for an
+                administrator, for staff only while staff_can_create_api_keys is on,
+                never for a requester. Present on GET /me and PATCH /me/email-preferences.
+            sla_enabled:
+              type: boolean
+              description: >-
+                Whether SLA tracking is on. Present on GET /me and PATCH /me/email-preferences, only for
+                staff and administrators, and only when the setting could be read: absent means unknown, not off.
+                A requester never gets it, and it is not on the public GET /site. The ticket list offers the sla
+                filter and sort only while it is true; both answer 400 while it is false.
+            email_notifications:
+              type: object
+              description: |
+                What the four email switches amount to for this person, which is not always what they chose: an
+                administrator can force a switch on or off for everyone (the staff_email_*_override settings).
+                enabled is whether they get that mail; forced is true when the administrator decided it, so their
+                own email_notify_* value is not what applies. Present only on GET /me and PATCH /me/email-preferences,
+                and only for staff and administrators. sla is the SLA alerts switch; it says nothing about whether
+                SLA alerts are sent at all, which is the sla_alerts_enabled setting.
+              required: [assigned, activity, group, sla]
+              properties:
+                assigned: {$ref: '#/components/schemas/EmailSwitchState'}
+                activity: {$ref: '#/components/schemas/EmailSwitchState'}
+                group: {$ref: '#/components/schemas/EmailSwitchState'}
+                sla: {$ref: '#/components/schemas/EmailSwitchState'}
+            attachment_max_bytes:
+              type: integer
+              format: int64
+              description: >-
+                The largest file any upload may be, in bytes (attachment_max_mb, #673), so
+                the browser can refuse one before sending it. Always present on GET /me. The login
+                response's user does not carry it; read it from GET /me.
+            can_use_available_queue:
+              type: boolean
+              description: >-
+                Whether this account may open the Available view (scope=unassigned): true for an administrator,
+                true for staff while available_queue_roles lists staff, false for a requester. Always present on
+                GET /me and PATCH /me/email-preferences, so a client never has to read the setting to know.
     User:
       description: An account. The password hash, the TOTP secret, single sign-on subjects and the deletion time are never returned. mfa_enabled is the TOTP flag only.
       type: object
-      required: [id, email, display_name, role, mfa_enabled, disabled, must_change_password, created_at, updated_at, email_notify_assigned, email_notify_activity, email_notify_group]
+      required: [id, email, display_name, role, mfa_enabled, disabled, must_change_password, created_at, updated_at, email_notify_assigned, email_notify_activity, email_notify_group, email_notify_sla]
       properties:
         id: {$ref: '#/components/schemas/Uuid'}
         email: {type: string}
@@ -11294,73 +11853,53 @@ components:
         email_notify_assigned: {type: boolean, description: 'Email me when a ticket is assigned to me. Staff email switch, on by default.'}
         email_notify_activity: {type: boolean, description: 'Email me when a requester replies on a ticket assigned to me, or it is reopened. On by default.'}
         email_notify_group: {type: boolean, description: "Email me about my groups' tickets. On by default."}
-        api_key_max_lifetime_years:
-          type: integer
-          enum: [1, 2, 3, 4, 5, -1]
-          description: >-
-            The longest a new API key may live, in years, or -1 for no limit (the
-            api_key_max_lifetime_years setting). Present only on GET /me and PATCH
-            /me/email-preferences, beside can_create_api_keys.
-        can_create_api_keys:
-          type: boolean
-          description: >-
-            Whether this account may create its own API keys: always for an
-            administrator, for staff only while staff_can_create_api_keys is on,
-            never for a requester. Present only on GET /me and PATCH
-            /me/email-preferences.
-        sla_enabled:
-          type: boolean
-          description: >-
-            Whether SLA tracking is on. Present only on GET /me and PATCH /me/email-preferences, only for
-            staff and administrators, and only when the setting could be read: absent means unknown, not off.
-            A requester never gets it, and it is not on the public GET /site. The ticket list offers the sla
-            filter and sort only while it is true; both answer 400 while it is false.
-        email_notifications:
-          type: object
-          description: |
-            What the three email switches amount to for this person, which is not always what they chose: an
-            administrator can force a switch on or off for everyone (the staff_email_*_override settings).
-            enabled is whether they get that mail; forced is true when the administrator decided it, so their
-            own email_notify_* value is not what applies. Present only on GET /me and PATCH /me/email-preferences,
-            and only for staff and administrators.
-          required: [assigned, activity, group]
-          properties:
-            assigned: {$ref: '#/components/schemas/EmailSwitchState'}
-            activity: {$ref: '#/components/schemas/EmailSwitchState'}
-            group: {$ref: '#/components/schemas/EmailSwitchState'}
+        email_notify_sla: {type: boolean, description: "Email me when an SLA target on a ticket assigned to me, on a group ticket nobody has taken, or on a ticket I follow has breached or is at risk. Staff email switch, on by default; the other three switches do not apply to it."}
     EmailSwitchState:
       type: object
       required: [enabled, forced]
       properties:
         enabled: {type: boolean}
         forced: {type: boolean}
+    CtiDescription:
+      description: >-
+        Optional guidance an administrator wrote for a category, type or item, shown beneath the
+        Category / Type / Item chooser on the ticket forms (1.3.0). Plain text of at most 500
+        characters (characters, not bytes), with newlines; it is never Markdown or HTML, so a client
+        must render it as text. The empty string means none. The description of every active category,
+        type and item is public: the catalogue routes serve it to anyone while guest submission is on, and
+        to any signed-in user always.
+      type: string
+      maxLength: 500
     Category:
       description: A top-level category of the Category / Type / Item tree. active is false once the category is archived.
       type: object
-      required: [id, name, sort_order, active]
+      required: [id, name, description, sort_order, active]
       properties:
         id: {$ref: '#/components/schemas/Uuid'}
         name: {type: string}
+        description: {$ref: '#/components/schemas/CtiDescription'}
         sort_order: {type: integer}
         active: {type: boolean}
     CategoryType:
       description: A type within a category. active is false once the type is archived.
       type: object
-      required: [id, category_id, name, sort_order, active]
+      required: [id, category_id, name, description, sort_order, active]
       properties:
         id: {$ref: '#/components/schemas/Uuid'}
         category_id: {$ref: '#/components/schemas/Uuid'}
         name: {type: string}
+        description: {$ref: '#/components/schemas/CtiDescription'}
         sort_order: {type: integer}
         active: {type: boolean}
     CategoryItem:
       description: An item within a type. active is false once the item is archived.
       type: object
-      required: [id, type_id, name, sort_order, active]
+      required: [id, type_id, name, description, sort_order, active]
       properties:
         id: {$ref: '#/components/schemas/Uuid'}
         type_id: {$ref: '#/components/schemas/Uuid'}
         name: {type: string}
+        description: {$ref: '#/components/schemas/CtiDescription'}
         sort_order: {type: integer}
         active: {type: boolean}
     Status:
@@ -11579,6 +12118,301 @@ components:
                   $ref: '#/components/schemas/Uuid'
                 tracking_number:
                   type: string
+    Dashboard:
+      description: |
+        What GET /api/v1/dashboard returns. queues is the strip, in the order it is shown.
+        attention and volume are null when the block is not part of the caller's dashboard (a reporting
+        user has no attention list and no trend); [] and zero counts are a real answer, "nothing to show".
+      type: object
+      required: [queues, attention, volume]
+      properties:
+        queues:
+          type: array
+          items: {$ref: '#/components/schemas/DashboardQueue'}
+        attention:
+          type: [array, 'null']
+          items: {$ref: '#/components/schemas/DashboardAttention'}
+        volume:
+          anyOf:
+            - $ref: '#/components/schemas/DashboardVolume'
+            - type: 'null'
+    DashboardQueue:
+      type: object
+      required: [key, count]
+      properties:
+        key:
+          type: string
+          description: |
+            A queue cell. assigned_to_me, my_groups and awaiting_my_reply, and sla_breached and sla_at_risk
+            while SLA tracking is on, are staff and administrator cells; my_tickets is the requester's one cell.
+            Each key appears at most once in a response, and a consumer ignores a key it does not know.
+          enum: [assigned_to_me, my_groups, sla_breached, sla_at_risk, awaiting_my_reply, my_tickets]
+        count:
+          type: integer
+          format: int64
+          minimum: 0
+          description: The number of tickets the link for this cell lists (the GET /tickets call with the cell's parameters).
+    DashboardAttention:
+      type: object
+      required: [reason, since, ticket]
+      properties:
+        reason:
+          type: string
+          description: |
+            Why the ticket needs attention: breached and at_risk (SLA), unassigned (no group and no person,
+            the Available queue) or reopened (reopened in the last 7 days). A ticket is listed once, under its
+            first reason in that order.
+          enum: [breached, at_risk, unassigned, reopened]
+        since:
+          type: string
+          format: date-time
+          description: The instant the row's age is measured from, in UTC. The ticket's created_at for breached, at_risk and unassigned; the time it was last reopened for reopened.
+        ticket:
+          description: The ticket as GET /api/v1/tickets returns it to this caller, with its SLA status and can_reopen.
+          $ref: '#/components/schemas/TicketView'
+    DashboardVolume:
+      type: object
+      required: [tz, days]
+      properties:
+        tz:
+          type: string
+          description: The time zone the days are counted in, as sent (UTC when tz was absent).
+        days:
+          type: array
+          description: Thirty entries, oldest first; the last is today in tz. Every day is present, zeros included.
+          minItems: 30
+          maxItems: 30
+          items: {$ref: '#/components/schemas/DashboardVolumeDay'}
+    DashboardVolumeDay:
+      type: object
+      required: [date, created, resolved]
+      properties:
+        date:
+          type: string
+          format: date
+          description: A calendar date in tz.
+        created:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Tickets the caller can see whose created_at falls on this day in tz.
+        resolved:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Tickets the caller can see whose resolved_at, or closed_at when it is null, falls on this day in tz.
+    KpiReport:
+      description: What GET /api/v1/reports/kpi returns.
+      type: object
+      required: [tz, period, previous, filters, sla_enabled, measures, volume, backlog, workload]
+      properties:
+        tz:
+          type: string
+          description: The time zone the days are counted in, as sent (UTC when tz was absent).
+        period: {$ref: '#/components/schemas/KpiPeriod'}
+        previous: {$ref: '#/components/schemas/KpiPeriod'}
+        filters:
+          type: object
+          description: The filters that were applied, echoed. priority is in the fixed order, critical first.
+          required: [category_id, priority, assignee_group_id]
+          properties:
+            category_id:
+              anyOf:
+                - $ref: '#/components/schemas/Uuid'
+                - type: 'null'
+            priority:
+              type: array
+              items: {$ref: '#/components/schemas/Priority'}
+            assignee_group_id:
+              anyOf:
+                - $ref: '#/components/schemas/Uuid'
+                - type: 'null'
+        sla_enabled:
+          type: boolean
+          description: Whether SLA tracking is on now. The SLA figures are computed either way.
+        measures:
+          type: object
+          required: [current, previous, change]
+          properties:
+            current: {$ref: '#/components/schemas/KpiMeasures'}
+            previous: {$ref: '#/components/schemas/KpiMeasures'}
+            change:
+              type: object
+              description: The change of each compared measure from previous to current. All nine keys are always present.
+              required:
+                - created
+                - resolved
+                - time_to_resolve_median
+                - time_to_resolve_p90
+                - first_response_median
+                - sla_met_rate
+                - sla_response_met_rate
+                - sla_resolution_met_rate
+                - reopen_rate
+              properties:
+                created: {$ref: '#/components/schemas/KpiChange'}
+                resolved: {$ref: '#/components/schemas/KpiChange'}
+                time_to_resolve_median: {$ref: '#/components/schemas/KpiChange'}
+                time_to_resolve_p90: {$ref: '#/components/schemas/KpiChange'}
+                first_response_median: {$ref: '#/components/schemas/KpiChange'}
+                sla_met_rate: {$ref: '#/components/schemas/KpiChange'}
+                sla_response_met_rate: {$ref: '#/components/schemas/KpiChange'}
+                sla_resolution_met_rate: {$ref: '#/components/schemas/KpiChange'}
+                reopen_rate: {$ref: '#/components/schemas/KpiChange'}
+              additionalProperties: false
+        volume:
+          type: object
+          required: [days, by_category, by_priority]
+          properties:
+            days:
+              type: array
+              description: One entry for each day of the period, oldest first, zeros included.
+              items: {$ref: '#/components/schemas/DashboardVolumeDay'}
+            by_category:
+              type: array
+              description: Tickets created in the period by category, as named now. Rows above zero only, largest first, then by name.
+              items:
+                type: object
+                required: [id, name, count]
+                properties:
+                  id: {$ref: '#/components/schemas/Uuid'}
+                  name: {type: string}
+                  count: {type: integer, format: int64, minimum: 1}
+            by_priority:
+              type: array
+              description: Tickets created in the period by priority. Always the four, critical first, zeros included.
+              minItems: 4
+              maxItems: 4
+              items:
+                type: object
+                required: [priority, count]
+                properties:
+                  priority: {$ref: '#/components/schemas/Priority'}
+                  count: {type: integer, format: int64, minimum: 0}
+        backlog:
+          type: object
+          required: [as_of, total, buckets]
+          properties:
+            as_of:
+              type: string
+              format: date-time
+              description: The instant the open tickets were counted at, in UTC.
+            total: {type: integer, format: int64, minimum: 0}
+            buckets:
+              type: array
+              description: Open tickets by age in days. Always the four, in order.
+              minItems: 4
+              maxItems: 4
+              items:
+                type: object
+                required: [key, min_days, max_days, count]
+                properties:
+                  key:
+                    type: string
+                    enum: ['0_2', '3_7', '8_30', over_30]
+                  min_days: {type: integer, minimum: 0}
+                  max_days:
+                    type: [integer, 'null']
+                    description: Null for the open-ended band.
+                  count: {type: integer, format: int64, minimum: 0}
+        workload:
+          type: object
+          required: [as_of, total, by_assignee, by_group]
+          properties:
+            as_of:
+              type: string
+              format: date-time
+              description: The instant the open tickets were counted at, in UTC.
+            total: {type: integer, format: int64, minimum: 0}
+            by_assignee:
+              type: array
+              description: Open tickets by the person holding them, largest first, then by name; the row with a null id and name, tickets with no person, is last.
+              items: {$ref: '#/components/schemas/KpiHolder'}
+            by_group:
+              type: array
+              description: Open tickets by the group holding them, as by_assignee.
+              items: {$ref: '#/components/schemas/KpiHolder'}
+    KpiPeriod:
+      type: object
+      required: [from, to, days]
+      properties:
+        from: {type: string, format: date}
+        to: {type: string, format: date, description: Inclusive.}
+        days: {type: integer, minimum: 1, maximum: 366}
+    KpiMeasures:
+      type: object
+      required: [created, resolved, time_to_resolve, first_response, sla, reopen]
+      properties:
+        created:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Tickets created in the period.
+        resolved:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Tickets finished in the period (resolved, or closed without being resolved).
+        time_to_resolve:
+          type: object
+          required: [count, median_seconds, p90_seconds]
+          properties:
+            count: {type: integer, format: int64, minimum: 0}
+            median_seconds: {type: [integer, 'null'], format: int64, description: Null when count is 0.}
+            p90_seconds: {type: [integer, 'null'], format: int64, description: Null when count is 0.}
+        first_response:
+          type: object
+          required: [count, median_seconds]
+          properties:
+            count: {type: integer, format: int64, minimum: 0}
+            median_seconds: {type: [integer, 'null'], format: int64, description: Null when count is 0.}
+        sla:
+          type: object
+          required: [tracked, met, response_met, resolution_met, met_rate, response_met_rate, resolution_met_rate]
+          properties:
+            tracked: {type: integer, format: int64, minimum: 0}
+            met: {type: integer, format: int64, minimum: 0}
+            response_met: {type: integer, format: int64, minimum: 0}
+            resolution_met: {type: integer, format: int64, minimum: 0}
+            met_rate: {type: [number, 'null'], minimum: 0, maximum: 1, description: Null when tracked is 0.}
+            response_met_rate: {type: [number, 'null'], minimum: 0, maximum: 1, description: Null when tracked is 0.}
+            resolution_met_rate: {type: [number, 'null'], minimum: 0, maximum: 1, description: Null when tracked is 0.}
+        reopen:
+          type: object
+          required: [reopened, rate]
+          properties:
+            reopened: {type: integer, format: int64, minimum: 0}
+            rate: {type: [number, 'null'], minimum: 0, maximum: 1, description: Null when no ticket was resolved.}
+    KpiChange:
+      type: object
+      required: [kind, state, value]
+      properties:
+        kind:
+          type: string
+          enum: [relative, points]
+          description: relative is (current - previous) / previous, for counts and durations; points is current - previous, for rates (both fractions).
+        state:
+          type: string
+          enum: [change, from_zero, no_previous, no_current]
+          description: |
+            Which rule applied, the first that holds. no_current: the current value is null. no_previous: the
+            previous value is null. change: a number, 0 when the two are equal. from_zero: a relative change from 0,
+            which has no value.
+        value:
+          type: [number, 'null']
+          description: A number, rounded to four places, only when state is change; otherwise null.
+    KpiHolder:
+      type: object
+      required: [id, name, count]
+      properties:
+        id:
+          anyOf:
+            - $ref: '#/components/schemas/Uuid'
+            - type: 'null'
+        name:
+          type: [string, 'null']
+          description: The current name, of a deleted or disabled person too. Null with a null id.
+        count: {type: integer, format: int64, minimum: 1}
     SlaStatus:
       description: |
         A ticket's live SLA status. Computed fresh on every read from the
@@ -12095,6 +12929,15 @@ components:
         guest_submission_enabled:
           type: boolean
           description: Whether anonymous guests may submit tickets. Session only.
+        attachment_max_mb:
+          type: integer
+          minimum: 1
+          maximum: 100
+          default: 25
+          description: |
+            The largest file any upload may be, in megabytes (#673). Default 25,
+            which is what every install had before this setting. Session only.
+            A guest's limit (guest_attachment_max_mb) may not exceed it.
         guest_attachments_enabled:
           type: boolean
           description: |
@@ -12120,12 +12963,19 @@ components:
           minimum: 1
           maximum: 100
           description: |
-            A guest's per-file maximum in megabytes (#445). Default 5. The
-            instance-wide 25 MB maximum still applies and wins where lower.
-            Session only.
+            A guest's per-file maximum in megabytes (#445), from 1 to
+            attachment_max_mb. Default 5. The guest is held to the lower of this
+            and attachment_max_mb (25 MB by default). Session only.
         sla_enabled:
           type: boolean
           description: Whether SLA tracking is on.
+        sla_alerts_enabled:
+          type: boolean
+          description: >-
+            Whether the SLA sweep announces what it stamps: sla.breached and sla.at_risk, by email to staff
+            (under each person's SLA alerts switch and its override) and to webhooks. Off, the sweep still stamps
+            and raises nothing. Off on an install upgraded from 1.2 and on by default on a fresh install. Not
+            session only.
         mfa_enabled:
           type: boolean
           description: Whether multi-factor authentication is on for the instance. Session only.
@@ -12134,6 +12984,21 @@ components:
           items:
             type: string
           description: Role names that must enrol a second factor, from admin, staff and user. Session only.
+        passkey_required_roles:
+          type: array
+          items:
+            type: string
+            enum: [admin, staff, user]
+          description: |
+            Role names whose members must finish every sign-in with a passkey
+            (#616). A TOTP code proves a factor for them but does not pass MFA.
+            A role listed here is also treated as MFA-enforced, computed when
+            read: mfa_enforced_roles is not changed. Like mfa_enforced_roles it has
+            no effect while mfa_enabled is off. Applied when a session is created;
+            sessions already open are not ended. Suspended while passkeys are
+            unavailable (GET /admin/security-warnings, passkeys.suspended_roles).
+            An element other than admin, staff or user, a non-array or null is
+            refused with 400 bad_request. Default []. Session only.
         reopen_window_days:
           type: integer
           description: Days after resolution during which a reporter may still reply to a Resolved ticket.
@@ -12181,6 +13046,10 @@ components:
           type: string
           enum: [user, 'on', 'off']
           description: The same for a group's tickets, for every member of the group.
+        staff_email_sla_override:
+          type: string
+          enum: [user, 'on', 'off']
+          description: The same for SLA alerts (sla.breached and sla.at_risk mail) on a ticket assigned to a person, on a group ticket nobody has taken, or on a ticket a person follows. Anything unrecognised reads as user. Off on an install upgraded from 1.2, which sends no SLA mail until an administrator changes it.
         audit_retention_days:
           type: integer
           maximum: 36525
@@ -12247,6 +13116,15 @@ components:
         ticket_scope_enforced:
           type: boolean
           description: Whether staff visibility is limited to the tickets their groups cover.
+        available_queue_roles:
+          type: array
+          items:
+            type: string
+            enum: [admin, staff]
+          description: >-
+            Roles that may open the Available view (scope=unassigned), from admin and staff. An administrator
+            is always allowed whether or not admin is listed. Absent, unreadable or [] means administrators only.
+            A requester is never allowed. Session only.
         auto_assign_group_id:
           type: string
           description: UUID of the group that new tickets are assigned to. Must name an existing group; empty or null turns it off.
@@ -12428,15 +13306,26 @@ components:
         ticket.followed and ticket.unfollowed a person starting or stopping following a
         ticket (the person's id is in the payload, never their name). None of the four
         sends email. The raw Payload ids each name carries are listed on createWebhook.
+        sla.breached and sla.at_risk are raised only by the SLA sweep, at most one per
+        ticket per pass, while the SLA alerts setting is on: a breach just stamped, or a
+        target that reached 80% and has not breached. A pass that does both on one ticket
+        is one sla.breached that also names the at-risk target. "*" includes both.
+        A hook that lists sla.at_risk and not sla.breached is not told of an at-risk
+        target that came in the same pass as a breach of the other.
       type: string
-      enum: ['*', ticket.created, ticket.assigned, ticket.status_changed, ticket.replied, ticket.note_added, ticket.resolved, ticket.closed, ticket.reopened, ticket.linked, ticket.priority_changed, ticket.classified, ticket.unlinked, ticket.attachment_added, ticket.followed, ticket.unfollowed]
+      enum: ['*', ticket.created, ticket.assigned, ticket.status_changed, ticket.replied, ticket.note_added, ticket.resolved, ticket.closed, ticket.reopened, ticket.linked, ticket.priority_changed, ticket.classified, ticket.unlinked, ticket.attachment_added, ticket.followed, ticket.unfollowed, sla.breached, sla.at_risk]
     WebhookPayloadFormat:
       description: >-
         The body shape a delivery uses.
         raw sends the event as ids-only JSON (no subject, tracking number, address or
         text; see createWebhook). The other four are chat or ITSM shapes and keep their
-        subject, tracking number, status and public reply text. An omitted or empty
-        payload_format is stored as raw.
+        subject, tracking number, status and public reply text. A slack or teams
+        message for ticket.created also names the classification (Category > Type >
+        Item) and who holds it (Group, Assignee, or Unassigned when nobody holds it),
+        whatever events the hook lists. These are read when the message is built
+        (a Redeliver names the ticket's current holder) and are not part of any
+        request or response schema. An omitted or empty payload_format is stored as
+        raw.
       type: string
       enum: [raw, slack, teams, discord, jira]
     WebhookFilter:
