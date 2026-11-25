@@ -33,7 +33,7 @@ Go Help Desk is an open-source ticket management system. Staff submit and track 
 - Markdown in tickets: a formatting editor, strict rendering (no raw HTML, no images), and older text left as plain text
 - Staff can file a ticket for a requester, an existing user or a typed email address, and mark it as a phone call
 - Each ticket records how it arrived (web, API, MCP, guest form or phone); staff see it, requesters do not
-- For staff and administrators, ticket list views in the sidebar: Assigned to Me, My Group's Tickets, Available (when an administrator allows it), and Search over every ticket you can see
+- For staff and administrators, ticket list views in the sidebar: Assigned to Me, My Group's Tickets, Available (administrators always; staff when an administrator allows it), and Search over every ticket you can see
 - Readable audit log with opt-in retention
 - Email notifications, queued with retries. Staff are emailed about their tickets and can follow a ticket
 - Staff and administrators can add other staff members and administrators as followers of a ticket, and remove followers

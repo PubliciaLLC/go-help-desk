@@ -132,7 +132,7 @@ log behind every mutation.
 - **Priority is a manual free pick** (`domain/ticket/ticket.go:13`), not derived
   from Impact × Urgency. ITIL is explicit that priority is *derived*; a manual
   pick makes prioritization subjective and inconsistent across agents.
-  Deferred to v4.
+  Planned for v1.4 (#135).
 - **No major incident concept.** No major-incident flag, no stakeholder
   communication list, no bridge/war-room, no distinct major-incident workflow.
 - **No functional escalation tiers.** Reassign-to-group is the only mechanism.
@@ -409,7 +409,7 @@ This is a stronger showing than most tools at comparable maturity.
   route exposed it — no admin audit view and no per-ticket activity feed. An
   audit trail nobody can read does not satisfy an auditor. Fixed in 1.3
   (#129): an admin audit view and a per-ticket Activity feed.
-- No data retention or purge policy (relevant to GDPR/records management).
+- No retention or purge policy for ticket data (relevant to GDPR/records management); audit-log retention is opt-in since 1.3.
 - No field-level encryption for sensitive ticket content; internal notes are the
   only confidentiality control.
 
