@@ -356,6 +356,53 @@ export async function deleteLogo(): Promise<void> {
   await api.delete('/admin/settings/logo')
 }
 
+// ── Site icon (#708) ─────────────────────────────────────────────────────────
+
+/** One file the server generated from the uploaded icon, in the order it lists them. */
+export interface SiteIconFile {
+  name: string
+  /** Public, versioned and immutable: the address the previews load. */
+  url: string
+  /** Pixel sides inside the file: [16, 32, 48] for the .ico, one number otherwise. */
+  sizes: number[]
+  bytes: number
+}
+
+export interface SiteIconStatus {
+  /** False until an administrator uploads one; the built-in icon is used then. */
+  set: boolean
+  /** "#rrggbb": fills the transparent parts of the home screen icons. */
+  background: string
+  version: string
+  source_size: number
+  updated_at: string | null
+  files: SiteIconFile[]
+}
+
+export async function getSiteIcon(): Promise<SiteIconStatus> {
+  const res = await api.get<SiteIconStatus>('/admin/settings/icon')
+  return res.data
+}
+
+export async function uploadSiteIcon(file: File, background: string): Promise<SiteIconStatus> {
+  const form = new FormData()
+  form.append('icon', file)
+  form.append('background', background)
+  const res = await api.post<SiteIconStatus>('/admin/settings/icon', form, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  })
+  return res.data
+}
+
+export async function setSiteIconBackground(background: string): Promise<SiteIconStatus> {
+  const res = await api.patch<SiteIconStatus>('/admin/settings/icon', { background })
+  return res.data
+}
+
+export async function deleteSiteIcon(): Promise<void> {
+  await api.delete('/admin/settings/icon')
+}
+
 // ── Settings ─────────────────────────────────────────────────────────────────
 
 export async function getSettings(): Promise<Record<string, unknown>> {
