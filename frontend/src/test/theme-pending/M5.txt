@@ -1,0 +1,24 @@
+# M5: files still carrying palette colours. Delete this file when none are left (see ../theme-colours.test.ts).
+components/admin/AttachmentSizeLimitSection.tsx
+components/admin/AvailableQueueSection.tsx
+components/admin/GuestSizeSlider.tsx
+components/admin/LifetimeSlider.tsx
+pages/admin/settings/EmailTemplatesTab.tsx
+pages/admin/settings/SettingsPageShell.tsx
+pages/admin/settings/SettingsTabs.tsx
+pages/admin/settings/primitives.tsx
+pages/admin/settings/sections/APIKeysSettingsSection.tsx
+pages/admin/settings/sections/AuditLogSettingsSection.tsx
+pages/admin/settings/sections/IdentitySection.tsx
+pages/admin/settings/sections/MFASection.tsx
+pages/admin/settings/sections/MalwareScanningSection.tsx
+pages/admin/settings/sections/OIDCSettingsSection.tsx
+pages/admin/settings/sections/PasswordsSection.tsx
+pages/admin/settings/sections/RegistrationSection.tsx
+pages/admin/settings/sections/ReputationSection.tsx
+pages/admin/settings/sections/SAMLSettingsSection.tsx
+pages/admin/settings/sections/SLAPoliciesSection.tsx
+pages/admin/settings/sections/StaffEmailSection.tsx
+pages/admin/settings/sections/SubmissionsSection.tsx
+pages/admin/settings/sections/TicketLifecycleSection.tsx
+pages/admin/settings/sections/UploadsSection.tsx

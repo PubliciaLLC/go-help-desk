@@ -1,0 +1,16 @@
+# M4: files still carrying palette colours. Delete this file when none are left (see ../theme-colours.test.ts).
+components/admin/DescriptionField.tsx
+components/admin/ExpiryCell.tsx
+components/admin/ExpiryField.tsx
+components/admin/ScopePicker.tsx
+components/admin/SortableList.tsx
+components/admin/TokenBanner.tsx
+components/admin/touchTargets.ts
+pages/admin/CannedResponsesPage.tsx
+pages/admin/CategoriesPage.tsx
+pages/admin/CustomFieldsPage.tsx
+pages/admin/RolesPage.tsx
+pages/admin/RoutingPage.tsx
+pages/admin/StatusesPage.tsx
+pages/admin/TagsPage.tsx
+pages/admin/WebhooksPage.tsx

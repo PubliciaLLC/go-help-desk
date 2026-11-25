@@ -1,0 +1,17 @@
+# M2: files still carrying palette colours. Delete this file when none are left (see ../theme-colours.test.ts).
+components/AttachmentUpload.tsx
+components/TagInput.tsx
+components/ticket/FilterChips.tsx
+components/ticket/FilterDialog.tsx
+components/ticket/PriorityControl.tsx
+components/ticket/QuarantinedBadge.tsx
+components/ticket/ReopenedBadge.tsx
+components/ticket/ReplyMatch.tsx
+components/ticket/RequesterPicker.tsx
+components/ticket/SLAIndicator.tsx
+components/ticket/TicketFilters.tsx
+pages/NewTicketPage.tsx
+pages/TicketDetailPage.tsx
+pages/TicketListPage.tsx
+pages/admin/APIKeysPage.tsx
+pages/admin/OAuthClientsPage.tsx
