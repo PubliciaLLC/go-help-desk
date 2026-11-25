@@ -190,7 +190,7 @@ export function GuestTicketViewPage() {
                     : 'rounded-md bg-muted p-3 text-sm'
                 }
               >
-                <p className="text-xs text-fg-faint mb-1">
+                <p className="text-xs text-fg-muted mb-1">
                   {/* Staff are described, never named: the server sends no
                       identity for a reply that is not the guest's own. */}
                   {r.from_you ? 'You' : 'Support'} ·{' '}
