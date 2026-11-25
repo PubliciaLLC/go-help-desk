@@ -5,7 +5,9 @@
 // 1.3.0 shots from 29 on need and must run after those have been captured: it
 // files a ticket, archives a category and changes settings, any of which would
 // alter the older shots (the ticket lists, the audit log, the dashboard counts).
-// It reads and rewrites seed.json, adding an "extras" key.
+// It reads and rewrites seed.json, adding an "extras" key. It also writes the
+// descriptions on Hardware and Hardware > Laptop and the two followers of T7
+// (shots 53 to 55), last, after the history that puts Sam in IT Support.
 //
 // --extras also seeds the history the dashboard (02) and Reports (48) need: SLA
 // tracking and policies, a group with three members, about seventy tickets filed
@@ -668,6 +670,10 @@ async function history(admin, seed, U) {
   return hist
 }
 
+// The text of Hardware > Laptop (shots 54, 55). Shot 55 shows its length in the
+// counter and its alt text on the site says the number, so change both together.
+const LAPTOP_DESCRIPTION = 'A company laptop that is damaged, slow or will not start. Include the asset tag from the sticker underneath.'
+
 async function extras() {
   const mailDir = process.env.SHOTS_MAIL_DIR
   if (!mailDir) throw new Error('SHOTS_MAIL_DIR is required with --extras (the directory fake-smtp.mjs writes to)')
@@ -753,6 +759,20 @@ async function extras() {
   // backdate.sql reads this (scripts/screenshots.sh hands it over). Not a secret.
   writeFileSync(join(OUT, 'history.json'), JSON.stringify(hist) + '\n')
   console.log(`X. history seeded: ${hist.length} tickets to move in time`)
+
+  // Descriptions (shots 54, 55): on Hardware and Hardware > Laptop only. Shot 34
+  // picks Software > Office suite and shot 04 and 06 are taken before this seed,
+  // so none of them gains a line of text. Laptop > Screen has none, which is what
+  // shot 54 shows: the item has no text of its own, so the type's text is the
+  // one the form shows.
+  await call(admin, 'PATCH', `/api/v1/admin/categories/${hw}`, { description: 'Laptops, printers, monitors and other equipment at your desk.' }, [200, 204])
+  await call(admin, 'PATCH', `/api/v1/admin/categories/${hw}/types/${laptop}`, { description: LAPTOP_DESCRIPTION }, [200, 204])
+
+  // Followers (shot 53): Jordan follows T7 and adds Alex. After history(), where
+  // Sam joins IT Support, the group T7 is assigned to: only then can Sam see the
+  // ticket, so only then does the picker offer Sam.
+  await call(jordan, 'PUT', `/api/v1/tickets/${seed.tickets.T7.id}/follow`, null, [200, 204])
+  await call(jordan, 'PUT', `/api/v1/tickets/${seed.tickets.T7.id}/followers/${ids[P.admin.email]}`, null, [200, 204])
 
   seed.extras = { tickets: { T11: { id: t11.id, tracking: t11.tracking_number } }, guestPath, fields: { condition: condition.id } }
   writeFileSync(seedPath, JSON.stringify(seed, null, 2) + '\n', { mode: 0o600 })
