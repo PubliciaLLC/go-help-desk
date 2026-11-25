@@ -60,6 +60,7 @@
       <li><a href="#advisories">Advisories</a></li>
       <li><a href="#reporting">Reporting a vulnerability</a></li>
       <li><a href="#supported">Supported versions</a></li>
+      <li><a href="#sso">Single sign-on</a></li>
       <li><a href="attachment-security.html">Attachment security</a></li>
     </ul>
   </div>
@@ -238,6 +239,10 @@
     <li><strong>Every formatted post has a Plain text button</strong> that shows the stored characters, so a suspicious link can be checked.</li>
   </ul>
   <p><a href="tickets.html#tickets-formatting">Formatting text →</a></p>
+
+  <h2 id="sso">Single sign-on</h2>
+  <p>A SAML sign-in reconnects a person to their account by email address when the NameID is new to the help desk. That makes the identity provider's address attribute the identity of every SAML-created account, a promoted administrator's included. Anyone who can make the provider assert an address can sign in as the SAML-created account that holds it. A local account, or a service account, is never taken over this way. Check which attribute your provider maps to the address, and that users cannot edit it there.</p>
+  <p><a href="authentication.html#auth-saml-trust">Trust and account matching in SAML →</a></p>
 
   <h2 id="uploads">What happens to an uploaded file</h2>
   <p>Attachments get their own writeup — what the server detects, the storage tiers, the quarantine
