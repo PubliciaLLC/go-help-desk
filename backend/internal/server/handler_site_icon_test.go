@@ -1042,6 +1042,7 @@ func TestUpdateSettings_SiteShortName(t *testing.T) {
 	for name, v := range map[string]any{
 		"thirty-one characters": strings.Repeat("a", 31), "a number": 123, "null": nil,
 		"a control character": "\u0007", "a newline": "a\nb", "a boolean": true,
+		"a right-to-left override": "a\u202eb", "a zero-width space": "a\u200bb", "U+2028": "a\u2028b",
 	} {
 		t.Run("refused: "+name, func(t *testing.T) {
 			status, code, msg := readAPIError(t, patch(v))

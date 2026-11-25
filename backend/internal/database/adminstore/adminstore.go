@@ -32,6 +32,9 @@ func NewWithDB(q *dbgen.Queries, db *sql.DB) *Store { return &Store{q: q, db: db
 
 func (s *Store) Get(ctx context.Context, key string) ([]byte, error) {
 	row, err := s.q.GetSetting(ctx, key)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("getting setting %q: %w: %w", key, admin.ErrSettingNotFound, err)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("getting setting %q: %w", key, err)
 	}

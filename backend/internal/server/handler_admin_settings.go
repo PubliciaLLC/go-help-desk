@@ -327,14 +327,14 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// The home screen name (#708): what a phone prints under the icon. Any
-	// string up to 30 characters without control characters; empty means "use
+	// string up to 30 characters without control or invisible characters; empty means "use
 	// the site name". A number, a boolean or null is refused rather than stored
 	// to be read back as empty.
 	if raw, ok := body[admin.KeySiteShortName]; ok {
 		var v string
 		if err := unmarshalSetting(raw, admin.KeySiteShortName, &v); err != nil || admin.ValidSiteShortName(v) != nil {
 			Error(w, http.StatusBadRequest, "invalid_site_short_name",
-				"the home screen name can be at most 30 characters and cannot contain control characters")
+				"the home screen name can be at most 30 characters and cannot contain control or invisible characters")
 			return
 		}
 	}

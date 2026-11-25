@@ -179,10 +179,13 @@ func (s *Server) currentIcon(ctx context.Context) *siteicon.Icon {
 }
 
 // siteNames is the site name and what a home screen shows under the icon.
+//
+// It never fails: names that cannot be read are the defaults, and the fault is
+// logged here, at the boundary, because the domain returns it and logs nothing.
 func (s *Server) siteNames(ctx context.Context) (name, home string) {
-	name = s.adminSvc.SiteName(ctx)
-	if home = s.adminSvc.SiteShortName(ctx); home == "" {
-		home = name
+	name, home, err := s.adminSvc.SiteNames(ctx)
+	if err != nil {
+		slog.Warn("reading the site names; using the defaults where unreadable", "error", err)
 	}
 	return name, home
 }
@@ -213,11 +216,21 @@ func (s *Server) handleServeManifest(w http.ResponseWriter, r *http.Request) {
 
 // ── The shell's head ─────────────────────────────────────────────────────────
 
+// shellHeadTimeout is how long the reads behind the shell's head may take
+// between them. They run on every page load, bots' included, and nothing caches
+// them; without a limit a database that has stopped answering holds each load
+// until the server's write timeout instead of the page being served with the
+// built-in icon and name.
+const shellHeadTimeout = 750 * time.Millisecond
+
 // ShellHead is what replaces the marked region of index.html on each request
 // (NewSPAHandler): the icon links, the manifest link, the home screen name and
-// the title. It never fails: on a read error it logs and answers the built-in
-// block, so the page is always served.
+// the title. It never fails and never waits long: on a read error, or when the
+// reads run past shellHeadTimeout, it logs and answers the built-in name and
+// icon for whatever could not be read, so the page is always served.
 func (s *Server) ShellHead(ctx context.Context) string {
+	ctx, cancel := context.WithTimeout(ctx, shellHeadTimeout)
+	defer cancel()
 	name, home := s.siteNames(ctx)
 	return shellHeadBlock(name, home, s.currentIcon(ctx))
 }

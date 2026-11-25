@@ -6283,8 +6283,9 @@ paths:
           null or any other type is refused (bad_request) and nothing is written.
         - site_short_name, the name a phone prints under the icon on its home
           screen, must be a string of at most 30 characters once trimmed, with no
-          control characters. Empty means the site name is used. A number, a
-          boolean, null, a longer string or a control character is refused with 400
+          control or invisible characters (a right-to-left override, a zero-width
+          space, U+2028). Empty means the site name is used. A number, a
+          boolean, null, a longer string or such a character is refused with 400
           invalid_site_short_name and nothing is written. It is not session only.
         - saml_metadata_url and saml_metadata_xml cannot both be non-empty after
           the write, and saml_metadata_xml must be SAML IdP metadata of at most
@@ -13544,7 +13545,7 @@ components:
           maxLength: 30
           description: >-
             What a phone prints under the icon on its home screen. At most 30
-            characters, no control characters. Empty or unset means the site name.
+            characters, no control or invisible characters. Empty or unset means the site name.
         ticket_prefix:
           type: string
           pattern: '^[A-Z0-9]{1,8}$'
