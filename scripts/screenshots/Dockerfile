@@ -9,7 +9,10 @@
 FROM ubuntu:24.04
 
 ARG GO_VERSION
-ARG NODE_MAJOR=24
+# A tag, not a digest: ubuntu:24.04 moves with security rebuilds, and so do the
+# apt packages below (postgresql-16, fontconfig). Node and Go are pinned and
+# checked against the checksums their own sites publish.
+ARG NODE_VERSION=v24.22.3
 # Playwright 1.56 is the release whose Chromium is revision 1194, the build
 # that capture.mjs and screenshots.sh pin (/opt/pw-browsers/chromium-1194).
 # The frontend's own Playwright (1.63) drives it through executablePath.
@@ -33,9 +36,17 @@ RUN apt-get update \
 
 RUN set -eux; \
     case "$TARGETARCH" in amd64) node_arch=x64 ;; arm64) node_arch=arm64 ;; *) exit 1 ;; esac; \
-    ver="$(curl -fsSL https://nodejs.org/dist/index.json | python3 -c "import json,sys; print(next(x['version'] for x in json.load(sys.stdin) if x['version'].startswith('v${NODE_MAJOR}.')))")"; \
-    curl -fsSL "https://nodejs.org/dist/$ver/node-$ver-linux-$node_arch.tar.xz" | tar -xJ -C /usr/local --strip-components=1; \
-    curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-${TARGETARCH}.tar.gz" | tar -xz -C /usr/local; \
+    cd /tmp; \
+    node_tar="node-${NODE_VERSION}-linux-${node_arch}.tar.xz"; \
+    curl -fsSLO "https://nodejs.org/dist/${NODE_VERSION}/${node_tar}"; \
+    curl -fsSL "https://nodejs.org/dist/${NODE_VERSION}/SHASUMS256.txt" | grep " ${node_tar}\$" | sha256sum -c -; \
+    tar -xJf "$node_tar" -C /usr/local --strip-components=1; \
+    go_tar="go${GO_VERSION}.linux-${TARGETARCH}.tar.gz"; \
+    curl -fsSLO "https://go.dev/dl/${go_tar}"; \
+    go_sum="$(curl -fsSL 'https://go.dev/dl/?mode=json&include=all' | GO_TAR="$go_tar" python3 -c "import json,os,sys; print(next(f['sha256'] for r in json.load(sys.stdin) for f in r['files'] if f['filename']==os.environ['GO_TAR']))")"; \
+    echo "${go_sum}  ${go_tar}" | sha256sum -c -; \
+    tar -xzf "$go_tar" -C /usr/local; \
+    rm -f "$node_tar" "$go_tar"; \
     node --version; go version
 
 # Chromium and the system libraries and fonts it needs. The CLI is fetched
