@@ -74,12 +74,22 @@ describe('the home screen name', () => {
     expect(screen.getByText('The home screen uses the site name.')).toBeTruthy()
   })
 
-  it('ticking shows the field, placeholder the site name, at most 30 characters', async () => {
+  it('the site name row says it is also the install and home screen name by default', async () => {
+    await renderBranding()
+    expect(
+      screen.getByText(
+        'Displayed in the sidebar header and browser tab when no logo is set. Also the name used when someone installs the site or adds it to a home screen, unless you set a different home screen name below.',
+      ),
+    ).toBeTruthy()
+  })
+
+  it('ticking shows the field, placeholder the site name, 30 characters allowed', async () => {
     const box = await renderBranding()
     await userEvent.click(box)
     expect(field()).toBeTruthy()
     expect(field()!.placeholder).toBe('Acme IT')
-    expect(field()!.maxLength).toBe(30)
+    // No maxLength: it counts UTF-16 units, the server and the counter count characters.
+    expect(field()!.hasAttribute('maxlength')).toBe(false)
     expect(screen.queryByText('The home screen uses the site name.')).toBeNull()
     expect(screen.getByText("Shown under the icon when someone adds this site to a phone's home screen.")).toBeTruthy()
     expect(screen.getByText('0/30')).toBeTruthy()
@@ -133,11 +143,36 @@ describe('the home screen name', () => {
     expect(save().disabled).toBe(false)
   })
 
-  it('measures the trimmed text, not the spaces around it', async () => {
+  it('measures the trimmed text, not the spaces around it, in the counter and in the note', async () => {
     const box = await renderBranding()
     await userEvent.click(box)
     fireEvent.change(field()!, { target: { value: '   Help       ' } })
     expect(note()).toBeNull()
+    expect(screen.getByText('4/30')).toBeTruthy()
+    fireEvent.change(field()!, { target: { value: '  1234567890123  ' } })
+    expect(screen.getByText('13/30')).toBeTruthy()
+    expect(note()).toBeTruthy()
+  })
+
+  it('counts characters, not UTF-16 units: 30 emoji fit, 31 are over', async () => {
+    const box = await renderBranding()
+    await userEvent.click(box)
+    fireEvent.change(field()!, { target: { value: '😀'.repeat(30) } })
+    expect(field()!.value).toBe('😀'.repeat(30))
+    const counter = screen.getByText('30/30')
+    expect(counter.className).not.toContain('text-red')
+    expect(field()!.getAttribute('aria-invalid')).not.toBe('true')
+  })
+
+  it('does not cut typing off at 30: the counter turns red above it and the server has the last word', async () => {
+    const box = await renderBranding()
+    await userEvent.click(box)
+    fireEvent.change(field()!, { target: { value: 'a'.repeat(31) } })
+    expect(field()!.value).toHaveLength(31)
+    const counter = screen.getByText('31/30')
+    expect(counter.className).toContain('text-red')
+    expect(field()!.getAttribute('aria-invalid')).toBe('true')
+    expect(save().disabled).toBe(false)
   })
 
   it('shows the server refusal through the save bar', async () => {

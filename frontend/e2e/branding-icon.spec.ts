@@ -120,3 +120,42 @@ test('applying a colour and removing the icon', async ({ page }) => {
   await expect(page.getByText('No icon uploaded. The built-in icon is used.')).toBeVisible()
   await expect(page.locator('figure')).toHaveCount(0)
 })
+
+test('the previews are in a tidy grid: captions line up and the colour row comes first', async ({ page }) => {
+  for (const width of [320, 1280]) {
+    await page.setViewportSize({ width, height: 900 })
+    await open(page, { set: true })
+    const group = page.getByRole('group', { name: 'Generated icons' })
+    await expect(group.locator('figure')).toHaveCount(PREVIEW_COUNT)
+
+    // Within one row of previews the captions share a top edge, and the
+    // thumbnails end at the same line, whatever size each is drawn at.
+    const boxes = await group.locator('figure').evaluateAll((figs) =>
+      figs.map((f) => ({
+        row: Math.round(f.getBoundingClientRect().top),
+        caption: Math.round(f.querySelector('figcaption')!.getBoundingClientRect().top),
+        thumbBottom: Math.round(f.querySelector('img')!.getBoundingClientRect().bottom),
+      })),
+    )
+    for (const row of new Set(boxes.map((b) => b.row))) {
+      const same = boxes.filter((b) => b.row === row)
+      expect(new Set(same.map((b) => b.caption)).size, `captions in the row at ${row}px, ${width}px wide`).toBe(1)
+      expect(new Set(same.map((b) => b.thumbBottom)).size, `thumbnails in the row at ${row}px`).toBe(1)
+    }
+
+    // The colour decides how four of them look, so it is above them.
+    const colourY = (await page.getByLabel('Home screen background colour, hex').boundingBox())!.y
+    const groupY = (await group.boundingBox())!.y
+    const replaceY = (await page.getByRole('button', { name: 'Replace icon' }).boundingBox())!.y
+    expect(colourY).toBeLessThan(groupY)
+    expect(replaceY).toBeGreaterThan(groupY)
+  }
+})
+
+test('after removing the icon the keyboard is on Upload icon', async ({ page }) => {
+  await open(page, { set: true })
+  await page.getByRole('button', { name: 'Remove icon' }).click()
+  await page.getByRole('dialog').getByRole('button', { name: 'Remove icon' }).click()
+  await expect(page.getByRole('status')).toHaveText('Icon removed.')
+  await expect(page.getByRole('button', { name: 'Upload icon' })).toBeFocused()
+})

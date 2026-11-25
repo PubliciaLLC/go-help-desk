@@ -49,3 +49,52 @@ describe('headMarkersProblem', () => {
     else expect(got).toContain(want)
   })
 })
+
+// The server throws the region away, so anything in it other than the icon and
+// the title is something the built page would lose without a word: a script or
+// stylesheet that Vite put there would not load.
+describe('headMarkersProblem: what may sit between the markers', () => {
+  const region = (inner: string) => `<head><meta charset="UTF-8" />${OPEN}${inner}${CLOSE}</head>`
+  const icon = '<link rel="icon" type="image/svg+xml" href="/favicon.svg" />'
+  const title = '<title>Go Help Desk</title>'
+
+  it.each([
+    ['the icon link and the title', `\n${icon}\n${title}\n`],
+    ['the title alone', title],
+    ['an empty region', ''],
+    ['an icon link in single quotes, any case', `<LINK REL='icon' HREF='/f.png'>${title}`],
+    ['a shortcut icon', `<link rel="shortcut icon" href="/favicon.ico" />${title}`],
+    ['an apple touch icon', `<link rel="apple-touch-icon" href="/a.png" />${title}`],
+    ['markup around the region does not matter', `${icon}${title}`],
+  ])('accepts %s', (_name, inner) => {
+    expect(headMarkersProblem(region(inner))).toBeNull()
+  })
+
+  it.each([
+    ['a script', `${icon}${title}<script type="module" src="/assets/index.js"></script>`, '<script'],
+    ['an inline script', `${icon}${title}<script>alert(1)</script>`, '<script'],
+    ['a stylesheet link', `${icon}${title}<link rel="stylesheet" href="/assets/index.css" />`, 'stylesheet'],
+    ['a modulepreload link', `${icon}${title}<link rel="modulepreload" href="/assets/vendor.js" />`, 'modulepreload'],
+    ['a link with no rel', `${icon}${title}<link href="/x" />`, '<link href="/x" />'],
+    ['an icon link that is also a stylesheet', `<link rel="icon stylesheet" href="/x.css" />${title}`, 'stylesheet'],
+    ['a meta tag', `${icon}${title}<meta name="theme-color" content="#fff" />`, '<meta'],
+    ['a style element', `${icon}${title}<style>body{}</style>`, '<style'],
+    ['a stray comment', `${icon}${title}<!-- note -->`, '<!-- note -->'],
+    ['loose text', `${icon}${title}hello`, 'hello'],
+    ['a script in capitals', `${icon}${title}<SCRIPT SRC="/x.js"></SCRIPT>`, '<SCRIPT'],
+  ])('refuses %s', (_name, inner, mention) => {
+    const got = headMarkersProblem(region(inner))
+    expect(got).not.toBeNull()
+    expect(got).toContain('between the markers')
+    expect(got).toContain(mention)
+  })
+
+  it('does not look outside the markers: a script after the closing marker is fine', () => {
+    const html = `<head>${OPEN}${icon}${title}${CLOSE}<script type="module" src="/a.js"></script></head>`
+    expect(headMarkersProblem(html)).toBeNull()
+  })
+
+  it('reports a marker problem before a content problem', () => {
+    expect(headMarkersProblem(`${OPEN}<script></script>`)).toContain('closing')
+  })
+})
