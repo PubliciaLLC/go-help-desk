@@ -262,4 +262,7 @@ func TestBuiltIndexHasMarkers(t *testing.T) {
 	require.Equal(t, 1, strings.Count(s, "<!-- ghd:head -->"))
 	require.Equal(t, 1, strings.Count(s, "<!-- /ghd:head -->"))
 	require.Less(t, strings.Index(s, "<!-- ghd:head -->"), strings.Index(s, "<!-- /ghd:head -->"))
+	// The server throws this region away. What the bundler put in it would go
+	// with it (see headRegionProblems).
+	require.Empty(t, headRegionProblems(s), "the region between the markers holds more than the icon link and the title")
 }
