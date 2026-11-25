@@ -105,7 +105,7 @@ function ReputationWarning({ children }: { children: React.ReactNode }) {
   return (
     <div
       role="alert"
-      className="space-y-2 rounded border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900"
+      className="space-y-2 rounded border border-warning-border bg-warning-soft px-4 py-3 text-sm text-warning-fg-strong"
     >
       {children}
     </div>
@@ -328,8 +328,8 @@ function ReputationProviderRow({
     <div role="group" aria-label={provider.name} className="space-y-3 px-5 py-4">
       <div className="flex items-center justify-between gap-8">
         <div className="min-w-0 flex-1">
-          <div className="text-sm font-medium text-gray-900">{provider.name}</div>
-          <div className="mt-0.5 text-sm text-gray-500">{provider.description}</div>
+          <div className="text-sm font-medium text-fg">{provider.name}</div>
+          <div className="mt-0.5 text-sm text-fg-faint">{provider.description}</div>
         </div>
         <div className="shrink-0">
           <Toggle label={`Ask ${provider.name}`} checked={enabled} onChange={setEnabled} />
@@ -338,7 +338,7 @@ function ReputationProviderRow({
 
       {provider.keySetting && (
         <div className="space-y-2">
-          <label htmlFor={fieldId} className="block text-sm font-medium text-gray-900">
+          <label htmlFor={fieldId} className="block text-sm font-medium text-fg">
             {provider.name} API key
           </label>
           <Input
@@ -351,7 +351,7 @@ function ReputationProviderRow({
             disabled={cleared}
             onChange={(e) => setTypedKey(e.target.value)}
           />
-          <p className="text-xs text-gray-500">
+          <p className="text-xs text-fg-faint">
             {keyStored ? 'A key is stored.' : 'No key is stored.'} Write-only: the server never sends a
             stored key back, so this field cannot be filled in for you. Leaving it blank leaves whatever is
             stored untouched — saving an empty field never removes a working key.
@@ -359,7 +359,7 @@ function ReputationProviderRow({
 
           {cleared ? (
             <div className="flex items-center gap-3">
-              <p className="text-sm text-amber-700">The stored key will be removed when you save.</p>
+              <p className="text-sm text-warning-fg">The stored key will be removed when you save.</p>
               <Button variant="outline" size="sm" onClick={() => setCleared(false)}>
                 Keep the stored key
               </Button>
@@ -403,7 +403,7 @@ export function ReputationSection({ draft }: { draft: SettingsDraft }) {
           send customer file hashes anywhere, and "nothing configured" is the
           easiest thing in a settings page to render as though something were
           wrong. One statement, not a prompt. */}
-      <div className="space-y-2 px-5 py-4 text-sm text-gray-500">
+      <div className="space-y-2 px-5 py-4 text-sm text-fg-faint">
         <p>
           A quarantined attachment's SHA-256 can be looked up at these services. They answer different
           questions — how many engines flagged the file, whether a catalogue has it on record — so every

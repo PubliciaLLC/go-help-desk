@@ -55,24 +55,24 @@ export function AvailableQueueSection() {
   return (
     <Section title="Available queue">
       <div className="px-5 py-4">
-        <p className="text-sm text-gray-500">
+        <p className="text-sm text-fg-faint">
           Who can open the Available view: tickets with no group and no person assigned.
         </p>
 
         <div className="mt-3 flex flex-col gap-2">
-          <label className="flex items-center gap-1.5 select-none text-sm text-gray-700">
+          <label className="flex items-center gap-1.5 select-none text-sm text-fg-soft">
             <input
               type="checkbox"
-              className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+              className="h-4 w-4 rounded border-border-strong text-primary focus:ring-ring"
               checked
               disabled
             />
-            Administrators <span className="text-gray-400">always</span>
+            Administrators <span className="text-fg-faint">always</span>
           </label>
-          <label className="flex items-center gap-1.5 cursor-pointer select-none text-sm text-gray-700">
+          <label className="flex items-center gap-1.5 cursor-pointer select-none text-sm text-fg-soft">
             <input
               type="checkbox"
-              className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+              className="h-4 w-4 rounded border-border-strong text-primary focus:ring-ring"
               checked={staff}
               disabled={!settings}
               onChange={(e) => setDraft(e.target.checked)}
@@ -82,14 +82,14 @@ export function AvailableQueueSection() {
         </div>
 
         {enforced && (
-          <p className="mt-3 text-sm text-gray-500">
+          <p className="mt-3 text-sm text-fg-faint">
             With Limit staff to their group scope on, staff see only the available tickets in their
             groups&apos; categories. Tick Staff if your staff pick up new tickets themselves: otherwise
             they find them only through Search.
           </p>
         )}
 
-        {error && <p role="alert" className="mt-3 text-sm text-red-600">{error}</p>}
+        {error && <p role="alert" className="mt-3 text-sm text-danger-fg">{error}</p>}
 
         <div className="mt-3">
           <Button

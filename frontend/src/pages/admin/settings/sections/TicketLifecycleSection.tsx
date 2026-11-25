@@ -23,7 +23,7 @@ export function TicketLifecycleSection({ draft }: { draft: SettingsDraft }) {
             value={num('reopen_window_days')}
             onChange={(e) => setNum('reopen_window_days', Math.max(0, parseInt(e.target.value, 10) || 0))}
           />
-          <span className="text-sm text-gray-500">days</span>
+          <span className="text-sm text-fg-faint">days</span>
         </div>
       </SettingRow>
       <SettingRow

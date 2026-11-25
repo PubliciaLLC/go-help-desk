@@ -27,7 +27,7 @@ export function PasswordsSection({ draft }: { draft: SettingsDraft }) {
               if (has('password_rehash_grace_days') && num('password_rehash_grace_days') < 1) setNum('password_rehash_grace_days', 1)
             }}
           />
-          <span className="text-sm text-gray-500">days</span>
+          <span className="text-sm text-fg-faint">days</span>
         </div>
       </SettingRow>
     </Section>

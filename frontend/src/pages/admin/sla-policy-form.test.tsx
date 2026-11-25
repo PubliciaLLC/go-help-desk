@@ -211,7 +211,7 @@ describe('the SLA policy form', () => {
 
     // The policy being edited stays in the list, marked, with no row actions.
     const row = screen.getByText('Critical outage').closest('tr') as HTMLElement
-    expect(row.className).toContain('bg-blue-50')
+    expect(row.className).toContain('bg-selected')
     expect(within(row).queryByRole('button', { name: 'Edit' })).toBeNull()
     // Marked by text and aria-current, not by colour alone (#672).
     expect(row.getAttribute('aria-current')).toBe('true')
@@ -324,7 +324,7 @@ describe('the SLA policy form', () => {
     // A is back to a plain row, B is the marked one without actions.
     expect(within(rowA()).getByRole('button', { name: 'Edit' })).toBeTruthy()
     expect(within(rowA()).getByRole('button', { name: 'Delete' })).toBeTruthy()
-    expect(rowA().className).not.toContain('bg-blue-50')
+    expect(rowA().className).not.toContain('bg-selected')
     expect(within(rowB()).queryByRole('button', { name: 'Edit' })).toBeNull()
     expect(within(rowB()).queryByRole('button', { name: 'Delete' })).toBeNull()
 

@@ -30,8 +30,8 @@ export function SettingsTabs({ page, tabs }: { page: string; tabs: SettingsTab[]
               className={cn(
                 'border-b-2 pb-3 text-sm font-medium whitespace-nowrap transition-colors',
                 current
-                  ? 'border-blue-600 text-blue-600'
-                  : 'border-transparent text-gray-500 hover:border-gray-300 hover:text-gray-700'
+                  ? 'border-ring text-selected-fg'
+                  : 'border-transparent text-fg-faint hover:border-border-strong hover:text-fg-soft'
               )}
             >
               {tab.label}

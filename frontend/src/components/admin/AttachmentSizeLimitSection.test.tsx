@@ -83,7 +83,7 @@ describe('the file size section', () => {
       const hint = screen.getByText(HINT)
       // A grey aside, not an amber warning: the stock scanner is fine.
       expect(hint.className).toContain('text-xs')
-      expect(hint.className).toContain('text-gray-500')
+      expect(hint.className).toContain('text-fg-faint')
       expect(hint.className).not.toMatch(/amber/)
       expect(hint.textContent).toMatch(/clamd 0\.105 and later accept up to 100 MB/)
       expect(hint.getAttribute('role')).toBeNull()
