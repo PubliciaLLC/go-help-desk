@@ -1457,7 +1457,8 @@ paths:
         has passed MFA, an API key owned by staff or an administrator, and any OAuth
         client. Open to a signed-in caller of any role, to a key or OAuth client with no
         scopes, and to anyone when guest submission is enabled. Otherwise answers
-        401. Returns an empty array, never null.
+        401. Returns an empty array, never null. Unlike the type and item lists,
+        this one is the same for a guest whatever guests_can_choose_type_item says.
       tags: ['Catalogue']
       x-ghd-handler: handleListPublicCategories
       security:
@@ -1502,7 +1503,8 @@ paths:
         OAuth client); everyone else gets active ones only, and none at all while the category is archived (so a
         requester's page can no longer resolve the type name of a ticket in an archived category). An
         unknown category gives an empty array; a failed lookup of the category is a 500. Same callers as the
-        category list.
+        category list. An anonymous caller (a guest) gets an empty array, whatever the category, unless
+        guests_can_choose_type_item is on (#711, off by default); a signed-in caller's answer does not depend on it.
       tags: ['Catalogue']
       x-ghd-handler: handleListPublicTypes
       security:
@@ -1555,7 +1557,9 @@ paths:
         client); everyone else gets active ones only, and none at all while the type or its category is archived.
         The category in the path is not looked up, so an item list is returned for any category id that is sent. An
         unknown type gives an empty array; a failed lookup of the type or its category is a 500. Same callers as the
-        category list.
+        category list. An anonymous caller (a guest) gets an empty array, whatever the type, unless
+        guests_can_choose_type_item is on (#711, off by default), so no item name reaches a guest while it is off.
+        A signed-in requester's answer does not depend on it: their ticket page names the item staff gave it from this list.
       tags: ['Catalogue']
       x-ghd-handler: handleListPublicItems
       security:
@@ -1710,7 +1714,7 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [name, logo_url, version, guest_submission_enabled, guest_attachments_enabled]
+                required: [name, logo_url, version, guest_submission_enabled, guest_attachments_enabled, guests_can_choose_type_item]
                 properties:
                   name:
                     type: string
@@ -1731,6 +1735,14 @@ paths:
                       public: unlike the upload route, which answers the same
                       404 whether the setting or the token failed, this tells
                       anyone whether uploads are on. Accepted as low sensitivity.
+                  guests_can_choose_type_item:
+                    type: boolean
+                    description: |
+                      Whether the guest form offers a Type and an Item under Category
+                      (#711). The effective value: true only while guest submission is
+                      also on, false by default and after an upgrade. Public, and it
+                      reveals only what opening /submit shows anyone; the type and item
+                      lists it unlocks are public in that state.
                   guest_attachment_max_bytes:
                     type: integer
                     format: int64
@@ -2468,7 +2480,8 @@ paths:
         subject is required and is limited to 500 bytes. description is limited to 50,000 bytes. category_id
         must name an active category that is open to guests. guest_email is required and must be a plain
         ASCII address without a display name (400 otherwise). guest_name is required. guest_phone is optional. Priority is always
-        medium and cannot be set by a guest.
+        medium and cannot be set by a guest. type_id and item_id are read only while the instance lets guests
+        choose them (guests_can_choose_type_item, #711); the fields a guest is offered stay the category's own.
         custom_fields takes only the fields GET /guest/fields lists for the category. Anything else (a field
         offered only to staff, one on a type, a deactivated one, an id that names nothing, a key that is not an
         id, an empty value for one of those) is 400 bad_request, as is a value the field does not accept and a
@@ -2505,6 +2518,18 @@ paths:
                   description: How description is shown. See TextFormatRequest.
                   $ref: '#/components/schemas/TextFormatRequest'
                 category_id: {$ref: '#/components/schemas/Uuid'}
+                type_id:
+                  description: |
+                    Optional, and only read while guests_can_choose_type_item is on (#711): otherwise
+                    ignored, a malformed value included, as it always was. When read it must be a type
+                    of category_id that is active (400 bad_request otherwise).
+                  $ref: '#/components/schemas/Uuid'
+                item_id:
+                  description: |
+                    Optional, and only read while guests_can_choose_type_item is on (#711). It must
+                    belong to type_id, which must be sent with it, and be active (400 bad_request
+                    otherwise). Nothing is created and no tracking number is used on a refusal.
+                  $ref: '#/components/schemas/Uuid'
                 guest_email:
                   type: string
                   description: Address to send the link to. Must be a valid address and is stored lowercased.
@@ -3858,17 +3883,22 @@ paths:
         What the caller may set depends on the role.
         - Staff and administrators may set every field, including item_id and
           priority.
-        - A reporting user has item_id and priority ignored (priority becomes
-          medium), must file into an active category, and must use an active
-          type when type_id is sent.
+        - A reporting user has priority ignored (priority becomes medium), must
+          file into an active category, and must use an active type when type_id
+          is sent. Their item_id is ignored too, unless an administrator has
+          turned on users_can_choose_item (#711, off by default, upgrades
+          included): then it is validated like staff's (400 bad_request unless
+          it belongs to type_id, which must be sent, and is active).
         - Nobody, staff and administrators included, may file into an archived
           category, type or item (400 bad_request, for example "item_id is not
           an active item"). Staff could before; that exception is gone. A
-          reporting user's item_id is dropped before this check, so the item
-          refusal is only ever seen by staff and administrators.
+          reporting user's item_id is dropped before this check while
+          users_can_choose_item is off, so the item refusal is then only ever seen
+          by staff and administrators.
         subject is required after trimming. description is optional. subject is
         limited to 500 bytes and description to 50,000 bytes. type_id must belong
-        to category_id, and for staff an item_id must belong to type_id.
+        to category_id, and an item_id (staff, administrators, and a reporting user
+        while users_can_choose_item is on) must belong to type_id.
         custom_fields maps custom field ids to values. They are written after the
         ticket exists, in one transaction, and never fail the request. An empty
         value means "no value" and is skipped without a word. Any other entry that
@@ -6110,6 +6140,10 @@ paths:
         - guest_attachments_enabled must be a JSON boolean (null is refused). It
           is off unless set, upgrades included, and only takes effect while
           guest_submission_enabled is on.
+        - users_can_choose_item and guests_can_choose_type_item (#711) must be JSON
+          booleans (null is refused). Both are off unless set, upgrades included
+          (no migration: an absent row reads off), both are session only, and the
+          second only takes effect while guest_submission_enabled is on.
         - guest_attachment_max_per_ticket must be an integer from 1 to 50 (default
           5) and guest_attachment_uploads_per_hour an integer from 1 to 30 (default
           3). Anything else, including null, a string and a fraction, is refused
@@ -6208,7 +6242,8 @@ paths:
         oidc_redirect_url, mfa_enabled, mfa_enforced_roles, passkey_required_roles, allowed_email_domains,
         self_signup_enabled, open_registration_enabled, closed_reopen_policy,
         audit_mask_requester_names, guest_submission_enabled,
-        guest_attachments_enabled, attachment_max_mb, guest_attachment_max_mb,
+        guest_attachments_enabled, users_can_choose_item, guests_can_choose_type_item,
+        attachment_max_mb, guest_attachment_max_mb,
         guest_attachment_max_per_ticket, guest_attachment_uploads_per_hour,
         attachment_scan_address, attachment_scan_policy, attachment_allowed_types,
         attachment_infected_handling, attachment_mismatch_handling,
@@ -11828,7 +11863,7 @@ components:
       allOf:
         - {$ref: '#/components/schemas/User'}
         - type: object
-          required: [can_use_available_queue]
+          required: [can_use_available_queue, can_choose_item]
           properties:
             api_key_max_lifetime_years:
               type: integer
@@ -11872,6 +11907,12 @@ components:
                 The largest file any upload may be, in bytes (attachment_max_mb, #673), so
                 the browser can refuse one before sending it. Always present on GET /me. The login
                 response's user does not carry it; read it from GET /me.
+            can_choose_item:
+              type: boolean
+              description: >-
+                Whether the new-ticket page offers this account an Item selector (#711): always true for staff
+                and administrators, and for a requester the users_can_choose_item setting (off by default).
+                Always present on GET /me. Not on the public GET /site.
             can_use_available_queue:
               type: boolean
               description: >-

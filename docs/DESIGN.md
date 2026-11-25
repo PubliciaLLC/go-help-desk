@@ -258,8 +258,10 @@ administrator turns one on.
   exactly as it routes a requester's. **Hostile or stale ids**: a type of another
   category, an item of another type, an unknown id and an archived one are each a
   `400`, never a `500`, and a refused request leaves the tracking-number sequence
-  where it was; a malformed UUID is the JSON decoder's `400 bad_request`
-  ("invalid JSON"). An API key is its owner's role: a requester's key is held to
+  where it was; a malformed UUID is a `400 bad_request` too (the JSON decoder's
+  "invalid JSON" on `POST /tickets`, "type_id is not a valid id" on the guest
+  form, which reads the two ids itself so that, while the setting is off, even a
+  malformed one is ignored as it always was). An API key is its owner's role: a requester's key is held to
   the requester rules above, and is `403 insufficient_scope` as ever without
   `tickets:write`.
 - **Descriptions and custom fields follow the selection.** The chooser shows
