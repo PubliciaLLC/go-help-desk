@@ -6,6 +6,14 @@
 // files a ticket, archives a category and changes settings, any of which would
 // alter the older shots (the ticket lists, the audit log, the dashboard counts).
 // It reads and rewrites seed.json, adding an "extras" key.
+//
+// --extras also seeds the history the dashboard (02) and Reports (48) need: SLA
+// tracking and policies, a group with three members, about seventy tickets filed
+// over two months, a reopened one, an unassigned pair and a breached and an
+// at-risk ticket. The API cannot backdate, so every ticket in that history
+// is filed "now" and described in $SHOTS_OUT/history.json, which backdate.sql
+// reads (scripts/screenshots.sh runs it between the extras seed and the extras
+// capture).
 import { request } from '@playwright/test'
 import { execFileSync } from 'node:child_process'
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
@@ -412,6 +420,254 @@ const guestPathFromMail = async (mailDir, to) => {
   throw new Error(`no mail to ${to} with a ticket link in ${mailDir} within 30 s`)
 }
 
+
+// ── --extras: the history behind the dashboard (02) and Reports (48) ──────────
+//
+// A help desk that has run for two months, not for two minutes: SLA tracking
+// with policies, a trend over many days, a comparison period, an unassigned
+// pair, a reopened ticket, one breached and one at-risk ticket, and an
+// administrator who is in a group and holds tickets. Every ticket is filed
+// through the API, which stamps it "now". Each one is also written to
+// $SHOTS_OUT/history.json with the age it should have, and backdate.sql moves
+// it there (scripts/screenshots.sh runs that between this seed and the extras
+// capture).
+//
+// Times are minutes. In a plan: c is the age of the ticket when the shots are
+// taken, fr the minutes from filing to the first staff reply, res the minutes
+// from filing to the resolution, clo the minutes from the resolution to the
+// close, upd how long ago the ticket last changed (worked out when it is left
+// out) and ro how long ago the ticket was reopened.
+const day = (n) => Math.round(n * 1440)
+
+const WORK = {
+  Hardware: 'Thanks for the report. A technician has taken a look and will confirm the next step by email.',
+  Software: 'Thanks for the details. We are checking the account and the licence and will update this ticket shortly.',
+  Network: 'Thanks. The problem shows in the gateway logs and we are working on a fix.',
+  'Accounts & Access': 'Thanks. Your identity is confirmed and the account is being updated now.',
+}
+
+// The ten tickets of the main seed are moved to these ages, so that the
+// older ones count in the previous period and the trend has no spike on the day
+// of the run. T6 was resolved and then reopened by the requester (history()).
+const LEGACY = {
+  T1: { c: day(9), upd: 120 },
+  T2: { c: day(21), upd: day(2) },
+  T3: { c: day(5), upd: day(1) },
+  T4: { c: day(33), upd: day(4) },
+  T5: { c: day(2), upd: day(2) },
+  T6: { c: day(40), res: day(3), ro: 120, upd: 120 },
+  T7: { c: day(14), upd: day(1) },
+  T8: { c: day(3), upd: day(3) },
+  T9: { c: day(18), res: 180, clo: day(2) },
+  T10: { c: day(6), upd: day(6) },
+}
+
+// req: the requester. by: the staff member who holds it. cat and type are
+// names. state: closed, resolved, open (In Progress), pending (waiting on the
+// requester or a vendor: the SLA clock stops there, so an old one is not
+// breached) or new. self: filed by the requester, not for them.
+const PLAN = [
+  // The month before last (days 58 to 32 ago): fewer tickets, slower, more late.
+  { req: 'morgan', cat: 'Network', type: 'Wi-Fi', pri: 'medium', by: 'sam', state: 'closed', c: day(58), fr: 50, res: 1300, clo: day(1), subject: 'Cannot connect to the guest Wi-Fi from the lobby', desc: 'The guest network asks for a code at the front desk and none of the codes on the card work.' },
+  { req: 'morgan', cat: 'Software', type: 'Office suite', pri: 'medium', by: 'jordan', state: 'closed', c: day(57), fr: 90, res: 1200, clo: day(1), subject: 'Cannot install the PDF editor', desc: 'The installer stops at 40 percent with an access error on my laptop.' },
+  { req: 'taylor', cat: 'Hardware', type: 'Laptop', pri: 'medium', by: 'jordan', state: 'closed', c: day(55), fr: 70, res: 1700, clo: day(1), subject: 'Laptop screen flickers on battery', desc: 'The screen flickers whenever the laptop is unplugged and stops when I plug the charger in.' },
+  { req: 'casey', cat: 'Accounts & Access', type: 'Password reset', pri: 'high', by: 'jordan', state: 'closed', c: day(53), fr: 30, res: 300, clo: day(2), subject: 'Password reset for the contractor portal', desc: 'The contractor portal rejects my password after the quarterly change and I cannot submit hours.' },
+  { req: 'taylor', cat: 'Hardware', type: 'Laptop', pri: 'high', by: 'jordan', state: 'closed', c: day(52), fr: 110, res: 5000, clo: day(1), subject: 'Laptop charger gets hot and cuts out', desc: 'The charger is too hot to touch after an hour and the laptop switches to battery on its own.' },
+  { req: 'morgan', cat: 'Hardware', type: 'Printer', pri: 'low', by: 'jordan', state: 'closed', c: day(51), fr: 300, res: 4500, clo: day(1), subject: 'Printer on floor 1 shows offline', desc: 'Every laptop on floor 1 lists the printer as offline since Monday, but it prints from the panel.' },
+  { req: 'taylor', cat: 'Network', type: 'VPN', pri: 'medium', by: 'sam', state: 'closed', c: day(49), fr: 120, res: 1500, clo: day(1), subject: 'VPN client will not install on the new laptop', desc: 'The installer says a newer version is already present, but there is no VPN client in the app list.' },
+  { req: 'casey', cat: 'Hardware', type: 'Monitor', pri: 'low', by: 'jordan', state: 'closed', c: day(47), fr: 400, res: 3900, clo: day(2), subject: 'Request for a second monitor', desc: 'Finance would like a second monitor at the shared desk on floor 2.' },
+  { req: 'morgan', cat: 'Software', type: 'Email', pri: 'high', by: 'admin', state: 'closed', c: day(45), fr: 40, res: 900, clo: day(1), subject: 'Shared mailbox missing from Outlook', desc: 'The accounts mailbox disappeared from Outlook this morning. Webmail still shows it.' },
+  { req: 'casey', cat: 'Network', type: 'Wi-Fi', pri: 'medium', by: 'sam', state: 'closed', c: day(44), fr: 100, res: 1100, clo: day(1), subject: 'No Wi-Fi in meeting room 4', desc: 'Laptops see the network in meeting room 4 but cannot get an address.' },
+  { req: 'taylor', cat: 'Accounts & Access', type: 'New starter', pri: 'critical', by: 'admin', state: 'closed', c: day(43), fr: 12, res: 230, clo: day(1), subject: 'New starter: accounts and laptop for Monday', desc: 'A new analyst starts on Monday and needs a laptop, email and portal access.' },
+  { req: 'casey', cat: 'Network', type: 'Wi-Fi', pri: 'medium', by: 'sam', state: 'resolved', c: day(41), fr: 200, res: 1500, subject: 'Teams meetings freeze on video calls', desc: 'Video freezes for about ten seconds every few minutes on the office Wi-Fi. Audio is fine.' },
+  { req: 'morgan', cat: 'Accounts & Access', type: 'Password reset', pri: 'low', by: 'jordan', state: 'closed', c: day(40), fr: 150, res: 700, clo: day(1), subject: 'Expired password warning keeps appearing', desc: 'Windows says my password expires in 0 days every time I sign in, even after changing it.' },
+  { req: 'morgan', cat: 'Software', type: 'Office suite', pri: 'low', by: 'jordan', state: 'closed', c: day(39), fr: 350, res: 2800, clo: day(1), subject: 'Excel macro security warning on the budget file', desc: 'The budget workbook opens with a red security bar and the macros are switched off.' },
+  { req: 'taylor', cat: 'Hardware', type: 'Monitor', pri: 'medium', by: 'jordan', state: 'closed', c: day(37), fr: 60, res: 1100, clo: day(1), subject: 'Monitor goes black after a few minutes', desc: 'The monitor on my desk goes black every few minutes and comes back when I move the mouse.' },
+  { req: 'casey', cat: 'Software', type: 'Email', pri: 'low', by: 'jordan', state: 'pending', c: day(36), fr: 200, subject: 'Archive the mailboxes of departed staff', desc: 'Please archive the mailboxes of the four people who left in September. Finance still needs read access.', reply: 'Thanks. Please send the four names and who should keep read access, and we will schedule the archive.' },
+  { req: 'casey', cat: 'Accounts & Access', type: 'Password reset', pri: 'high', by: 'jordan', state: 'closed', c: day(35), fr: 45, res: 600, clo: day(2), subject: 'Cannot sign in after the MFA reset', desc: 'After the MFA reset the portal says the code is invalid. The authenticator shows a new code every 30 seconds.' },
+  { req: 'morgan', cat: 'Network', type: 'VPN', pri: 'critical', by: 'sam', state: 'closed', c: day(34), fr: 8, res: 260, clo: day(1), subject: 'VPN gateway rejects every login from the east office', desc: 'Nobody in the east office can connect to the VPN since 08:00. The credentials work on the web portal.' },
+
+  // The last 30 days: busier, quicker, mostly on time.
+  { req: 'morgan', cat: 'Hardware', type: 'Laptop', pri: 'medium', by: 'jordan', state: 'closed', c: day(29), fr: 40, res: 700, clo: day(2), subject: 'Laptop battery drains within an hour', desc: 'A fully charged battery is empty after about an hour of light work. It is two years old.' },
+  { req: 'casey', cat: 'Accounts & Access', type: 'Password reset', pri: 'high', by: 'jordan', state: 'resolved', c: day(27), fr: 25, res: 300, subject: 'Locked out of the finance portal', desc: 'The finance portal locked my account after three attempts and I have a payment run at noon.' },
+  { req: 'morgan', cat: 'Network', type: 'VPN', pri: 'high', by: 'sam', state: 'closed', c: day(26), fr: 50, res: 700, clo: day(2), subject: 'VPN will not connect from home', desc: 'The VPN says the gateway is unreachable from my home connection. Other sites load normally.' },
+  { req: 'taylor', cat: 'Hardware', type: 'Laptop', pri: 'high', by: 'jordan', state: 'resolved', c: day(24), fr: 90, res: day(2), subject: 'Keys stick on my laptop keyboard', desc: 'The E and R keys stick and repeat. I cannot type a password without retyping it.' },
+  { req: 'casey', cat: 'Software', type: 'Email', pri: 'medium', by: 'admin', state: 'closed', c: day(23), fr: 60, res: 600, clo: day(1), subject: 'Outlook keeps asking for my password', desc: 'Outlook shows a sign-in box every few minutes. Webmail works without asking.' },
+  { req: 'taylor', cat: 'Hardware', type: 'Monitor', pri: 'low', by: 'jordan', state: 'closed', c: day(21), fr: 200, res: 2000, clo: day(2), subject: 'Monitor arm for the new standing desk', desc: 'The new standing desk has no room for the monitor foot. Could we fit an arm?' },
+  { req: 'morgan', cat: 'Network', type: 'Wi-Fi', pri: 'medium', by: 'sam', state: 'resolved', c: day(20), fr: 30, res: 1500, subject: 'Wi-Fi drops in the east wing', desc: 'The Wi-Fi drops for a minute in the east wing about every hour. The wired desks are fine.' },
+  { req: 'casey', cat: 'Accounts & Access', type: 'New starter', pri: 'critical', by: 'admin', state: 'closed', c: day(19), fr: 10, res: 200, clo: day(1), subject: 'New starter needs a laptop, email and portal access', desc: 'A new analyst starts tomorrow. Please prepare a laptop, a mailbox and portal access.' },
+  { req: 'morgan', cat: 'Software', type: 'Office suite', pri: 'medium', by: 'jordan', state: 'closed', c: day(17), fr: 90, res: 800, clo: day(1), subject: 'Excel crashes when opening the large budget workbook', desc: 'Excel closes without a message when I open the 60 MB budget workbook.' },
+  { req: 'taylor', cat: 'Hardware', type: 'Printer', pri: 'low', by: 'jordan', state: 'closed', c: day(16), fr: 120, res: 900, clo: day(1), subject: 'Printer on floor 2 is out of toner', desc: 'The printer on floor 2 shows a toner empty message and prints pale pages.' },
+  { req: 'casey', cat: 'Network', type: 'Wi-Fi', pri: 'medium', by: 'sam', state: 'resolved', c: day(14), fr: 45, res: 400, subject: 'Video calls drop on the conference room Wi-Fi', desc: 'Calls from the big conference room drop twice an hour. The Wi-Fi bars are full.' },
+  { req: 'morgan', cat: 'Accounts & Access', type: 'Password reset', pri: 'high', by: 'admin', state: 'closed', c: day(13), fr: 20, res: 120, clo: day(1), subject: 'Locked out after a password change', desc: 'I changed my password on my phone and now my laptop locks the account every few minutes.' },
+  { req: 'taylor', cat: 'Hardware', type: 'Laptop', pri: 'high', by: 'jordan', state: 'resolved', c: day(12), fr: 80, res: 3000, subject: 'Docking station does not charge the laptop', desc: 'The docking station connects the screens but the laptop does not charge on it.' },
+  { req: 'morgan', cat: 'Network', type: 'Wi-Fi', pri: 'low', by: 'sam', state: 'closed', c: day(10), fr: 150, res: 1800, clo: day(2), subject: 'Wi-Fi access for a visiting auditor', desc: 'An auditor is on site for two weeks and needs Wi-Fi access for a laptop that is not ours.' },
+  { req: 'taylor', cat: 'Software', type: 'Email', pri: 'critical', by: 'sam', state: 'resolved', c: day(9), fr: 6, res: 180, subject: 'Executive mailbox is not receiving external email', desc: 'The finance director has received nothing from outside the company since 07:30.' },
+  { req: 'casey', cat: 'Hardware', type: 'Laptop', pri: 'high', by: 'jordan', state: 'closed', c: day(8), fr: 80, res: 2500, clo: day(1), subject: 'Laptop fan runs at full speed all day', desc: 'The fan never slows down, even when nothing is open, and the case is hot.' },
+  { req: 'morgan', cat: 'Accounts & Access', type: 'Password reset', pri: 'medium', by: 'jordan', state: 'resolved', c: day(6), fr: 30, res: 200, subject: 'Reset my portal password', desc: 'I forgot the portal password and the reset mail does not arrive.' },
+  { req: 'taylor', cat: 'Network', type: 'VPN', pri: 'medium', by: 'sam', state: 'resolved', c: day(5), fr: 35, res: 480, subject: 'VPN disconnects when switching Wi-Fi networks', desc: 'The VPN drops every time I move from the office Wi-Fi to the phone hotspot.' },
+  { req: 'casey', cat: 'Software', type: 'Office suite', pri: 'low', by: 'admin', state: 'resolved', c: day(4), fr: 100, res: 600, subject: 'Word template missing from the shared library', desc: 'The letter template is gone from the shared template library.' },
+  { req: 'morgan', cat: 'Hardware', type: 'Monitor', pri: 'medium', by: 'jordan', state: 'resolved', c: day(3), fr: 20, res: 240, subject: 'Second monitor not detected after docking', desc: 'After docking the second monitor stays black until I unplug and replug the cable.' },
+  { req: 'taylor', cat: 'Hardware', type: 'Laptop', pri: 'medium', by: 'jordan', state: 'resolved', c: day(2), fr: 25, res: 300, subject: 'Trackpad does not click', desc: 'The trackpad moves the pointer but a press does not register as a click.' },
+  { req: 'casey', cat: 'Accounts & Access', type: 'Password reset', pri: 'high', by: 'admin', state: 'resolved', c: day(1), fr: 15, res: 90, subject: 'No code arrives when I reset my password', desc: 'The reset page says a code was sent, but nothing reaches my mailbox.' },
+
+  // Open now. The printer tickets fill the Printer filter of the ticket list
+  // shots. The word "fuser" is in the reply on the first and in an internal
+  // note on the second, and nowhere else.
+  { req: 'taylor', cat: 'Hardware', type: 'Printer', pri: 'high', by: 'jordan', state: 'open', c: day(3), fr: 55, subject: 'Printer on the 3rd floor jams on tray 2', desc: 'The 3rd floor printer jams on every third page from tray 2. Clearing the jam does not help for long.', reply: 'Thanks for the detail. The paper is creasing at the fuser, so I have ordered a new fuser kit and will fit it Thursday.' },
+  { req: 'casey', cat: 'Hardware', type: 'Printer', pri: 'high', by: 'jordan', state: 'pending', c: day(6), fr: 80, subject: 'Toner warning stays on after replacement', desc: 'The printer on floor 4 still shows the toner warning after I fitted the new cartridge.', reply: 'Thanks. We are checking the service counter with the vendor and will come back to you.', note: 'Spoke to the vendor: the counter resets with the fuser, not the toner. Check the service menu before ordering a second cartridge.' },
+  { req: 'morgan', cat: 'Hardware', type: 'Printer', pri: 'high', by: 'sam', state: 'open', c: day(2), fr: 60, subject: 'Duplex printing smudges the back of each page', desc: 'Double-sided prints come out with a grey smear along one edge of the back of every page.' },
+  { req: 'taylor', cat: 'Hardware', type: 'Printer', pri: 'high', by: 'jordan', state: 'pending', c: day(9), fr: 70, subject: 'Reception badge printer ignores queued jobs', desc: 'Visitor badges stay in the queue at reception and the printer light stays green.' },
+  { req: 'casey', cat: 'Hardware', type: 'Printer', pri: 'high', by: 'sam', state: 'open', c: day(1), fr: 30, subject: 'Plotter prints with a blue cast', desc: 'Everything from the plotter in the design room comes out with a blue tint.' },
+  { req: 'taylor', cat: 'Hardware', type: 'Laptop', pri: 'medium', by: 'sam', state: 'open', c: 360, fr: 40, subject: 'Laptop will not boot after the overnight update', desc: 'The laptop shows the logo and then a black screen after last night’s update.' },
+  { req: 'taylor', cat: 'Hardware', type: 'Laptop', pri: 'medium', by: 'jordan', state: 'pending', c: day(8), fr: 120, subject: 'Warranty claim for the cracked docking station', desc: 'The docking station cracked when it fell off the desk. It is still in warranty.', reply: 'Thanks. We have sent the claim to the supplier and are waiting for their reply.' },
+  { req: 'morgan', cat: 'Software', type: 'Office suite', pri: 'low', by: 'jordan', state: 'pending', c: day(15), fr: 200, subject: 'Software licence request for the design tools', desc: 'The design team needs three more licences for the layout tool.', reply: 'Thanks. The purchase request is with finance and we will install the licences when it is approved.' },
+  { req: 'casey', cat: 'Network', type: 'Wi-Fi', pri: 'low', by: 'sam', state: 'pending', c: day(24), fr: 90, subject: 'Wi-Fi coverage survey for building C', desc: 'Building C has weak coverage on the second floor. Could someone survey it?', reply: 'Thanks. The survey is booked for when the contractor returns, and we will share the heat map.' },
+
+  // What the dashboard's queue strip and attention list are built on. Alex
+  // holds the first two. The first is breached on both targets: nobody has
+  // answered it. The second is at risk: its resolution has used 90 percent of
+  // the day the policy allows, and the requester has just written back.
+  { req: 'casey', cat: 'Software', type: 'Office suite', pri: 'high', by: 'admin', state: 'open', c: 840, subject: 'Month-end workbook is locked and its owner is out', desc: 'The month-end workbook is locked by a colleague on leave. Finance cannot post the accruals.' },
+  { req: 'morgan', cat: 'Software', type: 'Email', pri: 'medium', by: 'admin', state: 'open', c: 1296, fr: 35, upd: 20, follow: 'Thanks, I have tried that and the calendar still does not sync with my phone.', subject: 'Outlook calendar will not sync with my phone', desc: 'Meetings I accept on my laptop never reach my phone calendar.', reply: 'Thanks. I have reset the sync profile on the server. Please remove and add the account on your phone and tell me how it goes.' },
+  // Filed by the requesters themselves in a category no group covers: they land
+  // in Available, with no group and no person.
+  { req: 'taylor', cat: 'Facilities', type: 'Building access', self: true, state: 'new', c: 150, subject: 'Badge reader at the loading dock is not working', desc: 'The badge reader at the loading dock does not beep or open the door, so deliveries wait outside.' },
+  { req: 'casey', cat: 'Facilities', type: 'Desk moves', self: true, state: 'new', c: 60, subject: 'Request to move my desk to the second floor', desc: 'I would like to move to the second floor with the rest of the finance team.' },
+]
+
+// The targets of each priority, in minutes, and the longer ones Hardware gets at high priority.
+const POLICIES = [
+  { name: 'Critical', priority: 'critical', response_target_min: 15, resolution_target_min: 240 },
+  { name: 'High', priority: 'high', response_target_min: 60, resolution_target_min: 480 },
+  { name: 'Medium', priority: 'medium', response_target_min: 240, resolution_target_min: 1440 },
+  { name: 'Low', priority: 'low', response_target_min: 480, resolution_target_min: 4320 },
+]
+const HARDWARE_HIGH = { name: 'High, hardware', priority: 'high', response_target_min: 120, resolution_target_min: 10080 }
+
+// Returns what backdate.sql needs: one entry per ticket to move in time.
+async function history(admin, seed, U) {
+  const as = {}
+  const who = async (key) => (as[key] ??= await login(P[key].email))
+  const hist = []
+
+  const S = {}
+  for (const s of await call(admin, 'GET', '/api/v1/statuses', null, 200)) S[s.name] = s.id
+  const groups = await call(admin, 'GET', '/api/v1/admin/groups', null, 200)
+  const it = groups.find((g) => g.name === 'IT Support')?.id
+  const net = groups.find((g) => g.name === 'Network Team')?.id
+  if (!it || !net) throw new Error('IT Support or Network Team group not found')
+
+  // Two more people in IT Support, so "assigned to others" and the workload
+  // card have somebody to show. Alex is an administrator and holds tickets.
+  for (const m of ['admin', 'sam']) await call(admin, 'POST', `/api/v1/admin/groups/${it}/members`, { user_id: U[m] }, 204)
+
+  // Facilities: a category no group covers, so its tickets have no group.
+  const facilities = await call(admin, 'POST', '/api/v1/admin/categories', { name: 'Facilities', sort_order: 5 }, 201)
+  const cats = {}
+  const types = {}
+  for (const c of await call(admin, 'GET', '/api/v1/admin/categories', null, 200)) {
+    cats[c.name] = c.id
+    types[c.name] = {}
+    if (c.name === 'Desk phones') continue
+    for (const t of await call(admin, 'GET', `/api/v1/admin/categories/${c.id}/types`, null, 200)) types[c.name][t.name] = t.id
+  }
+  for (const [i, name] of ['Building access', 'Desk moves'].entries()) {
+    types.Facilities[name] = (await call(admin, 'POST', `/api/v1/admin/categories/${facilities.id}/types`, { name, sort_order: i }, 201)).id
+  }
+  const groupOf = { Hardware: it, Software: it, 'Accounts & Access': it, Network: net }
+
+  const reply = (ctx, id, body, internal = false) =>
+    call(ctx, 'POST', `/api/v1/tickets/${id}/replies`, { body, internal, notify_customer: false }, 201)
+
+  // ── Legacy phase: SLA is still off. Morgan's reply on T1 makes it wait for
+  // Jordan, and Casey's reply on T6, which was resolved, reopens it.
+  await reply(await who('morgan'), seed.tickets.T1.id, 'Thanks. The new screen arrived, but the lid still does not close all the way. Can someone look at the hinge as well?')
+  await reply(await who('casey'), seed.tickets.T6.id, 'The reset worked, but the portal now asks me to change the password again as soon as I sign in.')
+  // The main seed assigned T1 and T2 to a person alone, which left them in no
+  // group; put each back in its group so the group views count them.
+  await call(admin, 'PATCH', `/api/v1/tickets/${seed.tickets.T1.id}`, { assignee_user_id: U.jordan, assignee_group_id: it }, 200)
+  await call(admin, 'PATCH', `/api/v1/tickets/${seed.tickets.T2.id}`, { assignee_user_id: U.sam, assignee_group_id: net }, 200)
+  for (const [k, spec] of Object.entries(LEGACY)) hist.push({ id: seed.tickets[k].id, ...spec })
+
+  // Two tickets that were resolved, reopened by the requester and resolved
+  // again: what makes the reopen rate more than zero. Filed while SLA is off, so
+  // the reopen does not start a second SLA record that would also need moving.
+  const reopened = [
+    { req: 'taylor', cat: 'Software', type: 'Email', pri: 'low', by: 'jordan', subject: 'Email signature is missing on the new laptop', desc: 'My signature is blank in Outlook on the new laptop. It was fine on the old one.', c: day(19), fr: 90, res: day(2) + 300, ro: day(17) },
+    { req: 'casey', cat: 'Hardware', type: 'Printer', pri: 'medium', by: 'jordan', subject: 'Badge printer prints blank cards', desc: 'The badge printer feeds a card and ejects it blank.', c: day(12), fr: 60, res: 4200, ro: day(12) - 3600 },
+  ]
+  for (const p of reopened) {
+    const t = await call(admin, 'POST', '/api/v1/tickets', clean({ subject: p.subject, description: p.desc, category_id: cats[p.cat], type_id: types[p.cat][p.type], priority: p.pri, reporter_user_id: U[p.req] }), 201)
+    await call(admin, 'PATCH', `/api/v1/tickets/${t.id}`, { assignee_group_id: it, assignee_user_id: U[p.by], status_id: S['In Progress'] }, 200)
+    const holder = await who(p.by)
+    await reply(holder, t.id, WORK[p.cat])
+    await call(holder, 'POST', `/api/v1/tickets/${t.id}/resolve`, { notes: 'Fixed and confirmed.' }, 200)
+    await reply(await who(p.req), t.id, 'It has come back: the same thing happens again this morning.')
+    await call(holder, 'POST', `/api/v1/tickets/${t.id}/resolve`, { notes: 'Found the cause this time and fixed it for good.' }, 200)
+    // The ticket was reopened after it was filed and before the resolution that stands.
+    if (!(p.ro <= p.c && p.ro > p.c - p.res)) throw new Error(`history: the reopen of "${p.subject}" is not between filing and resolution: ${JSON.stringify(p)}`)
+    hist.push({ id: t.id, c: p.c, fr: p.fr, res: p.res, ro: p.ro })
+  }
+
+  // ── SLA phase.
+  await call(admin, 'PATCH', '/api/v1/admin/settings', {
+    sla_enabled: true,
+    // The auto-close sweep (every five minutes in the server) closes a Resolved
+    // ticket whose resolved_at is older than this many days (default 7).
+    // backdate.sql moves resolved tickets back up to 41 days, so with the default
+    // each of them would flip to Closed whenever a sweep tick landed between the
+    // backdate and the capture, and the status cards and columns would differ from
+    // run to run. 90 days is longer than any history filed here.
+    reopen_window_days: 90,
+    // Off: the dashboard's health card then has its one amber item (tracking on, alerts off).
+    sla_alerts_enabled: false,
+    // Staff see Available too, so Jordan's sidebar lists it.
+    available_queue_roles: ['admin', 'staff'],
+  }, 204)
+  for (const pol of [...POLICIES, { ...HARDWARE_HIGH, category_id: cats.Hardware }]) {
+    await call(admin, 'POST', '/api/v1/admin/sla/policies', pol, 201)
+  }
+
+  for (const p of PLAN) {
+    const filer = p.self ? await who(p.req) : admin
+    const body = p.self
+      ? { subject: p.subject, description: p.desc, category_id: cats[p.cat], type_id: types[p.cat][p.type] }
+      : { subject: p.subject, description: p.desc, category_id: cats[p.cat], type_id: types[p.cat][p.type], priority: p.pri, reporter_user_id: U[p.req] }
+    const t = await call(filer, 'POST', '/api/v1/tickets', clean(body), 201)
+    // An assignment replaces both the person and the group, so a PATCH that names
+    // only the person leaves the ticket in no group: the group goes with it.
+    const move = {}
+    if (groupOf[p.cat]) move.assignee_group_id = groupOf[p.cat]
+    if (p.by) Object.assign(move, { assignee_user_id: U[p.by], status_id: S['In Progress'] })
+    if (Object.keys(move).length) await call(admin, 'PATCH', `/api/v1/tickets/${t.id}`, move, 200)
+
+    const holder = p.by ? await who(p.by) : null
+    if (p.fr != null) await reply(holder, t.id, p.reply ?? WORK[p.cat])
+    if (p.follow) await reply(await who(p.req), t.id, p.follow)
+    if (p.note) await reply(holder, t.id, p.note, true)
+    if (p.state === 'pending') await call(holder, 'PATCH', `/api/v1/tickets/${t.id}`, { status_id: S.Pending }, 200)
+    if (p.state === 'resolved' || p.state === 'closed') {
+      await call(holder, 'POST', `/api/v1/tickets/${t.id}/resolve`, { notes: 'Fixed, and confirmed with the requester.' }, 200)
+    }
+    if (p.state === 'closed') await call(admin, 'POST', `/api/v1/tickets/${t.id}/close`, null, 200)
+    hist.push({ id: t.id, c: p.c, fr: p.fr, res: p.res, clo: p.clo, upd: p.upd })
+  }
+
+  // Every plan says when things happened, so check that it can have: a ticket
+  // is filed, answered, resolved and closed in that order, and not in the future.
+  for (const h of hist) {
+    if (!(h.c > (h.res ?? 0) + (h.clo ?? 0)) || (h.fr != null && h.res != null && h.fr > h.res)) {
+      throw new Error(`history: impossible times for ${h.id}: ${JSON.stringify(h)}`)
+    }
+    // Where upd is left out: the last thing that happened to the ticket.
+    // A reopen cannot be older than the ticket.
+    if (h.ro != null && h.ro > h.c) throw new Error(`history: reopened before it was filed: ${JSON.stringify(h)}`)
+    h.upd ??= h.clo != null ? h.c - h.res - h.clo : h.res != null ? h.c - h.res : h.fr != null ? h.c - h.fr : h.c
+  }
+  return hist
+}
+
 async function extras() {
   const mailDir = process.env.SHOTS_MAIL_DIR
   if (!mailDir) throw new Error('SHOTS_MAIL_DIR is required with --extras (the directory fake-smtp.mjs writes to)')
@@ -488,6 +744,15 @@ async function extras() {
   await call(admin, 'PATCH', `/api/v1/admin/custom-fields/${condition.id}`, { options: ['Like new', 'Good', 'Worn', 'Damaged'], retired_options: ['Refurbished'] }, 200)
 
   const guestPath = await guestPathFromMail(mailDir, PAT.email)
+
+  const ids = Object.fromEntries(users.map((u) => [u.email, u.id]))
+  const hist = await history(admin, seed, {
+    admin: ids[P.admin.email], jordan: ids[P.jordan.email], sam: ids[P.sam.email],
+    morgan: ids[P.morgan.email], casey: ids[P.casey.email], taylor: ids[P.taylor.email],
+  })
+  // backdate.sql reads this (scripts/screenshots.sh hands it over). Not a secret.
+  writeFileSync(join(OUT, 'history.json'), JSON.stringify(hist) + '\n')
+  console.log(`X. history seeded: ${hist.length} tickets to move in time`)
 
   seed.extras = { tickets: { T11: { id: t11.id, tracking: t11.tracking_number } }, guestPath, fields: { condition: condition.id } }
   writeFileSync(seedPath, JSON.stringify(seed, null, 2) + '\n', { mode: 0o600 })
