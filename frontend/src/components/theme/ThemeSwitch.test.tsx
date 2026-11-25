@@ -82,7 +82,7 @@ describe.each(['icons', 'labelled'] as const)('the %s switch', (variant) => {
     useAuthStore.setState({ user: { id: 'u', email: 'a@b.c', display_name: 'A', role: 'user', mfa_enabled: false, created_at: '', updated_at: '' } })
     vi.mocked(updateAppearance).mockRejectedValue(new Error('x'))
     render(<ThemeSwitch variant={variant} />)
-    const live = within(group().parentElement!).getByRole('status')
+    const live = group().parentElement!.querySelector('[aria-live="polite"]')!
     expect(live.textContent).toBe('')
 
     await userEvent.click(screen.getByRole('radio', { name: 'Dark' }))

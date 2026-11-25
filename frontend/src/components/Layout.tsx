@@ -383,7 +383,9 @@ function SidebarContent({ user, adminNav, branding, onNavigate, onLogout }: Side
             <LogOutIcon className="h-4 w-4" />
             Sign out
           </Button>
-          <ThemeSwitch variant="icons" />
+          {/* 28px segments plus their frame are 34px: the 3px margins take the
+              difference out of the footer's own padding, so the row stays 28px. */}
+          <ThemeSwitch variant="icons" className="-my-[3px]" />
         </div>
       </div>
     </>

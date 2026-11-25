@@ -76,12 +76,9 @@ export function ThemeSwitch({ variant, className }: { variant: 'icons' | 'labell
           </label>
         ))}
       </fieldset>
-      {/* Always rendered, so a screen reader hears the text when it appears.
-          role="status" is a polite live region. It is written that way, and not
-          as aria-live="polite", so the sidebar's copy is not the one a page's
-          own test for its live region finds first. */}
+      {/* Always rendered, so a screen reader hears the text when it appears. */}
       <span
-        role="status"
+        aria-live="polite"
         className={cn(
           !message && 'sr-only',
           message && error && (labelled ? 'mt-2 text-sm text-danger-fg' : 'mt-1 max-w-48 text-right text-[10px] leading-tight text-danger-fg'),
