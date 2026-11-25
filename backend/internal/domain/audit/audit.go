@@ -345,6 +345,13 @@ var shownKeys = map[string]bool{
 	// account being relinked to a new NameID (saml_relinked): the flag. Neither
 	// the address nor the NameID is ever written.
 	"replacedbyuserid": true, "previoususerid": true, "samlsubjectchanged": true,
+	// The site icon being uploaded, recoloured or removed (#708): the SHA-256
+	// of the uploaded file, the side of the square it was, the home screen
+	// background colour and the version digest of the generated files. A
+	// digest, a number, a colour and a digest; none holds what the picture
+	// shows. (The key is icon_sha256, not icon_hash: a name containing "hash"
+	// would be shown as a redaction placeholder.)
+	"iconsha256": true, "iconsourcesize": true, "iconbackground": true, "iconversion": true,
 }
 
 // Redact returns copies of before/after showing only allow-listed keys

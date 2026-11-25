@@ -53,6 +53,10 @@ const (
 	KeyAttachmentScanAddress         = "attachment_scan_address"
 	KeySiteName                      = "site_name"
 	KeySiteLogoURL                   = "site_logo_url"
+	// What a phone prints under the icon on its home screen (#708): up to
+	// SiteShortNameMaxRunes characters. Empty or unset means the site name.
+	// Not session-only: it is branding, as KeySiteName is.
+	KeySiteShortName = "site_short_name" // string
 
 	// Whether a Closed ticket can be force-reopened at all and, if so, by whom:
 	// off | admin | staff_admin (#349). Closed is terminal by default; this is
@@ -517,7 +521,7 @@ func KnownKeys() []string {
 		KeySLAEnabled, KeySLAAlertsEnabled, KeyMFAEnabled, KeyMFAEnforcedRoles, KeyPasskeyRequiredRoles,
 		KeyReopenWindowDays, KeyReopenTargetStatusName,
 		KeyAttachmentScanPolicy, KeyAttachmentScanAddress,
-		KeySiteName, KeySiteLogoURL,
+		KeySiteName, KeySiteLogoURL, KeySiteShortName,
 		KeyClosedReopenPolicy, KeyAuditMaskRequesterNames,
 		KeyAttachmentAllowedTypes, KeyAttachmentInfectedHandling, KeyAttachmentMismatchHandling,
 		KeyAttachmentVTLookup, KeyAttachmentVTAPIKey,

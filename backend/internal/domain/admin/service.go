@@ -9,6 +9,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 
@@ -603,6 +605,44 @@ func (s *Service) SiteName(ctx context.Context) string {
 		return "Go Help Desk"
 	}
 	return v
+}
+
+// SiteShortNameMaxRunes is the longest home screen name accepted. Phones show
+// about twelve characters and cut the rest; thirty is the hard limit, twelve a
+// warning the settings page gives.
+const SiteShortNameMaxRunes = 30
+
+// ValidSiteShortName reports whether v may be stored as the home screen name:
+// at most SiteShortNameMaxRunes characters once trimmed, no control
+// characters. Empty is valid and means "use the site name".
+func ValidSiteShortName(v string) error {
+	v = strings.TrimSpace(v)
+	if utf8.RuneCountInString(v) > SiteShortNameMaxRunes {
+		return fmt.Errorf("the home screen name is longer than %d characters", SiteShortNameMaxRunes)
+	}
+	if strings.IndexFunc(v, unicode.IsControl) >= 0 {
+		return errors.New("the home screen name contains a control character")
+	}
+	return nil
+}
+
+// SiteShortName returns the configured home screen name, trimmed; empty when it
+// is unset, blank or unreadable.
+func (s *Service) SiteShortName(ctx context.Context) string {
+	v, err := s.GetString(ctx, KeySiteShortName)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(v)
+}
+
+// HomeScreenName is what appears under the icon on a phone's home screen: the
+// short name if there is one, else the site name.
+func (s *Service) HomeScreenName(ctx context.Context) string {
+	if v := s.SiteShortName(ctx); v != "" {
+		return v
+	}
+	return s.SiteName(ctx)
 }
 
 // SiteLogoURL returns the configured logo URL (empty if not set).
