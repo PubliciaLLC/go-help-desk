@@ -285,7 +285,7 @@ export function IconSection() {
               role="group"
               aria-label="Generated icons"
               aria-describedby={captionId}
-              className="flex flex-wrap gap-4"
+              className="grid grid-cols-2 gap-4 sm:grid-cols-4"
             >
               {status.files
                 .filter((f) => PREVIEWS[f.name])
@@ -293,7 +293,7 @@ export function IconSection() {
                 .map((f) => {
                   const p = PREVIEWS[f.name]
                   return (
-                    <figure key={f.name} className="flex w-28 flex-col items-center gap-1.5 text-center">
+                    <figure key={f.name} className="flex min-w-0 flex-col items-center gap-1.5 text-center">
                       <div className="flex items-end justify-center" style={{ height: THUMB_AREA }}>
                         {/* A hairline edge on every one: a white icon on the white card has none of its own. */}
                         <div
