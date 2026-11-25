@@ -598,13 +598,18 @@ func (s *Service) AuditMaskRequesterNames(ctx context.Context) string {
 	return v
 }
 
-// SiteName returns the configured site name, defaulting to "Go Help Desk".
+// DefaultSiteName is the site name until an administrator sets one.
+const DefaultSiteName = "Go Help Desk"
+
+// ErrSettingNotFound is what a Store's Get wraps when the key has no row: the
+// setting is unset, which is not a fault. Any other error from Get is.
+var ErrSettingNotFound = errors.New("setting not set")
+
+// SiteName returns the configured site name, trimmed, defaulting to
+// "Go Help Desk" when it is unset, blank or unreadable.
 func (s *Service) SiteName(ctx context.Context) string {
-	v, err := s.GetString(ctx, KeySiteName)
-	if err != nil || v == "" {
-		return "Go Help Desk"
-	}
-	return v
+	name, _, _ := s.SiteNames(ctx)
+	return name
 }
 
 // SiteShortNameMaxRunes is the longest home screen name accepted. Phones show
@@ -613,36 +618,46 @@ func (s *Service) SiteName(ctx context.Context) string {
 const SiteShortNameMaxRunes = 30
 
 // ValidSiteShortName reports whether v may be stored as the home screen name:
-// at most SiteShortNameMaxRunes characters once trimmed, no control
-// characters. Empty is valid and means "use the site name".
+// at most SiteShortNameMaxRunes characters once trimmed, and none that draws
+// nothing or moves the text: control characters, format characters (a
+// right-to-left override, a zero-width space, a byte order mark) and line or
+// paragraph separators (U+2028, U+2029). Empty is valid and means "use the site
+// name".
 func ValidSiteShortName(v string) error {
 	v = strings.TrimSpace(v)
 	if utf8.RuneCountInString(v) > SiteShortNameMaxRunes {
 		return fmt.Errorf("the home screen name is longer than %d characters", SiteShortNameMaxRunes)
 	}
-	if strings.IndexFunc(v, unicode.IsControl) >= 0 {
-		return errors.New("the home screen name contains a control character")
+	if strings.IndexFunc(v, func(r rune) bool {
+		return unicode.IsControl(r) || unicode.In(r, unicode.Cf, unicode.Zl, unicode.Zp)
+	}) >= 0 {
+		return errors.New("the home screen name contains a control or invisible character")
 	}
 	return nil
 }
 
-// SiteShortName returns the configured home screen name, trimmed; empty when it
-// is unset, blank or unreadable.
-func (s *Service) SiteShortName(ctx context.Context) string {
-	v, err := s.GetString(ctx, KeySiteShortName)
-	if err != nil {
-		return ""
+// SiteNames reads the site name and the home screen name (what a phone prints
+// under the icon: the short name when there is one, else the site name) in one
+// place, for the page shell and the manifest. It always answers with names a
+// page can print: the defaults stand in for anything unset, blank or unreadable.
+// err is for the caller to log, and is not set for an unset key, which is normal.
+func (s *Service) SiteNames(ctx context.Context) (name, home string, err error) {
+	read := func(key string) (string, error) {
+		v, err := s.GetString(ctx, key)
+		if errors.Is(err, ErrSettingNotFound) {
+			return "", nil
+		}
+		return strings.TrimSpace(v), err
 	}
-	return strings.TrimSpace(v)
-}
-
-// HomeScreenName is what appears under the icon on a phone's home screen: the
-// short name if there is one, else the site name.
-func (s *Service) HomeScreenName(ctx context.Context) string {
-	if v := s.SiteShortName(ctx); v != "" {
-		return v
+	name, nameErr := read(KeySiteName)
+	short, shortErr := read(KeySiteShortName)
+	if name == "" {
+		name = DefaultSiteName
 	}
-	return s.SiteName(ctx)
+	if home = short; home == "" {
+		home = name
+	}
+	return name, home, errors.Join(nameErr, shortErr)
 }
 
 // SiteLogoURL returns the configured logo URL (empty if not set).

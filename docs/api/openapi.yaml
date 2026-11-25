@@ -1693,6 +1693,15 @@ paths:
             text/plain:
               schema:
                 type: string
+        '500':
+          description: >-
+            The file could not be read from storage (storage_error). A browser
+            that gets this keeps the icon it has, or shows none, until the next
+            request; the page and the manifest do not fail for it.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
   /api/v1/branding/manifest.webmanifest:
     get:
       operationId: getWebManifest
@@ -6283,8 +6292,9 @@ paths:
           null or any other type is refused (bad_request) and nothing is written.
         - site_short_name, the name a phone prints under the icon on its home
           screen, must be a string of at most 30 characters once trimmed, with no
-          control characters. Empty means the site name is used. A number, a
-          boolean, null, a longer string or a control character is refused with 400
+          control or invisible characters (a right-to-left override, a zero-width
+          space, U+2028). Empty means the site name is used. A number, a
+          boolean, null, a longer string or such a character is refused with 400
           invalid_site_short_name and nothing is written. It is not session only.
         - saml_metadata_url and saml_metadata_xml cannot both be non-empty after
           the write, and saml_metadata_xml must be SAML IdP metadata of at most
@@ -6483,13 +6493,16 @@ paths:
                 $ref: '#/components/schemas/SiteIconStatus'
         '400':
           description: |
-            Refused before anything is stored. Codes: file_too_large (over 5 MB,
-            or a body over the cap), invalid_form (not multipart), missing_field
-            (no icon field), invalid_background (not #rrggbb), invalid_type (not
-            PNG, JPEG or GIF), invalid_image (the header or the image cannot be
-            read, or its decoded size is over the limit), icon_not_square,
-            icon_too_small (under 512), icon_too_large (over 4096). The message of
-            the three icon_ codes names the image's size.
+            Refused before anything is stored. The checks run in this order and the
+            first to fail answers, so an upload that breaks two rules gets the
+            earlier code: invalid_form (not multipart) or file_too_large (a body
+            over the cap), missing_field (no icon field), invalid_background (not
+            #rrggbb), file_too_large (the file is over 5 MB), invalid_type (not
+            PNG, JPEG or GIF), invalid_image (the header cannot be read),
+            icon_not_square, icon_too_small (under 512) or icon_too_large (over
+            4096), in that order of precedence, then invalid_image again (the
+            decoded size is over the limit, or the image cannot be decoded). The
+            message of the three icon_ codes names the image's size.
           content:
             application/json:
               schema:
@@ -13544,7 +13557,7 @@ components:
           maxLength: 30
           description: >-
             What a phone prints under the icon on its home screen. At most 30
-            characters, no control characters. Empty or unset means the site name.
+            characters, no control or invisible characters. Empty or unset means the site name.
         ticket_prefix:
           type: string
           pattern: '^[A-Z0-9]{1,8}$'

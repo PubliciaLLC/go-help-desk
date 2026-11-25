@@ -19,8 +19,12 @@ import (
 	"net/http/httptest"
 	"net/textproto"
 	"runtime"
+	"runtime/debug"
+	"runtime/metrics"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
@@ -442,6 +446,37 @@ func TestUploadSiteIcon_Refusals(t *testing.T) {
 			400, "invalid_background", "#ffffff"},
 		{"bad background, a name", newIconUpload(iconPNG(t, iconDisc(600))).withBackground("white"),
 			400, "invalid_background", "hex colour"},
+
+		// An upload that breaks two rules gets the code of the one checked first.
+		// The order is documented (openapi.yaml, uploadSiteIcon): the form, the
+		// field, the colour, the file's size, its type, its header, its shape
+		// (not square, then too small, then too large), and last what decoding
+		// would cost. A refusal that depended on anything else would send the
+		// administrator to fix the wrong thing first.
+		{"colour before type: bad background and SVG", newIconUpload(svg).withBackground("#fff"),
+			400, "invalid_background", "#ffffff"},
+		{"colour before size: bad background and over 5 MB", newIconUpload(overByte).withBackground("white"),
+			400, "invalid_background", "hex colour"},
+		{"colour before shape: bad background and not square", newIconUpload(iconPNG(t, iconSolid(800, 600, color.RGBA{A: 255}))).withBackground("#12345"),
+			400, "invalid_background", "#ffffff"},
+		{"size before type: over 5 MB and SVG", newIconUpload(append(append([]byte{}, svg...), make([]byte, siteicon.MaxUploadBytes)...)),
+			400, "file_too_large", "5 MB"},
+		{"type before shape: SVG that is not square", newIconUpload([]byte(`<svg xmlns="http://www.w3.org/2000/svg" width="800" height="600"/>`)),
+			400, "invalid_type", "PNG, JPG, or GIF"},
+		{"header before shape: garbage that is not square", newIconUpload(append([]byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1A, '\n'}, make([]byte, 24)...)),
+			400, "invalid_image", "could not be read"},
+		{"shape before size: not square and too small", newIconUpload(iconPNG(t, iconSolid(300, 200, color.RGBA{A: 255}))),
+			400, "icon_not_square", "300 × 200"},
+		{"shape before size: not square and too large", newIconUpload(iconPNGHeader(5000, 4000, 8, 6)),
+			400, "icon_not_square", "5000 × 4000"},
+		{"too small before too large: square checks in order", newIconUpload(iconPNG(t, iconSolid(100, 100, color.RGBA{A: 255}))),
+			400, "icon_too_small", "100 × 100"},
+		{"shape before the decode budget: not square and over it", newIconUpload(iconPNGHeader(4096, 4000, 16, 6)),
+			400, "icon_not_square", "4096 × 4000"},
+		{"size before the decode budget: too large and over it", newIconUpload(iconPNGHeader(5000, 5000, 16, 6)),
+			400, "icon_too_large", "5000 × 5000"},
+		{"shape before the decode: not square and truncated", newIconUpload(iconPNGHeader(800, 600, 8, 6)),
+			400, "icon_not_square", "800 × 600"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -512,6 +547,65 @@ func TestUploadSiteIcon_DecompressionBombNeverDecodes(t *testing.T) {
 			require.False(t, h.iconStatus(t).Set)
 		})
 	}
+}
+
+// The other end of the budget: an image the decode check ACCEPTS must cost what
+// the check says. A 4096 x 4096 RGBA PNG is 64 MiB decoded, under the 100 MB a
+// slot is allowed, and scaling it in one step used to add a work buffer of
+// another 64 MiB (draw.CatmullRom: destination width x source height x 32).
+// With four slots, that was 600 MB of heap on a 5 MB upload.
+//
+// The peak is sampled while the request runs, with the collector made eager so
+// that dead buffers are not counted as live.
+func TestUploadSiteIcon_LargestAcceptedImageStaysInTheSlotBudget(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	img := image.NewRGBA(image.Rect(0, 0, siteicon.MaxSide, siteicon.MaxSide))
+	for y := range siteicon.MaxSide {
+		for x := range siteicon.MaxSide {
+			if x%8 < 4 {
+				img.SetRGBA(x, y, color.RGBA{R: 20, G: 60, B: 200, A: 255})
+			}
+		}
+	}
+	data := iconPNG(t, img)
+	img = nil
+	require.Less(t, len(data), siteicon.MaxUploadBytes, "the fixture must be an acceptable upload")
+	req := iconRequest(t, http.MethodPost, "/api/v1/admin/settings/icon", newIconUpload(data))
+	req.Header.Set("Authorization", "ApiKey "+h.adminKey)
+
+	defer debug.SetGCPercent(debug.SetGCPercent(5))
+	runtime.GC()
+	sample := []metrics.Sample{{Name: "/memory/classes/heap/objects:bytes"}}
+	metrics.Read(sample)
+	base := sample[0].Value.Uint64()
+
+	var peak atomic.Uint64
+	stop, done := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(done)
+		s := []metrics.Sample{{Name: sample[0].Name}}
+		for {
+			metrics.Read(s)
+			if v := s[0].Value.Uint64(); v > peak.Load() {
+				peak.Store(v)
+			}
+			select {
+			case <-stop:
+				return
+			case <-time.After(time.Millisecond):
+			}
+		}
+	}()
+	st := readStatus(t, h.serve(req))
+	close(stop)
+	<-done
+
+	require.Equal(t, siteicon.MaxSide, st.SourceSize)
+	used := int64(peak.Load()) - int64(base)
+	t.Logf("peak heap above the baseline: %d MiB", used>>20)
+	require.Less(t, used, int64(100<<20), "one 4096 px upload held %d bytes at its peak", used)
 }
 
 func TestUploadSiteIcon_Background(t *testing.T) {
@@ -979,6 +1073,7 @@ func TestUpdateSettings_SiteShortName(t *testing.T) {
 	for name, v := range map[string]any{
 		"thirty-one characters": strings.Repeat("a", 31), "a number": 123, "null": nil,
 		"a control character": "\u0007", "a newline": "a\nb", "a boolean": true,
+		"a right-to-left override": "a\u202eb", "a zero-width space": "a\u200bb", "U+2028": "a\u2028b",
 	} {
 		t.Run("refused: "+name, func(t *testing.T) {
 			status, code, msg := readAPIError(t, patch(v))

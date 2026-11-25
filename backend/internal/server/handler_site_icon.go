@@ -179,10 +179,13 @@ func (s *Server) currentIcon(ctx context.Context) *siteicon.Icon {
 }
 
 // siteNames is the site name and what a home screen shows under the icon.
+//
+// It never fails: names that cannot be read are the defaults, and the fault is
+// logged here, at the boundary, because the domain returns it and logs nothing.
 func (s *Server) siteNames(ctx context.Context) (name, home string) {
-	name = s.adminSvc.SiteName(ctx)
-	if home = s.adminSvc.SiteShortName(ctx); home == "" {
-		home = name
+	name, home, err := s.adminSvc.SiteNames(ctx)
+	if err != nil {
+		slog.Warn("reading the site names; using the defaults where unreadable", "error", err)
 	}
 	return name, home
 }
@@ -213,11 +216,21 @@ func (s *Server) handleServeManifest(w http.ResponseWriter, r *http.Request) {
 
 // ── The shell's head ─────────────────────────────────────────────────────────
 
+// shellHeadTimeout is how long the reads behind the shell's head may take
+// between them. They run on every page load, bots' included, and nothing caches
+// them; without a limit a database that has stopped answering holds each load
+// until the server's write timeout instead of the page being served with the
+// built-in icon and name.
+const shellHeadTimeout = 750 * time.Millisecond
+
 // ShellHead is what replaces the marked region of index.html on each request
 // (NewSPAHandler): the icon links, the manifest link, the home screen name and
-// the title. It never fails: on a read error it logs and answers the built-in
-// block, so the page is always served.
+// the title. It never fails and never waits long: on a read error, or when the
+// reads run past shellHeadTimeout, it logs and answers the built-in name and
+// icon for whatever could not be read, so the page is always served.
 func (s *Server) ShellHead(ctx context.Context) string {
+	ctx, cancel := context.WithTimeout(ctx, shellHeadTimeout)
+	defer cancel()
 	name, home := s.siteNames(ctx)
 	return shellHeadBlock(name, home, s.currentIcon(ctx))
 }
@@ -433,7 +446,9 @@ func (s *Server) handleUploadSiteIcon(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 9 to 11. Decode and render, a few at a time (imageWork); the slot is given
-	// back before the store is touched, so none is held while waiting for a lock.
+	// back before the store is touched, so an upload never holds one while
+	// waiting for a row lock. (A colour change does the reverse, takes its slot
+	// under the lock, which is safe for that reason: see handleUpdateSiteIcon.)
 	background = s.iconBackground(r.Context(), background)
 	files, decodeErr, err := renderIcon(data, kind, cfg, background)
 	if decodeErr != nil {
@@ -477,6 +492,15 @@ func (s *Server) iconBackground(ctx context.Context, sent string) string {
 		return icon.Background
 	}
 	return siteicon.DefaultBackground
+}
+
+// withImageSlot runs fn holding one slot of imageWork, and gives it back
+// however fn ends, a panic included: four leaked slots would stop every image
+// upload on the instance until a restart.
+func withImageSlot(fn func()) {
+	imageWork <- struct{}{}
+	defer func() { <-imageWork }()
+	fn()
 }
 
 // renderIcon decodes the checked upload and makes the eight files. decodeErr is
@@ -543,9 +567,14 @@ func (s *Server) handleUpdateSiteIcon(w http.ResponseWriter, r *http.Request) {
 		if prev.Background == background {
 			return prev, nil, audit.Entry{}, siteicon.ErrUnchanged
 		}
-		imageWork <- struct{}{}
-		files, err := siteicon.Recolour(stored, background)
-		<-imageWork
+		// The slot is taken while the row is locked (the master has to be read
+		// under the lock to be the one the colour is applied to). That cannot
+		// deadlock: whoever holds a slot never waits for a row lock (an upload
+		// gives its slot back before it calls the store). The work is a 512 px
+		// master, a few MB, not an upload's decode.
+		var files siteicon.Files
+		var err error
+		withImageSlot(func() { files, err = siteicon.Recolour(stored, background) })
 		if err != nil {
 			return prev, nil, audit.Entry{}, err
 		}

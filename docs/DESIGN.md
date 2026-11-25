@@ -1665,7 +1665,7 @@ master; the image does not have to be uploaded again.
 **Home screen name.** By default the icon's name on a home screen is the site
 name. Under the site name, a checkbox **Use a different name on the home
 screen** shows a **Home screen name** field, setting `site_short_name`. It is
-at most **30 characters** (after trimming; control characters refused,
+at most **30 characters** (after trimming; control, invisible and line-separator characters refused,
 `400 invalid_site_short_name`); the page warns, without refusing, above 12,
 which is about what a home screen shows before cutting a name short. Clearing
 the checkbox stores `""`, which means "use the site name". The manifest's
@@ -1755,8 +1755,7 @@ updates an installed app's icon and name from the manifest on its own
 schedule (Chrome checks when the app is opened, at most about daily), so a
 change reaches new installs at once and existing ones later or not at all.
 
-**Upgrading.** Migration `0000NN_site_icon` (the number is assigned when it
-merges) creates the two empty tables. Until someone uploads an icon, an
+**Upgrading.** Migration `000070_site_icon` creates the two empty tables. Until someone uploads an icon, an
 upgraded instance shows the same tab icon and title as before; the shell gains
 the manifest link (so a browser may now offer to install the site) and
 `apple-mobile-web-app-title` (the site name, which iOS used anyway). Rolling the

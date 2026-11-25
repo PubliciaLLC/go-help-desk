@@ -11,12 +11,9 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/testutil"
 )
 
-// The migration number is a placeholder (see the file names): it is assigned
-// when this branch is merged, and this file and these two constants are renamed
-// with it.
 const (
-	siteIconMigrationUp   = "migrations/000071_site_icon.up.sql"
-	siteIconMigrationDown = "migrations/000071_site_icon.down.sql"
+	siteIconMigrationUp   = "migrations/000070_site_icon.up.sql"
+	siteIconMigrationDown = "migrations/000070_site_icon.down.sql"
 )
 
 const sha64 = "0011223344556677889900112233445566778899001122334455667788990011"
