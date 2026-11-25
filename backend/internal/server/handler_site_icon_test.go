@@ -19,8 +19,12 @@ import (
 	"net/http/httptest"
 	"net/textproto"
 	"runtime"
+	"runtime/debug"
+	"runtime/metrics"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
@@ -512,6 +516,65 @@ func TestUploadSiteIcon_DecompressionBombNeverDecodes(t *testing.T) {
 			require.False(t, h.iconStatus(t).Set)
 		})
 	}
+}
+
+// The other end of the budget: an image the decode check ACCEPTS must cost what
+// the check says. A 4096 x 4096 RGBA PNG is 64 MiB decoded, under the 100 MB a
+// slot is allowed, and scaling it in one step used to add a work buffer of
+// another 64 MiB (draw.CatmullRom: destination width x source height x 32).
+// With four slots, that was 600 MB of heap on a 5 MB upload.
+//
+// The peak is sampled while the request runs, with the collector made eager so
+// that dead buffers are not counted as live.
+func TestUploadSiteIcon_LargestAcceptedImageStaysInTheSlotBudget(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+
+	img := image.NewRGBA(image.Rect(0, 0, siteicon.MaxSide, siteicon.MaxSide))
+	for y := range siteicon.MaxSide {
+		for x := range siteicon.MaxSide {
+			if x%8 < 4 {
+				img.SetRGBA(x, y, color.RGBA{R: 20, G: 60, B: 200, A: 255})
+			}
+		}
+	}
+	data := iconPNG(t, img)
+	img = nil
+	require.Less(t, len(data), siteicon.MaxUploadBytes, "the fixture must be an acceptable upload")
+	req := iconRequest(t, http.MethodPost, "/api/v1/admin/settings/icon", newIconUpload(data))
+	req.Header.Set("Authorization", "ApiKey "+h.adminKey)
+
+	defer debug.SetGCPercent(debug.SetGCPercent(5))
+	runtime.GC()
+	sample := []metrics.Sample{{Name: "/memory/classes/heap/objects:bytes"}}
+	metrics.Read(sample)
+	base := sample[0].Value.Uint64()
+
+	var peak atomic.Uint64
+	stop, done := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(done)
+		s := []metrics.Sample{{Name: sample[0].Name}}
+		for {
+			metrics.Read(s)
+			if v := s[0].Value.Uint64(); v > peak.Load() {
+				peak.Store(v)
+			}
+			select {
+			case <-stop:
+				return
+			case <-time.After(time.Millisecond):
+			}
+		}
+	}()
+	st := readStatus(t, h.serve(req))
+	close(stop)
+	<-done
+
+	require.Equal(t, siteicon.MaxSide, st.SourceSize)
+	used := int64(peak.Load()) - int64(base)
+	t.Logf("peak heap above the baseline: %d MiB", used>>20)
+	require.Less(t, used, int64(100<<20), "one 4096 px upload held %d bytes at its peak", used)
 }
 
 func TestUploadSiteIcon_Background(t *testing.T) {

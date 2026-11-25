@@ -19,13 +19,70 @@ import (
 // A source of exactly 512 x 512 is copied, not resampled. EXIF orientation and
 // colour profiles are not read: Go's decoders ignore both, the logo does the
 // same, and the previews show the administrator the result at once.
+//
+// A source over bigScale pixels on a side is first averaged down by a whole
+// factor (boxShrink) to at most 1024. draw.CatmullRom keeps a work buffer of
+// destination width x source height x 32 bytes, which for a 4096 source is
+// 64 MiB on top of the 64 MiB source; the upload budget (maxDecodedBytes in
+// the server) counts the source and not that buffer. After the first step the
+// buffer is 16 MiB at most, and the box average is a better prefilter for a
+// fine pattern than skipping pixels would be.
 func MasterFrom(src image.Image) *image.RGBA {
 	dst := image.NewRGBA(image.Rect(0, 0, MasterSide, MasterSide))
 	sb := src.Bounds()
-	if sb.Dx() == MasterSide && sb.Dy() == MasterSide {
+	switch {
+	case sb.Dx() == MasterSide && sb.Dy() == MasterSide:
 		draw.Draw(dst, dst.Bounds(), src, sb.Min, draw.Src)
-	} else {
+	default:
+		if side := max(sb.Dx(), sb.Dy()); side > bigScale {
+			src = boxShrink(src, (side+bigStep-1)/bigStep)
+			sb = src.Bounds()
+		}
 		draw.CatmullRom.Scale(dst, dst.Bounds(), src, sb, draw.Src, nil)
+	}
+	return dst
+}
+
+const (
+	// bigScale is the side above which MasterFrom shrinks in two steps. At or
+	// under it, the scaler's buffer is 32 MiB at most.
+	bigScale = 2048
+	// bigStep is the side the first step aims at (never over it).
+	bigStep = 1024
+)
+
+// boxShrink makes the image f times smaller on each side (f >= 2) by averaging
+// the pixels each new one covers. The average is taken in premultiplied alpha,
+// so a transparent edge keeps its colour and picks up no fringe. The boxes are
+// f or f+1 pixels wide when the side is not a multiple of f; no pixel is left
+// out.
+func boxShrink(src image.Image, f int) *image.RGBA {
+	sb := src.Bounds()
+	w, h := max(sb.Dx()/f, 1), max(sb.Dy()/f, 1)
+	dst := image.NewRGBA(image.Rect(0, 0, w, h))
+	// One band of source rows at a time, converted to premultiplied RGBA by
+	// draw.Draw (which has a fast path for every decoder's output; asking the
+	// image for each pixel boxes a colour per pixel, 64 MiB of garbage for a
+	// 4096 square).
+	band := image.NewRGBA(image.Rect(0, 0, sb.Dx(), sb.Dy()/h+1))
+	for y := range h {
+		y0, y1 := y*sb.Dy()/h, (y+1)*sb.Dy()/h
+		rows := image.Rect(0, 0, sb.Dx(), y1-y0)
+		draw.Draw(band, rows, src, image.Pt(sb.Min.X, sb.Min.Y+y0), draw.Src)
+		for x := range w {
+			x0, x1 := x*sb.Dx()/w, (x+1)*sb.Dx()/w
+			var sum [4]uint64
+			for r := range y1 - y0 {
+				px := band.Pix[r*band.Stride+4*x0 : r*band.Stride+4*x1]
+				for i := 0; i < len(px); i += 4 {
+					sum[0], sum[1], sum[2], sum[3] = sum[0]+uint64(px[i]), sum[1]+uint64(px[i+1]), sum[2]+uint64(px[i+2]), sum[3]+uint64(px[i+3])
+				}
+			}
+			n := uint64((y1 - y0) * (x1 - x0))
+			// Rounded, and never above 255.
+			to8 := func(v uint64) uint8 { return uint8((v + n/2) / n) }
+			dst.SetRGBA(x, y, color.RGBA{R: to8(sum[0]), G: to8(sum[1]), B: to8(sum[2]), A: to8(sum[3])})
+		}
 	}
 	return dst
 }
