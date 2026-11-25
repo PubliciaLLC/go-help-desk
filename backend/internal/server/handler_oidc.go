@@ -200,6 +200,27 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 		email,
 	)
 
+	// "Require SAML for staff and users" covers OIDC as it covers passwords.
+	// Decided before UpsertOIDCUser, which would provision a new account or
+	// bind this subject to an existing local one, for a sign-in that is then
+	// refused. Only a subject already bound to an administrator passes: a new
+	// account is a plain user, and an unknown subject is never adopted onto an
+	// administrator (canAdoptByEmail), so anything else could not get through.
+	// A disabled administrator passes this and is refused by the upsert.
+	if samlOn := s.adminSvc.SAMLEnabled(r.Context()); samlOn {
+		role := user.RoleUser
+		if known, err := s.users.GetByOIDCSubject(r.Context(), claims.Subject); err == nil {
+			role = known.Role
+		} else if !errors.Is(err, user.ErrNotFound) {
+			failInternal(err)
+			return
+		}
+		if !user.MaySignInWithoutSAML(role, samlOn) {
+			fail("saml_required")
+			return
+		}
+	}
+
 	u, err := s.users.UpsertOIDCUser(
 		r.Context(),
 		claims.Subject,

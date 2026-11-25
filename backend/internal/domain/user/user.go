@@ -184,10 +184,15 @@ func (u *User) Validate() error {
 // password. When SAML is globally enabled, only admins retain local auth as a
 // failsafe. In all other cases local auth is available to everyone.
 func IsLocalAuthAllowed(u User, samlEnabled bool) bool {
-	if !samlEnabled {
-		return true
-	}
-	return u.Role == RoleAdmin
+	return MaySignInWithoutSAML(u.Role, samlEnabled)
+}
+
+// MaySignInWithoutSAML is the rule behind "Require SAML for staff and users"
+// (saml_enabled): with it on, only an administrator may sign in by any means
+// other than SAML — a password or OIDC. Administrators keep that as the way
+// back in when SAML is down or misconfigured.
+func MaySignInWithoutSAML(role Role, samlEnabled bool) bool {
+	return !samlEnabled || role == RoleAdmin
 }
 
 // AssignableStaff is somebody work can be given to: an id and a name, and
