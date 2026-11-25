@@ -33,6 +33,7 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/database/replyindex"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/reputationstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/sessionstore"
+	"github.com/publiciallc/go-help-desk/backend/internal/database/siteiconstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/slastore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/tagstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/ticketstore"
@@ -489,6 +490,7 @@ func run() error {
 		server.WithPasskeysUnavailable(passkeyReason),
 		server.WithEmailHealth(outboxStore),
 		server.WithEmailTemplates(emailTemplates, emailDisp),
+		server.WithSiteIcons(siteiconstore.NewWithDB(sqlDB)),
 		server.WithWebhookRedeliverer(webhookDisp),
 		server.WithPasswordReset(passwordResetSvc),
 	)
@@ -521,7 +523,7 @@ func run() error {
 	mux.Handle("/mcp/", mcpHandler) // /mcp/ (Streamable HTTP alias), /mcp/sse, /mcp/message
 	mux.Handle("/api/", srv)
 	mux.Handle("/health", srv)
-	mux.Handle("/", server.NewSPAHandler(ui.FS()))
+	mux.Handle("/", server.NewSPAHandler(ui.FS(), srv.ShellHead))
 
 	// Expired rows stop authenticating the moment they expire — GetSession
 	// filters on expires_at — so this is housekeeping, not a security control.

@@ -34,6 +34,7 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/plugin"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/registration"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/report"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/siteicon"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/sla"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/tag"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
@@ -263,6 +264,10 @@ type Server struct {
 	// The template editor (#158). Nil unless WithEmailTemplates gave them.
 	emailTemplates emailtemplate.Store
 	templateMailer TemplateMailer
+	// The site icon (#708). Nil unless WithSiteIcons gave one: the icon routes
+	// then answer 404, the manifest and the shell use the built-in icon, and
+	// an administrator's write is refused.
+	siteIcons siteicon.Store
 	// templateTestLimiter caps template test sends per administrator
 	// (templateTestsPerWindow in templateTestWindow).
 	templateTestLimiter *ratelimit.Limiter
@@ -690,6 +695,11 @@ func (s *Server) buildRouter() *chi.Mux {
 		// Public endpoints — no auth required.
 		r.Get("/site", s.handleGetSiteConfig)
 		r.Get("/logo", s.handleServeLogo)
+		// The site icon and the manifest that names it (#708). Public for the
+		// reason the logo is: a browser asks for them with no credential, and
+		// the sign-in page has a tab too.
+		r.Get("/branding/icons/{file}", s.handleServeSiteIcon)
+		r.Get("/branding/manifest.webmanifest", s.handleServeManifest)
 		r.Get("/setup/status", s.handleSetupStatus)
 		r.Post("/setup", s.handleSetup)
 
