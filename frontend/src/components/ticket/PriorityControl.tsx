@@ -61,12 +61,12 @@ export function PriorityControl({ ticketId, priority, locked = false }: Priority
         ))}
       </Select>
       {locked && (
-        <p className="text-xs text-gray-500">
+        <p className="text-xs text-fg-faint">
           Priority cannot be changed on a resolved or closed ticket.
         </p>
       )}
       {mutation.isError && (
-        <p role="alert" className="text-xs text-red-600">{extractError(mutation.error)}</p>
+        <p role="alert" className="text-xs text-danger-fg">{extractError(mutation.error)}</p>
       )}
     </div>
   )

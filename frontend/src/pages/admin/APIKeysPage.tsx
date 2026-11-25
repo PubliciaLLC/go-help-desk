@@ -50,10 +50,10 @@ function OwnerPicker({
 
   if (value) {
     return (
-      <div className="text-sm text-gray-700">
+      <div className="text-sm text-fg-soft">
         <span className="font-medium">Issue for</span>{' '}
         {value.display_name} ({value.email}, {value.role}){' '}
-        <button type="button" className="text-xs text-blue-600 hover:underline" onClick={() => { onChange(null); setText('') }}>
+        <button type="button" className="text-xs text-link hover:underline" onClick={() => { onChange(null); setText('') }}>
           Change
         </button>
       </div>
@@ -61,9 +61,9 @@ function OwnerPicker({
   }
   return (
     <div className="space-y-1">
-      <label className="block text-sm text-gray-700">
+      <label className="block text-sm text-fg-soft">
         <span className="font-medium">Issue for</span>
-        <span className="ml-2 text-xs text-gray-500">optional — search by name or email; leave empty to make a key for yourself</span>
+        <span className="ml-2 text-xs text-fg-faint">optional — search by name or email; leave empty to make a key for yourself</span>
         <Input
           value={text}
           onChange={(e) => setText(e.target.value)}
@@ -72,11 +72,11 @@ function OwnerPicker({
         />
       </label>
       {matches.length > 0 && (
-        <ul role="listbox" aria-label="Matching accounts" className="max-w-xs rounded border bg-white divide-y text-sm">
+        <ul role="listbox" aria-label="Matching accounts" className="max-w-xs rounded border bg-card divide-y text-sm">
           {matches.map((u) => (
             <li key={u.id} role="presentation">
-              <button type="button" role="option" aria-selected={false} className="w-full px-3 py-1.5 text-left hover:bg-gray-50" onClick={() => onChange(u)}>
-                {u.display_name} <span className="text-xs text-gray-500">{u.email} · {u.role}</span>
+              <button type="button" role="option" aria-selected={false} className="w-full px-3 py-1.5 text-left hover:bg-subtle" onClick={() => onChange(u)}>
+                {u.display_name} <span className="text-xs text-fg-faint">{u.email} · {u.role}</span>
               </button>
             </li>
           ))}
@@ -153,8 +153,8 @@ export function APIKeysPage() {
     <Layout>
       <div className="space-y-6">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">API Keys</h1>
-          <p className="mt-1 text-sm text-gray-500">
+          <h1 className="text-2xl font-bold text-fg">API Keys</h1>
+          <p className="mt-1 text-sm text-fg-faint">
             API keys allow external services (Hermes, scripts, integrations) to authenticate with the REST API and MCP server.
           </p>
         </div>
@@ -163,8 +163,8 @@ export function APIKeysPage() {
           <TokenBanner token={newToken} onDismiss={() => setNewToken(null)} />
         )}
 
-        <div className="rounded-lg border bg-white p-4">
-          <p className="mb-3 text-sm font-medium text-gray-700">Create new key</p>
+        <div className="rounded-lg border bg-card p-4">
+          <p className="mb-3 text-sm font-medium text-fg-soft">Create new key</p>
           <div className="space-y-4">
             <Input
               placeholder="Key name (e.g. Hermes, email-bridge)"
@@ -195,15 +195,15 @@ export function APIKeysPage() {
               {createMutation.isPending ? 'Creating…' : 'Create'}
             </Button>
           </div>
-          {createError && <p role="alert" className="mt-2 text-sm text-red-600">{createError}</p>}
+          {createError && <p role="alert" className="mt-2 text-sm text-danger-fg">{createError}</p>}
         </div>
 
         {isLoading ? (
           <div className="flex justify-center py-12"><Spinner /></div>
         ) : (
-          <div className="rounded-lg border bg-white overflow-x-auto">
+          <div className="rounded-lg border bg-card overflow-x-auto">
             <table className="w-full text-sm">
-              <thead className="bg-gray-50 text-xs text-gray-500 uppercase">
+              <thead className="bg-subtle text-xs text-fg-faint uppercase">
                 <tr>
                   <th className="px-4 py-3 text-left">Name</th>
                   <th className="px-4 py-3 text-left">Owner</th>
@@ -216,45 +216,45 @@ export function APIKeysPage() {
               </thead>
               <tbody className="divide-y">
                 {keys.map((k) => (
-                  <tr key={k.id} className="hover:bg-gray-50">
-                    <td className="px-4 py-3 font-medium text-gray-900">
+                  <tr key={k.id} className="hover:bg-subtle">
+                    <td className="px-4 py-3 font-medium text-fg">
                       <span className="flex items-center gap-2">
-                        <KeyIcon className="h-3.5 w-3.5 text-gray-400 shrink-0" />
+                        <KeyIcon className="h-3.5 w-3.5 text-fg-faint shrink-0" />
                         <span className="min-w-0 wrap-anywhere">{k.name}</span>
                       </span>
                     </td>
                     <td className="px-4 py-3">
-                      <div className="text-gray-900 wrap-anywhere">{k.owner_name}</div>
-                      <div className="text-xs text-gray-500 wrap-anywhere">{k.owner_email}</div>
+                      <div className="text-fg wrap-anywhere">{k.owner_name}</div>
+                      <div className="text-xs text-fg-faint wrap-anywhere">{k.owner_email}</div>
                       {k.created_by && k.created_by !== k.user_id && (
-                        <div className="text-xs text-gray-500">Issued on their behalf</div>
+                        <div className="text-xs text-fg-faint">Issued on their behalf</div>
                       )}
                     </td>
                     <td className="px-4 py-3">
                       {k.scopes?.length ? (
                         <div className="flex flex-wrap gap-1">
                           {k.scopes.map((sc) => (
-                            <span key={sc} className="rounded bg-gray-100 px-1.5 py-0.5 font-mono text-xs text-gray-700">
+                            <span key={sc} className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs text-fg-soft">
                               {sc}
                             </span>
                           ))}
                         </div>
                       ) : (
-                        <span className="text-xs text-amber-700">
+                        <span className="text-xs text-warning-fg">
                           None — this key is refused everywhere
                         </span>
                       )}
                     </td>
-                    <td className="px-4 py-3 text-gray-500">{fmt(k.created_at)}</td>
-                    <td className="px-4 py-3 text-gray-500">{fmt(k.last_used_at)}</td>
-                    <td className="px-4 py-3 text-gray-500">
+                    <td className="px-4 py-3 text-fg-faint">{fmt(k.created_at)}</td>
+                    <td className="px-4 py-3 text-fg-faint">{fmt(k.last_used_at)}</td>
+                    <td className="px-4 py-3 text-fg-faint">
                       <ExpiryCell expiresAt={k.expires_at} beyondLimit={k.beyond_limit} />
                     </td>
                     <td className="px-4 py-3 text-right">
                       <Button
                         size="sm"
                         variant="outline"
-                        className="text-red-600 border-red-200 hover:bg-red-50"
+                        className="text-danger-fg border-danger-border hover:bg-danger-soft"
                         onClick={() => setPendingDelete(k)}
                         disabled={deleteMutation.isPending}
                       >
@@ -265,7 +265,7 @@ export function APIKeysPage() {
                 ))}
                 {keys.length === 0 && (
                   <tr>
-                    <td colSpan={7} className="px-4 py-8 text-center text-gray-400">
+                    <td colSpan={7} className="px-4 py-8 text-center text-fg-faint">
                       No API keys yet.
                     </td>
                   </tr>

@@ -39,8 +39,8 @@ export function RequesterPicker({
 
   return (
     <fieldset className="space-y-3">
-      <legend className="text-sm font-medium text-gray-700">Requester</legend>
-      <div className="flex flex-wrap items-center gap-x-6 gap-y-2 text-sm text-gray-700">
+      <legend className="text-sm font-medium text-fg-soft">Requester</legend>
+      <div className="flex flex-wrap items-center gap-x-6 gap-y-2 text-sm text-fg-soft">
         <label className="flex items-center gap-1.5">
           <input
             type="radio"
@@ -74,7 +74,7 @@ export function RequesterPicker({
       </div>
 
       {value.mode === 'user' && value.picked && (
-        <p className="text-sm text-gray-700 wrap-anywhere">
+        <p className="text-sm text-fg-soft wrap-anywhere">
           Filing for <strong>{value.picked.display_name}</strong> ({value.picked.email}){' '}
           <Button
             type="button"
@@ -103,22 +103,22 @@ export function RequesterPicker({
             />
           </div>
           {hits.length > 0 && searching && (
-            <ul aria-label="Matching users" className="divide-y divide-gray-100 rounded-md border border-gray-200">
+            <ul aria-label="Matching users" className="divide-y divide-border rounded-md border border-border">
               {hits.map((h) => (
                 <li key={h.id}>
                   <button
                     type="button"
-                    className="flex w-full flex-col px-3 py-2 text-left text-sm hover:bg-gray-50 focus-visible:bg-gray-50 focus-visible:outline-none sm:flex-row sm:items-baseline sm:gap-2"
+                    className="flex w-full flex-col px-3 py-2 text-left text-sm hover:bg-subtle focus-visible:bg-subtle focus-visible:outline-none sm:flex-row sm:items-baseline sm:gap-2"
                     onClick={() => onChange({ mode: 'user', picked: h })}
                   >
-                    <span className="font-medium text-gray-900 wrap-anywhere">{h.display_name}</span>
-                    <span className="text-gray-500 wrap-anywhere">{h.email}</span>
+                    <span className="font-medium text-fg wrap-anywhere">{h.display_name}</span>
+                    <span className="text-fg-faint wrap-anywhere">{h.email}</span>
                   </button>
                 </li>
               ))}
             </ul>
           )}
-          <p role="status" className="text-sm text-gray-500">
+          <p role="status" className="text-sm text-fg-faint">
             {searching && !isFetching && hits.length === 0 ? 'No users match.' : ''}
           </p>
         </div>
@@ -161,7 +161,7 @@ export function RequesterPicker({
               />
             </div>
           </div>
-          <p className="text-sm text-gray-500">
+          <p className="text-sm text-fg-faint">
             If this address has an account the ticket is filed for that account, and the name and
             phone are not used. Otherwise they are sent a link to follow it, as for any guest
             ticket.

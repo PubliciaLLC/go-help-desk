@@ -5,6 +5,8 @@ import { getTicket, searchTickets, updateTicket } from '@/api/tickets'
 import { listStatuses } from '@/api/admin'
 import { getMe } from '@/api/auth'
 import { useAuthStore } from '@/store/auth'
+import { useResolvedTheme } from '@/store/theme'
+import { readableStatusColor } from '@/lib/statusColor'
 import { Layout } from '@/components/Layout'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -122,13 +124,13 @@ function SortHeader({
       <button
         type="button"
         onClick={() => onSort(k)}
-        className="-mx-1 inline-flex items-center gap-1 rounded-sm px-1 uppercase tracking-wider hover:text-gray-900 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+        className="-mx-1 inline-flex items-center gap-1 rounded-sm px-1 uppercase tracking-wider hover:text-fg focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       >
         {SORT_LABEL[k]}
         {active ? (
           now.order === 'asc' ? <ArrowUpIcon aria-hidden="true" className="h-3 w-3" /> : <ArrowDownIcon aria-hidden="true" className="h-3 w-3" />
         ) : (
-          <ChevronsUpDownIcon aria-hidden="true" className="h-3 w-3 text-gray-400" />
+          <ChevronsUpDownIcon aria-hidden="true" className="h-3 w-3 text-fg-faint" />
         )}
       </button>
     </th>
@@ -143,6 +145,9 @@ export function TicketListPage() {
   // keeps this page honest if it is ever given a raw one.
   const search = parseTicketSearch(useSearch({ from: '/tickets' }) as Record<string, unknown>)
   const { user } = useAuthStore()
+  // An administrator-chosen status colour, lightened in dark until it reads (#709).
+  const theme = useResolvedTheme()
+  const statusInk = (color: string) => readableStatusColor(color, theme)
   const isStaffOrAdmin = user?.role === 'staff' || user?.role === 'admin'
   const isAdmin = user?.role === 'admin'
 
@@ -401,7 +406,7 @@ export function TicketListPage() {
     <Layout>
       <div className="space-y-6">
         <div className="flex items-center justify-between">
-          <h1 className="text-2xl font-bold text-gray-900">{view ? VIEW_NAME[view] : 'Tickets'}</h1>
+          <h1 className="text-2xl font-bold text-fg">{view ? VIEW_NAME[view] : 'Tickets'}</h1>
           <Link to="/tickets/new">
             <Button>
               <PlusIcon className="mr-2 h-4 w-4" />
@@ -413,7 +418,7 @@ export function TicketListPage() {
         {/* Toolbar: search + scope + closed toggle */}
         <div className="flex items-center gap-3 flex-wrap">
           <div className="relative w-full md:flex-1 md:max-w-lg">
-            <SearchIcon className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-400" />
+            <SearchIcon className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-fg-faint" />
             <Input
               className="pl-9"
               aria-label="Search tickets"
@@ -435,7 +440,7 @@ export function TicketListPage() {
             {filterCount > 0 && (
               <span
                 aria-label={`${filterCount} active`}
-                className="inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-blue-600 px-1 text-xs font-medium text-white"
+                className="inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-primary px-1 text-xs font-medium text-primary-foreground"
               >
                 {filterCount}
               </span>
@@ -473,20 +478,20 @@ export function TicketListPage() {
           {/* Their own row: with the filters button they would take room the
               search box is there to use (#414 pins its width). */}
           <div className="flex w-full flex-wrap items-center gap-x-5 gap-y-1">
-            <label className="flex min-h-7 items-center gap-2 text-sm text-gray-600 cursor-pointer select-none whitespace-nowrap pointer-coarse:min-h-11">
+            <label className="flex min-h-7 items-center gap-2 text-sm text-fg-muted cursor-pointer select-none whitespace-nowrap pointer-coarse:min-h-11">
               <input
                 type="checkbox"
-                className="h-4 w-4 rounded border-gray-300"
+                className="h-4 w-4 rounded border-border-strong"
                 checked={Boolean(search.closed)}
                 onChange={e => patchFilters({ closed: e.target.checked ? true : undefined })}
               />
               Include closed
             </label>
             {/* On unless turned off, and only meaningful with text in the box. */}
-            <label className="flex min-h-7 items-center gap-2 text-sm text-gray-600 cursor-pointer select-none whitespace-nowrap pointer-coarse:min-h-11">
+            <label className="flex min-h-7 items-center gap-2 text-sm text-fg-muted cursor-pointer select-none whitespace-nowrap pointer-coarse:min-h-11">
               <input
                 type="checkbox"
-                className="h-4 w-4 rounded border-gray-300"
+                className="h-4 w-4 rounded border-border-strong"
                 checked={search.replies !== false}
                 onChange={e => patchFilters({ replies: e.target.checked ? undefined : false })}
               />
@@ -505,10 +510,10 @@ export function TicketListPage() {
                 aria-pressed={heldBy === h}
                 onClick={() => update(s => ({ ...s, held_by: h, page: undefined }), true)}
                 className={
-                  'rounded-md border px-3 py-1.5 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 pointer-coarse:min-h-11 ' +
+                  'rounded-md border px-3 py-1.5 text-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring pointer-coarse:min-h-11 ' +
                   (heldBy === h
-                    ? 'border-gray-900 bg-gray-900 text-white'
-                    : 'border-gray-200 bg-white text-gray-700 hover:bg-gray-50')
+                    ? 'border-inverse bg-inverse text-inverse-foreground'
+                    : 'border-border bg-card text-fg-soft hover:bg-subtle')
                 }
               >
                 {HELD_BY_LABEL[h ?? 'all']}
@@ -518,12 +523,12 @@ export function TicketListPage() {
         )}
 
         {jumpError && (
-          <p role="alert" className="text-sm text-red-600">{jumpError}</p>
+          <p role="alert" className="text-sm text-danger-fg">{jumpError}</p>
         )}
 
         {/* The desktop panel. Each change applies at once. */}
         {filtersOpen && wide && (
-          <section aria-label="Filters" className="rounded-md border border-gray-200 bg-white p-4">
+          <section aria-label="Filters" className="rounded-md border border-border bg-card p-4">
             <TicketFilters
               value={search}
               onChange={patchFilters}
@@ -533,11 +538,11 @@ export function TicketListPage() {
               statuses={statuses}
               offered={offered}
             />
-            <div className="mt-4 flex items-center justify-end gap-3 border-t border-gray-100 pt-3">
+            <div className="mt-4 flex items-center justify-end gap-3 border-t border-border pt-3">
               <button
                 type="button"
                 onClick={() => update(s => clearAll(s), true)}
-                className="rounded-sm text-xs text-gray-500 underline underline-offset-2 hover:text-gray-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 pointer-coarse:min-h-11 pointer-coarse:px-2"
+                className="rounded-sm text-xs text-fg-faint underline underline-offset-2 hover:text-fg-soft focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring pointer-coarse:min-h-11 pointer-coarse:px-2"
               >
                 Clear all
               </button>
@@ -577,7 +582,7 @@ export function TicketListPage() {
             not announced. */}
         {isStaffOrAdmin && (
           <div className={searching ? 'flex items-center gap-2 text-sm' : 'sr-only'}>
-            <span aria-live="polite" className="text-gray-500">
+            <span aria-live="polite" className="text-fg-faint">
               {searching ? 'Searching all tickets you can see' : ''}
             </span>
           </div>
@@ -590,10 +595,10 @@ export function TicketListPage() {
             besides. */}
         {someSelected && isStaffOrAdmin && (
           <div className="hidden space-y-2 md:block">
-          <div className="flex items-center gap-3 rounded-md border border-blue-200 bg-blue-50 px-4 py-2 text-sm">
-            <span className="text-blue-700 font-medium">{selectedIds.size} selected</span>
+          <div className="flex items-center gap-3 rounded-md border border-info-border bg-selected px-4 py-2 text-sm">
+            <span className="text-selected-fg font-medium">{selectedIds.size} selected</span>
             <select
-              className="rounded border border-gray-300 bg-white px-2 py-1 text-sm"
+              className="rounded border border-border-strong bg-card px-2 py-1 text-sm"
               value={bulkStatusId}
               onChange={e => setBulkStatusId(e.target.value)}
             >
@@ -611,14 +616,14 @@ export function TicketListPage() {
             </Button>
             <button
               type="button"
-              className="ml-auto text-xs text-gray-500 hover:text-gray-700"
+              className="ml-auto text-xs text-fg-faint hover:text-fg-soft"
               onClick={() => { setSelectedIds(new Set()); setBulkError('') }}
             >
               Clear selection
             </button>
           </div>
           {bulkError && (
-            <p role="alert" className="text-sm text-red-600">{bulkError}</p>
+            <p role="alert" className="text-sm text-danger-fg">{bulkError}</p>
           )}
           </div>
         )}
@@ -630,12 +635,12 @@ export function TicketListPage() {
             with its text is often not announced. */}
         <div role="status" aria-label="Reply search" className={replyNotice ? '' : 'sr-only'}>
           {replyNotice && (
-            <p className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">{replyNotice}</p>
+            <p className="rounded-md border border-warning-border bg-warning-soft px-3 py-2 text-sm text-warning-fg">{replyNotice}</p>
           )}
         </div>
         <div role="status" aria-label="SLA in this link" className={slaLinkDropped ? '' : 'sr-only'}>
           {slaLinkDropped && (
-            <p className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-900">
+            <p className="rounded-md border border-warning-border bg-warning-soft px-3 py-2 text-sm text-warning-fg">
               SLA tracking is off, so this link&apos;s SLA {search.sla && search.sort === 'sla' ? 'filter and sort were' : search.sla ? 'filter was' : 'sort was'} not
               applied.
             </p>
@@ -644,22 +649,22 @@ export function TicketListPage() {
 
         {/* Results */}
         {listError && !result ? (
-          <p role="alert" className="text-sm text-red-600">
+          <p role="alert" className="text-sm text-danger-fg">
             {extractError(listError)}
           </p>
         ) : isFetching && !result ? (
-          <div className="flex items-center gap-2 text-sm text-gray-500">
+          <div className="flex items-center gap-2 text-sm text-fg-faint">
             <Spinner size="sm" /> Loading tickets…
           </div>
         ) : tickets.length === 0 ? (
-          <div className="py-8 text-center text-sm text-gray-500">
+          <div className="py-8 text-center text-sm text-fg-faint">
             {filterCount > 0 ? (
               <>
                 <p>No tickets match these filters.</p>
                 <button
                   type="button"
                   onClick={() => update(s => clearAll(s), true)}
-                  className="mt-2 rounded-sm underline underline-offset-2 hover:text-gray-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 pointer-coarse:min-h-11 pointer-coarse:px-2"
+                  className="mt-2 rounded-sm underline underline-offset-2 hover:text-fg-soft focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring pointer-coarse:min-h-11 pointer-coarse:px-2"
                 >
                   Clear all
                 </button>
@@ -671,7 +676,7 @@ export function TicketListPage() {
         ) : (
           <>
             {/* How the list is ordered, and the way back to best match. */}
-            <div className="flex flex-wrap items-center gap-x-3 gap-y-2 text-sm text-gray-500">
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-2 text-sm text-fg-faint">
               <span aria-live="polite">
                 {sortNow.sort === 'relevance'
                   ? 'Sorted by best match.'
@@ -681,7 +686,7 @@ export function TicketListPage() {
                 <button
                   type="button"
                   onClick={() => update(s => ({ ...s, sort: undefined, order: undefined, page: undefined }))}
-                  className="rounded-sm underline underline-offset-2 hover:text-gray-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 pointer-coarse:min-h-11 pointer-coarse:px-2"
+                  className="rounded-sm underline underline-offset-2 hover:text-fg-soft focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring pointer-coarse:min-h-11 pointer-coarse:px-2"
                 >
                   Sort by best match
                 </button>
@@ -690,7 +695,7 @@ export function TicketListPage() {
                   table has room for them, and below md it is cards with no
                   headings to click. This reaches every column in between. */}
               <div className="flex items-center gap-2 2xl:hidden">
-                <label htmlFor="sort-by" className="text-gray-600">Sort by</label>
+                <label htmlFor="sort-by" className="text-fg-muted">Sort by</label>
                 <Select
                   id="sort-by"
                   className="h-9 w-auto pointer-coarse:h-11"
@@ -724,16 +729,16 @@ export function TicketListPage() {
                 Small screens section) — a checkbox per card plus a floating
                 action bar is a different feature, not this one at a smaller
                 size, so the card view below has no selection UI at all. */}
-            <div className="hidden overflow-hidden rounded-md border border-gray-200 md:block">
+            <div className="hidden overflow-hidden rounded-md border border-border md:block">
               <table className="w-full text-sm">
-                <thead className="bg-gray-50 text-xs font-medium uppercase tracking-wider text-gray-500">
+                <thead className="bg-subtle text-xs font-medium uppercase tracking-wider text-fg-faint">
                   <tr>
                     {isStaffOrAdmin && (
                       <th className="w-8 px-3 py-2">
                         <input
                           type="checkbox"
                           aria-label="Select every ticket on this page"
-                          className="h-4 w-4 rounded border-gray-300"
+                          className="h-4 w-4 rounded border-border-strong"
                           checked={allSelected}
                           onChange={toggleAll}
                         />
@@ -750,13 +755,13 @@ export function TicketListPage() {
                     )}
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-gray-100 bg-white">
+                <tbody className="divide-y divide-border bg-card">
                   {tickets.map(t => {
                     const status = statusFor(t.status_id)
                     return (
                       <tr
                         key={t.id}
-                        className={`cursor-pointer hover:bg-gray-50 ${selectedIds.has(t.id) ? 'bg-blue-50' : ''}`}
+                        className={`cursor-pointer hover:bg-subtle ${selectedIds.has(t.id) ? 'bg-selected' : ''}`}
                         onClick={() => navigate({ to: '/tickets/$id', params: { id: t.id } })}
                       >
                         {isStaffOrAdmin && (
@@ -764,19 +769,19 @@ export function TicketListPage() {
                             <input
                               type="checkbox"
                               aria-label={`Select ticket ${t.tracking_number}`}
-                              className="h-4 w-4 rounded border-gray-300"
+                              className="h-4 w-4 rounded border-border-strong"
                               checked={selectedIds.has(t.id)}
                               onChange={() => toggleOne(t.id)}
                             />
                           </td>
                         )}
-                        <td className="whitespace-nowrap px-3 py-2 font-mono text-xs text-gray-500">
+                        <td className="whitespace-nowrap px-3 py-2 font-mono text-xs text-fg-faint">
                           {t.tracking_number}
                         </td>
                         {/* max-w-[16rem] on both: the Link truncates, but a cell's narrowest width
                             is its text up to this cap, so a wider cap is room the status chip
                             (which never wraps) and the date columns would need. */}
-                        <td className={'max-w-[16rem] px-3 py-2 font-medium text-gray-900 ' + (t.reply_match ? '' : 'truncate')}>
+                        <td className={'max-w-[16rem] px-3 py-2 font-medium text-fg ' + (t.reply_match ? '' : 'truncate')}>
                           {/* A real link, not just a row click. The row was a
                               <tr onClick>, which no amount of tabbing reaches,
                               so a keyboard-only user had no way into a ticket
@@ -786,7 +791,7 @@ export function TicketListPage() {
                           <Link
                             to="/tickets/$id"
                             params={{ id: t.id }}
-                            className="block truncate rounded-sm text-inherit hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+                            className="block truncate rounded-sm text-inherit hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                             title={t.subject}
                           >
                             {t.subject}
@@ -802,7 +807,7 @@ export function TicketListPage() {
                               // The text is all in the page (title as well); the cut is only
                               // what is drawn.
                               className="inline-flex max-w-[7.5rem] items-center gap-1 whitespace-nowrap rounded-full border px-2 py-0.5 text-xs font-medium"
-                              style={{ borderColor: status.color, color: status.color }}
+                              style={{ borderColor: statusInk(status.color), color: statusInk(status.color) }}
                             >
                               <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ backgroundColor: status.color }} />
                               {/* The title is on the text, the element the ellipsis cuts. */}
@@ -826,11 +831,11 @@ export function TicketListPage() {
                             </div>
                           </td>
                         )}
-                        <td className="hidden whitespace-nowrap px-2 py-2 text-xs text-gray-500 xl:table-cell" title={new Date(t.created_at).toLocaleString()}>
+                        <td className="hidden whitespace-nowrap px-2 py-2 text-xs text-fg-faint xl:table-cell" title={new Date(t.created_at).toLocaleString()}>
                           {shortDate(t.created_at)}
                         </td>
                         {isStaffOrAdmin && (
-                          <td className="hidden whitespace-nowrap px-2 py-2 text-xs text-gray-500 xl:table-cell" title={new Date(t.updated_at ?? t.created_at).toLocaleString()}>
+                          <td className="hidden whitespace-nowrap px-2 py-2 text-xs text-fg-faint xl:table-cell" title={new Date(t.updated_at ?? t.created_at).toLocaleString()}>
                             {t.updated_at ? shortDate(t.updated_at) : ''}
                           </td>
                         )}
@@ -850,25 +855,25 @@ export function TicketListPage() {
               {tickets.map(t => {
                 const status = statusFor(t.status_id)
                 return (
-                  <li key={t.id} className="rounded-md border border-gray-200 bg-white p-3">
+                  <li key={t.id} className="rounded-md border border-border bg-card p-3">
                     <Link
                       to="/tickets/$id"
                       params={{ id: t.id }}
-                      className="block rounded-sm text-inherit focus:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+                      className="block rounded-sm text-inherit focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                     >
                       <div className="flex items-center justify-between gap-2">
-                        <span className="font-mono text-xs text-gray-500">{t.tracking_number}</span>
+                        <span className="font-mono text-xs text-fg-faint">{t.tracking_number}</span>
                         {status ? (
                           <span
                             className="inline-flex min-w-0 items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium"
-                            style={{ borderColor: status.color, color: status.color }}
+                            style={{ borderColor: statusInk(status.color), color: statusInk(status.color) }}
                           >
                             <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ backgroundColor: status.color }} />
                             <span className="min-w-0 wrap-anywhere">{status.name}</span>
                           </span>
                         ) : '—'}
                       </div>
-                      <p className="mt-1.5 wrap-anywhere font-medium text-gray-900">{t.subject}</p>
+                      <p className="mt-1.5 wrap-anywhere font-medium text-fg">{t.subject}</p>
                       {t.reply_match && <ReplyMatchLine match={t.reply_match} />}
                       <div className="mt-1.5 flex flex-wrap items-center gap-2">
                         <Badge variant={priorityVariant(t.priority) as never}>
@@ -881,7 +886,7 @@ export function TicketListPage() {
                             line rather than crowding the badges. Staff only, like the Updated
                             sort and column: it is what the Sort by menu orders by. */}
                         {isStaffOrAdmin && t.updated_at && (
-                          <span className="ml-auto whitespace-nowrap text-xs text-gray-500">Updated {shortDate(t.updated_at)}</span>
+                          <span className="ml-auto whitespace-nowrap text-xs text-fg-faint">Updated {shortDate(t.updated_at)}</span>
                         )}
                       </div>
                     </Link>
@@ -905,7 +910,7 @@ export function TicketListPage() {
             >
               Previous
             </Button>
-            <span className="text-sm text-gray-500" aria-live="polite">
+            <span className="text-sm text-fg-faint" aria-live="polite">
               {`Page ${page + 1}`}
             </span>
             <Button

@@ -260,7 +260,7 @@ export function NewTicketPage() {
   return (
     <Layout>
       <div className="max-w-2xl space-y-6">
-        <h1 className="text-2xl font-bold text-gray-900">New Ticket</h1>
+        <h1 className="text-2xl font-bold text-fg">New Ticket</h1>
 
         <Card>
           <CardHeader>
@@ -273,8 +273,8 @@ export function NewTicketPage() {
               )}
               {isStaffOrAdmin && requester.mode !== 'me' && (
                 <fieldset className="space-y-2">
-                  <legend className="text-sm font-medium text-gray-700">How did this reach you?</legend>
-                  <div className="flex flex-wrap items-center gap-x-6 gap-y-2 text-sm text-gray-700">
+                  <legend className="text-sm font-medium text-fg-soft">How did this reach you?</legend>
+                  <div className="flex flex-wrap items-center gap-x-6 gap-y-2 text-sm text-fg-soft">
                     <label className="flex items-center gap-1.5">
                       <input
                         type="radio"
@@ -407,12 +407,12 @@ export function NewTicketPage() {
 
               {visibleFields.length > 0 && (
                 <div className="space-y-4">
-                  <div className="border-t border-gray-100" />
+                  <div className="border-t border-border" />
                   {visibleFields.map((f) => (
                     <div key={f.id} className="space-y-1">
                       <Label htmlFor={`cf-${f.id}`}>
                         {f.field_def?.name}
-                        {f.required_on_new && <span className="ml-0.5 text-red-500"> *</span>}
+                        {f.required_on_new && <span className="ml-0.5 text-danger-fg"> *</span>}
                       </Label>
                       <CustomFieldInput
                         field={f}
@@ -438,14 +438,14 @@ export function NewTicketPage() {
                 />
               </div>
 
-              {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
+              {error && <p role="alert" className="text-sm text-danger-fg">{error}</p>}
 
               {uploadDone && createdTicketId && (
-                <div className="rounded-md bg-yellow-50 border border-yellow-200 p-3 text-sm space-y-1">
-                  <p className="text-yellow-800 font-medium">Some files failed to upload.</p>
+                <div className="rounded-md bg-warning-soft border border-warning-border p-3 text-sm space-y-1">
+                  <p className="text-warning-fg-strong font-medium">Some files failed to upload.</p>
                   <button
                     type="button"
-                    className="text-blue-600 underline hover:no-underline"
+                    className="text-link underline hover:no-underline"
                     onClick={() => navigate({ to: '/tickets/$id', params: { id: createdTicketId } })}
                   >
                     View ticket anyway

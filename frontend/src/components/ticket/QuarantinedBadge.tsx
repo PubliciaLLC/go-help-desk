@@ -9,7 +9,7 @@ export function QuarantinedBadge({ hasQuarantined }: { hasQuarantined: boolean |
     <span
       data-testid="quarantined-badge"
       title="A file attached to this ticket was identified as malicious by the scanner and quarantined."
-      className="inline-flex items-center rounded-full border border-red-200 bg-red-50 px-2 py-0.5 text-xs font-medium text-red-800"
+      className="inline-flex items-center rounded-full border border-danger-border bg-danger-soft px-2 py-0.5 text-xs font-medium text-danger-fg-strong"
     >
       Quarantined file
     </span>

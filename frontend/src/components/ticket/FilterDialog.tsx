@@ -38,13 +38,13 @@ function DialogBody({
         e.preventDefault()
         returnFocusTo.current?.focus()
       }}
-      className="fixed inset-0 z-50 flex flex-col bg-white focus:outline-none"
+      className="fixed inset-0 z-50 flex flex-col bg-card focus:outline-none"
     >
-      <div className="flex items-center justify-between border-b border-gray-200 px-4 py-2">
-        <Dialog.Title className="text-xl font-bold text-gray-900">Filters</Dialog.Title>
+      <div className="flex items-center justify-between border-b border-border px-4 py-2">
+        <Dialog.Title className="text-xl font-bold text-fg">Filters</Dialog.Title>
         <Dialog.Close
           aria-label="Close filters"
-          className="inline-flex h-11 w-11 items-center justify-center rounded-md text-gray-600 hover:bg-gray-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+          className="inline-flex h-11 w-11 items-center justify-center rounded-md text-fg-muted hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
           <XIcon aria-hidden="true" className="h-5 w-5" />
         </Dialog.Close>
@@ -54,7 +54,7 @@ function DialogBody({
         <TicketFilters value={draft} onChange={patch} layout="dialog" staff={rest.staff} slaOn={rest.slaOn} statuses={rest.statuses} offered={rest.offered} />
       </div>
 
-      <div className="flex gap-3 border-t border-gray-200 px-4 py-3">
+      <div className="flex gap-3 border-t border-border px-4 py-3">
         <Button type="button" variant="outline" className="h-11 flex-1" onClick={() => setDraft(d => ({ ...clearAll(d) }))}>
           Clear all
         </Button>
