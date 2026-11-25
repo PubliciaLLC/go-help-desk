@@ -24,16 +24,16 @@ export function TokenBanner({ token, onDismiss }: { token: string; onDismiss: ()
   }
 
   return (
-    <div className="rounded-lg border border-green-200 bg-green-50 p-4 space-y-3">
+    <div className="rounded-lg border border-success-border bg-success-soft p-4 space-y-3">
       <div className="flex items-start justify-between gap-4">
         <div>
-          <p className="text-sm font-medium text-green-800">API key created — copy it now</p>
-          <p className="text-xs text-green-700 mt-0.5">This token will not be shown again.</p>
+          <p className="text-sm font-medium text-success-fg-strong">API key created — copy it now</p>
+          <p className="text-xs text-success-fg-strong mt-0.5">This token will not be shown again.</p>
         </div>
-        <button onClick={onDismiss} className="text-green-600 hover:text-green-800 text-xs">Dismiss</button>
+        <button onClick={onDismiss} className="text-success-fg-strong hover:underline text-xs">Dismiss</button>
       </div>
       <div className="flex items-center gap-2">
-        <code className="flex-1 rounded border border-green-200 bg-white px-3 py-2 font-mono text-xs text-gray-800 break-all">
+        <code className="flex-1 rounded border border-success-border bg-card px-3 py-2 font-mono text-xs text-fg break-all">
           {token}
         </code>
         <Button size="sm" variant="outline" onClick={() => void copy()} className="shrink-0">
@@ -42,7 +42,7 @@ export function TokenBanner({ token, onDismiss }: { token: string; onDismiss: ()
         </Button>
       </div>
       {failed && (
-        <p role="alert" className="text-xs text-red-700">
+        <p role="alert" className="text-xs text-danger-fg-strong">
           Could not copy. Select the token above and copy it by hand before you dismiss this.
         </p>
       )}

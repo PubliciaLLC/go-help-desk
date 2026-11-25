@@ -54,7 +54,7 @@ function Row<T extends SortableItem>({
       aria-label={`Reorder ${item.label}`}
       // touch-none: without it the browser takes the gesture to scroll the page
       // and the drag never starts on a phone.
-      className={`touch-none cursor-grab rounded text-gray-400 hover:text-gray-600 active:cursor-grabbing ${TOUCH_SIZE}`}
+      className={`touch-none cursor-grab rounded text-fg-faint hover:text-fg-muted active:cursor-grabbing ${TOUCH_SIZE}`}
     >
       <GripVerticalIcon aria-hidden="true" className="h-4 w-4" />
     </button>

@@ -150,10 +150,10 @@ function EditRow({
 
   return (
     <tr>
-      <td colSpan={5} className="px-4 py-4 bg-gray-50">
+      <td colSpan={5} className="px-4 py-4 bg-subtle">
         <div className="space-y-3">
           <CannedResponseFields form={form} onChange={setForm} categories={categories} />
-          {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
+          {error && <p role="alert" className="text-sm text-danger-fg">{error}</p>}
           <div className="flex gap-2">
             <Button
               size="sm"
@@ -246,8 +246,8 @@ export function CannedResponsesPage() {
     <Layout>
       <div className="space-y-6">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">Canned Responses</h1>
-          <p className="mt-1 text-sm text-gray-500">
+          <h1 className="text-2xl font-bold text-fg">Canned Responses</h1>
+          <p className="mt-1 text-sm text-fg-faint">
             Reusable reply templates staff insert into ticket replies. Admins manage them here.
           </p>
         </div>
@@ -259,7 +259,7 @@ export function CannedResponsesPage() {
           </CardHeader>
           <CardContent className="space-y-3">
             <CannedResponseFields form={form} onChange={setForm} categories={categories} />
-            {createError && <p role="alert" className="text-sm text-red-600">{createError}</p>}
+            {createError && <p role="alert" className="text-sm text-danger-fg">{createError}</p>}
             <Button
               size="sm"
               onClick={() => createMutation.mutate()}
@@ -274,9 +274,9 @@ export function CannedResponsesPage() {
         {isLoading ? (
           <div className="flex justify-center py-12"><Spinner /></div>
         ) : (
-          <div className="rounded-lg border bg-white overflow-x-auto">
+          <div className="rounded-lg border bg-card overflow-x-auto">
             <table className="w-full text-sm">
-              <thead className="bg-gray-50 text-xs text-gray-500 uppercase">
+              <thead className="bg-subtle text-xs text-fg-faint uppercase">
                 <tr>
                   <th className="px-4 py-3 text-left">Name</th>
                   <th className="px-4 py-3 text-left">Body</th>
@@ -296,11 +296,11 @@ export function CannedResponsesPage() {
                     />
                   ) : (
                     <tr key={r.id}>
-                      <td className="px-4 py-3 font-medium text-gray-900 wrap-anywhere">{r.name}</td>
+                      <td className="px-4 py-3 font-medium text-fg wrap-anywhere">{r.name}</td>
                       {/* Cut at 80 characters, so the whole body is on hover. */}
-                      <td className="px-4 py-3 text-gray-500 wrap-anywhere" title={r.body}>{bodyPreview(r.body)}</td>
-                      <td className="px-4 py-3 text-gray-500 wrap-anywhere">{scopeLabel(r)}</td>
-                      <td className="px-4 py-3 text-gray-500">{r.sort_order}</td>
+                      <td className="px-4 py-3 text-fg-faint wrap-anywhere" title={r.body}>{bodyPreview(r.body)}</td>
+                      <td className="px-4 py-3 text-fg-faint wrap-anywhere">{scopeLabel(r)}</td>
+                      <td className="px-4 py-3 text-fg-faint">{r.sort_order}</td>
                       <td className="px-4 py-3 text-right">
                         <div className="flex justify-end gap-2">
                           <Button
@@ -314,7 +314,7 @@ export function CannedResponsesPage() {
                           <Button
                             size="sm"
                             variant="outline"
-                            className="text-red-600 border-red-200 hover:bg-red-50"
+                            className="text-danger-fg border-danger-border hover:bg-danger-soft hover:text-danger-fg-strong"
                             onClick={() => setPendingDelete(r)}
                           >
                             <Trash2Icon className="mr-1 h-3.5 w-3.5" />
@@ -327,7 +327,7 @@ export function CannedResponsesPage() {
                 )}
                 {responses.length === 0 && (
                   <tr>
-                    <td colSpan={5} className="px-4 py-8 text-center text-gray-400">
+                    <td colSpan={5} className="px-4 py-8 text-center text-fg-faint">
                       No canned responses yet.
                     </td>
                   </tr>

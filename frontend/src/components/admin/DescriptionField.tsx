@@ -34,8 +34,8 @@ export function DescriptionField({
   const hintId = `${id}-hint`
   return (
     <div className="space-y-1">
-      <Label htmlFor={id} className="text-xs text-gray-600">
-        Description <span className="font-normal text-gray-400">(optional)</span>
+      <Label htmlFor={id} className="text-xs text-fg-muted">
+        Description <span className="font-normal text-fg-faint">(optional)</span>
       </Label>
       <Textarea
         id={id}
@@ -47,15 +47,15 @@ export function DescriptionField({
         className="text-sm"
       />
       <div className="flex flex-wrap items-start justify-between gap-x-3 gap-y-1 text-xs">
-        <p id={hintId} className="min-w-0 flex-1 text-gray-500 wrap-anywhere">
+        <p id={hintId} className="min-w-0 flex-1 text-fg-faint wrap-anywhere">
           {DESCRIPTION_HINT}
         </p>
-        <span className={over ? 'font-medium text-red-600' : 'text-gray-500'}>
+        <span className={over ? 'font-medium text-danger-fg' : 'text-fg-faint'}>
           {count} / {CTI_DESCRIPTION_MAX}
         </span>
       </div>
       {over && (
-        <p role="alert" className="text-xs text-red-600">
+        <p role="alert" className="text-xs text-danger-fg">
           This description is too long. Shorten it to {CTI_DESCRIPTION_MAX} characters or fewer to save.
         </p>
       )}

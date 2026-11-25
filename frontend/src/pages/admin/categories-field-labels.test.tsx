@@ -129,7 +129,7 @@ describe('Categories page: field name link', () => {
 
     const cls = (await screen.findByRole('link', { name: 'Region' })).className
     // Same classes as the other in-app links on the admin pages.
-    expect(cls).toContain('text-blue-600')
+    expect(cls).toContain('text-link')
     expect(cls).toContain('hover:underline')
     expect(cls).toContain('focus-visible:ring-2')
   })

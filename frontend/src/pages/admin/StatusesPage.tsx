@@ -11,7 +11,7 @@ import { Badge } from '@/components/ui/badge'
 import { Spinner } from '@/components/ui/spinner'
 import { PlusIcon, LockIcon } from 'lucide-react'
 
-const DEFAULT_COLOR = '#6b7280'
+const DEFAULT_COLOR = '#6b7280' // theme-ok: stored status data, not styling
 
 export function StatusesPage() {
   const qc = useQueryClient()
@@ -76,8 +76,8 @@ export function StatusesPage() {
       <div className="space-y-6">
         <div className="flex flex-col items-start gap-3 sm:flex-row sm:justify-between sm:gap-0">
           <div className="min-w-0">
-            <h1 className="text-2xl font-bold text-gray-900">Ticket Statuses</h1>
-            <p className="mt-1 text-sm text-gray-500">
+            <h1 className="text-2xl font-bold text-fg">Ticket Statuses</h1>
+            <p className="mt-1 text-sm text-fg-faint">
               Add custom intermediate statuses for your workflow. The three system statuses — New, Resolved, and Closed — have fixed lifecycle rules and cannot be renamed, removed, or deactivated.
             </p>
           </div>
@@ -88,11 +88,11 @@ export function StatusesPage() {
         </div>
 
         {addingStatus && (
-          <div className="rounded-lg border bg-white p-4">
-            <p className="mb-3 text-sm font-medium text-gray-700">New status</p>
+          <div className="rounded-lg border bg-card p-4">
+            <p className="mb-3 text-sm font-medium text-fg-soft">New status</p>
             <div className="flex items-end gap-3">
               <div className="flex-1 space-y-1">
-                <label className="text-xs font-medium text-gray-500 uppercase tracking-wide">Name</label>
+                <label className="text-xs font-medium text-fg-faint uppercase tracking-wide">Name</label>
                 <Input
                   autoFocus
                   placeholder="e.g. In Progress"
@@ -105,19 +105,19 @@ export function StatusesPage() {
                 />
               </div>
               <div className="space-y-1">
-                <label className="text-xs font-medium text-gray-500 uppercase tracking-wide">Color</label>
+                <label className="text-xs font-medium text-fg-faint uppercase tracking-wide">Color</label>
                 <div className="flex items-center gap-2 h-9">
                   <input
                     type="color"
                     value={color}
                     onChange={(e) => setColor(e.target.value)}
-                    className="h-9 w-14 cursor-pointer rounded border border-gray-300 p-1"
+                    className="h-9 w-14 cursor-pointer rounded border border-border-strong p-1"
                   />
-                  <span className="font-mono text-sm text-gray-500">{color}</span>
+                  <span className="font-mono text-sm text-fg-faint">{color}</span>
                 </div>
               </div>
               <div className="w-28 space-y-1">
-                <label className="text-xs font-medium text-gray-500 uppercase tracking-wide">Sort order</label>
+                <label className="text-xs font-medium text-fg-faint uppercase tracking-wide">Sort order</label>
                 <Input
                   type="number"
                   value={sortOrder}
@@ -136,16 +136,16 @@ export function StatusesPage() {
                 </Button>
               </div>
             </div>
-            {formError && <p role="alert" className="mt-2 text-sm text-red-600">{formError}</p>}
+            {formError && <p role="alert" className="mt-2 text-sm text-danger-fg">{formError}</p>}
           </div>
         )}
 
         {isLoading ? (
           <div className="flex justify-center py-12"><Spinner /></div>
         ) : (
-          <div className="overflow-x-auto rounded-lg border bg-white">
+          <div className="overflow-x-auto rounded-lg border bg-card">
             <table className="w-full text-sm">
-              <thead className="bg-gray-50 text-xs uppercase tracking-wide text-gray-500">
+              <thead className="bg-subtle text-xs uppercase tracking-wide text-fg-faint">
                 <tr>
                   <th className="w-10 px-4 py-3 text-left">Color</th>
                   <th className="px-4 py-3 text-left">Name</th>
@@ -157,17 +157,17 @@ export function StatusesPage() {
               </thead>
               <tbody className="divide-y">
                 {sorted.map((s) => (
-                  <tr key={s.id} className={`group hover:bg-gray-50 ${!s.active ? 'opacity-50' : ''}`}>
+                  <tr key={s.id} className={`group hover:bg-subtle ${!s.active ? 'opacity-50' : ''}`}>
                     <td className="px-4 py-3">
                       <span
-                        className="inline-block h-4 w-4 rounded-full border border-black/10 shadow-sm"
+                        className="inline-block h-4 w-4 rounded-full border border-border shadow-sm"
                         style={{ backgroundColor: s.color || DEFAULT_COLOR }}
                       />
                     </td>
-                    <td className="px-4 py-3 font-medium text-gray-900 wrap-anywhere">
+                    <td className="px-4 py-3 font-medium text-fg wrap-anywhere">
                       {s.name}
                       {!s.active && (
-                        <span className="ml-2 rounded bg-gray-100 px-1.5 py-0.5 text-xs font-normal text-gray-500">
+                        <span className="ml-2 rounded bg-muted px-1.5 py-0.5 text-xs font-normal text-fg-muted">
                           inactive
                         </span>
                       )}
@@ -177,19 +177,19 @@ export function StatusesPage() {
                         {s.kind}
                       </Badge>
                     </td>
-                    <td className="px-4 py-3 text-gray-500">{s.sort_order}</td>
-                    <td className="px-4 py-3 text-gray-500">{s.ticket_count}</td>
+                    <td className="px-4 py-3 text-fg-faint">{s.sort_order}</td>
+                    <td className="px-4 py-3 text-fg-faint">{s.ticket_count}</td>
                     <td className="px-4 py-3">
                       <div className="flex items-center justify-end gap-2">
                         {s.kind === 'system' ? (
                           <span title="System status — cannot be modified" className="flex justify-end">
-                            <LockIcon className="h-3.5 w-3.5 text-gray-300" />
+                            <LockIcon className="h-3.5 w-3.5 text-fg-faint" />
                           </span>
                         ) : s.active ? (
                           <Button
                             size="sm"
                             variant="outline"
-                            className="text-yellow-700 border-yellow-300 hover:bg-yellow-50"
+                            className="text-warning-fg border-warning-border hover:bg-warning-soft hover:text-warning-fg-strong"
                             onClick={() => deactivateMutation.mutate(s.id)}
                             disabled={deactivateMutation.isPending}
                           >
@@ -200,7 +200,7 @@ export function StatusesPage() {
                             <Button
                               size="sm"
                               variant="outline"
-                              className="text-green-700 border-green-300 hover:bg-green-50"
+                              className="text-success-fg border-success-border hover:bg-success-soft hover:text-success-fg-strong"
                               onClick={() => reactivateMutation.mutate(s.id)}
                               disabled={reactivateMutation.isPending}
                             >
@@ -210,7 +210,7 @@ export function StatusesPage() {
                               <Button
                                 size="sm"
                                 variant="outline"
-                                className="text-red-600 border-red-200 hover:bg-red-50"
+                                className="text-danger-fg border-danger-border hover:bg-danger-soft hover:text-danger-fg-strong"
                                 onClick={() => { setFormError(''); setPendingDelete(s) }}
                                 disabled={deleteMutation.isPending}
                               >
@@ -225,7 +225,7 @@ export function StatusesPage() {
                 ))}
                 {sorted.length === 0 && (
                   <tr>
-                    <td colSpan={6} className="px-4 py-10 text-center text-sm text-gray-400">
+                    <td colSpan={6} className="px-4 py-10 text-center text-sm text-fg-faint">
                       No statuses configured.
                     </td>
                   </tr>
@@ -236,7 +236,7 @@ export function StatusesPage() {
         )}
         {/* Not nested under addingStatus above: this also carries delete
             refusals (409 status_in_use, #275) surfaced outside that form. */}
-        {formError && !addingStatus && <p className="text-sm text-red-600">{formError}</p>}
+        {formError && !addingStatus && <p className="text-sm text-danger-fg">{formError}</p>}
       </div>
       <ConfirmDialog
         open={pendingDelete !== null}
