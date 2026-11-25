@@ -72,13 +72,13 @@ export function RoutingPage() {
     <Layout>
       <div className="max-w-2xl space-y-6">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">Routing</h1>
-          <p className="mt-1 text-sm text-gray-500">
+          <h1 className="text-2xl font-bold text-fg">Routing</h1>
+          <p className="mt-1 text-sm text-fg-faint">
             Where a new ticket goes. The first rule that matches wins, and routing runs once, when the ticket is created.
           </p>
         </div>
 
-        <ol className="list-decimal space-y-1 pl-5 text-sm text-gray-700">
+        <ol className="list-decimal space-y-1 pl-5 text-sm text-fg-soft">
           <li>A group whose scope covers the ticket&apos;s category (set on the Groups page).</li>
           <li>The catch-all group below.</li>
           <li>The round-robin list below, dealing tickets out in turn.</li>
@@ -111,16 +111,16 @@ export function RoutingPage() {
           <Card>
             <CardHeader><CardTitle className="text-base">Round-robin staff</CardTitle></CardHeader>
             <CardContent className="space-y-2">
-              <p className="text-xs text-gray-500">
+              <p className="text-xs text-fg-faint">
                 Tickets are dealt out to the people ticked here, in the order they were ticked. The turn order is kept
                 in memory, so it starts again when the server restarts. Someone who is suspended when their turn comes is skipped.
               </p>
               {gone > 0 && (
-                <p className="text-xs text-amber-700">
+                <p className="text-xs text-warning-fg">
                   {gone} saved {gone === 1 ? 'entry no longer exists' : 'entries no longer exist'} and will be dropped when you save.
                 </p>
               )}
-              {people.length === 0 && <p className="text-sm text-gray-400">No staff to choose from.</p>}
+              {people.length === 0 && <p className="text-sm text-fg-faint">No staff to choose from.</p>}
               <ul className="space-y-1">
                 {people.map((p) => (
                   <li key={p.id}>
@@ -140,8 +140,8 @@ export function RoutingPage() {
 
           <div className="flex items-center gap-3">
             <Button type="submit" disabled={save.isPending}>{save.isPending ? 'Saving…' : 'Save'}</Button>
-            {saved && <span className="text-sm text-green-700">Saved.</span>}
-            {save.isError && <p role="alert" className="text-sm text-red-600">{extractError(save.error)}</p>}
+            {saved && <span className="text-sm text-success-fg">Saved.</span>}
+            {save.isError && <p role="alert" className="text-sm text-danger-fg">{extractError(save.error)}</p>}
           </div>
         </form>
       </div>

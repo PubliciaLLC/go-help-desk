@@ -5,13 +5,13 @@
 export function ExpiryCell({ expiresAt, beyondLimit }: { expiresAt?: string; beyondLimit?: boolean }) {
   if (!expiresAt) {
     return beyondLimit
-      ? <span className="text-amber-700">No expiry (longer than the current limit)</span>
+      ? <span className="text-warning-fg">No expiry (longer than the current limit)</span>
       : <>—</>
   }
   return (
     <>
       {new Date(expiresAt).toLocaleDateString()}
-      {beyondLimit && <div className="text-xs text-amber-700">(longer than the current limit)</div>}
+      {beyondLimit && <div className="text-xs text-warning-fg">(longer than the current limit)</div>}
     </>
   )
 }

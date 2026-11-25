@@ -45,13 +45,13 @@ function RoleRow({ user, currentUserRole }: { user: AdminUser; currentUserRole: 
   const isCurrentAdmin = user.role === 'admin' && currentUserRole === 'admin'
 
   return (
-    <tr className="hover:bg-gray-50">
-      <td className="px-4 py-3 font-medium text-gray-900 wrap-anywhere">{user.display_name}</td>
-      <td className="px-4 py-3 text-gray-500 wrap-anywhere">{user.email}</td>
-      <td className="px-4 py-3 text-gray-400">{new Date(user.created_at).toLocaleDateString()}</td>
+    <tr className="hover:bg-subtle">
+      <td className="px-4 py-3 font-medium text-fg wrap-anywhere">{user.display_name}</td>
+      <td className="px-4 py-3 text-fg-faint wrap-anywhere">{user.email}</td>
+      <td className="px-4 py-3 text-fg-faint">{new Date(user.created_at).toLocaleDateString()}</td>
       <td className="px-4 py-3 text-right">
         {mutation.isError && (
-          <span role="alert" className="mr-2 text-xs text-red-500">{extractError(mutation.error)}</span>
+          <span role="alert" className="mr-2 text-xs text-danger-fg">{extractError(mutation.error)}</span>
         )}
         {/* A service user is never an administrator (409 service_account, #434
             Q2), so its dropdown does not offer the role. */}
@@ -84,18 +84,18 @@ function RoleCard({
   currentUserRole: Role
 }) {
   return (
-    <div className="rounded-lg border bg-white overflow-x-auto">
+    <div className="rounded-lg border bg-card overflow-x-auto">
       <div className="flex items-start gap-3 border-b px-5 py-4">
         <Badge variant={badgeVariant(role) as never} className="mt-0.5 shrink-0 capitalize">
           {label}
         </Badge>
-        <p className="text-sm text-gray-500">{description}</p>
+        <p className="text-sm text-fg-faint">{description}</p>
       </div>
       {users.length === 0 ? (
-        <p className="px-5 py-4 text-sm text-gray-400">No {label.toLowerCase()}s.</p>
+        <p className="px-5 py-4 text-sm text-fg-faint">No {label.toLowerCase()}s.</p>
       ) : (
         <table className="w-full text-sm">
-          <thead className="bg-gray-50 text-xs text-gray-500 uppercase">
+          <thead className="bg-subtle text-xs text-fg-faint uppercase">
             <tr>
               <th className="px-4 py-2 text-left">Name</th>
               <th className="px-4 py-2 text-left">Email</th>
@@ -140,8 +140,8 @@ export function RolesPage() {
     <Layout>
       <div className="space-y-6">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">Roles</h1>
-          <p className="mt-1 text-sm text-gray-500">
+          <h1 className="text-2xl font-bold text-fg">Roles</h1>
+          <p className="mt-1 text-sm text-fg-faint">
             The three built-in roles define what each user can see and do. Change a user's role
             using the dropdown in their row.
           </p>

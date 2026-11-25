@@ -4,4 +4,4 @@ export const TOUCH_SIZE =
   'pointer-coarse:inline-flex pointer-coarse:items-center pointer-coarse:justify-center ' +
   'pointer-coarse:min-h-11 pointer-coarse:min-w-11'
 export const ROW_BTN =
-  `opacity-0 focus-visible:opacity-100 group-focus-within:opacity-100 group-hover:opacity-100 text-gray-300 pointer-coarse:opacity-100 ${TOUCH_SIZE}`
+  `opacity-0 focus-visible:opacity-100 group-focus-within:opacity-100 group-hover:opacity-100 text-fg-faint pointer-coarse:opacity-100 ${TOUCH_SIZE}`
