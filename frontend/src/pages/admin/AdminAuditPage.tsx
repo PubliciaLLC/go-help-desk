@@ -11,7 +11,7 @@ import { Spinner } from '@/components/ui/spinner'
 import { AuditDiff } from '@/components/AuditDiff'
 import { CustomFieldAuditContext } from '@/components/admin/CustomFieldAuditContext'
 import { CredentialAuditContext } from '@/components/admin/CredentialAuditContext'
-import { followRemovalLabel, isFollowAction } from '@/lib/followAudit'
+import { followEntryLabel, isFollowAction } from '@/lib/followAudit'
 import { isReplyAction, replyActionLabel } from '@/lib/replyAudit'
 import { EyeOffIcon } from 'lucide-react'
 import type { AdminAuditEntry } from '@/api/types'
@@ -230,7 +230,7 @@ export function AdminAuditPage() {
                         <span className="font-mono text-xs">{e.entity_type}</span>
                       </td>
                       <td className="px-4 py-3">
-                        <span className="font-medium text-gray-900">{isReplyAction(e.action) ? replyActionLabel(e.action) : (followRemovalLabel(e) ?? labelFor(e.action))}</span>
+                        <span className="font-medium text-gray-900">{isReplyAction(e.action) ? replyActionLabel(e.action) : (followEntryLabel(e) ?? labelFor(e.action))}</span>
                         {e.entity_type === 'custom_field' && <CustomFieldAuditContext before={e.before} after={e.after} />}
                         {(e.entity_type === 'oauth_client' || e.entity_type === 'webhook') && (
                           <CredentialAuditContext entityType={e.entity_type} before={e.before} after={e.after} />

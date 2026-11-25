@@ -23,10 +23,11 @@ func New(q *dbgen.Queries) *Store { return &Store{q: q} }
 
 func (s *Store) CreateCategory(ctx context.Context, c category.Category) error {
 	return s.q.CreateCategory(ctx, dbgen.CreateCategoryParams{
-		ID:        c.ID,
-		Name:      c.Name,
-		SortOrder: int32(c.SortOrder),
-		Active:    c.Active,
+		ID:          c.ID,
+		Name:        c.Name,
+		Description: c.Description,
+		SortOrder:   int32(c.SortOrder),
+		Active:      c.Active,
 	})
 }
 
@@ -38,7 +39,7 @@ func (s *Store) GetCategory(ctx context.Context, id uuid.UUID) (category.Categor
 		}
 		return category.Category{}, fmt.Errorf("getting category %s: %w", id, err)
 	}
-	return category.Category{ID: r.ID, Name: r.Name, SortOrder: int(r.SortOrder), Active: r.Active}, nil
+	return category.Category{ID: r.ID, Name: r.Name, Description: r.Description, SortOrder: int(r.SortOrder), Active: r.Active}, nil
 }
 
 // CategoryNames, TypeNames and ItemNames name every id given in one statement,
@@ -82,10 +83,11 @@ func (s *Store) ItemNames(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]s
 
 func (s *Store) UpdateCategory(ctx context.Context, c category.Category) error {
 	return s.q.UpdateCategory(ctx, dbgen.UpdateCategoryParams{
-		ID:        c.ID,
-		Name:      c.Name,
-		SortOrder: int32(c.SortOrder),
-		Active:    c.Active,
+		ID:          c.ID,
+		Name:        c.Name,
+		Description: c.Description,
+		SortOrder:   int32(c.SortOrder),
+		Active:      c.Active,
 	})
 }
 
@@ -131,18 +133,19 @@ func (s *Store) ListCategories(ctx context.Context, activeOnly bool) ([]category
 	}
 	out := make([]category.Category, len(rows))
 	for i, r := range rows {
-		out[i] = category.Category{ID: r.ID, Name: r.Name, SortOrder: int(r.SortOrder), Active: r.Active}
+		out[i] = category.Category{ID: r.ID, Name: r.Name, Description: r.Description, SortOrder: int(r.SortOrder), Active: r.Active}
 	}
 	return out, nil
 }
 
 func (s *Store) CreateType(ctx context.Context, t category.Type) error {
 	err := s.q.CreateType(ctx, dbgen.CreateTypeParams{
-		ID:         t.ID,
-		CategoryID: t.CategoryID,
-		Name:       t.Name,
-		SortOrder:  int32(t.SortOrder),
-		Active:     t.Active,
+		ID:          t.ID,
+		CategoryID:  t.CategoryID,
+		Name:        t.Name,
+		Description: t.Description,
+		SortOrder:   int32(t.SortOrder),
+		Active:      t.Active,
 	})
 	if isFKViolationOn(err, "types_category_id_fkey") {
 		return fmt.Errorf("category %s: %w", t.CategoryID, category.ErrNotFound)
@@ -158,16 +161,17 @@ func (s *Store) GetType(ctx context.Context, id uuid.UUID) (category.Type, error
 		}
 		return category.Type{}, fmt.Errorf("getting type %s: %w", id, err)
 	}
-	return category.Type{ID: r.ID, CategoryID: r.CategoryID, Name: r.Name, SortOrder: int(r.SortOrder), Active: r.Active}, nil
+	return category.Type{ID: r.ID, CategoryID: r.CategoryID, Name: r.Name, Description: r.Description, SortOrder: int(r.SortOrder), Active: r.Active}, nil
 }
 
 func (s *Store) UpdateType(ctx context.Context, t category.Type) error {
 	return s.q.UpdateType(ctx, dbgen.UpdateTypeParams{
-		ID:         t.ID,
-		CategoryID: t.CategoryID,
-		Name:       t.Name,
-		SortOrder:  int32(t.SortOrder),
-		Active:     t.Active,
+		ID:          t.ID,
+		CategoryID:  t.CategoryID,
+		Name:        t.Name,
+		Description: t.Description,
+		SortOrder:   int32(t.SortOrder),
+		Active:      t.Active,
 	})
 }
 
@@ -201,18 +205,19 @@ func (s *Store) ListTypes(ctx context.Context, categoryID uuid.UUID, activeOnly 
 	}
 	out := make([]category.Type, len(rows))
 	for i, r := range rows {
-		out[i] = category.Type{ID: r.ID, CategoryID: r.CategoryID, Name: r.Name, SortOrder: int(r.SortOrder), Active: r.Active}
+		out[i] = category.Type{ID: r.ID, CategoryID: r.CategoryID, Name: r.Name, Description: r.Description, SortOrder: int(r.SortOrder), Active: r.Active}
 	}
 	return out, nil
 }
 
 func (s *Store) CreateItem(ctx context.Context, i category.Item) error {
 	err := s.q.CreateItem(ctx, dbgen.CreateItemParams{
-		ID:        i.ID,
-		TypeID:    i.TypeID,
-		Name:      i.Name,
-		SortOrder: int32(i.SortOrder),
-		Active:    i.Active,
+		ID:          i.ID,
+		TypeID:      i.TypeID,
+		Name:        i.Name,
+		Description: i.Description,
+		SortOrder:   int32(i.SortOrder),
+		Active:      i.Active,
 	})
 	if isFKViolationOn(err, "items_type_id_fkey") {
 		return fmt.Errorf("type %s: %w", i.TypeID, category.ErrNotFound)
@@ -228,16 +233,17 @@ func (s *Store) GetItem(ctx context.Context, id uuid.UUID) (category.Item, error
 		}
 		return category.Item{}, fmt.Errorf("getting item %s: %w", id, err)
 	}
-	return category.Item{ID: r.ID, TypeID: r.TypeID, Name: r.Name, SortOrder: int(r.SortOrder), Active: r.Active}, nil
+	return category.Item{ID: r.ID, TypeID: r.TypeID, Name: r.Name, Description: r.Description, SortOrder: int(r.SortOrder), Active: r.Active}, nil
 }
 
 func (s *Store) UpdateItem(ctx context.Context, i category.Item) error {
 	return s.q.UpdateItem(ctx, dbgen.UpdateItemParams{
-		ID:        i.ID,
-		TypeID:    i.TypeID,
-		Name:      i.Name,
-		SortOrder: int32(i.SortOrder),
-		Active:    i.Active,
+		ID:          i.ID,
+		TypeID:      i.TypeID,
+		Name:        i.Name,
+		Description: i.Description,
+		SortOrder:   int32(i.SortOrder),
+		Active:      i.Active,
 	})
 }
 
@@ -269,7 +275,7 @@ func (s *Store) ListItems(ctx context.Context, typeID uuid.UUID, activeOnly bool
 	}
 	out := make([]category.Item, len(rows))
 	for i, r := range rows {
-		out[i] = category.Item{ID: r.ID, TypeID: r.TypeID, Name: r.Name, SortOrder: int(r.SortOrder), Active: r.Active}
+		out[i] = category.Item{ID: r.ID, TypeID: r.TypeID, Name: r.Name, Description: r.Description, SortOrder: int(r.SortOrder), Active: r.Active}
 	}
 	return out, nil
 }

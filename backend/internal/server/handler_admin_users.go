@@ -201,13 +201,24 @@ func (s *Server) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
 		return
 	}
-	u, err := s.users.Create(r.Context(), user.CreateUserInput{
+	var actorID *uuid.UUID
+	if actor := authmw.GetActor(r); actor != nil {
+		actorID = &actor.UserID
+	}
+	u, err := s.users.CreateByAdmin(r.Context(), user.CreateUserInput{
 		Email:       body.Email,
 		DisplayName: body.DisplayName,
 		Role:        user.Role(body.Role),
 		Password:    body.Password,
-	})
+	}, actorID)
 	if err != nil {
+		// A deleted account no longer holds its address here, so a taken
+		// address is a live account. The sentinel's own text says "possibly a
+		// deleted account", which is true for the paths that still refuse one.
+		if errors.Is(err, user.ErrEmailTaken) {
+			Error(w, http.StatusConflict, "email_taken", "an account with that email address already exists")
+			return
+		}
 		handleError(w, err)
 		return
 	}

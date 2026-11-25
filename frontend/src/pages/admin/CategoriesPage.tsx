@@ -28,6 +28,8 @@ import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { Input } from '@/components/ui/input'
 import { Spinner } from '@/components/ui/spinner'
 import { TOUCH_SIZE, ROW_BTN } from '@/components/admin/touchTargets'
+import { DescriptionField } from '@/components/admin/DescriptionField'
+import { isDescriptionTooLong, trimDescription } from '@/lib/ctiDescription'
 import {
   ChevronRightIcon, ChevronDownIcon, PlusIcon, TrashIcon,
   GripVerticalIcon, PencilIcon, CheckIcon, XIcon, UsersRoundIcon, SlidersIcon,
@@ -191,6 +193,72 @@ function ArchiveControl({
 
 function ArchivedBadge() {
   return <span className="rounded bg-gray-200 px-1.5 py-0.5 text-xs text-gray-800">Archived</span>
+}
+
+// ── Description ───────────────────────────────────────────────────────────────
+
+// The public lists the ticket forms read; they hold descriptions, so an edit here
+// must not leave a form on this browser showing the old text.
+function invalidatePublicCatalogue(qc: ReturnType<typeof useQueryClient>) {
+  for (const key of ['public-categories', 'public-types', 'public-items']) {
+    qc.invalidateQueries({ queryKey: [key] })
+  }
+}
+
+// The edit side of a node's description: the field and its own Save. It is a
+// form of its own, so Enter in the box is a line break and saving is deliberate.
+function DescriptionEditor({
+  id, value, save, onSaved,
+}: {
+  id: string
+  value: string
+  save: (description: string) => Promise<unknown>
+  onSaved: () => void
+}) {
+  const qc = useQueryClient()
+  const [draft, setDraft] = useState(value)
+  // The row can change under an open box (another administrator's edit, a refetch).
+  // A box nothing has been typed in follows it; one being typed in is left alone.
+  // Derived while rendering, from the value the last render saw.
+  const [seen, setSeen] = useState(value)
+  if (seen !== value) {
+    setSeen(value)
+    if (trimDescription(draft) === trimDescription(seen)) setDraft(value)
+  }
+  const mutation = useMutation({
+    mutationFn: () => save(draft),
+    onSuccess: () => {
+      // What the server stored is trimmed; show that, so the box and the row agree.
+      setDraft((d) => trimDescription(d))
+      onSaved()
+      invalidatePublicCatalogue(qc)
+    },
+  })
+  const unchanged = trimDescription(draft) === trimDescription(value)
+
+  return (
+    <form
+      className="space-y-2 px-3 py-2"
+      onSubmit={(e) => {
+        e.preventDefault()
+        if (!unchanged && !isDescriptionTooLong(draft)) mutation.mutate()
+      }}
+    >
+      <DescriptionField id={id} value={draft} onChange={(v) => { setDraft(v); mutation.reset() }} />
+      {mutation.isError && (
+        <p role="alert" className="text-xs text-red-600 wrap-anywhere">{extractError(mutation.error)}</p>
+      )}
+      <Button
+        type="submit"
+        size="sm"
+        className="h-7 text-xs"
+        disabled={unchanged || isDescriptionTooLong(draft) || mutation.isPending}
+        aria-label="Save description"
+      >
+        {mutation.isPending ? 'Saving…' : 'Save'}
+      </Button>
+    </form>
+  )
 }
 
 // ── Groups subsection ─────────────────────────────────────────────────────────
@@ -610,6 +678,12 @@ function SortableItemRow({
       </div>
       {expanded && (
         <div className="ml-8 max-sm:ml-4 border-l border-gray-100 pl-2">
+          <DescriptionEditor
+            id={`description-item-${item.id}`}
+            value={item.description ?? ''}
+            save={(description) => updateItem(categoryId, typeId, item.id, { description })}
+            onSaved={() => qc.invalidateQueries({ queryKey: ['admin', 'items', categoryId, typeId] })}
+          />
           <FieldsSubsection scope={{ kind: 'item', categoryId, typeId, itemId: item.id }} />
         </div>
       )}
@@ -640,6 +714,7 @@ function SortableTypeRow({
   const [expanded, setExpanded] = useState(false)
   const [addingItem, setAddingItem] = useState(false)
   const [itemName, setItemName] = useState('')
+  const [itemDescription, setItemDescription] = useState('')
   const [confirmOpen, setConfirmOpen] = useState(false)
 
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
@@ -666,11 +741,13 @@ function SortableTypeRow({
   })
 
   const addItemMutation = useMutation({
-    mutationFn: () => createItem(categoryId, type.id, { name: itemName.trim(), sort_order: items.length + 1 }),
+    mutationFn: () => createItem(categoryId, type.id, { name: itemName.trim(), description: itemDescription, sort_order: items.length + 1 }),
     onSuccess: () => {
       setItemName('')
+      setItemDescription('')
       setAddingItem(false)
       qc.invalidateQueries({ queryKey: ['admin', 'items', categoryId, type.id] })
+      invalidatePublicCatalogue(qc)
     },
   })
 
@@ -747,6 +824,12 @@ function SortableTypeRow({
 
       {expanded && (
         <div className="ml-8 max-sm:ml-4 border-l border-gray-100 pl-2 pb-1">
+          <DescriptionEditor
+            id={`description-type-${type.id}`}
+            value={type.description ?? ''}
+            save={(description) => updateType(categoryId, type.id, { description })}
+            onSaved={() => qc.invalidateQueries({ queryKey: ['admin', 'types', categoryId] })}
+          />
           <GroupsSubsection categoryId={categoryId} typeId={type.id} />
           <FieldsSubsection scope={{ kind: 'type', categoryId, typeId: type.id }} />
           <div className="pt-1">
@@ -762,20 +845,23 @@ function SortableTypeRow({
                   </SortableContext>
                 </DndContext>
                 {addingItem ? (
-                  <div className="flex items-center gap-2 py-2 pl-4 pr-3">
-                    <Input
-                      autoFocus
-                      placeholder="Item name"
-                      value={itemName}
-                      onChange={(e) => setItemName(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter' && itemName.trim()) addItemMutation.mutate()
-                        if (e.key === 'Escape') { setAddingItem(false); setItemName('') }
-                      }}
-                      className="h-7 text-sm"
-                    />
-                    <Button size="sm" className="h-7 text-xs" onClick={() => addItemMutation.mutate()} disabled={!itemName.trim() || addItemMutation.isPending}>Add</Button>
-                    <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => { setAddingItem(false); setItemName('') }}>Cancel</Button>
+                  <div className="space-y-2 py-2 pl-4 pr-3">
+                    <div className="flex items-center gap-2">
+                      <Input
+                        autoFocus
+                        placeholder="Item name"
+                        value={itemName}
+                        onChange={(e) => setItemName(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' && itemName.trim() && !isDescriptionTooLong(itemDescription)) addItemMutation.mutate()
+                          if (e.key === 'Escape') { setAddingItem(false); setItemName(''); setItemDescription('') }
+                        }}
+                        className="h-7 text-sm"
+                      />
+                      <Button size="sm" className="h-7 text-xs" onClick={() => addItemMutation.mutate()} disabled={!itemName.trim() || isDescriptionTooLong(itemDescription) || addItemMutation.isPending}>Add</Button>
+                      <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => { setAddingItem(false); setItemName(''); setItemDescription('') }}>Cancel</Button>
+                    </div>
+                    <DescriptionField id={`new-item-description-${type.id}`} value={itemDescription} onChange={setItemDescription} />
                   </div>
                 ) : (
                   <button
@@ -801,6 +887,7 @@ function SortableCategoryRow({ cat }: { cat: Category }) {
   const [expanded, setExpanded] = useState(false)
   const [addingType, setAddingType] = useState(false)
   const [typeName, setTypeName] = useState('')
+  const [typeDescription, setTypeDescription] = useState('')
   const [confirmOpen, setConfirmOpen] = useState(false)
 
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
@@ -827,11 +914,13 @@ function SortableCategoryRow({ cat }: { cat: Category }) {
   })
 
   const addTypeMutation = useMutation({
-    mutationFn: () => createType(cat.id, { name: typeName.trim(), sort_order: types.length + 1 }),
+    mutationFn: () => createType(cat.id, { name: typeName.trim(), description: typeDescription, sort_order: types.length + 1 }),
     onSuccess: () => {
       setTypeName('')
+      setTypeDescription('')
       setAddingType(false)
       qc.invalidateQueries({ queryKey: ['admin', 'types', cat.id] })
+      invalidatePublicCatalogue(qc)
     },
   })
 
@@ -906,6 +995,12 @@ function SortableCategoryRow({ cat }: { cat: Category }) {
 
       {expanded && (
         <div className="ml-11 max-sm:ml-4 border-l border-gray-100 pl-2 pb-2">
+          <DescriptionEditor
+            id={`description-category-${cat.id}`}
+            value={cat.description ?? ''}
+            save={(description) => updateCategory(cat.id, { description })}
+            onSaved={() => qc.invalidateQueries({ queryKey: ['admin', 'categories'] })}
+          />
           <GroupsSubsection categoryId={cat.id} />
           <FieldsSubsection scope={{ kind: 'category', categoryId: cat.id }} />
           <div className="pt-1">
@@ -921,20 +1016,23 @@ function SortableCategoryRow({ cat }: { cat: Category }) {
                   </SortableContext>
                 </DndContext>
                 {addingType ? (
-                  <div className="flex items-center gap-2 py-2 pl-3 pr-3">
-                    <Input
-                      autoFocus
-                      placeholder="Type name"
-                      value={typeName}
-                      onChange={(e) => setTypeName(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter' && typeName.trim()) addTypeMutation.mutate()
-                        if (e.key === 'Escape') { setAddingType(false); setTypeName('') }
-                      }}
-                      className="h-8 text-sm"
-                    />
-                    <Button size="sm" className="h-8 text-xs" onClick={() => addTypeMutation.mutate()} disabled={!typeName.trim() || addTypeMutation.isPending}>Add</Button>
-                    <Button size="sm" variant="ghost" className="h-8 text-xs" onClick={() => { setAddingType(false); setTypeName('') }}>Cancel</Button>
+                  <div className="space-y-2 py-2 pl-3 pr-3">
+                    <div className="flex items-center gap-2">
+                      <Input
+                        autoFocus
+                        placeholder="Type name"
+                        value={typeName}
+                        onChange={(e) => setTypeName(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' && typeName.trim() && !isDescriptionTooLong(typeDescription)) addTypeMutation.mutate()
+                          if (e.key === 'Escape') { setAddingType(false); setTypeName(''); setTypeDescription('') }
+                        }}
+                        className="h-8 text-sm"
+                      />
+                      <Button size="sm" className="h-8 text-xs" onClick={() => addTypeMutation.mutate()} disabled={!typeName.trim() || isDescriptionTooLong(typeDescription) || addTypeMutation.isPending}>Add</Button>
+                      <Button size="sm" variant="ghost" className="h-8 text-xs" onClick={() => { setAddingType(false); setTypeName(''); setTypeDescription('') }}>Cancel</Button>
+                    </div>
+                    <DescriptionField id={`new-type-description-${cat.id}`} value={typeDescription} onChange={setTypeDescription} />
                   </div>
                 ) : (
                   <button
@@ -959,6 +1057,7 @@ export function CategoriesPage() {
   const qc = useQueryClient()
   const [addingCategory, setAddingCategory] = useState(false)
   const [catName, setCatName] = useState('')
+  const [catDescription, setCatDescription] = useState('')
   const [formError, setFormError] = useState('')
 
   const { data: categories = [], isLoading } = useQuery({
@@ -967,12 +1066,14 @@ export function CategoriesPage() {
   })
 
   const addCategoryMutation = useMutation({
-    mutationFn: () => createCategory({ name: catName.trim(), sort_order: categories.length + 1 }),
+    mutationFn: () => createCategory({ name: catName.trim(), description: catDescription, sort_order: categories.length + 1 }),
     onSuccess: () => {
       setCatName('')
+      setCatDescription('')
       setAddingCategory(false)
       setFormError('')
       qc.invalidateQueries({ queryKey: ['admin', 'categories'] })
+      invalidatePublicCatalogue(qc)
     },
     onError: (err) => setFormError(extractError(err)),
   })
@@ -1021,15 +1122,18 @@ export function CategoriesPage() {
                 value={catName}
                 onChange={(e) => setCatName(e.target.value)}
                 onKeyDown={(e) => {
-                  if (e.key === 'Enter' && catName.trim()) addCategoryMutation.mutate()
-                  if (e.key === 'Escape') { setAddingCategory(false); setCatName('') }
+                  if (e.key === 'Enter' && catName.trim() && !isDescriptionTooLong(catDescription)) addCategoryMutation.mutate()
+                  if (e.key === 'Escape') { setAddingCategory(false); setCatName(''); setCatDescription('') }
                 }}
                 className="max-w-xs"
               />
-              <Button onClick={() => addCategoryMutation.mutate()} disabled={!catName.trim() || addCategoryMutation.isPending}>
+              <Button onClick={() => addCategoryMutation.mutate()} disabled={!catName.trim() || isDescriptionTooLong(catDescription) || addCategoryMutation.isPending}>
                 {addCategoryMutation.isPending ? 'Adding…' : 'Add'}
               </Button>
-              <Button variant="outline" onClick={() => { setAddingCategory(false); setCatName('') }}>Cancel</Button>
+              <Button variant="outline" onClick={() => { setAddingCategory(false); setCatName(''); setCatDescription('') }}>Cancel</Button>
+            </div>
+            <div className="mt-3 max-w-lg">
+              <DescriptionField id="new-category-description" value={catDescription} onChange={setCatDescription} />
             </div>
             {formError && <p role="alert" className="mt-2 text-sm text-red-600">{formError}</p>}
           </div>

@@ -38,6 +38,7 @@ const (
 var auditNameFields = map[string]auditNameKind{
 	"status_id":        auditNameStatus,
 	"assignee_user_id": auditNameUser,
+	"follower_user_id": auditNameUser,
 	"category_id":      auditNameCategory,
 	"type_id":          auditNameType,
 	"item_id":          auditNameItem,

@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Select } from '@/components/ui/select'
 import { Label } from '@/components/ui/label'
+import { CtiDescription } from '@/components/ticket/CtiDescription'
 import type { Category, TicketType, TicketItem } from '@/api/types'
 
 // options renders one tier's <option>s: every row, so staff still SEE archived
@@ -114,6 +115,7 @@ export function ClassificationPanel({ ticketId, categoryId, typeId, itemId, canE
   const categorySelectId = `cti-category-${ticketId}`
   const typeSelectId = `cti-type-${ticketId}`
   const itemSelectId = `cti-item-${ticketId}`
+  const descriptionId = `cti-description-${ticketId}`
 
   // These resolve against the lists above, which for staff now include
   // archived rows. Before, a ticket filed under a category that had since
@@ -143,46 +145,60 @@ export function ClassificationPanel({ ticketId, categoryId, typeId, itemId, canE
       <CardContent className="space-y-2 text-sm">
         {editing ? (
           <div className="space-y-2">
-            <div className="space-y-0.5">
-              <Label htmlFor={categorySelectId} className="text-xs text-gray-500">Category</Label>
-              <Select
-                id={categorySelectId}
-                className="h-7 text-xs w-full"
-                value={draftCategory}
-                onChange={(e) => { setDraftCategory(e.target.value); setDraftType(''); setDraftItem('') }}
-              >
-                <option value="">— select —</option>
-                {options(categories, categoryId)}
-              </Select>
+            {/* The selectors and their description are one child, so an empty description adds no gap. */}
+            <div>
+              <div className="space-y-2">
+                <div className="space-y-0.5">
+                  <Label htmlFor={categorySelectId} className="text-xs text-gray-500">Category</Label>
+                  <Select
+                    id={categorySelectId}
+                    aria-describedby={descriptionId}
+                    className="h-7 text-xs w-full"
+                    value={draftCategory}
+                    onChange={(e) => { setDraftCategory(e.target.value); setDraftType(''); setDraftItem('') }}
+                  >
+                    <option value="">— select —</option>
+                    {options(categories, categoryId)}
+                  </Select>
+                </div>
+                {types.length > 0 && (
+                  <div className="space-y-0.5">
+                    <Label htmlFor={typeSelectId} className="text-xs text-gray-500">Type</Label>
+                    <Select
+                      id={typeSelectId}
+                      aria-describedby={descriptionId}
+                      className="h-7 text-xs w-full"
+                      value={draftType}
+                      onChange={(e) => { setDraftType(e.target.value); setDraftItem('') }}
+                    >
+                      <option value="">— none —</option>
+                      {options(types, typeId)}
+                    </Select>
+                  </div>
+                )}
+                {items.length > 0 && (
+                  <div className="space-y-0.5">
+                    <Label htmlFor={itemSelectId} className="text-xs text-gray-500">Item</Label>
+                    <Select
+                      id={itemSelectId}
+                      aria-describedby={descriptionId}
+                      className="h-7 text-xs w-full"
+                      value={draftItem}
+                      onChange={(e) => setDraftItem(e.target.value)}
+                    >
+                      <option value="">— none —</option>
+                      {options(items, itemId)}
+                    </Select>
+                  </div>
+                )}
+              </div>
+              <CtiDescription
+                id={descriptionId}
+                category={categories.find((c) => c.id === draftCategory)}
+                type={types.find((t) => t.id === draftType)}
+                item={items.find((i) => i.id === draftItem)}
+              />
             </div>
-            {types.length > 0 && (
-              <div className="space-y-0.5">
-                <Label htmlFor={typeSelectId} className="text-xs text-gray-500">Type</Label>
-                <Select
-                  id={typeSelectId}
-                  className="h-7 text-xs w-full"
-                  value={draftType}
-                  onChange={(e) => { setDraftType(e.target.value); setDraftItem('') }}
-                >
-                  <option value="">— none —</option>
-                  {options(types, typeId)}
-                </Select>
-              </div>
-            )}
-            {items.length > 0 && (
-              <div className="space-y-0.5">
-                <Label htmlFor={itemSelectId} className="text-xs text-gray-500">Item</Label>
-                <Select
-                  id={itemSelectId}
-                  className="h-7 text-xs w-full"
-                  value={draftItem}
-                  onChange={(e) => setDraftItem(e.target.value)}
-                >
-                  <option value="">— none —</option>
-                  {options(items, itemId)}
-                </Select>
-              </div>
-            )}
             {error && <p role="alert" className="text-xs text-red-600">{error}</p>}
             <div className="flex gap-2 pt-1">
               <Button

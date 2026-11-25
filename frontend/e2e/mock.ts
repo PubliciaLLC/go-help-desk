@@ -401,6 +401,46 @@ export const KPI_RESPONSE = {
   },
 }
 
+// A classification tree with descriptions, for the text beneath the chooser.
+// Hardware has one that wraps over several lines at 320px and holds a token with
+// no break point; Laptop has its own; Battery has none (so it shows Laptop's);
+// Software and its OS have none at all.
+export const CTI_DESCRIPTIONS = {
+  hardware: 'Laptops, docks and monitors.\nFor phones see Mobile. ' + 'https://example.com/'.padEnd(120, 'x'),
+  laptop: 'Anything with a keyboard that you carry.',
+  dock: 'Docking stations and their power bricks.',
+  markup: '<b>not bold</b> & <i>not italic</i>',
+}
+export const CTI_CATEGORIES = [
+  { id: 'cat-hw', name: 'Hardware', description: CTI_DESCRIPTIONS.hardware, sort_order: 1, active: true },
+  { id: 'cat-sw', name: 'Software', description: '', sort_order: 2, active: true },
+  { id: 'cat-mk', name: 'Markup', description: CTI_DESCRIPTIONS.markup, sort_order: 3, active: true },
+]
+const CTI_TYPES: Record<string, object[]> = {
+  'cat-hw': [{ id: 'ty-lap', category_id: 'cat-hw', name: 'Laptop', description: CTI_DESCRIPTIONS.laptop, sort_order: 1, active: true }],
+  'cat-sw': [{ id: 'ty-os', category_id: 'cat-sw', name: 'OS', description: '', sort_order: 1, active: true }],
+}
+const CTI_ITEMS: Record<string, object[]> = {
+  'ty-lap': [
+    { id: 'it-dock', type_id: 'ty-lap', name: 'Dock', description: CTI_DESCRIPTIONS.dock, sort_order: 1, active: true },
+    { id: 'it-bat', type_id: 'ty-lap', name: 'Battery', description: '', sort_order: 2, active: true },
+  ],
+}
+
+// Serves CTI_CATEGORIES and the types and items under them. Registered after
+// mockApi, whose catch-all would otherwise answer with an empty list (Playwright
+// runs the most recently registered matching route first).
+export async function mockCti(page: Page) {
+  await page.route('**/api/v1/categories**', async (route) => {
+    // ['api', 'v1', 'categories', id?, 'types'?, typeId?, 'items'?]
+    const parts = new URL(route.request().url()).pathname.split('/').filter(Boolean)
+    if (parts.length === 3) return route.fulfill({ json: CTI_CATEGORIES })
+    if (parts.length === 5) return route.fulfill({ json: CTI_TYPES[parts[3]] ?? [] })
+    if (parts.length === 7) return route.fulfill({ json: CTI_ITEMS[parts[5]] ?? [] })
+    return route.fallback()
+  })
+}
+
 export async function mockApi(
   page: Page,
   opts: {

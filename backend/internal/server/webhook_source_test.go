@@ -7,6 +7,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/category"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
@@ -63,4 +64,58 @@ func TestWebhookEventSource_ReadsTheTicketAsItIsNow(t *testing.T) {
 	_, found, err = src.TicketFacts(ctx, uuid.New())
 	require.NoError(t, err)
 	require.False(t, found)
+}
+
+// The names a created-ticket chat message shows (placement), read through the
+// production source from the ticket's ids, with the real service and database.
+// Renamed since the ids were taken: the name now.
+func TestWebhookEventSource_PlacementNamesTheIdsAsTheyAreNow(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+	c := h.makeCTITree(t)
+	email := "guest@test.local"
+	tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
+		Subject: "Battery swollen", Description: "bulging", CategoryID: h.catID, TypeID: &c.typ, ItemID: &c.item,
+		GuestEmail: &email, GuestName: "Ada"})
+	require.NoError(t, err)
+	src := server.NewWebhookEventSource(h.ticketSvc)
+
+	facts, found, err := src.TicketFacts(ctx, tk.ID)
+	require.NoError(t, err)
+	require.True(t, found)
+	got, err := src.Placement(ctx, *facts.State)
+	require.NoError(t, err)
+	require.Equal(t, "Laptop", got.Type)
+	require.Equal(t, "Battery", got.Item)
+	require.NotEmpty(t, got.Category)
+	require.Empty(t, got.Group)
+	require.Empty(t, got.Assignee)
+
+	require.NoError(t, h.categorySvc.UpdateItem(ctx, category.Item{ID: c.item, TypeID: c.typ, Name: "Battery pack", SortOrder: 1, Active: true}))
+	got, err = src.Placement(ctx, *facts.State)
+	require.NoError(t, err)
+	require.Equal(t, "Battery pack", got.Item, "named as it is when the message is built")
+}
+
+// A replay names the holder too, so the state it reads from the ticket carries
+// the assignee as well as the group.
+func TestWebhookEventSource_StateCarriesTheAssignee(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+	tk, _ := seedGuestTicket(t, h)
+	_, err := h.ticketSvc.Assign(ctx, tk.ID, &h.staffID, nil, ticket.Actor{UserID: &h.adminID, Role: user.RoleAdmin})
+	require.NoError(t, err)
+	src := server.NewWebhookEventSource(h.ticketSvc)
+
+	facts, found, err := src.TicketFacts(ctx, tk.ID)
+	require.NoError(t, err)
+	require.True(t, found)
+	require.NotNil(t, facts.State.AssigneeUserID)
+	require.Equal(t, h.staffID, *facts.State.AssigneeUserID)
+
+	got, err := src.Placement(ctx, *facts.State)
+	require.NoError(t, err)
+	require.Equal(t, "Staff", got.Assignee)
 }

@@ -3,7 +3,7 @@ import { listTicketAudit } from '@/api/tickets'
 import type { TicketAuditEntry } from '@/api/types'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { AuditDiff } from '@/components/AuditDiff'
-import { followRemovalLabel, isFollowAction } from '@/lib/followAudit'
+import { followEntryLabel, isFollowAction } from '@/lib/followAudit'
 import { isReplyAction, replyActionVerb } from '@/lib/replyAudit'
 import { EyeOffIcon, LockIcon, MessageSquareIcon } from 'lucide-react'
 
@@ -35,7 +35,7 @@ function labelFor(action: string): string {
 }
 
 function labelForEntry(e: TicketAuditEntry): string {
-  return followRemovalLabel(e) ?? labelFor(e.action)
+  return followEntryLabel(e) ?? labelFor(e.action)
 }
 
 // #129: the per-ticket activity feed, next to the status timeline —

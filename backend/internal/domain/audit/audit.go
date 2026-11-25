@@ -253,7 +253,10 @@ const redactedPlaceholder = "[redacted]"
 var shownKeys = map[string]bool{
 	"id": true, "statusid": true, "priority": true,
 	"assigneeuserid": true, "assigneegroupid": true, "followupof": true,
-	"forcedreopen": true, "closedreopenpolicy": true,
+	// Whose follow an added or removed follower is, when somebody else did it
+	// (#695): an id.
+	"followeruserid": true,
+	"forcedreopen":   true, "closedreopenpolicy": true,
 	// A reclassification (1.3.0 audit D3): the ticket's category, type and item,
 	// as ids.
 	"categoryid": true, "typeid": true, "itemid": true,
@@ -337,6 +340,11 @@ var shownKeys = map[string]bool{
 	// are public, they are what the identity provider shows. The private key is
 	// never written.
 	"certnotafter": true, "certfingerprint": true,
+	// A deleted account giving up its address to a new one (email_released,
+	// replaced_deleted_user): the two user ids, which are UUIDs, and a SAML
+	// account being relinked to a new NameID (saml_relinked): the flag. Neither
+	// the address nor the NameID is ever written.
+	"replacedbyuserid": true, "previoususerid": true, "samlsubjectchanged": true,
 }
 
 // Redact returns copies of before/after showing only allow-listed keys

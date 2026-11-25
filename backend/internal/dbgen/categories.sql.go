@@ -50,20 +50,22 @@ func (q *Queries) CountTicketsByType(ctx context.Context, typeID uuid.NullUUID) 
 }
 
 const createCategory = `-- name: CreateCategory :exec
-INSERT INTO categories (id, name, sort_order, active) VALUES ($1, $2, $3, $4)
+INSERT INTO categories (id, name, description, sort_order, active) VALUES ($1, $2, $3, $4, $5)
 `
 
 type CreateCategoryParams struct {
-	ID        uuid.UUID `json:"id"`
-	Name      string    `json:"name"`
-	SortOrder int32     `json:"sort_order"`
-	Active    bool      `json:"active"`
+	ID          uuid.UUID `json:"id"`
+	Name        string    `json:"name"`
+	Description string    `json:"description"`
+	SortOrder   int32     `json:"sort_order"`
+	Active      bool      `json:"active"`
 }
 
 func (q *Queries) CreateCategory(ctx context.Context, arg CreateCategoryParams) error {
 	_, err := q.db.ExecContext(ctx, createCategory,
 		arg.ID,
 		arg.Name,
+		arg.Description,
 		arg.SortOrder,
 		arg.Active,
 	)
@@ -71,15 +73,16 @@ func (q *Queries) CreateCategory(ctx context.Context, arg CreateCategoryParams) 
 }
 
 const createItem = `-- name: CreateItem :exec
-INSERT INTO items (id, type_id, name, sort_order, active) VALUES ($1, $2, $3, $4, $5)
+INSERT INTO items (id, type_id, name, description, sort_order, active) VALUES ($1, $2, $3, $4, $5, $6)
 `
 
 type CreateItemParams struct {
-	ID        uuid.UUID `json:"id"`
-	TypeID    uuid.UUID `json:"type_id"`
-	Name      string    `json:"name"`
-	SortOrder int32     `json:"sort_order"`
-	Active    bool      `json:"active"`
+	ID          uuid.UUID `json:"id"`
+	TypeID      uuid.UUID `json:"type_id"`
+	Name        string    `json:"name"`
+	Description string    `json:"description"`
+	SortOrder   int32     `json:"sort_order"`
+	Active      bool      `json:"active"`
 }
 
 func (q *Queries) CreateItem(ctx context.Context, arg CreateItemParams) error {
@@ -87,6 +90,7 @@ func (q *Queries) CreateItem(ctx context.Context, arg CreateItemParams) error {
 		arg.ID,
 		arg.TypeID,
 		arg.Name,
+		arg.Description,
 		arg.SortOrder,
 		arg.Active,
 	)
@@ -94,15 +98,16 @@ func (q *Queries) CreateItem(ctx context.Context, arg CreateItemParams) error {
 }
 
 const createType = `-- name: CreateType :exec
-INSERT INTO types (id, category_id, name, sort_order, active) VALUES ($1, $2, $3, $4, $5)
+INSERT INTO types (id, category_id, name, description, sort_order, active) VALUES ($1, $2, $3, $4, $5, $6)
 `
 
 type CreateTypeParams struct {
-	ID         uuid.UUID `json:"id"`
-	CategoryID uuid.UUID `json:"category_id"`
-	Name       string    `json:"name"`
-	SortOrder  int32     `json:"sort_order"`
-	Active     bool      `json:"active"`
+	ID          uuid.UUID `json:"id"`
+	CategoryID  uuid.UUID `json:"category_id"`
+	Name        string    `json:"name"`
+	Description string    `json:"description"`
+	SortOrder   int32     `json:"sort_order"`
+	Active      bool      `json:"active"`
 }
 
 func (q *Queries) CreateType(ctx context.Context, arg CreateTypeParams) error {
@@ -110,6 +115,7 @@ func (q *Queries) CreateType(ctx context.Context, arg CreateTypeParams) error {
 		arg.ID,
 		arg.CategoryID,
 		arg.Name,
+		arg.Description,
 		arg.SortOrder,
 		arg.Active,
 	)
@@ -256,7 +262,7 @@ func (q *Queries) DeleteType(ctx context.Context, arg DeleteTypeParams) (int64, 
 }
 
 const getCategory = `-- name: GetCategory :one
-SELECT id, name, sort_order, active FROM categories WHERE id = $1
+SELECT id, name, sort_order, active, description FROM categories WHERE id = $1
 `
 
 func (q *Queries) GetCategory(ctx context.Context, id uuid.UUID) (Category, error) {
@@ -267,6 +273,7 @@ func (q *Queries) GetCategory(ctx context.Context, id uuid.UUID) (Category, erro
 		&i.Name,
 		&i.SortOrder,
 		&i.Active,
+		&i.Description,
 	)
 	return i, err
 }
@@ -306,7 +313,7 @@ func (q *Queries) GetCategoryNamesByIDs(ctx context.Context, ids []uuid.UUID) ([
 }
 
 const getItem = `-- name: GetItem :one
-SELECT id, type_id, name, sort_order, active FROM items WHERE id = $1
+SELECT id, type_id, name, sort_order, active, description FROM items WHERE id = $1
 `
 
 func (q *Queries) GetItem(ctx context.Context, id uuid.UUID) (Item, error) {
@@ -318,6 +325,7 @@ func (q *Queries) GetItem(ctx context.Context, id uuid.UUID) (Item, error) {
 		&i.Name,
 		&i.SortOrder,
 		&i.Active,
+		&i.Description,
 	)
 	return i, err
 }
@@ -355,7 +363,7 @@ func (q *Queries) GetItemNamesByIDs(ctx context.Context, ids []uuid.UUID) ([]Get
 }
 
 const getType = `-- name: GetType :one
-SELECT id, category_id, name, sort_order, active FROM types WHERE id = $1
+SELECT id, category_id, name, sort_order, active, description FROM types WHERE id = $1
 `
 
 func (q *Queries) GetType(ctx context.Context, id uuid.UUID) (Type, error) {
@@ -367,6 +375,7 @@ func (q *Queries) GetType(ctx context.Context, id uuid.UUID) (Type, error) {
 		&i.Name,
 		&i.SortOrder,
 		&i.Active,
+		&i.Description,
 	)
 	return i, err
 }
@@ -404,7 +413,7 @@ func (q *Queries) GetTypeNamesByIDs(ctx context.Context, ids []uuid.UUID) ([]Get
 }
 
 const listCategories = `-- name: ListCategories :many
-SELECT id, name, sort_order, active FROM categories
+SELECT id, name, sort_order, active, description FROM categories
 WHERE ($1::boolean = FALSE OR active = TRUE)
 ORDER BY sort_order, name
 `
@@ -423,6 +432,7 @@ func (q *Queries) ListCategories(ctx context.Context, dollar_1 bool) ([]Category
 			&i.Name,
 			&i.SortOrder,
 			&i.Active,
+			&i.Description,
 		); err != nil {
 			return nil, err
 		}
@@ -438,7 +448,7 @@ func (q *Queries) ListCategories(ctx context.Context, dollar_1 bool) ([]Category
 }
 
 const listItems = `-- name: ListItems :many
-SELECT id, type_id, name, sort_order, active FROM items
+SELECT id, type_id, name, sort_order, active, description FROM items
 WHERE type_id = $1 AND ($2::boolean = FALSE OR active = TRUE)
 ORDER BY sort_order, name
 `
@@ -463,6 +473,7 @@ func (q *Queries) ListItems(ctx context.Context, arg ListItemsParams) ([]Item, e
 			&i.Name,
 			&i.SortOrder,
 			&i.Active,
+			&i.Description,
 		); err != nil {
 			return nil, err
 		}
@@ -478,7 +489,7 @@ func (q *Queries) ListItems(ctx context.Context, arg ListItemsParams) ([]Item, e
 }
 
 const listTypes = `-- name: ListTypes :many
-SELECT id, category_id, name, sort_order, active FROM types
+SELECT id, category_id, name, sort_order, active, description FROM types
 WHERE category_id = $1 AND ($2::boolean = FALSE OR active = TRUE)
 ORDER BY sort_order, name
 `
@@ -503,6 +514,7 @@ func (q *Queries) ListTypes(ctx context.Context, arg ListTypesParams) ([]Type, e
 			&i.Name,
 			&i.SortOrder,
 			&i.Active,
+			&i.Description,
 		); err != nil {
 			return nil, err
 		}
@@ -518,20 +530,22 @@ func (q *Queries) ListTypes(ctx context.Context, arg ListTypesParams) ([]Type, e
 }
 
 const updateCategory = `-- name: UpdateCategory :exec
-UPDATE categories SET name = $2, sort_order = $3, active = $4 WHERE id = $1
+UPDATE categories SET name = $2, description = $3, sort_order = $4, active = $5 WHERE id = $1
 `
 
 type UpdateCategoryParams struct {
-	ID        uuid.UUID `json:"id"`
-	Name      string    `json:"name"`
-	SortOrder int32     `json:"sort_order"`
-	Active    bool      `json:"active"`
+	ID          uuid.UUID `json:"id"`
+	Name        string    `json:"name"`
+	Description string    `json:"description"`
+	SortOrder   int32     `json:"sort_order"`
+	Active      bool      `json:"active"`
 }
 
 func (q *Queries) UpdateCategory(ctx context.Context, arg UpdateCategoryParams) error {
 	_, err := q.db.ExecContext(ctx, updateCategory,
 		arg.ID,
 		arg.Name,
+		arg.Description,
 		arg.SortOrder,
 		arg.Active,
 	)
@@ -539,15 +553,16 @@ func (q *Queries) UpdateCategory(ctx context.Context, arg UpdateCategoryParams) 
 }
 
 const updateItem = `-- name: UpdateItem :exec
-UPDATE items SET type_id = $2, name = $3, sort_order = $4, active = $5 WHERE id = $1
+UPDATE items SET type_id = $2, name = $3, description = $4, sort_order = $5, active = $6 WHERE id = $1
 `
 
 type UpdateItemParams struct {
-	ID        uuid.UUID `json:"id"`
-	TypeID    uuid.UUID `json:"type_id"`
-	Name      string    `json:"name"`
-	SortOrder int32     `json:"sort_order"`
-	Active    bool      `json:"active"`
+	ID          uuid.UUID `json:"id"`
+	TypeID      uuid.UUID `json:"type_id"`
+	Name        string    `json:"name"`
+	Description string    `json:"description"`
+	SortOrder   int32     `json:"sort_order"`
+	Active      bool      `json:"active"`
 }
 
 func (q *Queries) UpdateItem(ctx context.Context, arg UpdateItemParams) error {
@@ -555,6 +570,7 @@ func (q *Queries) UpdateItem(ctx context.Context, arg UpdateItemParams) error {
 		arg.ID,
 		arg.TypeID,
 		arg.Name,
+		arg.Description,
 		arg.SortOrder,
 		arg.Active,
 	)
@@ -562,15 +578,16 @@ func (q *Queries) UpdateItem(ctx context.Context, arg UpdateItemParams) error {
 }
 
 const updateType = `-- name: UpdateType :exec
-UPDATE types SET category_id = $2, name = $3, sort_order = $4, active = $5 WHERE id = $1
+UPDATE types SET category_id = $2, name = $3, description = $4, sort_order = $5, active = $6 WHERE id = $1
 `
 
 type UpdateTypeParams struct {
-	ID         uuid.UUID `json:"id"`
-	CategoryID uuid.UUID `json:"category_id"`
-	Name       string    `json:"name"`
-	SortOrder  int32     `json:"sort_order"`
-	Active     bool      `json:"active"`
+	ID          uuid.UUID `json:"id"`
+	CategoryID  uuid.UUID `json:"category_id"`
+	Name        string    `json:"name"`
+	Description string    `json:"description"`
+	SortOrder   int32     `json:"sort_order"`
+	Active      bool      `json:"active"`
 }
 
 func (q *Queries) UpdateType(ctx context.Context, arg UpdateTypeParams) error {
@@ -578,6 +595,7 @@ func (q *Queries) UpdateType(ctx context.Context, arg UpdateTypeParams) error {
 		arg.ID,
 		arg.CategoryID,
 		arg.Name,
+		arg.Description,
 		arg.SortOrder,
 		arg.Active,
 	)

@@ -35,13 +35,18 @@ func (s webhookEventSource) TicketFacts(ctx context.Context, id uuid.UUID) (noti
 	}
 	facts := notify.TicketFacts{Subject: t.Subject, TrackingNumber: string(t.TrackingNumber), Priority: string(t.Priority),
 		State: &notification.TicketState{CategoryID: t.CategoryID, TypeID: t.TypeID, ItemID: t.ItemID,
-			Priority: string(t.Priority), AssigneeGroupID: t.AssigneeGroupID}}
+			Priority: string(t.Priority), AssigneeGroupID: t.AssigneeGroupID, AssigneeUserID: t.AssigneeUserID}}
 	for _, st := range statuses {
 		if st.ID == t.StatusID {
 			facts.StatusName = st.Name
 		}
 	}
 	return facts, true, nil
+}
+
+// Placement is the names behind the ids of a ticket state, as they are now.
+func (s webhookEventSource) Placement(ctx context.Context, st notification.TicketState) (notification.Placement, error) {
+	return s.tickets.PlacementNames(ctx, st)
 }
 
 // PublicReplyBody is the text of a reply on that ticket, if it still exists
