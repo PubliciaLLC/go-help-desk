@@ -91,13 +91,13 @@ export function MarkdownEditor({ ref, value, onChange, labelId, disabled, placeh
         <button
           type="button"
           onClick={() => setChosenPlain((p) => !p)}
-          className="inline-flex min-h-6 items-center py-1 text-xs text-gray-500 underline hover:text-gray-700"
+          className="inline-flex min-h-6 items-center py-1 text-xs text-fg-faint underline hover:text-fg-soft"
         >
           {chosenPlain ? 'Switch to rich editor' : 'Switch to plain editor'}
         </button>
       )}
       {failed && (
-        <p className="text-xs text-gray-500">The rich editor could not load. You can write Markdown here.</p>
+        <p className="text-xs text-fg-faint">The rich editor could not load. You can write Markdown here.</p>
       )}
     </div>
   )

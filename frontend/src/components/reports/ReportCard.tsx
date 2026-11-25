@@ -11,7 +11,7 @@ import type { KpiResponse } from '@/api/types'
 // is the data; this is the markup, and the markup is what the image export
 // reads back.
 
-const TONE_CLASS = { good: 'text-green-700', bad: 'text-red-700', neutral: 'text-gray-500' } as const
+const TONE_CLASS = { good: 'text-success-fg', bad: 'text-danger-fg', neutral: 'text-fg-faint' } as const
 
 // Volume and Workload take the whole row from md up; the others share it.
 const WIDE: KpiCardKey[] = ['volume', 'workload']
@@ -47,8 +47,8 @@ function Comparison({ c }: { c: ComparisonText }) {
 function Figure({ f }: { f: KpiFigure }) {
   return (
     <div className="min-w-0">
-      <p className="text-xs font-medium uppercase tracking-wide text-gray-500">{f.label}</p>
-      <p className="text-2xl font-bold text-gray-900">{f.value}</p>
+      <p className="text-xs font-medium uppercase tracking-wide text-fg-faint">{f.label}</p>
+      <p className="text-2xl font-bold text-fg">{f.value}</p>
       {f.comparison && <Comparison c={f.comparison} />}
     </div>
   )
@@ -59,7 +59,7 @@ export function ReportCardLoading({ cardKey }: { cardKey: KpiCardKey }) {
   const titleId = useId()
   return (
     <section aria-labelledby={titleId} aria-busy="true" className={`${CARD_CLASS} ${spanClass(cardKey)}`}>
-      <h2 id={titleId} className="text-base font-semibold text-gray-900">
+      <h2 id={titleId} className="text-base font-semibold text-fg">
         {KPI_CARD_TITLES[cardKey]}
       </h2>
       <div className={`flex items-center justify-center ${LOADING_HEIGHT[cardKey]}`}>
@@ -85,7 +85,7 @@ export function ReportCard({ model, resp, contextLines }: ReportCardProps) {
   return (
     <section ref={root} aria-labelledby={titleId} className={`${CARD_CLASS} ${spanClass(model.key)}`}>
       <div className="flex items-start justify-between gap-2">
-        <h2 id={titleId} className="min-w-0 text-base font-semibold text-gray-900">
+        <h2 id={titleId} className="min-w-0 text-base font-semibold text-fg">
           {model.title}
         </h2>
         <Button
@@ -103,13 +103,13 @@ export function ReportCard({ model, resp, contextLines }: ReportCardProps) {
         </Button>
       </div>
       {image.failed && (
-        <p data-export="skip" className="text-sm text-red-700">
+        <p data-export="skip" className="text-sm text-danger-fg">
           {IMAGE_FAILED}
         </p>
       )}
 
       {model.emptyText ? (
-        <p className="py-4 text-sm text-gray-500">{model.emptyText}</p>
+        <p className="py-4 text-sm text-fg-faint">{model.emptyText}</p>
       ) : (
         model.figures.length > 0 && (
           <div className="flex flex-wrap gap-x-8 gap-y-3">
@@ -120,7 +120,7 @@ export function ReportCard({ model, resp, contextLines }: ReportCardProps) {
         )
       )}
       {model.lines.map((l) => (
-        <p key={l} className="text-sm text-gray-500">
+        <p key={l} className="text-sm text-fg-faint">
           {l}
         </p>
       ))}
@@ -139,7 +139,7 @@ export function ReportCard({ model, resp, contextLines }: ReportCardProps) {
             const limited = model.key === 'workload' && !expanded[id] && c.rows.length > WORKLOAD_ROWS
             return (
               <div key={c.key} className="min-w-0 space-y-2">
-                <h3 className="text-sm font-medium text-gray-700">{c.title}</h3>
+                <h3 className="text-sm font-medium text-fg-soft">{c.title}</h3>
                 <BarChart
                   rows={limited ? c.rows.slice(0, WORKLOAD_ROWS) : c.rows}
                   ariaLabel={`${model.title} ${c.title.toLowerCase()}`}

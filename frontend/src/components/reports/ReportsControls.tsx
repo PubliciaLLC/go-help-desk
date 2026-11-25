@@ -119,7 +119,7 @@ export function ReportsControls({ search, onChange, shown, categories, groups, m
         />
       )}
       {message && (
-        <p role="alert" className="text-sm text-red-700 wrap-anywhere">
+        <p role="alert" className="text-sm text-danger-fg wrap-anywhere">
           {message}
         </p>
       )}

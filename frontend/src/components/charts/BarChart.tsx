@@ -27,7 +27,7 @@ export function BarChart({ rows, ariaLabel, tone = 'blue', formatValue = String,
   if (max === 0) {
     return (
       <figure>
-        <div className="flex items-center justify-center py-6 text-sm text-gray-500">{emptyText}</div>
+        <div className="flex items-center justify-center py-6 text-sm text-fg-faint">{emptyText}</div>
       </figure>
     )
   }
@@ -41,7 +41,7 @@ export function BarChart({ rows, ariaLabel, tone = 'blue', formatValue = String,
       <div className="grid grid-cols-[minmax(0,40%)_minmax(0,1fr)_auto] gap-x-2">
         <div>
           {rows.map((r) => (
-            <div key={r.key} title={r.label} className="h-7 truncate text-sm leading-7 text-gray-700">
+            <div key={r.key} title={r.label} className="h-7 truncate text-sm leading-7 text-fg-soft">
               {r.label}
             </div>
           ))}
@@ -68,7 +68,7 @@ export function BarChart({ rows, ariaLabel, tone = 'blue', formatValue = String,
         </svg>
         <div className="text-right">
           {rows.map((r) => (
-            <div key={r.key} className="h-7 text-sm leading-7 tabular-nums text-gray-700">
+            <div key={r.key} className="h-7 text-sm leading-7 tabular-nums text-fg-soft">
               {formatValue(r.value)}
             </div>
           ))}

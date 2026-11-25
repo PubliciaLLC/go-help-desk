@@ -91,11 +91,11 @@ describe('QueueStrip for staff and administrators', () => {
 
 describe('QueueStrip SLA colours', () => {
   const cases = [
-    { name: 'Breached above zero is red', key: 'sla_breached', n: 2, want: 'text-red-600' },
-    { name: 'At risk above zero is amber', key: 'sla_at_risk', n: 2, want: 'text-amber-700' },
-    { name: 'Breached at zero is grey', key: 'sla_breached', n: 0, want: 'text-gray-500', not: 'text-red-600' },
-    { name: 'At risk at zero is grey', key: 'sla_at_risk', n: 0, want: 'text-gray-500', not: 'text-amber-700' },
-    { name: 'a non-SLA cell above zero is never coloured', key: 'assigned_to_me', n: 7, want: 'text-gray-900', not: 'text-red-600' },
+    { name: 'Breached above zero is red', key: 'sla_breached', n: 2, want: 'text-danger-fg' },
+    { name: 'At risk above zero is amber', key: 'sla_at_risk', n: 2, want: 'text-warning-fg' },
+    { name: 'Breached at zero is grey', key: 'sla_breached', n: 0, want: 'text-fg-faint', not: 'text-danger-fg' },
+    { name: 'At risk at zero is grey', key: 'sla_at_risk', n: 0, want: 'text-fg-faint', not: 'text-warning-fg' },
+    { name: 'a non-SLA cell above zero is never coloured', key: 'assigned_to_me', n: 7, want: 'text-fg', not: 'text-danger-fg' },
   ]
   it.each(cases)('$name', ({ key, n, want, not }) => {
     render(<QueueStrip queues={[{ key, count: n }]} requester={false} />)
