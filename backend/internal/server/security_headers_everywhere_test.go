@@ -1,6 +1,7 @@
 package server_test
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -29,7 +30,7 @@ func TestSPAHandler_CarriesTheSecurityHeaders(t *testing.T) {
 		"assets/app.js":  &fstest.MapFile{Data: []byte("export {}")},
 		"assets/app.css": &fstest.MapFile{Data: []byte("body{}")},
 	}
-	h := server.NewSPAHandler(ui)
+	h := server.NewSPAHandler(ui, func(context.Context) string { return "" })
 
 	for _, path := range []string{
 		"/",               // index

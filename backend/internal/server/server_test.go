@@ -30,6 +30,7 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/database/ratelimitstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/registrationstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/sessionstore"
+	"github.com/publiciallc/go-help-desk/backend/internal/database/siteiconstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/slastore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/tagstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/ticketstore"
@@ -434,6 +435,8 @@ func newHarnessMode(t *testing.T, openDB func(*testing.T) (*testutil.DB, func())
 	require.NoError(t, err)
 	emailDisp.WithTemplates(tmplStore, adminSvc)
 	srvOpts = append(srvOpts, server.WithEmailTemplates(tmplStore, emailDisp))
+	// The site icon (#708), over the harness transaction as well.
+	srvOpts = append(srvOpts, server.WithSiteIcons(siteiconstore.New(q)))
 	srv := server.New(
 		cfg,
 		sessionStore,

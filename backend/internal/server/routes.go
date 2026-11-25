@@ -298,6 +298,11 @@ func (s *Server) adminRouter() *chi.Mux {
 		r.Patch("/", s.handleUpdateSettings)
 		r.Post("/logo", s.handleUploadLogo)
 		r.Delete("/logo", s.handleDeleteLogo)
+		// The site icon (#708): beside the logo, under the same resource.
+		r.Get("/icon", s.handleGetSiteIcon)
+		r.Post("/icon", s.handleUploadSiteIcon)
+		r.Patch("/icon", s.handleUpdateSiteIcon)
+		r.Delete("/icon", s.handleDeleteSiteIcon)
 	})
 
 	// Repointing the identity provider is a route to an administrator session:
