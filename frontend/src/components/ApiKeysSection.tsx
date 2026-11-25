@@ -67,7 +67,7 @@ function Form({ onCreated }: { onCreated: (token: string) => void }) {
         <PlusIcon className="mr-2 h-4 w-4" />
         {create.isPending ? 'Creating…' : 'Create key'}
       </Button>
-      {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
+      {error && <p role="alert" className="text-sm text-danger-fg">{error}</p>}
     </div>
   )
 }
@@ -97,12 +97,12 @@ export function ApiKeysSection() {
   if (!eligible || !isSuccess || (!canCreate && keys.length === 0)) return null
 
   return (
-    <section className="rounded-lg border bg-white">
+    <section className="rounded-lg border bg-card">
       <div className="flex items-start gap-3 border-b p-4">
-        <div className="mt-0.5 text-gray-400"><KeyIcon className="h-4 w-4" /></div>
+        <div className="mt-0.5 text-fg-faint"><KeyIcon className="h-4 w-4" /></div>
         <div className="min-w-0">
-          <h2 className="text-sm font-semibold text-gray-900">API keys</h2>
-          <p className="mt-0.5 text-xs text-gray-500">
+          <h2 className="text-sm font-semibold text-fg">API keys</h2>
+          <p className="mt-0.5 text-xs text-fg-faint">
             For your own scripts and tools. A key acts as you, with at most the permissions you choose here.
           </p>
         </div>
@@ -113,14 +113,14 @@ export function ApiKeysSection() {
         {canCreate ? (
           <Form onCreated={setToken} />
         ) : (
-          <p className="text-sm text-gray-600">
+          <p className="text-sm text-fg-muted">
             An administrator has not allowed staff to create their own API keys. You can still revoke the ones below.
           </p>
         )}
 
         {keys.length > 0 && (
           <table className="w-full text-sm">
-            <thead className="text-xs uppercase text-gray-500">
+            <thead className="text-xs uppercase text-fg-faint">
               <tr>
                 <th className="py-2 text-left">Name</th>
                 <th className="py-2 text-left">Permissions</th>
@@ -132,26 +132,26 @@ export function ApiKeysSection() {
             <tbody className="divide-y">
               {keys.map((k) => (
                 <tr key={k.id}>
-                  <td className="py-2 font-medium text-gray-900">
+                  <td className="py-2 font-medium text-fg">
                     {k.name}
                     {k.created_by && k.created_by !== k.user_id && (
-                      <div className="text-xs font-normal text-gray-500">Issued for you by an administrator</div>
+                      <div className="text-xs font-normal text-fg-faint">Issued for you by an administrator</div>
                     )}
                   </td>
                   <td className="py-2">
                     <div className="flex flex-wrap gap-1">
                       {k.scopes.map((sc) => (
-                        <span key={sc} className="rounded bg-gray-100 px-1.5 py-0.5 font-mono text-xs text-gray-700">{sc}</span>
+                        <span key={sc} className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs text-fg-soft">{sc}</span>
                       ))}
                     </div>
                   </td>
-                  <td className="py-2 text-gray-500">{fmt(k.last_used_at)}</td>
-                  <td className="py-2 text-gray-500"><ExpiryCell expiresAt={k.expires_at} beyondLimit={k.beyond_limit} /></td>
+                  <td className="py-2 text-fg-faint">{fmt(k.last_used_at)}</td>
+                  <td className="py-2 text-fg-faint"><ExpiryCell expiresAt={k.expires_at} beyondLimit={k.beyond_limit} /></td>
                   <td className="py-2 text-right">
                     <Button
                       size="sm"
                       variant="outline"
-                      className="text-red-600 border-red-200 hover:bg-red-50"
+                      className="text-danger-fg border-danger-border hover:bg-danger-soft hover:text-danger-fg-strong"
                       onClick={() => setPending(k)}
                     >
                       Revoke

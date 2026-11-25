@@ -44,7 +44,7 @@ export function TextLimit({ value }: { value: string }) {
       </div>
       {level === 'over' ? (
         <>
-          <p className="text-red-600">
+          <p className="text-danger-fg">
             This is {percent}% over the size limit ({fmt(MAX_TEXT_BYTES)} bytes). Letters outside basic English and emoji take
             2 to 4 bytes each. Shorten it to send.
           </p>
@@ -53,7 +53,7 @@ export function TextLimit({ value }: { value: string }) {
           </p>
         </>
       ) : level === 'near' ? (
-        <p className="text-gray-500">
+        <p className="text-fg-faint">
           {fmt(bytes)} / {fmt(MAX_TEXT_BYTES)} bytes
         </p>
       ) : null}

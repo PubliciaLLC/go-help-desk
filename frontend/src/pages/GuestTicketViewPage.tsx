@@ -108,7 +108,7 @@ export function GuestTicketViewPage() {
   const followUp = useMutation({ mutationFn: () => createGuestFollowUp(token) })
 
   if (isLoading) {
-    return <Shell><p className="text-sm text-gray-500">Loading…</p></Shell>
+    return <Shell><p className="text-sm text-fg-faint">Loading…</p></Shell>
   }
 
   // One message for every reason. The server does not say which, deliberately,
@@ -125,7 +125,7 @@ export function GuestTicketViewPage() {
       <Shell>
         <Card>
           <CardHeader><CardTitle className="text-lg">Open the link from your email</CardTitle></CardHeader>
-          <CardContent className="space-y-3 text-sm text-gray-700">
+          <CardContent className="space-y-3 text-sm text-fg-soft">
             <p>
               This page needs the full link we emailed you. Reloading or
               bookmarking it drops the part that identifies your ticket, which
@@ -134,7 +134,7 @@ export function GuestTicketViewPage() {
             </p>
             <p>
               Your emailed link still works. If you cannot find it, you can{' '}
-              <a href="/track" className="text-blue-600 underline">ask for a new one</a>.
+              <a href="/track" className="text-link underline">ask for a new one</a>.
             </p>
           </CardContent>
         </Card>
@@ -147,7 +147,7 @@ export function GuestTicketViewPage() {
       <Shell>
         <Card>
           <CardHeader><CardTitle className="text-lg">This link no longer works</CardTitle></CardHeader>
-          <CardContent className="space-y-3 text-sm text-gray-700">
+          <CardContent className="space-y-3 text-sm text-fg-soft">
             <p>
               {error instanceof GuestLinkInvalid
                 ? 'Links are replaced each time we update your ticket, and stop working 30 days after they are sent.'
@@ -155,7 +155,7 @@ export function GuestTicketViewPage() {
             </p>
             <p>
               You can{' '}
-              <a href="/track" className="text-blue-600 underline">request a new link</a>{' '}
+              <a href="/track" className="text-link underline">request a new link</a>{' '}
               with your tracking number and email address.
             </p>
           </CardContent>
@@ -170,33 +170,33 @@ export function GuestTicketViewPage() {
         <CardHeader>
           <div className="flex items-baseline justify-between gap-3 flex-wrap">
             <CardTitle className="text-lg wrap-anywhere">{ticket.subject}</CardTitle>
-            <span className="text-xs font-mono text-gray-500">{ticket.tracking_number}</span>
+            <span className="text-xs font-mono text-fg-faint">{ticket.tracking_number}</span>
           </div>
-          <p className="text-sm text-gray-500 mt-1 wrap-anywhere">Status: {ticket.status}</p>
+          <p className="text-sm text-fg-faint mt-1 wrap-anywhere">Status: {ticket.status}</p>
         </CardHeader>
         <CardContent className="space-y-4">
-          <TicketText text={ticket.description} format={ticket.description_format} className="text-sm text-gray-800" />
+          <TicketText text={ticket.description} format={ticket.description_format} className="text-sm text-fg" />
 
           <div className="space-y-3 border-t pt-4">
             {ticket.replies.length === 0 && (
-              <p className="text-sm text-gray-500">No replies yet.</p>
+              <p className="text-sm text-fg-faint">No replies yet.</p>
             )}
             {ticket.replies.map((r) => (
               <div
                 key={r.id}
                 className={
                   r.from_you
-                    ? 'rounded-md bg-blue-50 p-3 text-sm'
-                    : 'rounded-md bg-gray-100 p-3 text-sm'
+                    ? 'rounded-md bg-info-soft p-3 text-sm'
+                    : 'rounded-md bg-muted p-3 text-sm'
                 }
               >
-                <p className="text-xs text-gray-500 mb-1">
+                <p className="text-xs text-fg-faint mb-1">
                   {/* Staff are described, never named: the server sends no
                       identity for a reply that is not the guest's own. */}
                   {r.from_you ? 'You' : 'Support'} ·{' '}
                   {new Date(r.created_at).toLocaleString()}
                 </p>
-                <TicketText text={r.body} format={r.body_format} className="text-gray-800" />
+                <TicketText text={r.body} format={r.body_format} className="text-fg" />
               </div>
             ))}
           </div>
@@ -205,7 +205,7 @@ export function GuestTicketViewPage() {
               nothing writes to it (#349). Said here rather than leaving a
               reply box that could only fail. */}
           {ticket.status === 'Closed' ? (
-            <div role="note" className="space-y-3 border-t pt-4 text-sm text-gray-600">
+            <div role="note" className="space-y-3 border-t pt-4 text-sm text-fg-muted">
               {/* Text only (#625): the follow-up has its own link, by email. */}
               <p>
                 This ticket is closed, so it can no longer be replied to.{' '}
@@ -214,7 +214,7 @@ export function GuestTicketViewPage() {
                   : 'If you still need help, you can open a follow-up ticket based on it.'}
               </p>
               {ticket.has_follow_up && !followUp.isSuccess ? null : followUp.isSuccess ? (
-                <p role="status" className="text-green-700">
+                <p role="status" className="text-success-fg">
                   Your follow-up ticket is{' '}
                   <span className="font-mono">{followUp.data}</span>. We have
                   emailed you a link to it.
@@ -230,7 +230,7 @@ export function GuestTicketViewPage() {
                     {followUp.isPending ? 'Creating…' : 'Create follow-up'}
                   </Button>
                   {followUp.isError && (
-                    <p role="alert" className="text-red-600">
+                    <p role="alert" className="text-danger-fg">
                       {followUp.error instanceof GuestFollowUpRateLimited
                         ? 'Too many attempts. Please wait a minute and try again.'
                         : 'We could not create a follow-up. One may already exist for this ticket; look for the email we sent you.'}
@@ -256,7 +256,7 @@ export function GuestTicketViewPage() {
               />
               <TextLimit value={reply} />
               {send.isError && (
-                <p role="alert" className="text-sm text-red-600">
+                <p role="alert" className="text-sm text-danger-fg">
                   We could not add your reply. The ticket may have been closed.
                 </p>
               )}
@@ -272,9 +272,9 @@ export function GuestTicketViewPage() {
                   has no attachment list), so this counts this visit's only. The
                   server holds the real cap and says so when it is reached. */}
               {attached.length >= perTicket ? (
-                <p className="text-sm text-gray-600">You have attached the most files that can be added to this ticket.</p>
+                <p className="text-sm text-fg-muted">You have attached the most files that can be added to this ticket.</p>
               ) : attached.length >= perHour ? (
-                <p className="text-sm text-gray-600">You have used this hour&apos;s uploads. Reload this page later to add more.</p>
+                <p className="text-sm text-fg-muted">You have used this hour&apos;s uploads. Reload this page later to add more.</p>
               ) : (
               <AttachmentUpload
                 maxFiles={Math.min(perTicket - attached.length, perHour - attached.length)}
@@ -291,12 +291,12 @@ export function GuestTicketViewPage() {
               />
               )}
               {attached.length > 0 && (
-                <p role="status" className="text-sm text-green-700 wrap-anywhere">
+                <p role="status" className="text-sm text-success-fg wrap-anywhere">
                   Attached: {attached.join(', ')}
                 </p>
               )}
               {uploadErrors.map((m, i) => (
-                <p key={i} role="alert" className="text-sm text-red-600 wrap-anywhere">{m}</p>
+                <p key={i} role="alert" className="text-sm text-danger-fg wrap-anywhere">{m}</p>
               ))}
             </div>
           )}
@@ -308,7 +308,7 @@ export function GuestTicketViewPage() {
 
 function Shell({ children }: { children: React.ReactNode }) {
   return (
-    <div className="min-h-screen bg-gray-50 flex items-start justify-center p-4">
+    <div className="min-h-screen bg-canvas flex items-start justify-center p-4">
       <div className="max-w-2xl w-full mt-8">{children}</div>
     </div>
   )

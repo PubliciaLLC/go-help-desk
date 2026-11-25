@@ -74,28 +74,28 @@ export function ResetPasswordPage() {
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-gray-50">
+    <div className="flex min-h-screen items-center justify-center bg-canvas">
       <Card className="w-full max-w-sm">
         <CardHeader>
           <CardTitle className="text-xl">Choose a new password</CardTitle>
         </CardHeader>
         <CardContent>
           {done ? (
-            <div className="space-y-3 text-sm text-gray-700">
+            <div className="space-y-3 text-sm text-fg-soft">
               <p role="status">
                 Your password has been changed. Sign in with your new password.
               </p>
               <p>
-                <Link to="/login" className="text-blue-600 hover:underline">
+                <Link to="/login" className="text-link hover:underline">
                   Go to sign in
                 </Link>
               </p>
             </div>
           ) : linkDead ? (
-            <div className="space-y-3 text-sm text-gray-700">
-              <p role="alert" className="text-red-600">{error}</p>
+            <div className="space-y-3 text-sm text-fg-soft">
+              <p role="alert" className="text-danger-fg">{error}</p>
               <p>
-                <Link to="/forgot-password" className="text-blue-600 hover:underline">
+                <Link to="/forgot-password" className="text-link hover:underline">
                   Request a new link
                 </Link>
               </p>
@@ -124,7 +124,7 @@ export function ResetPasswordPage() {
                   autoComplete="new-password"
                 />
               </div>
-              {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
+              {error && <p role="alert" className="text-sm text-danger-fg">{error}</p>}
               <Button type="submit" className="w-full" disabled={loading}>
                 {loading ? 'Saving…' : 'Change password'}
               </Button>

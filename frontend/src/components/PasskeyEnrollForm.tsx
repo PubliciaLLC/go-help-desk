@@ -17,7 +17,7 @@ export function PasskeyEnrollForm({ onEnrolled }: { onEnrolled: () => Promise<vo
 
   if (!browserSupportsPasskeys()) {
     return (
-      <p role="alert" className="text-sm text-red-600">
+      <p role="alert" className="text-sm text-danger-fg">
         Your administrator requires a passkey for your role, and this browser cannot create one.
         Use a current version of Chrome, Edge, Firefox or Safari, over HTTPS.
       </p>
@@ -41,7 +41,7 @@ export function PasskeyEnrollForm({ onEnrolled }: { onEnrolled: () => Promise<vo
 
   return (
     <form onSubmit={handleSubmit} className="space-y-4">
-      <p className="text-sm text-gray-600">
+      <p className="text-sm text-fg-muted">
         Your administrator requires a passkey for your role. Register one with your
         fingerprint, face, screen lock or a security key; you will use it each time you
         sign in.
@@ -58,7 +58,7 @@ export function PasskeyEnrollForm({ onEnrolled }: { onEnrolled: () => Promise<vo
           autoComplete="off"
         />
       </div>
-      {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
+      {error && <p role="alert" className="text-sm text-danger-fg">{error}</p>}
       <Button type="submit" className="w-full" disabled={loading}>
         {loading ? 'Waiting for your key…' : 'Register a passkey & sign in'}
       </Button>

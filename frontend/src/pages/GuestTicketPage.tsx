@@ -142,25 +142,25 @@ export function GuestTicketPage() {
 
   if (success) {
     return (
-      <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4">
+      <div className="min-h-screen bg-canvas flex items-center justify-center p-4">
         <div className="max-w-md w-full">
           <Card>
             <CardHeader>
-              <CardTitle className="text-lg text-green-700">Ticket submitted</CardTitle>
+              <CardTitle className="text-lg text-success-fg">Ticket submitted</CardTitle>
             </CardHeader>
-            <CardContent className="space-y-3 text-sm text-gray-700">
+            <CardContent className="space-y-3 text-sm text-fg-soft">
               <p>
                 Your request has been received. Your tracking number is:
               </p>
-              <p className="text-center text-2xl font-mono font-bold tracking-widest text-gray-900">
+              <p className="text-center text-2xl font-mono font-bold tracking-widest text-fg">
                 {success.trackingNumber}
               </p>
               {success.notice && (
-                <p role="status" className="rounded-md border border-amber-200 bg-amber-50 p-3 text-amber-900">
+                <p role="status" className="rounded-md border border-warning-border bg-warning-soft p-3 text-warning-fg-strong">
                   {success.notice}
                 </p>
               )}
-              <p className="text-gray-500">
+              <p className="text-fg-faint">
                 We have emailed you a link to follow the ticket. Keep this
                 number too — with your email address it will get you a fresh
                 link if you lose the first one.
@@ -189,11 +189,11 @@ export function GuestTicketPage() {
   }
 
   return (
-    <div className="min-h-screen bg-gray-50 flex items-start justify-center p-4 pt-12">
+    <div className="min-h-screen bg-canvas flex items-start justify-center p-4 pt-12">
       <div className="max-w-lg w-full space-y-6">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">Submit a request</h1>
-          <p className="mt-1 text-sm text-gray-500">
+          <h1 className="text-2xl font-bold text-fg">Submit a request</h1>
+          <p className="mt-1 text-sm text-fg-faint">
             Fill out the form below and we will get back to you shortly.
           </p>
         </div>
@@ -227,7 +227,7 @@ export function GuestTicketPage() {
               </div>
 
               <div className="space-y-1">
-                <Label htmlFor="phone">Phone <span className="text-gray-400 font-normal">(optional)</span></Label>
+                <Label htmlFor="phone">Phone <span className="text-fg-faint font-normal">(optional)</span></Label>
                 <Input
                   id="phone"
                   type="tel"
@@ -237,7 +237,7 @@ export function GuestTicketPage() {
                 />
               </div>
 
-              <hr className="border-gray-100" />
+              <hr className="border-border" />
 
               {/* Ticket details */}
               <div className="space-y-1">
@@ -283,7 +283,7 @@ export function GuestTicketPage() {
                 <div key={f.id} className="space-y-1">
                   <Label htmlFor={`cf-${f.id}`}>
                     {f.name}
-                    {f.required && <span className="ml-0.5 text-red-500"> *</span>}
+                    {f.required && <span className="ml-0.5 text-danger-fg"> *</span>}
                   </Label>
                   <GuestFieldInput
                     field={f}
@@ -294,7 +294,7 @@ export function GuestTicketPage() {
               ))}
 
               {fieldsQuery.isError && (
-                <div role="alert" className="space-y-2 text-sm text-red-600">
+                <div role="alert" className="space-y-2 text-sm text-danger-fg">
                   <p>The extra questions for this category could not be loaded. Try again in a moment.</p>
                   <Button type="button" variant="outline" size="sm" onClick={() => fieldsQuery.refetch()}>
                     Try again
@@ -302,7 +302,7 @@ export function GuestTicketPage() {
                 </div>
               )}
 
-              {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
+              {error && <p role="alert" className="text-sm text-danger-fg">{error}</p>}
 
               <Button type="submit" className="w-full" disabled={loading || fieldsPending || isOverLimit(description)}>
                 {loading ? 'Submitting…' : 'Submit request'}
