@@ -321,9 +321,11 @@ func TestSaveSAMLConfig_RegenerateFalseDoesNothing(t *testing.T) {
 	require.Equal(t, wantCert, cert)
 }
 
-// Two saves at once on a fresh install make one pair, and both see it.
+// Several saves at once on a fresh install make one pair, and every one of them
+// loads it. On a committed harness, with connections of their own: the ordinary
+// harness is one transaction, which overlapping requests cannot share.
 func TestSaveSAMLConfig_GeneratesOnceWhenSavesRace(t *testing.T) {
-	h, cleanup := newHarness(t)
+	h, cleanup := newCommittedHarness(t)
 	defer cleanup()
 	sess := adminSession(t, h)
 	idp := newFakeIdP(t, h.cfgBaseURL()+"/api/v1/auth/saml/acs")
@@ -333,12 +335,12 @@ func TestSaveSAMLConfig_GeneratesOnceWhenSavesRace(t *testing.T) {
 	start := make(chan struct{})
 	statuses := make([]int, racers)
 	for i := 0; i < racers; i++ {
+		// Each racer is its own browser: a response replaces the cookie jar.
+		own := &session{h: h, jar: append([]*http.Cookie(nil), sess.jar...)}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			<-start
-			// Each racer is its own browser: a response replaces the cookie jar.
-			own := &session{h: h, jar: append([]*http.Cookie(nil), sess.jar...)}
 			res, _ := own.send(t, http.MethodPut, samlPath, map[string]any{"metadata_url": idp.srv.URL})
 			statuses[i] = res.StatusCode
 		}()
@@ -346,13 +348,21 @@ func TestSaveSAMLConfig_GeneratesOnceWhenSavesRace(t *testing.T) {
 	close(start)
 	wg.Wait()
 
-	for _, s := range statuses {
-		require.Equal(t, http.StatusNoContent, s)
+	for i, s := range statuses {
+		require.Equal(t, http.StatusNoContent, s, "racer %d", i)
 	}
 	require.Len(t, h.entriesFor(t, "setting", samlCertEntity), 1, "one generation, however many saves raced")
 	cert, key := storedPair(t, h)
 	_, err := tls.X509KeyPair([]byte(cert), []byte(key))
 	require.NoError(t, err, "the certificate and key come from the same generation")
+
+	// Every save ended on that pair: SAML is loaded with it.
+	got := adminGet(t, sess, samlPath)
+	require.Equal(t, cert, got["cert_pem"])
+	require.Equal(t, true, got["live"])
+	meta := h.rawGet(t, "/api/v1/auth/saml/metadata", nil)
+	require.Equal(t, http.StatusOK, meta.StatusCode)
+	require.Contains(t, readBody(t, meta), base64.StdEncoding.EncodeToString(parsePEMCert(t, cert).Raw))
 }
 
 // The private key is in the database and in the running middleware, and nowhere
