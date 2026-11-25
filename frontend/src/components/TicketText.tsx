@@ -200,13 +200,13 @@ function FullText({ text, format, className }: Props) {
       ) : (
         <PlainText text={text} className={className} />
       )}
-      {refusal && <p className="mt-1 text-xs text-gray-500">Shown as plain text: {refusal}.</p>}
+      {refusal && <p className="mt-1 text-xs text-fg-faint">Shown as plain text: {refusal}.</p>}
       {text.trim() !== '' && (
         <button
           type="button"
           aria-pressed={flipped}
           onClick={() => setFlipped((f) => !f)}
-          className="mt-1 inline-flex min-h-6 items-center py-1 text-xs text-gray-500 underline hover:text-gray-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2"
+          className="mt-1 inline-flex min-h-6 items-center py-1 text-xs text-fg-faint underline hover:text-fg-soft focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2"
         >
           {format === 'markdown' ? 'Plain text' : 'Show formatted'}
         </button>
@@ -270,7 +270,7 @@ export function TicketText(props: Props) {
       ) : (
         <>
           <p className={cn(plainClass, className)}>{start}</p>
-          <p role="note" className="mt-1 text-xs text-gray-600">
+          <p role="note" className="mt-1 text-xs text-fg-muted">
             Showing the first {countChars(start).toLocaleString('en-US')} of {countChars(text).toLocaleString('en-US')} characters.
             This is only part of the post: copying here copies only that part.
           </p>
@@ -280,7 +280,7 @@ export function TicketText(props: Props) {
         type="button"
         aria-expanded={expanded}
         onClick={() => setExpanded((e) => !e)}
-        className="mt-1 inline-flex min-h-6 items-center py-1 text-xs text-gray-700 underline hover:text-gray-900 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2"
+        className="mt-1 inline-flex min-h-6 items-center py-1 text-xs text-fg-soft underline hover:text-fg focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2"
       >
         {expanded ? 'Show only the start' : `Show full text (${sizeOf(text)})`}
       </button>

@@ -102,11 +102,11 @@ export function ReportsPage() {
           <header className="space-y-1">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div className="min-w-0 space-y-1">
-                <h1 className="text-2xl font-bold text-gray-900">Reports</h1>
+                <h1 className="text-2xl font-bold text-fg">Reports</h1>
                 {resp && (
                   <>
-                    <p className="text-sm text-gray-700 wrap-anywhere">{periodLine(resp)}</p>
-                    <p className="text-sm text-gray-500 wrap-anywhere">{filterLine(resp.filters, names)}</p>
+                    <p className="text-sm text-fg-soft wrap-anywhere">{periodLine(resp)}</p>
+                    <p className="text-sm text-fg-faint wrap-anywhere">{filterLine(resp.filters, names)}</p>
                   </>
                 )}
               </div>
@@ -135,7 +135,7 @@ export function ReportsPage() {
               </div>
             </div>
             {boardImage.failed && (
-              <p data-export="skip" className="text-sm text-red-700">
+              <p data-export="skip" className="text-sm text-danger-fg">
                 {IMAGE_FAILED}
               </p>
             )}
@@ -152,7 +152,7 @@ export function ReportsPage() {
               <div
                 data-export="skip"
                 role="alert"
-                className="flex flex-wrap items-center gap-3 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800"
+                className="flex flex-wrap items-center gap-3 rounded-lg border border-danger-border bg-danger-soft px-4 py-3 text-sm text-danger-fg-strong"
               >
                 <span>The reports could not be loaded.</span>
                 <Button

@@ -4,9 +4,9 @@ import { fmtAgo } from '@/lib/format'
 import type { AttentionItem, AttentionReason, Status } from '@/api/types'
 
 const REASON: Record<Exclude<AttentionReason, 'reopened'>, { label: string; className: string }> = {
-  breached: { label: 'Breached', className: 'border-red-300 bg-red-50 text-red-800' },
-  at_risk: { label: 'At risk', className: 'border-amber-300 bg-amber-50 text-amber-800' },
-  unassigned: { label: 'Unassigned', className: 'border-gray-300 bg-gray-100 text-gray-700' },
+  breached: { label: 'Breached', className: 'border-danger-border bg-danger-soft text-danger-fg-strong' },
+  at_risk: { label: 'At risk', className: 'border-warning-border bg-warning-soft text-warning-fg-strong' },
+  unassigned: { label: 'Unassigned', className: 'border-border-strong bg-muted text-fg-muted' },
 }
 
 function ReasonBadge({ item, statuses }: { item: AttentionItem; statuses?: Status[] }) {
@@ -32,7 +32,7 @@ function ReasonBadge({ item, statuses }: { item: AttentionItem; statuses?: Statu
 // ticket content and wraps.
 export function NeedsAttention({ items, statuses }: { items: AttentionItem[]; statuses?: Status[] }) {
   if (items.length === 0) {
-    return <p className="text-sm text-gray-500">Nothing needs attention right now.</p>
+    return <p className="text-sm text-fg-faint">Nothing needs attention right now.</p>
   }
   return (
     <ul className="divide-y">
@@ -41,14 +41,14 @@ export function NeedsAttention({ items, statuses }: { items: AttentionItem[]; st
           <Link
             to="/tickets/$id"
             params={{ id: item.ticket.id }}
-            className="block space-y-1 py-2 hover:bg-gray-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 pointer-coarse:min-h-11"
+            className="block space-y-1 py-2 hover:bg-subtle focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring pointer-coarse:min-h-11"
           >
             <span className="flex flex-wrap items-center gap-2">
-              <span className="font-mono text-xs text-gray-500 wrap-anywhere">{item.ticket.tracking_number}</span>
+              <span className="font-mono text-xs text-fg-faint wrap-anywhere">{item.ticket.tracking_number}</span>
               <ReasonBadge item={item} statuses={statuses} />
             </span>
-            <span className="block text-sm font-medium text-gray-900 wrap-anywhere">{item.ticket.subject}</span>
-            <span className="block text-xs text-gray-500" title={new Date(item.since).toLocaleString()}>
+            <span className="block text-sm font-medium text-fg wrap-anywhere">{item.ticket.subject}</span>
+            <span className="block text-xs text-fg-faint" title={new Date(item.since).toLocaleString()}>
               {`${item.reason === 'reopened' ? 'reopened' : 'opened'} ${fmtAgo(item.since)}`}
             </span>
           </Link>

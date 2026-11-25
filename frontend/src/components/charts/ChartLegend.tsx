@@ -9,7 +9,7 @@ export interface ChartLegendItem {
 
 export function ChartLegend({ items }: { items: ChartLegendItem[] }) {
   return (
-    <ul className="flex flex-wrap gap-x-4 gap-y-1 text-sm text-gray-700">
+    <ul className="flex flex-wrap gap-x-4 gap-y-1 text-sm text-fg-soft">
       {items.map((item) => (
         <li key={item.label} className="flex items-center gap-1.5">
           <span aria-hidden="true" className={`inline-block size-2.5 rounded-sm bg-current ${TONE_CLASS[item.tone]}`} />

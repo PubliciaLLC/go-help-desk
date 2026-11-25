@@ -11,9 +11,9 @@ import { adminHealthItems, type HealthItem } from '@/lib/adminHealth'
 // what is true now, and the banner's Hide governs only the banner.
 
 const TONE: Record<HealthItem['severity'], string> = {
-  info: 'border-blue-200 bg-blue-50 text-blue-900',
-  amber: 'border-amber-200 bg-amber-50 text-amber-900',
-  red: 'border-red-200 bg-red-50 text-red-900',
+  info: 'border-info-border bg-info-soft text-info-fg-strong',
+  amber: 'border-warning-border bg-warning-soft text-warning-fg-strong',
+  red: 'border-danger-border bg-danger-soft text-danger-fg-strong',
 }
 
 export function AdminHealthCard() {
@@ -22,7 +22,7 @@ export function AdminHealthCard() {
 
   if (warnings.isError || settings.isError) {
     return (
-      <div role="alert" className="flex flex-wrap items-center gap-3 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
+      <div role="alert" className="flex flex-wrap items-center gap-3 rounded-lg border border-danger-border bg-danger-soft px-4 py-3 text-sm text-danger-fg-strong">
         <span>Health checks could not be loaded.</span>
         <Button
           variant="outline"
@@ -44,7 +44,7 @@ export function AdminHealthCard() {
 
   const items = adminHealthItems(warnings.data, settings.data)
   if (items.length === 0) {
-    return <p className="text-sm text-gray-500">No problems to report.</p>
+    return <p className="text-sm text-fg-faint">No problems to report.</p>
   }
 
   return (

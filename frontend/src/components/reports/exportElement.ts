@@ -1,6 +1,7 @@
 import { useCallback, useState } from 'react'
 import { contextBox, isTransparent, paintPng, readBoxes, type Measure } from '@/components/charts/exportImage'
 import { saveDataUrl } from '@/lib/saveFile'
+import { withLightTheme } from '@/lib/theme'
 
 // The glue between a Reports element on screen and a PNG file: read the
 // element's layout back as boxes, add the strip that says which period and
@@ -19,21 +20,41 @@ function canvasMeasure(): Measure {
 }
 
 // The colour behind an element: its own computed background-color, or its
-// nearest ancestor's that has one, so a dark page gives a dark image.
+// nearest ancestor's that has one. Read it inside withLightTheme (see
+// readLight below): the picture is always light.
 function backgroundOf(el: HTMLElement): string {
   for (let e: HTMLElement | null = el; e; e = e.parentElement) {
     const c = window.getComputedStyle(e).getPropertyValue('background-color')
     if (!isTransparent(c)) return c
   }
-  return '#ffffff'
+  return '#ffffff' // theme-ok: the export is always light, and this is the paper colour
+}
+
+// An image is always light (printing, pasting), whatever theme the person uses
+// (#709). The layout and the colours are read with the page's dark class taken
+// off and put back in the same task, so no frame is painted in between and
+// nothing flashes. data-theme-switching switches transitions off for the same
+// moment: a transition would otherwise report the dark colour it starts from.
+// paintPng is async and runs afterwards on values already read.
+function readLight(el: HTMLElement, contextLines: string[], measure: Measure) {
+  const html = document.documentElement
+  const hadFlag = html.hasAttribute('data-theme-switching')
+  html.setAttribute('data-theme-switching', '')
+  try {
+    return withLightTheme(() => {
+      const { width, height } = el.getBoundingClientRect()
+      const boxes = readBoxes(el, measure)
+      const strip = contextBox(contextLines, width, measure, height)
+      return { width, height, boxes, strip, background: backgroundOf(el) }
+    })
+  } finally {
+    if (!hadFlag) html.removeAttribute('data-theme-switching')
+  }
 }
 
 export async function exportElement(el: HTMLElement, contextLines: string[], filename: string): Promise<void> {
-  const measure = canvasMeasure()
-  const { width, height } = el.getBoundingClientRect()
-  const boxes = readBoxes(el, measure)
-  const strip = contextBox(contextLines, width, measure, height)
-  const url = await paintPng([...boxes, ...strip.boxes], width, height + strip.h, backgroundOf(el))
+  const { width, height, boxes, strip, background } = readLight(el, contextLines, canvasMeasure())
+  const url = await paintPng([...boxes, ...strip.boxes], width, height + strip.h, background)
   saveDataUrl(url, filename)
 }
 

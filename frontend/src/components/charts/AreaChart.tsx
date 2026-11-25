@@ -49,7 +49,7 @@ export function AreaChart({
   if (empty) {
     return (
       <figure>
-        <div className="flex items-center justify-center text-sm text-gray-500" style={{ height }}>
+        <div className="flex items-center justify-center text-sm text-fg-faint" style={{ height }}>
           {emptyText}
         </div>
         <figcaption className="mt-2">
@@ -66,7 +66,7 @@ export function AreaChart({
   return (
     <figure>
       <div className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-2">
-        <div className="text-right text-xs tabular-nums text-gray-500" style={{ height }}>
+        <div className="text-right text-xs tabular-nums text-fg-faint" style={{ height }}>
           {formatValue(max)}
         </div>
         <svg
@@ -105,7 +105,7 @@ export function AreaChart({
           />
         </svg>
         <span aria-hidden="true" />
-        <div className="mt-1 flex justify-between text-xs text-gray-500">
+        <div className="mt-1 flex justify-between text-xs text-fg-faint">
           <span>{formatLabel(first)}</span>
           <span>{formatLabel(last)}</span>
         </div>

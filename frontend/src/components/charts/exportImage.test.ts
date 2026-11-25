@@ -28,8 +28,8 @@ function stubStyles(styles: Map<Element, Record<string, string>>, fallback: Reco
 describe('inlineSvg', () => {
   function svgWith() {
     document.body.innerHTML =
-      '<svg viewBox="0 0 100 84" preserveAspectRatio="none" class="block text-blue-600" style="height:84px">' +
-      '<g class="text-blue-600"><rect class="bar" style="fill:red" x="0" y="5" width="50" height="18" fill="currentColor"/></g></svg>'
+      '<svg viewBox="0 0 100 84" preserveAspectRatio="none" class="block text-chart-blue" style="height:84px">' +
+      '<g class="text-chart-blue"><rect class="bar" style="fill:red" x="0" y="5" width="50" height="18" fill="currentColor"/></g></svg>'
     return document.querySelector('svg')! as SVGSVGElement
   }
 
@@ -80,7 +80,7 @@ describe('inlineSvg', () => {
     const svg = svgWith()
     stubStyles(new Map(), { fill: 'rgb(0, 0, 0)' })
     inlineSvg(svg, 10, 10)
-    expect(svg.getAttribute('class')).toBe('block text-blue-600')
+    expect(svg.getAttribute('class')).toBe('block text-chart-blue')
     expect(svg.querySelector('rect')!.getAttribute('fill')).toBe('currentColor')
   })
 })

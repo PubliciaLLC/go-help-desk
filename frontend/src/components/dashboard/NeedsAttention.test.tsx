@@ -65,9 +65,9 @@ describe('NeedsAttention rows', () => {
   })
 
   const badges = [
-    { reason: 'breached' as const, text: 'Breached', cls: 'red' },
-    { reason: 'at_risk' as const, text: 'At risk', cls: 'amber' },
-    { reason: 'unassigned' as const, text: 'Unassigned', cls: 'gray' },
+    { reason: 'breached' as const, text: 'Breached', cls: 'bg-danger-soft' },
+    { reason: 'at_risk' as const, text: 'At risk', cls: 'bg-warning-soft' },
+    { reason: 'unassigned' as const, text: 'Unassigned', cls: 'bg-muted' },
   ]
   it.each(badges)('labels a $reason row $text', ({ reason, text, cls }) => {
     render(<NeedsAttention items={[item(reason)]} statuses={STATUSES} />)
