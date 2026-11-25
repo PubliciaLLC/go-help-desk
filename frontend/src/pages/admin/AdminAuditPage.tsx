@@ -110,13 +110,13 @@ export function AdminAuditPage() {
     <Layout>
       <div className="space-y-6">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">Audit Log</h1>
-          <p className="mt-1 text-sm text-gray-500">
+          <h1 className="text-2xl font-bold text-fg">Audit Log</h1>
+          <p className="mt-1 text-sm text-fg-faint">
             Every recorded change, across tickets, accounts and settings.
           </p>
         </div>
 
-        <div className="grid grid-cols-2 gap-4 rounded-lg border bg-white p-4 md:grid-cols-3 lg:grid-cols-6">
+        <div className="grid grid-cols-2 gap-4 rounded-lg border bg-card p-4 md:grid-cols-3 lg:grid-cols-6">
           <div className="space-y-1">
             <Label htmlFor="audit-entity-type">Entity type</Label>
             <Select
@@ -178,7 +178,7 @@ export function AdminAuditPage() {
             />
           </div>
           {rangeRefusal && (
-            <p role="alert" className="col-span-full text-sm text-red-600">{rangeRefusal}</p>
+            <p role="alert" className="col-span-full text-sm text-danger-fg">{rangeRefusal}</p>
           )}
           <div className="flex items-center gap-2 col-span-full">
             <input
@@ -193,7 +193,7 @@ export function AdminAuditPage() {
 
         {filters.q.trim() && data?.details_skipped_reason && (
           // The date pickers it points at are the From and To above.
-          <p className="-mt-3 text-sm text-gray-500">
+          <p className="-mt-3 text-sm text-fg-faint">
             Pick a date range of up to {DETAILS_SEARCH_MAX_DAYS} days to also search inside change details
           </p>
         )}
@@ -204,15 +204,15 @@ export function AdminAuditPage() {
           // Nothing to show. That includes a changed filter or page: each is its own
           // query key with no placeholderData, so it never inherits the last results.
           // A failed refresh with results already loaded is the notice below.
-          <p role="alert" className="text-sm text-red-600">Could not load the audit log.</p>
+          <p role="alert" className="text-sm text-danger-fg">Could not load the audit log.</p>
         ) : (
           <>
             {isError && (
-              <p role="alert" className="text-sm text-red-600">Couldn't refresh the results. Showing what was loaded before.</p>
+              <p role="alert" className="text-sm text-danger-fg">Couldn't refresh the results. Showing what was loaded before.</p>
             )}
-            <div className="rounded-lg border bg-white overflow-x-auto">
+            <div className="rounded-lg border bg-card overflow-x-auto">
               <table className="w-full text-sm">
-                <thead className="bg-gray-50 text-xs text-gray-500 uppercase">
+                <thead className="bg-subtle text-xs text-fg-faint uppercase">
                   <tr>
                     <th className="px-4 py-3 text-left">When</th>
                     <th className="px-4 py-3 text-left">Entity</th>
@@ -223,14 +223,14 @@ export function AdminAuditPage() {
                 <tbody className="divide-y">
                   {entries.map((e: AdminAuditEntry) => (
                     <tr key={e.id} className="align-top">
-                      <td className="whitespace-nowrap px-4 py-3 text-gray-500">
+                      <td className="whitespace-nowrap px-4 py-3 text-fg-faint">
                         {new Date(e.created_at).toLocaleString()}
                       </td>
-                      <td className="px-4 py-3 text-gray-600">
+                      <td className="px-4 py-3 text-fg-muted">
                         <span className="font-mono text-xs">{e.entity_type}</span>
                       </td>
                       <td className="px-4 py-3">
-                        <span className="font-medium text-gray-900">{isReplyAction(e.action) ? replyActionLabel(e.action) : (followEntryLabel(e) ?? labelFor(e.action))}</span>
+                        <span className="font-medium text-fg">{isReplyAction(e.action) ? replyActionLabel(e.action) : (followEntryLabel(e) ?? labelFor(e.action))}</span>
                         {e.entity_type === 'custom_field' && <CustomFieldAuditContext before={e.before} after={e.after} />}
                         {(e.entity_type === 'oauth_client' || e.entity_type === 'webhook') && (
                           <CredentialAuditContext entityType={e.entity_type} before={e.before} after={e.after} />
@@ -239,16 +239,16 @@ export function AdminAuditPage() {
                         {!isFollowAction(e.action) && !isReplyAction(e.action) && <AuditDiff before={e.before} after={e.after} names={e.names} />}
                         {e.entity_type === 'email_template' && e.before && !e.after && <RemovedTemplateText before={e.before} />}
                       </td>
-                      <td className="px-4 py-3 text-gray-600 wrap-anywhere">
+                      <td className="px-4 py-3 text-fg-muted wrap-anywhere">
                         {e.actor_masked
-                          ? <span className="italic text-gray-500"><EyeOffIcon aria-hidden="true" className="mr-1 inline h-3.5 w-3.5" />Requester (name hidden)</span>
+                          ? <span className="italic text-fg-faint"><EyeOffIcon aria-hidden="true" className="mr-1 inline h-3.5 w-3.5" />Requester (name hidden)</span>
                           : (e.actor_name || (isReplyAction(e.action) ? (e.actor_id ? 'Someone' : 'A guest') : '—'))}
                       </td>
                     </tr>
                   ))}
                   {entries.length === 0 && (
                     <tr>
-                      <td colSpan={4} className="px-4 py-8 text-center text-gray-400">
+                      <td colSpan={4} className="px-4 py-8 text-center text-fg-faint">
                         Nothing matches these filters.
                       </td>
                     </tr>
@@ -258,7 +258,7 @@ export function AdminAuditPage() {
             </div>
 
             <div className="flex items-center justify-between">
-              <p className="text-sm text-gray-500">
+              <p className="text-sm text-fg-faint">
                 {entries.length === 0
                   ? ''
                   : `${fmt(offset + 1)}–${fmt(offset + entries.length)} of ${totalLabel}`}
@@ -296,7 +296,7 @@ function RemovedTemplateText({ before }: { before: Record<string, unknown> }) {
   const body = typeof before.template_body === 'string' ? before.template_body : ''
   const html = typeof before.template_html === 'string' ? before.template_html : ''
   return (
-    <div className="mt-1 border-l-2 border-gray-100 pl-2 text-gray-500">
+    <div className="mt-1 border-l-2 border-border pl-2 text-fg-faint">
       <p>Removed text:</p>
       {subject && <p className="wrap-anywhere"><span className="font-mono">template_subject</span>: {subject}</p>}
       <pre className="whitespace-pre-wrap font-mono text-xs [overflow-wrap:anywhere]">{body}</pre>

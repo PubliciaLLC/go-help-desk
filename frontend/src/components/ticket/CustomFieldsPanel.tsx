@@ -78,12 +78,12 @@ export function CustomFieldsPanel({
     return isStaffOrAdmin ? (
       <Card>
         <CardHeader className="pb-2">
-          <CardTitle className="text-xs font-semibold uppercase tracking-wider text-gray-400">
+          <CardTitle className="text-xs font-semibold uppercase tracking-wider text-fg-faint">
             Custom Fields
           </CardTitle>
         </CardHeader>
         <CardContent>
-          <p role="alert" className="text-xs text-red-600">Couldn't load custom fields.</p>
+          <p role="alert" className="text-xs text-danger-fg">Couldn't load custom fields.</p>
         </CardContent>
       </Card>
     ) : null
@@ -240,12 +240,12 @@ export function CustomFieldsPanel({
     <Card>
       <CardHeader className="pb-2">
         <div className="flex items-center justify-between">
-          <CardTitle className="text-xs font-semibold uppercase tracking-wider text-gray-400">
+          <CardTitle className="text-xs font-semibold uppercase tracking-wider text-fg-faint">
             Custom Fields
           </CardTitle>
           {canEdit && !editValues && (
             <button
-              className="min-h-6 rounded px-2 py-1 text-xs text-blue-600 hover:underline"
+              className="min-h-6 rounded px-2 py-1 text-xs text-link hover:underline"
               onClick={() => {
                 const init: Record<string, string> = {}
                 for (const r of rows) if (r.editable) init[r.id] = r.value
@@ -260,16 +260,16 @@ export function CustomFieldsPanel({
       <CardContent className="space-y-3 text-sm">
         {rows.map((r) => (
           <div key={r.id} className="space-y-0.5">
-            <Label htmlFor={`custom-field-${r.id}`} className="text-xs text-gray-500 wrap-anywhere">
+            <Label htmlFor={`custom-field-${r.id}`} className="text-xs text-fg-faint wrap-anywhere">
               {r.name}
             </Label>
             {r.inactive && isStaffOrAdmin && (
-              <span className="ml-2 rounded bg-gray-100 px-1.5 py-0.5 text-xs text-gray-500">Inactive</span>
+              <span className="ml-2 rounded bg-muted px-1.5 py-0.5 text-xs text-fg-muted">Inactive</span>
             )}
             {r.editable && editValues ? (
               renderInput(r)
             ) : (
-              <p className="text-sm wrap-anywhere">{r.value || <span className="text-gray-400">—</span>}</p>
+              <p className="text-sm wrap-anywhere">{r.value || <span className="text-fg-faint">—</span>}</p>
             )}
           </div>
         ))}
@@ -294,11 +294,11 @@ export function CustomFieldsPanel({
           </div>
         )}
         {resolveNotice && (
-          <p role="alert" className="text-xs text-red-600">
+          <p role="alert" className="text-xs text-danger-fg">
             Couldn't load this ticket's fields, so they can't be edited. Reload to try again.
           </p>
         )}
-        {saveError && <p role="alert" className="text-xs text-red-600">{saveError}</p>}
+        {saveError && <p role="alert" className="text-xs text-danger-fg">{saveError}</p>}
       </CardContent>
     </Card>
   )

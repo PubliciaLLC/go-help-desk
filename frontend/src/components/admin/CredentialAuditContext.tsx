@@ -30,5 +30,5 @@ export function CredentialAuditContext({
       : [pick('url_host'), pick('events')]
   const line = parts.filter(Boolean).join(' · ')
   if (!line) return null
-  return <p className="mt-0.5 text-gray-600 wrap-anywhere">{line}</p>
+  return <p className="mt-0.5 text-fg-muted wrap-anywhere">{line}</p>
 }

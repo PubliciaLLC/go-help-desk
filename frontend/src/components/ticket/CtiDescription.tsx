@@ -27,7 +27,7 @@ export function CtiDescription({
   const text = mostSpecificDescription(category, type, item)
   return (
     <div id={id} aria-live="polite">
-      {text && <p className="mt-2 whitespace-pre-line wrap-anywhere text-sm text-gray-600">{text}</p>}
+      {text && <p className="mt-2 whitespace-pre-line wrap-anywhere text-sm text-fg-muted">{text}</p>}
     </div>
   )
 }

@@ -54,35 +54,35 @@ export function AuditFeed({ ticketId }: AuditFeedProps) {
   return (
     <Card>
       <CardHeader className="pb-2">
-        <CardTitle className="text-xs font-semibold uppercase tracking-wider text-gray-400">
+        <CardTitle className="text-xs font-semibold uppercase tracking-wider text-fg-faint">
           Activity
         </CardTitle>
       </CardHeader>
       <CardContent>
-        {isLoading && <p className="text-xs text-gray-400">Loading…</p>}
-        {isError && <p className="text-xs text-red-600">Could not load activity</p>}
+        {isLoading && <p className="text-xs text-fg-faint">Loading…</p>}
+        {isError && <p className="text-xs text-danger-fg">Could not load activity</p>}
         {!isLoading && !isError && entries.length === 0 && (
-          <p className="text-xs text-gray-400">Nothing recorded yet</p>
+          <p className="text-xs text-fg-faint">Nothing recorded yet</p>
         )}
         <ul className="space-y-2">
           {entries.map((e) => isReplyAction(e.action) ? (
             // "<who> replied publicly": the sentence is the whole entry. Its
             // diff is only the reply's id, which means nothing to a reader.
-            <li key={e.id} className="text-xs text-gray-700 wrap-anywhere">
+            <li key={e.id} className="text-xs text-fg-soft wrap-anywhere">
               {e.action === 'note_added'
-                ? <LockIcon aria-hidden="true" className="mr-1 inline h-3 w-3 text-gray-400" />
-                : <MessageSquareIcon aria-hidden="true" className="mr-1 inline h-3 w-3 text-gray-400" />}
+                ? <LockIcon aria-hidden="true" className="mr-1 inline h-3 w-3 text-fg-faint" />
+                : <MessageSquareIcon aria-hidden="true" className="mr-1 inline h-3 w-3 text-fg-faint" />}
               {e.actor_masked
                 ? <span className="italic"><EyeOffIcon aria-hidden="true" className="mr-0.5 inline h-3 w-3" />Requester (name hidden)</span>
                 : <span className="font-medium">{e.actor_name || (e.actor_id ? 'Someone' : 'A guest')}</span>}
               {' '}
               <span>{replyActionVerb(e.action)}</span>
-              <span className="block text-gray-400">
+              <span className="block text-fg-faint">
                 {new Date(e.created_at).toLocaleString()}
               </span>
             </li>
           ) : (
-            <li key={e.id} className="text-xs text-gray-700 wrap-anywhere">
+            <li key={e.id} className="text-xs text-fg-soft wrap-anywhere">
               <span className="font-medium">{labelForEntry(e)}</span>
               {e.actor_name && (
                 <>
@@ -92,7 +92,7 @@ export function AuditFeed({ ticketId }: AuditFeedProps) {
                     : <span className="font-medium">{e.actor_name}</span>}
                 </>
               )}
-              <span className="block text-gray-400">
+              <span className="block text-fg-faint">
                 {new Date(e.created_at).toLocaleString()}
               </span>
               {/* A follow entry's diff only repeats what its label says. */}
