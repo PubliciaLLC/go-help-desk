@@ -21,23 +21,25 @@ Go Help Desk is an open-source ticket management system. Staff submit and track 
 ## Features
 
 - CTI classification (Category → Type → Item), custom statuses, linked tickets, and follow-up tickets for closed ones
+- Optional descriptions on categories, types and items, shown beneath the Category, Type and Item chooser
 - Local, SAML 2.0 and OIDC sign-in; TOTP or passkey as a second factor
 - Roles (Admin, Staff, User), groups, and group scoping by CTI category
 - Guest submission and self-service signup, both off by default
 - Custom fields, tags, canned responses, and full-text search
-- Optional SLA tracking; resolved tickets close automatically after a configurable reopen window
-- A dashboard with your queue, the tickets that need attention, and a 30-day created-and-resolved trend
+- Optional SLA tracking, with email and webhook alerts when a target is breached or at risk; resolved tickets close automatically after a configurable reopen window
+- A dashboard with your queue; staff and administrators also get the tickets that need attention and a 30-day created-and-resolved trend
 - Reports for staff and administrators: time to resolve, first response, SLA attainment, reopens, backlog and volume, exported as CSV or PNG
 - API keys for administrators, and for staff when an administrator allows it. Every new key expires, and keys cannot create keys or write users
 - Markdown in tickets: a formatting editor, strict rendering (no raw HTML, no images), and older text left as plain text
 - Staff can file a ticket for a requester, an existing user or a typed email address, and mark it as a phone call
 - Each ticket records how it arrived (web, API, MCP, guest form or phone); staff see it, requesters do not
-- Ticket list views in the sidebar: Assigned to Me, My Group's Tickets, Available, and Search over every ticket you can see
+- For staff and administrators, ticket list views in the sidebar: Assigned to Me, My Group's Tickets, Available (when an administrator allows it), and Search over every ticket you can see
 - Readable audit log with opt-in retention
 - Email notifications, queued with retries. Staff are emailed about their tickets and can follow a ticket
+- Staff and administrators can add other staff members and administrators as followers of a ticket, and remove followers
 - Administrators can edit the wording of all 24 emails, plus a shared header and footer, with a live check and a test send. Each can have an optional HTML part. Never ticket content
 - Reopened tickets are flagged, raised one priority level the first time, and get a fresh SLA clock; staff can change a ticket's priority
-- Webhooks (Slack, Teams, Discord and JIRA formats, or raw JSON), one delivery per change, retried on failure, with a delivery history and an optional ticket filter
+- Webhooks (Slack, Teams, Discord and JIRA formats, or raw JSON; Slack and Teams new-ticket messages show the classification and the group or assignee), one delivery per change, retried on failure, with a delivery history and an optional ticket filter
 - Attachments: content detection, optional ClamAV scanning and reputation lookups, download only
 - REST API (OpenAPI 3.1 reference on the website) and an MCP server for AI assistant integration
 
