@@ -2,6 +2,8 @@
 export type TextFormat = 'plain' | 'markdown'
 
 export type Role = 'admin' | 'staff' | 'user'
+/** How the person wants the web UI to look (#709). `device` follows the browser's colour scheme. */
+export type ThemePreference = 'light' | 'dark' | 'device'
 export type Priority = 'critical' | 'high' | 'medium' | 'low'
 export type LinkType = 'related_to' | 'parent_child' | 'caused_by' | 'duplicate_of'
 
@@ -13,6 +15,9 @@ export interface User {
   mfa_enabled: boolean
   created_at: string
   updated_at: string
+  /** The person's appearance choice (#709). Optional: a server from before it
+   *  existed omits it, and absent means "unknown, keep what this browser has". */
+  theme?: ThemePreference
   /** Staff-email switches (#441). Optional so a profile from before they
    *  existed reads as on, which is also what the server defaults them to. */
   email_notify_assigned?: boolean

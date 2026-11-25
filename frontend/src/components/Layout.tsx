@@ -11,6 +11,7 @@ import { clearDismissedNotices } from '@/lib/noticeDismissal'
 import { VIEW_NAME, type View } from '@/lib/ticketSearch'
 import { BrandLogo } from '@/components/BrandLogo'
 import { Button } from '@/components/ui/button'
+import { ThemeSwitch } from '@/components/theme/ThemeSwitch'
 import { TicketIcon, UsersIcon, SettingsIcon, LogOutIcon, HomeIcon, FolderIcon, CircleDotIcon, ShieldIcon, UsersRoundIcon, TagIcon, SlidersIcon, KeyIcon, MessageSquareTextIcon, PlugIcon, WebhookIcon, RouteIcon, MenuIcon,
   UserIcon, HistoryIcon, MailIcon, ChevronDownIcon, WrenchIcon, ChartColumnIcon,
   ToggleRightIcon, PaletteIcon, PaperclipIcon, DoorOpenIcon, LockIcon, EyeOffIcon,
@@ -375,10 +376,15 @@ function SidebarContent({ user, adminNav, branding, onNavigate, onLogout }: Side
           onNavigate={onNavigate}
           dense
         />
-        <Button variant="ghost" size="sm" className="h-7 w-full justify-start gap-2 pointer-coarse:h-8" onClick={onLogout}>
-          <LogOutIcon className="h-4 w-4" />
-          Sign out
-        </Button>
+        {/* The appearance switch (#709) shares the Sign out row, so the sidebar
+            is no taller. Sign out gives up the width the switch needs. */}
+        <div className="flex items-center gap-1">
+          <Button variant="ghost" size="sm" className="h-7 min-w-0 flex-1 justify-start gap-2 pointer-coarse:h-8" onClick={onLogout}>
+            <LogOutIcon className="h-4 w-4" />
+            Sign out
+          </Button>
+          <ThemeSwitch variant="icons" />
+        </div>
       </div>
     </>
   )
