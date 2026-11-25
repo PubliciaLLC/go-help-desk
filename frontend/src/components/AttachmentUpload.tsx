@@ -35,14 +35,14 @@ function formatBytes(bytes: number): string {
 
 function statusIcon(state?: UploadState) {
   if (!state) return null
-  if (state.status === 'uploading') return <span className="text-xs text-blue-600 shrink-0">Uploading…</span>
-  if (state.status === 'done') return <span className="text-xs text-green-600 shrink-0">Done</span>
+  if (state.status === 'uploading') return <span className="text-xs text-info-fg shrink-0">Uploading…</span>
+  if (state.status === 'done') return <span className="text-xs text-success-fg shrink-0">Done</span>
   if (state.status === 'error') return (
-    <span role="alert" className="text-xs text-red-600 shrink-0" title={state.error}>
+    <span role="alert" className="text-xs text-danger-fg shrink-0" title={state.error}>
       {state.error ?? 'Failed'}
     </span>
   )
-  return <span className="text-xs text-gray-400 shrink-0">Queued</span>
+  return <span className="text-xs text-fg-faint shrink-0">Queued</span>
 }
 
 export function AttachmentUpload({ files, onChange, uploadStates, disabled, maxFiles = 5, maxBytes = MAX_SIZE_BYTES, stateKey, maxFilesNote }: AttachmentUploadProps) {
@@ -92,7 +92,7 @@ export function AttachmentUpload({ files, onChange, uploadStates, disabled, maxF
         >
           Add files
         </Button>
-        <span className="text-xs text-gray-500">
+        <span className="text-xs text-fg-faint">
           {atLimit
             ? `${maxFiles} file limit reached`
             : `PDF, DOCX, XLSX, TXT, LOG, JPEG, PNG, BMP \u00b7 max ${Math.floor(maxBytes / MB)}\u00a0MB \u00b7 ${maxFilesNote ?? `up to ${maxFiles} files`}`}
@@ -100,19 +100,19 @@ export function AttachmentUpload({ files, onChange, uploadStates, disabled, maxF
       </div>
 
       {files.length > 0 && (
-        <ul className="divide-y divide-gray-100 rounded-md border border-gray-200 text-sm">
+        <ul className="divide-y divide-border rounded-md border border-border text-sm">
           {files.map((f, i) => {
             const state = uploadStates?.[stateKey ? stateKey(f, i) : f.name]
             return (
               <li key={i} className="flex items-center gap-2 px-3 py-2">
-                <span className="flex-1 truncate text-gray-800" title={f.name}>{f.name}</span>
-                <span className="shrink-0 text-xs text-gray-400">{formatBytes(f.size)}</span>
+                <span className="flex-1 truncate text-fg" title={f.name}>{f.name}</span>
+                <span className="shrink-0 text-xs text-fg-faint">{formatBytes(f.size)}</span>
                 {isUploading ? (
                   statusIcon(state)
                 ) : (
                   <button
                     type="button"
-                    className="shrink-0 text-xs text-gray-400 hover:text-red-600"
+                    className="shrink-0 text-xs text-fg-faint hover:text-danger-fg"
                     onClick={() => remove(i)}
                   >
                     ✕

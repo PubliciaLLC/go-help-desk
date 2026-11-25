@@ -17,7 +17,7 @@ export function ReopenedBadge({
     <span
       data-testid="reopened-badge"
       title="This ticket was reopened after it had been resolved."
-      className="inline-flex items-center rounded-full border border-amber-300 bg-amber-50 px-2 py-0.5 text-xs font-medium text-amber-800"
+      className="inline-flex items-center rounded-full border border-warning-border bg-warning-soft px-2 py-0.5 text-xs font-medium text-warning-fg-strong"
     >
       Reopened
     </span>

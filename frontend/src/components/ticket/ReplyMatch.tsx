@@ -18,12 +18,12 @@ export function ReplyMatchLine({ match }: { match: ReplyMatch }) {
   const label = `${match.internal ? 'Internal note' : 'Public reply'}${when ? ` · ${when}` : ''}`
   const Icon = match.internal ? LockIcon : MessageSquareIcon
   return (
-    <div className="mt-1 flex items-baseline gap-1.5 text-xs font-normal text-gray-600">
-      <Icon aria-hidden="true" className="relative top-0.5 h-3 w-3 shrink-0 text-gray-400" />
+    <div className="mt-1 flex items-baseline gap-1.5 text-xs font-normal text-fg-muted">
+      <Icon aria-hidden="true" className="relative top-0.5 h-3 w-3 shrink-0 text-fg-faint" />
       <span
         className={
           'whitespace-nowrap ' +
-          (match.internal ? 'rounded border border-amber-300 bg-amber-50 px-1 text-amber-800' : 'text-gray-500')
+          (match.internal ? 'rounded border border-warning-border bg-warning-soft px-1 text-warning-fg-strong' : 'text-fg-faint')
         }
       >
         {label}
@@ -31,7 +31,7 @@ export function ReplyMatchLine({ match }: { match: ReplyMatch }) {
       <span className="min-w-0 wrap-anywhere">
         {splitSnippet(match.snippet).map((p, i) =>
           p.match ? (
-            <mark key={i} className="rounded-sm bg-yellow-200 px-px text-inherit">
+            <mark key={i} className="rounded-sm bg-highlight px-px text-inherit">
               {p.text}
             </mark>
           ) : (
