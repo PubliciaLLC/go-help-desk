@@ -353,11 +353,17 @@ needs-attention list and a 30-day created-and-resolved trend. Neither adds a
 table.
 
 **Gap (still open).** No first-contact resolution; no scheduled or emailed
-reports; no volume cut by channel or by agent (the Reports page cuts by
-category and priority only).
+reports; no volume cut by channel or by agent. The Reports page breaks volume
+down by category and priority only. The channel is recorded on every ticket
+(`source_channel`, 1.3) but not reported. The workload cards count open
+tickets by assignee and group, which is not volume handled.
 
 **Assessment.** The read side is built. What remains is smaller. Scheduled
-reports need a schedule and the notification outbox (v1.4; §6, finding B).
+reports are the one piece that needs new machinery (v1.4): a report job, a
+recipient list, and a rendering of the report that can be mailed. The two
+things such a job would run on already exist: the scheduler that runs the SLA
+and auto-close sweeps, and the notification outbox that carries email and
+webhooks (§5, finding B).
 
 ---
 
@@ -453,11 +459,19 @@ four at once. It is currently gated behind **v4 / SaaS**, which ties an
 open-source data-model decision to a commercial packaging decision — the two do
 not obviously belong together. **[roadmap decision]**
 
-**B. There is no background job runner.** Auto-close, SLA breach evaluation,
+**B. There was no background job runner.** Auto-close, SLA breach evaluation,
 breach escalation, scheduled reports, inbound email polling and change-window
-reminders all require one. None work today, and two of them (auto-close, SLA
-breach) are already described in `DESIGN.md` as working. One small scheduler
-unblocks several practices at once and fixes two spec divergences.
+reminders all require one. At the time none worked, and two of them
+(auto-close, SLA breach) were already described in `DESIGN.md` as working. One
+small scheduler unblocks several practices at once and fixes two spec
+divergences.
+
+*Since then (1.3).* A scheduler runs: the SLA sweep every minute
+(`runSLASweepTick` in `cmd/server/main.go`, #126, #670) and auto-close every
+five. Notifications go through a database outbox with retries (migration
+000031), so email and webhooks are queued, not sent in the request. What is
+still unbuilt is what would run on them: breach escalation (#408), scheduled
+reports, inbound email polling and change-window reminders.
 
 **C. There is no approval primitive.** Service Requests and Change Enablement
 both need it and neither can start without it. One generic `approvals` table
