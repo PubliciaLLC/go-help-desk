@@ -1755,8 +1755,7 @@ updates an installed app's icon and name from the manifest on its own
 schedule (Chrome checks when the app is opened, at most about daily), so a
 change reaches new installs at once and existing ones later or not at all.
 
-**Upgrading.** Migration `0000NN_site_icon` (the number is assigned when it
-merges) creates the two empty tables. Until someone uploads an icon, an
+**Upgrading.** Migration `000070_site_icon` creates the two empty tables. Until someone uploads an icon, an
 upgraded instance shows the same tab icon and title as before; the shell gains
 the manifest link (so a browser may now offer to install the site) and
 `apple-mobile-web-app-title` (the site name, which iOS used anyway). Rolling the
