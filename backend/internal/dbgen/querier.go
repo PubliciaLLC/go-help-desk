@@ -1373,6 +1373,10 @@ type Querier interface {
 	// machine credentials, and it is the one that can leave an instance with no
 	// administrator.
 	SetUserRoleUnlessLastAdmin(ctx context.Context, arg SetUserRoleUnlessLastAdminParams) (uuid.UUID, error)
+	// The person's own appearance choice (#709): light, dark or device.
+	// Narrow for the reason SetUserEmailPreferences is: UpdateUser writes a whole
+	// row from an earlier read. updated_at is left alone; the account did not change.
+	SetUserTheme(ctx context.Context, arg SetUserThemeParams) (int64, error)
 	// A tag that is already deleted keeps its original deleted_at but still counts
 	// as found, so only an unknown id reports zero rows.
 	SoftDeleteTag(ctx context.Context, id uuid.UUID) (int64, error)

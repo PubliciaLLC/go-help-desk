@@ -69,7 +69,29 @@ type User struct {
 	EmailNotifyActivity bool `json:"email_notify_activity"`
 	EmailNotifyGroup    bool `json:"email_notify_group"`
 	EmailNotifySLA      bool `json:"email_notify_sla"`
+
+	// Theme is how this person wants the web UI to look (#709). Only they
+	// change it (PATCH /me/appearance); the whole-row Update does not write it.
+	// Read-only in the administrator's views. A service account has the column
+	// and never uses it.
+	Theme Theme `json:"theme"`
 }
+
+// Theme is how the person wants the web UI to look (#709).
+type Theme string
+
+const (
+	ThemeLight  Theme = "light"
+	ThemeDark   Theme = "dark"
+	ThemeDevice Theme = "device" // follow the browser's prefers-color-scheme
+)
+
+// Valid reports whether t is one of the three choices. The database's CHECK and
+// the browser's own storage reading use the same three.
+func (t Theme) Valid() bool { return t == ThemeLight || t == ThemeDark || t == ThemeDevice }
+
+// ErrInvalidTheme is returned for any other value.
+var ErrInvalidTheme = errors.New("theme must be light, dark or device")
 
 // IsActive returns true when the user is neither disabled nor soft-deleted.
 func (u User) IsActive() bool { return !u.Disabled && u.DeletedAt == nil }

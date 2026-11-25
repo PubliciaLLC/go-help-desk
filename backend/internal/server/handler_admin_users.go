@@ -43,6 +43,9 @@ type adminUserSummary struct {
 	MFAEnabled     bool      `json:"mfa_enabled"`
 	CreatedAt      time.Time `json:"created_at"`
 	UpdatedAt      time.Time `json:"updated_at"`
+	// Theme is the person's own appearance choice (#709), shown read-only: no
+	// administrator route writes it.
+	Theme user.Theme `json:"theme"`
 }
 
 // adminUserDetail extends the summary with group memberships.
@@ -99,6 +102,7 @@ func toAdminSummary(u user.User) adminUserSummary {
 		MFAEnabled:     u.MFAEnabled,
 		CreatedAt:      u.CreatedAt,
 		UpdatedAt:      u.UpdatedAt,
+		Theme:          u.Theme,
 	}
 }
 

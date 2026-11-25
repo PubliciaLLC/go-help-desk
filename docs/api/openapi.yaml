@@ -2826,6 +2826,48 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+  /api/v1/me/appearance:
+    patch:
+      operationId: updateAppearance
+      summary: Change how the web UI looks for the caller.
+      description: |
+        Any role, in a signed-in session (second factor required). Sets the caller's own appearance
+        choice (1.3.0): `light`, `dark`, or `device` (follow the browser's prefers-color-scheme, the default
+        for every account). It belongs to the account, so it follows the person to other devices. It is a
+        display preference: it is not audited, it does not change `updated_at`, and no administrator route
+        can set it. An API key or OAuth client has no screen to look at, so both are refused (403).
+        A missing, null, non-string or unknown `theme` is 400 `invalid_theme`. Other keys are ignored.
+        Answers with the account as saved.
+      tags: ['Account']
+      x-ghd-handler: handleUpdateAppearance
+      security:
+        - sessionCookie: []
+      x-ghd-roles: [admin, staff, user]
+      x-ghd-mfa: true
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [theme]
+              properties:
+                theme: {$ref: '#/components/schemas/Theme'}
+      responses:
+        '200':
+          description: The caller's account (MeUser), with the theme as saved.
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/MeUser'}
+        '400':
+          description: "`invalid_theme`: theme must be light, dark or device."
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/Error'}
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
   /api/v1/me/mfa/enroll:
     post:
       operationId: mfaEnrollStart
@@ -11822,7 +11864,7 @@ components:
       enum: [critical, high, medium, low]
     MeUser:
       description: >-
-        The account GET /me and PATCH /me/email-preferences return for a person: a session, or an API key,
+        The account GET /me, PATCH /me/email-preferences and PATCH /me/appearance return for a person: a session, or an API key,
         which answers with its owner's account. It is User plus the fields only these two answers carry. An
         OAuth client is not a person and gets the machine object instead, which has none of them.
       allOf:
@@ -11881,7 +11923,7 @@ components:
     User:
       description: An account. The password hash, the TOTP secret, single sign-on subjects and the deletion time are never returned. mfa_enabled is the TOTP flag only.
       type: object
-      required: [id, email, display_name, role, mfa_enabled, disabled, must_change_password, created_at, updated_at, email_notify_assigned, email_notify_activity, email_notify_group, email_notify_sla]
+      required: [id, email, display_name, role, mfa_enabled, disabled, must_change_password, created_at, updated_at, email_notify_assigned, email_notify_activity, email_notify_group, email_notify_sla, theme]
       properties:
         id: {$ref: '#/components/schemas/Uuid'}
         email: {type: string}
@@ -11896,6 +11938,14 @@ components:
         email_notify_activity: {type: boolean, description: 'Email me when a requester replies on a ticket assigned to me, or it is reopened. On by default.'}
         email_notify_group: {type: boolean, description: "Email me about my groups' tickets. On by default."}
         email_notify_sla: {type: boolean, description: "Email me when an SLA target on a ticket assigned to me, on a group ticket nobody has taken, or on a ticket I follow has breached or is at risk. Staff email switch, on by default; the other three switches do not apply to it."}
+        theme: {$ref: '#/components/schemas/Theme'}
+    Theme:
+      description: >-
+        How a person wants the web UI to look (1.3.0). device follows the browser's prefers-color-scheme and is
+        the value of every account that never chose. It is changed only by the person, with
+        PATCH /me/appearance.
+      type: string
+      enum: [light, dark, device]
     EmailSwitchState:
       type: object
       required: [enabled, forced]
@@ -13569,7 +13619,7 @@ components:
         An account as the administrator list shows it. Password hash, MFA
         secret, SSO subjects and deletion time are never returned.
       type: object
-      required: [id, email, display_name, role, disabled, auth_type, service_account, mfa_enabled, created_at, updated_at]
+      required: [id, email, display_name, role, disabled, auth_type, service_account, mfa_enabled, created_at, updated_at, theme]
       properties:
         id: {$ref: '#/components/schemas/Uuid'}
         email: {type: string}
@@ -13607,6 +13657,10 @@ components:
         updated_at:
           type: string
           format: date-time
+        theme:
+          allOf:
+            - {$ref: '#/components/schemas/Theme'}
+          description: The person's own appearance choice. Read-only here, since no administrator route sets it.
     AdminUserDetail:
       description: >-
         One account in detail: the summary fields, flattened into the same object,
