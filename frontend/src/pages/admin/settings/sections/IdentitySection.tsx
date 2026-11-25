@@ -24,7 +24,13 @@ export function IdentitySection({ draft }: { draft: SettingsDraft }) {
   // loaded draft, so the first render already knows.
   const [useShortName, setUseShortName] = useState(() => str('site_short_name').trim() !== '')
   const shortName = str('site_short_name')
-  const longName = runes(shortName.trim()) > SHORT_NAME_SOFT_LIMIT
+  // The server trims, then counts characters. So does everything here: the
+  // counter, the note and the over-limit mark all read this one number. There
+  // is no maxLength on the field, because that counts UTF-16 units and would
+  // stop an emoji name the server accepts.
+  const shortLen = runes(shortName.trim())
+  const longName = shortLen > SHORT_NAME_SOFT_LIMIT
+  const overLimit = shortLen > SHORT_NAME_MAX
   const counterId = useId()
   const noteId = useId()
   const qc = useQueryClient()
@@ -81,7 +87,7 @@ export function IdentitySection({ draft }: { draft: SettingsDraft }) {
     <Section title="Identity">
       <SettingRow
         label="Site name"
-        description="Displayed in the sidebar header and browser tab when no logo is set."
+        description="Displayed in the sidebar header and browser tab when no logo is set. Also the name used when someone installs the site or adds it to a home screen, unless you set a different home screen name below."
       >
         <Input
           className="w-56"
@@ -121,13 +127,13 @@ export function IdentitySection({ draft }: { draft: SettingsDraft }) {
               className="w-56"
               aria-label="Home screen name"
               aria-describedby={longName ? `${counterId} ${noteId}` : counterId}
-              maxLength={SHORT_NAME_MAX}
+              aria-invalid={overLimit}
               placeholder={str('site_name') || 'Go Help Desk'}
               value={shortName}
               onChange={(e) => setStr('site_short_name', e.target.value)}
             />
-            <div id={counterId} className="text-xs text-gray-500">
-              {runes(shortName)}/{SHORT_NAME_MAX}
+            <div id={counterId} className={overLimit ? 'text-xs text-red-600' : 'text-xs text-gray-500'}>
+              {shortLen}/{SHORT_NAME_MAX}
             </div>
             {longName && (
               <p id={noteId} role="note" className="max-w-56 text-sm text-amber-700">
