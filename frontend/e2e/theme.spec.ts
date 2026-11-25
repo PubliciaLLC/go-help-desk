@@ -231,9 +231,10 @@ test.describe('no flash of the wrong theme', () => {
 
       // The script is a blocking file requested before the application bundle.
       const init = order.indexOf('/theme-init.js')
-      const bundle = order.findIndex((p) => /^\/assets\/index-.*\.js$/.test(p))
+      const bundle = order.findIndex((p) => /^\/assets\/index-.*\.js$|^\/src\/main\.tsx$/.test(p))
       expect(init, 'theme-init.js was never requested').toBeGreaterThanOrEqual(0)
-      if (bundle >= 0) expect(init).toBeLessThan(bundle)
+      expect(bundle, 'the application bundle was never requested').toBeGreaterThanOrEqual(0)
+      expect(init, 'theme-init.js came after the application bundle').toBeLessThan(bundle)
       await context.close()
     })
   }

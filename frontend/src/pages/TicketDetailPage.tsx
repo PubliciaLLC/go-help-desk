@@ -27,6 +27,7 @@ import { apiRefusal, extractError } from '@/api/client'
 import { useAuthStore } from '@/store/auth'
 import { useResolvedTheme } from '@/store/theme'
 import { readableStatusColor } from '@/lib/statusColor'
+import { StatusDot } from '@/components/ticket/StatusDot'
 import { Layout } from '@/components/Layout'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -451,7 +452,7 @@ export function TicketDetailPage() {
                 className="inline-flex max-w-full items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs font-medium"
                 style={{ borderColor: statusInk, color: statusInk }}
               >
-                <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ backgroundColor: statusColor }} />
+                <StatusDot color={statusColor} />
                 <span className="min-w-0 wrap-anywhere">{statusName}</span>
               </span>
               <Badge variant={priorityVariant(ticket.priority) as never}>

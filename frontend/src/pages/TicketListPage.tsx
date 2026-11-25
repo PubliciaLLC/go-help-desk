@@ -7,6 +7,7 @@ import { getMe } from '@/api/auth'
 import { useAuthStore } from '@/store/auth'
 import { useResolvedTheme } from '@/store/theme'
 import { readableStatusColor } from '@/lib/statusColor'
+import { StatusDot } from '@/components/ticket/StatusDot'
 import { Layout } from '@/components/Layout'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -809,7 +810,7 @@ export function TicketListPage() {
                               className="inline-flex max-w-[7.5rem] items-center gap-1 whitespace-nowrap rounded-full border px-2 py-0.5 text-xs font-medium"
                               style={{ borderColor: statusInk(status.color), color: statusInk(status.color) }}
                             >
-                              <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ backgroundColor: status.color }} />
+                              <StatusDot color={status.color} />
                               {/* The title is on the text, the element the ellipsis cuts. */}
                               <span className="min-w-0 truncate" title={status.name}>{status.name}</span>
                             </span>
@@ -868,7 +869,7 @@ export function TicketListPage() {
                             className="inline-flex min-w-0 items-center gap-1 rounded-full border px-2 py-0.5 text-xs font-medium"
                             style={{ borderColor: statusInk(status.color), color: statusInk(status.color) }}
                           >
-                            <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ backgroundColor: status.color }} />
+                            <StatusDot color={status.color} />
                             <span className="min-w-0 wrap-anywhere">{status.name}</span>
                           </span>
                         ) : '—'}

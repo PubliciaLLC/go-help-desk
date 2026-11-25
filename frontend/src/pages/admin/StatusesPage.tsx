@@ -160,7 +160,7 @@ export function StatusesPage() {
                   <tr key={s.id} className={`group hover:bg-subtle ${!s.active ? 'opacity-50' : ''}`}>
                     <td className="px-4 py-3">
                       <span
-                        className="inline-block h-4 w-4 rounded-full border border-border shadow-sm"
+                        className="inline-block h-4 w-4 rounded-full shadow-sm ring-1 ring-inset ring-border-strong"
                         style={{ backgroundColor: s.color || DEFAULT_COLOR }}
                       />
                     </td>
