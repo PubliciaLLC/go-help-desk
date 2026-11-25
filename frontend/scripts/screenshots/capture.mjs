@@ -22,9 +22,13 @@
 //                             database only). Everything before this step
 //                             was captured on an instance with no history
 //   6. capture extras         02 (the dashboard needs the history), 29 to 41,
-//                             and 42 to 52 (the ticket list, Reports, the
+//                             42 to 52 (the ticket list, Reports, the
 //                             mobile dashboard and the settings pages that
-//                             need it)
+//                             need it), 53 to 55 (followers and category
+//                             descriptions, which seed.mjs --extras adds) and,
+//                             last, 57, 58 and 56 (SAML: "Require SAML" is on
+//                             for 57 and 58, so no staff or user can sign in
+//                             with a password until 56 turns it off)
 // Shot 02 is in phase extras for that reason: its counts, health card and
 // trend exist only after steps 4 and 5. No shot of 01 to 28 changes because of
 // them, except that 02 is no longer a main shot. Output is
@@ -164,6 +168,49 @@ async function ensureBlindOAuthClient(ctx) {
   if ((await list.json()).some((c) => c.name === name)) return
   const r = await ctx.request.post('/api/v1/admin/oauth-clients', { data: { name, scopes: ['tickets:read'] } })
   if (!r.ok()) throw new Error(`create oauth client: HTTP ${r.status()}`)
+}
+
+// ── SAML (shots 56, 57, 58) ───────────────────────────────────────────────────
+//
+// The identity provider's metadata is pasted XML, from idp-metadata.xml: the
+// server needs no network for it, and the certificate and key of this side are
+// made by the server on the first save, which is what shot 56 shows. The file's
+// leading comment is for whoever maintains it; a file from a real identity
+// provider has none, so it is dropped.
+const IDP_METADATA = fs
+  .readFileSync(new URL('./idp-metadata.xml', import.meta.url), 'utf8')
+  .replace(/<!--[\s\S]*?-->\s*/g, '')
+
+async function sendJSON(ctx, method, url, data) {
+  const r = await ctx.request.fetch(url, { method, data })
+  if (!r.ok()) throw new Error(`${method} ${url}: HTTP ${r.status()} ${(await r.text()).slice(0, 200)}`)
+}
+
+// Every SAML setting empty and the switch off: nothing configured, nothing
+// loaded, no certificate stored. The switch goes first, so the save that clears
+// SAML is never one that would leave "Require SAML" on with nothing behind it.
+async function clearSAML(ctx) {
+  await sendJSON(ctx, 'PATCH', '/api/v1/admin/settings', { saml_enabled: false })
+  await sendJSON(ctx, 'PUT', '/api/v1/admin/saml', { metadata_url: '', metadata_xml: '', cert_pem: '', key_pem: '' })
+}
+
+// The "Reporting export" client made for 38 and 39 would put a second problem in
+// the notice bar of 57. Gone when it is not there.
+async function removeBlindOAuthClient(ctx) {
+  const list = await ctx.request.get('/api/v1/admin/oauth-clients')
+  if (!list.ok()) throw new Error(`oauth clients: HTTP ${list.status()}`)
+  for (const c of (await list.json()).filter((c) => c.name === 'Reporting export')) {
+    await sendJSON(ctx, 'DELETE', `/api/v1/admin/oauth-clients/${c.id}`)
+  }
+}
+
+// "Require SAML for staff and users" on, SAML not configured: the server reports
+// saml_required_not_loaded with reason "incomplete". Administrators keep password
+// sign-in, so the shot's own sign-in (and the next shot's) still works. From here
+// until 56 nothing may sign in as staff or a user: that is a 403 saml_required.
+async function requireSAMLWithoutSAML(ctx) {
+  await clearSAML(ctx)
+  await sendJSON(ctx, 'PATCH', '/api/v1/admin/settings', { saml_enabled: true })
 }
 
 const SHOTS = [
@@ -815,6 +862,80 @@ const SHOTS = [
     },
   },
   {
+    // Jordan follows T7 and has added Alex (seed.mjs --extras). The picker offers
+    // Sam, who sees T7 as a member of IT Support, the group it is assigned to.
+    file: '53-ticket-followers.png', phase: 'extras', role: 'jordan', path: ticketPath('T7'), vp: DESK,
+    target: { element: (page) => cardOf(page, 'Followers') },
+    async prepare(page) {
+      const card = cardOf(page, 'Followers')
+      await waitVisible(card.getByText('Alex Rivera', { exact: true }), DATA_WAIT)
+      await waitVisible(card.getByText('Jordan Blake', { exact: true }))
+      await waitVisible(card.getByText('(you)'))
+      await waitVisible(card.getByRole('button', { name: 'Remove Alex Rivera as a follower' }))
+      await waitVisible(card.getByRole('button', { name: 'Unfollow', exact: true }))
+      await waitVisible(card.getByLabel('Person to add as follower'))
+      await card.locator('option', { hasText: 'Sam Okafor' }).first().waitFor({ state: 'attached', timeout: DATA_WAIT })
+      await waitVisible(card.getByRole('button', { name: 'Add follower' }))
+    },
+  },
+  {
+    // The card on a phone: the remove button and the picker are 44 px targets.
+    // Not an element crop (that grows the window to desktop width): the card is
+    // scrolled to the top of the screen instead.
+    file: '53-ticket-followers-mobile.png', phase: 'extras', role: 'jordan', path: ticketPath('T7'), vp: MOBILE, mobile: true, optional: true,
+    async prepare(page) {
+      const card = cardOf(page, 'Followers')
+      await waitVisible(card.getByText('Alex Rivera', { exact: true }), DATA_WAIT)
+      await waitVisible(card.getByRole('button', { name: 'Unfollow', exact: true }))
+      await card.locator('option', { hasText: 'Sam Okafor' }).first().waitFor({ state: 'attached', timeout: DATA_WAIT })
+      await card.evaluate((el) => el.scrollIntoView({ block: 'start' }))
+    },
+  },
+  {
+    // Hardware > Laptop > Screen: the item has no description, the type has one,
+    // so the type's text is what shows (the most specific one there is).
+    file: '54-new-ticket-cti-description.png', phase: 'extras', role: 'jordan', path: '/tickets/new', vp: DESK,
+    target: {
+      union: (page) => [
+        page.locator('#category').locator('xpath=ancestor::div[contains(concat(" ", normalize-space(@class), " "), " grid ")][1]'),
+        page.locator('#cti-description'),
+      ],
+    },
+    async prepare(page) {
+      await page.locator('#category').selectOption({ label: 'Hardware' })
+      await page.locator('#type').selectOption({ label: 'Laptop' })
+      await waitVisible(page.locator('#item'))
+      await page.locator('#item').selectOption({ label: 'Screen' })
+      await waitVisible(page.locator('#cti-description').getByText(/^A company laptop that is damaged/))
+    },
+  },
+  {
+    // Laptop expanded on Categories: the type's Description box with its hint, the
+    // counter and Save. The row above it names the type; Save is off (nothing typed).
+    file: '55-admin-category-description.png', phase: 'extras', role: 'admin', path: '/admin/categories', vp: DESK,
+    // No pad above (16 px would catch the bottom of the Add group pill of the row
+    // above) and a short one below (the next heading is 16 px under Save).
+    target: {
+      padTop: 0, padBottom: 8,
+      union: (page) => [
+        page.locator('div[data-archived]').filter({ hasText: 'Laptop' }).first(),
+        page.locator('textarea[id^="description-type-"]').locator('xpath=ancestor::form[1]'),
+      ],
+    },
+    async prepare(page) {
+      const hardware = page.locator('div.group').filter({ hasText: 'Hardware' }).first()
+      await hardware.locator('button').nth(1).click()
+      const laptop = page.locator('div[data-archived]').filter({ hasText: 'Laptop' }).first()
+      await laptop.getByRole('button', { name: 'Expand' }).click()
+      const box = page.locator('textarea[id^="description-type-"]')
+      await waitVisible(box)
+      const text = await box.inputValue()
+      if (!text.startsWith('A company laptop that is damaged')) throw new Error(`the Laptop description box holds "${text.slice(0, 40)}"`)
+      await waitVisible(page.getByText(`${[...text].length} / 500`, { exact: true }))
+      await waitVisible(page.getByRole('button', { name: 'Save description' }).first())
+    },
+  },
+  {
     // The wizard shows for an install whose "seen" flag is off, which is what an
     // upgraded install has; setup sets it on a fresh one. Turned off here through
     // the settings API so no other shot is redirected to it.
@@ -860,6 +981,83 @@ const SHOTS = [
         buffer: Buffer.from('The visitor Wi-Fi asks for an access code.\n'),
       })
       await waitVisible(page.getByText(/Attached: visitor-wifi-prompt\.txt/), DATA_WAIT)
+    },
+  },
+
+  // ── Last: these turn "Require SAML for staff and users" on, after which nobody
+  // below staff signs in with a password (403 saml_required), and 56 turns it off
+  // again. Keep 57 and 58 at the end, and 56 after them. ──
+  {
+    // The switch is on and SAML is not configured, so the server reports "SAML is
+    // required but is not working" (reason: incomplete).
+    file: '57-server-notice-saml.png', phase: 'extras', role: 'admin', path: '/tickets', vp: DESK,
+    before: async (ctx) => {
+      await removeBlindOAuthClient(ctx)
+      await requireSAMLWithoutSAML(ctx)
+    },
+    target: { element: (page) => noticeBar(page), padBottom: 90 },
+    async prepare(page) {
+      const bar = noticeBar(page)
+      await waitVisible(bar.getByText('Staff and users cannot sign in: SAML is required but is not working'), DATA_WAIT)
+      if (/server problems/.test(await bar.innerText())) throw new Error('SAML notice: the bar lists more than one problem')
+      await bar.getByRole('button', { name: 'Details' }).click()
+      await waitVisible(bar.getByRole('link', { name: 'Open System → Authentication → SAML' }), DATA_WAIT)
+      await waitVisible(bar.getByText("the identity provider's metadata, the certificate or the private key is missing."))
+    },
+  },
+  {
+    // The same state on the dashboard's health card: the amber SLA item and the
+    // red SAML one.
+    file: '58-dashboard-health-saml.png', phase: 'extras', role: 'admin', path: '/dashboard', vp: DESK,
+    before: async (ctx) => {
+      // 37 turned the after-upgrade wizard back on, and an administrator is sent
+      // to it from the dashboard: the wizard is "seen" again, as it is once clicked through.
+      await sendJSON(ctx, 'PATCH', '/api/v1/admin/settings', { post_upgrade_130_seen: true })
+      await requireSAMLWithoutSAML(ctx)
+    },
+    target: { element: (page) => page.getByRole('region', { name: 'Health' }) },
+    async prepare(page) {
+      const health = page.getByRole('region', { name: 'Health' })
+      await waitVisible(health.getByText('SAML is required for staff and users but is not working', { exact: false }), DATA_WAIT)
+      await waitVisible(health.getByText('SLA tracking is on, but breach and at-risk alerts are off.'))
+      const items = await health.locator('li').count()
+      if (items !== 2) throw new Error(`dashboard: the health card has ${items} items, expected the amber SLA item and the red SAML one`)
+    },
+  },
+  {
+    // The last shot: it loads SAML, which clears the problem of 57 and 58, and
+    // turns the switch off, so the instance ends as a working one. The service
+    // provider's certificate does not exist before the save: the server makes it
+    // there, which is what "Generated automatically" and its expiry show.
+    file: '56-system-authentication-saml.png', phase: 'extras', role: 'admin', path: '/admin/settings/authentication', vp: DESK,
+    before: async (ctx) => {
+      await clearSAML(ctx)
+      await sendJSON(ctx, 'PUT', '/api/v1/admin/saml', { metadata_xml: IDP_METADATA, metadata_url: '' })
+    },
+    target: { element: (page) => sectionOf(page, 'SAML') },
+    async prepare(page, ctx) {
+      const saml = await apiGet(ctx, '/api/v1/admin/saml')
+      if (!(saml.configured && saml.live && saml.cert_generated && saml.cert_not_after)) {
+        throw new Error(`SAML is not loaded with a generated certificate: ${JSON.stringify({ ...saml, cert_pem: '', metadata_xml: '' })}`)
+      }
+      const section = sectionOf(page, 'SAML')
+      await waitVisible(section.getByText('Generated automatically'), DATA_WAIT)
+      await waitVisible(section.getByText(/Expires /))
+      await waitVisible(section.getByRole('link', { name: 'Download certificate' }))
+      await waitVisible(section.getByRole('button', { name: 'Replace…' }))
+      await waitVisible(section.getByRole('button', { name: 'Regenerate' }))
+      await waitVisible(section.getByRole('button', { name: 'Save SAML config' }))
+      await waitVisible(section.getByLabel('IdP metadata XML'))
+      if (!(await section.getByRole('radio', { name: 'XML' }).isChecked())) throw new Error('SAML: the XML source is not chosen')
+      // This instance answers on localhost; the page prints what the server was
+      // told its address is. Shown as an example host, as the throwaway token of
+      // shot 36 is masked: only the text of the two copy lines changes.
+      await page.evaluate(() => {
+        for (const el of document.querySelectorAll('code')) {
+          if (el.textContent.startsWith(location.origin)) el.textContent = el.textContent.replace(location.origin, 'https://help.example.com')
+        }
+      })
+      await waitVisible(section.getByText('https://help.example.com/api/v1/auth/saml/metadata'))
     },
   },
 ]
@@ -1041,7 +1239,7 @@ async function captureShot(browser, shot, s) {
       // Grow the window to the whole page first, so no part of the union sits
       // behind <main>'s own scroll.
       await fitTall(page, 4000, false)
-      screenshotOpts.clip = await elementClip(page, t.union(page))
+      screenshotOpts.clip = await elementClip(page, t.union(page), { top: t.padTop ?? PAD, bottom: t.padBottom ?? PAD })
     } else if (t.cutBetween) {
       // Crop height at the midpoint of the gap between two cards. Card positions
       // do not depend on the viewport height, so measuring at 900 px is valid.

@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Identity provider metadata for the SAML screenshots (56, 57, 58). Made up: the
+  host is an example domain, nothing answers there, and the certificate below is
+  a throwaway (an EC P-256 key that was never kept) valid until November 2056, so
+  its expiry never raises the "IdP certificate expires" notice. capture.mjs sends
+  this file as pasted XML (the server needs no network for pasted metadata, which
+  is why this is not a URL) and strips this comment first, as a real file from an
+  identity provider has none. To make a new certificate:
+    openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
+      -keyout /dev/null -out cert.pem -days 11000 -subj "/CN=idp.example.com"
+  and put the base64 lines between BEGIN and END into X509Certificate.
+-->
+<md:EntityDescriptor xmlns:md="urn:oasis:names:tc:SAML:2.0:metadata" entityID="https://idp.example.com/saml/metadata">
+  <md:IDPSSODescriptor protocolSupportEnumeration="urn:oasis:names:tc:SAML:2.0:protocol" WantAuthnRequestsSigned="false">
+    <md:KeyDescriptor use="signing">
+      <ds:KeyInfo xmlns:ds="http://www.w3.org/2000/09/xmldsig#">
+        <ds:X509Data>
+          <ds:X509Certificate>
+MIIBajCCARCgAwIBAgIUEY64BvcBocychDTgbmtt93J5lm0wCgYIKoZIzj0EAwIw
+GjEYMBYGA1UEAwwPaWRwLmV4YW1wbGUuY29tMCAXDTI2MTEyNTAyMzc1OVoYDzIw
+NTYxMTE3MDIzNzU5WjAaMRgwFgYDVQQDDA9pZHAuZXhhbXBsZS5jb20wWTATBgcq
+hkjOPQIBBggqhkjOPQMBBwNCAASnkNEEb+5cNJ+yiHJ/Htg0Zm3LJlCG1ZU1/kwl
+kPh9XG47OO0DnsKG2U9V/h2sGSdacYti32RQ2ohuNfC3GemjozIwMDAdBgNVHQ4E
+FgQUh1fWAtlchJrYiztvkzKxuySuFWcwDwYDVR0TAQH/BAUwAwEB/zAKBggqhkjO
+PQQDAgNIADBFAiEAssNZCRydoHJtuJg/MNsOhY+i9S65ayNaIViWMnV6ClgCID+X
+toUkfIwa8aabMzIix8if3Zqyyx0afdLQNXnqybuQ
+          </ds:X509Certificate>
+        </ds:X509Data>
+      </ds:KeyInfo>
+    </md:KeyDescriptor>
+    <md:NameIDFormat>urn:oasis:names:tc:SAML:1.1:nameid-format:emailAddress</md:NameIDFormat>
+    <md:SingleSignOnService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-Redirect" Location="https://idp.example.com/saml/sso"/>
+    <md:SingleSignOnService Binding="urn:oasis:names:tc:SAML:2.0:bindings:HTTP-POST" Location="https://idp.example.com/saml/sso"/>
+  </md:IDPSSODescriptor>
+</md:EntityDescriptor>
