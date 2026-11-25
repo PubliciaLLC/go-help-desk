@@ -83,7 +83,7 @@ describe('severity', () => {
   it('is red for a real failure', async () => {
     mockWarnings({ attachment_storage: STORAGE })
     renderWithQuery(<InsecureConfigBanner isAdmin />)
-    expect((await screen.findByRole('region', { name: 'Server notices' })).className).toContain('bg-red-')
+    expect((await screen.findByRole('region', { name: 'Server notices' })).className).toContain('bg-danger-soft')
   })
 
   // Required refuses uploads; permissive stores them unscanned right now.
@@ -92,22 +92,22 @@ describe('severity', () => {
     mockWarnings({ attachment_scanning: { policy, configured: true, reachable: false, effect: 'x' } })
     renderWithQuery(<InsecureConfigBanner isAdmin />)
     const bar = await screen.findByRole('region', { name: 'Server notices' })
-    expect(bar.className).toContain('bg-red-')
-    expect(bar.className).not.toContain('bg-amber-')
+    expect(bar.className).toContain('bg-danger-soft')
+    expect(bar.className).not.toContain('bg-warning-soft')
   })
 
   it('is neutral for a configuration notice', async () => {
     mockWarnings({ passkeys: PASSKEYS })
     renderWithQuery(<InsecureConfigBanner isAdmin />)
     const bar = await screen.findByRole('region', { name: 'Server notices' })
-    expect(bar.className).toContain('bg-amber-')
-    expect(bar.className).not.toContain('bg-red-')
+    expect(bar.className).toContain('bg-warning-soft')
+    expect(bar.className).not.toContain('bg-danger-soft')
   })
 
   it('goes red when a failure sits beside a configuration notice', async () => {
     mockWarnings({ passkeys: PASSKEYS, attachment_storage: STORAGE })
     renderWithQuery(<InsecureConfigBanner isAdmin />)
-    expect((await screen.findByRole('region', { name: 'Server notices' })).className).toContain('bg-red-')
+    expect((await screen.findByRole('region', { name: 'Server notices' })).className).toContain('bg-danger-soft')
   })
 })
 

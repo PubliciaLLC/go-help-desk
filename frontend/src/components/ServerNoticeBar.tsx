@@ -33,11 +33,11 @@ interface ServerNoticeBarProps {
 }
 
 const TINT: Record<Severity, string> = {
-  failure: 'border-red-300 bg-red-50 text-red-900',
-  config: 'border-amber-300 bg-amber-50 text-amber-950',
-  info: 'border-sky-300 bg-sky-50 text-sky-950',
+  failure: 'border-danger-border bg-danger-soft text-danger-fg-strong',
+  config: 'border-warning-border bg-warning-soft text-warning-fg-strong',
+  info: 'border-info-border bg-info-soft text-info-fg-strong',
 }
-const ROW_TINT: Record<Severity, string> = { failure: 'bg-red-50', config: 'bg-amber-50', info: 'bg-sky-50' }
+const ROW_TINT: Record<Severity, string> = { failure: 'bg-danger-soft', config: 'bg-warning-soft', info: 'bg-info-soft' }
 
 /**
  * One slim bar for every server notice: a summary line, details on request,
@@ -112,12 +112,12 @@ export function ServerNoticeBar({ notices, onOpen }: ServerNoticeBarProps) {
           Details
         </button>
       </div>
-      <ul id="server-notices" hidden={!open} className="max-h-[60dvh] min-w-0 overflow-y-auto border-t border-black/10">
+      <ul id="server-notices" hidden={!open} className="max-h-[60dvh] min-w-0 overflow-y-auto border-t border-border">
         {visible.map((n, i) => (
           <li
             key={noticeKey(n)}
             className={cn(
-              'flex min-w-0 items-start gap-2 border-b border-black/10 px-3 py-2 last:border-b-0',
+              'flex min-w-0 items-start gap-2 border-b border-border px-3 py-2 last:border-b-0',
               ROW_TINT[n.severity],
             )}
           >

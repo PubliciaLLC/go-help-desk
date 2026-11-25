@@ -31,7 +31,7 @@ describe('the SAML required but not loaded notice', () => {
 
     const bar = await screen.findByRole('region', { name: 'Server notices' })
     expect(bar.textContent).toContain(TITLE)
-    expect(bar.className).toContain('bg-red-')
+    expect(bar.className).toContain('bg-danger-soft')
     expect(screen.getByRole('button', { name: /details/i })).toBeTruthy()
   })
 

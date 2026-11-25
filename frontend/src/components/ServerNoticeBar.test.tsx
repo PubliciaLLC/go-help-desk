@@ -18,8 +18,8 @@ describe('the info severity', () => {
     expect(screen.queryByRole('alert')).toBeNull()
     expect(screen.getByRole('status').textContent).toContain('Version 1.4 is available')
     const bar = screen.getByRole('region', { name: 'Server notices' })
-    expect(bar.className).not.toContain('bg-red-')
-    expect(bar.className).not.toContain('bg-amber-')
+    expect(bar.className).not.toContain('bg-danger-soft')
+    expect(bar.className).not.toContain('bg-warning-soft')
   })
 
   it('is not counted in "N server problems"', () => {
@@ -29,9 +29,9 @@ describe('the info severity', () => {
 
   it('does not turn an amber bar red, and does not keep one red', () => {
     const { rerender } = render(<ServerNoticeBar notices={[info, config]} />)
-    expect(screen.getByRole('region', { name: 'Server notices' }).className).toContain('bg-amber-')
+    expect(screen.getByRole('region', { name: 'Server notices' }).className).toContain('bg-warning-soft')
     rerender(<ServerNoticeBar notices={[info, failure]} />)
-    expect(screen.getByRole('region', { name: 'Server notices' }).className).toContain('bg-red-')
+    expect(screen.getByRole('region', { name: 'Server notices' }).className).toContain('bg-danger-soft')
   })
 
   it('beside one problem names that problem', () => {

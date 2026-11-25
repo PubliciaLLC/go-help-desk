@@ -52,7 +52,7 @@ describe('the broken email template notice', () => {
     expect(text).toContain('Email template "Reset your password" is broken: this mail is not being sent')
     expect(text).toContain('Email template "Header" is broken: no email is being sent until it is fixed or reverted')
     expect(text).toContain('must include {{.ResetURL}}')
-    expect(region.className).toMatch(/red/)
+    expect(region.className).toContain('bg-danger-soft')
   })
 
   it('says that NO email is sent when the broken one is the header or the footer', async () => {
