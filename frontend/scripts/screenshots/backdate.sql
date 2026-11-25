@@ -5,20 +5,42 @@
 -- Reports has nothing to compare with, and no SLA target is anywhere near its
 -- limit. seed.mjs --extras files the history anyway and writes where each ticket
 -- should sit in time to history.json. This moves each ticket there, together
--- with its replies, its status changes and its SLA record, so the rows agree
--- with each other.
+-- with its replies, its status changes and its SLA record, so the pages that
+-- show them agree about when things happened. Replies and status changes keep
+-- the spacing they were really filed with (seconds apart), so a reply sits a
+-- moment after its ticket was filed even where the SLA record says the first
+-- response took an hour: no captured page shows a reply's own time next to it.
 --
 -- How it is run (scripts/screenshots.sh, between the extras seed and the extras
 -- capture), by hand it would be:
 --
---   psql -d ghd_screenshots -v ON_ERROR_STOP=1 -v spec="$(cat history.json)" -f backdate.sql
+--   psql -d ghd_screenshots -v spec="$(cat history.json)" -f backdate.sql
 --
--- Two guards: it stops unless the database is named ghd_screenshots*, and it
--- stops unless every ticket named in the spec exists. It is deterministic: every
--- instant is now() (fixed once, for the whole transaction) minus a fixed number
--- of minutes taken from the spec. There is no randomness. It touches only the
--- tickets in the spec; the audit log keeps the real time of each action, and no
--- page that is captured after this step shows it.
+-- Two guards, both inside the one transaction, so a failed guard rolls back
+-- everything whatever flags the caller passed (the \set below also stops psql at
+-- the first error): the database must be named ghd_screenshots*, and every
+-- ticket named in the spec must exist.
+--
+-- Repeatable: every instant is now() (fixed once, for the whole transaction)
+-- minus a fixed number of minutes taken from the spec. There is no randomness.
+-- What the server does in the background is not part of this file. The auto-close
+-- sweep (every five minutes) closes a Resolved ticket older than the reopen window,
+-- and these tickets are moved far into the past, so seed.mjs sets the window to 90
+-- days before this runs; with the default of 7 the status of a ticket would depend
+-- on where a sweep tick fell. The SLA sweep may also run before the capture; it
+-- stamps only targets that are already past, and the spec's ages put those there.
+-- Relative dates on the pages ("3 days ago") move with the clock, as they must.
+--
+-- It touches only the tickets in the spec, and in each only what the pages show.
+-- It does not move sla_records.started_at (checked below: it must be NULL, as it
+-- is for a record that was never re-matched), nor tickets.reopen_count and
+-- paused_seconds_at_last_reopen (the reopened tickets here are filed with SLA
+-- off, so no pause counter has anything in it). The audit log keeps the real time
+-- of each action, and no page that is captured after this step shows it.
+
+\set ON_ERROR_STOP on
+
+BEGIN;
 
 DO $$
 BEGIN
@@ -26,8 +48,6 @@ BEGIN
     RAISE EXCEPTION 'backdate.sql runs only against a database named ghd_screenshots*, not %', current_database();
   END IF;
 END $$;
-
-BEGIN;
 
 -- id, and in minutes: c age, fr first staff reply after filing, res resolution
 -- after filing, clo close after the resolution, upd time since the last change,
@@ -46,6 +66,7 @@ DO $$
 DECLARE
   missing int;
   incomplete int;
+  restarted int;
 BEGIN
   SELECT count(*) INTO missing FROM spec s WHERE NOT EXISTS (SELECT 1 FROM tickets t WHERE t.id = s.id);
   IF missing > 0 THEN
@@ -58,6 +79,12 @@ BEGIN
      OR (t.last_reopened_at IS NOT NULL AND s.ro IS NULL);
   IF incomplete > 0 THEN
     RAISE EXCEPTION 'backdate.sql: % ticket(s) were resolved, closed or reopened but the spec gives no time for it', incomplete;
+  END IF;
+  -- An SLA clock that was restarted keeps its own start time, which this file does not move.
+  SELECT count(*) INTO restarted FROM spec s JOIN sla_records r ON r.ticket_id = s.id
+  WHERE r.superseded_at IS NULL AND r.started_at IS NOT NULL;
+  IF restarted > 0 THEN
+    RAISE EXCEPTION 'backdate.sql: % SLA record(s) have a started_at, which this file does not move', restarted;
   END IF;
 END $$;
 
@@ -101,8 +128,9 @@ UPDATE sla_records r SET
   response_at_risk_at             = NULL,
   resolution_at_risk_at           = NULL
 FROM spec s
-JOIN shift sh ON sh.id = s.id
-JOIN sla_policies p ON TRUE
+JOIN shift sh ON sh.id = s.id,
+     sla_policies p
+-- (p cannot be joined with ON p.id = r.policy_id: the target of an UPDATE is not visible in a JOIN's ON clause.)
 WHERE r.ticket_id = s.id AND r.superseded_at IS NULL AND p.id = r.policy_id;
 
 SELECT count(*) AS tickets_moved,
