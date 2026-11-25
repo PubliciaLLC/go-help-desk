@@ -2,15 +2,15 @@
 #
 # Regenerates the website screenshots from a freshly seeded 1.3.0 instance.
 # A run is three captures with two seeds between them: the empty instance (15),
-# the main seed (01 to 28), then the extras seed (29 and later). The extras come
-# last because they file a ticket, archive a category and change settings, which
+# the main seed (01 to 28 except 02), then the extras seed (02, and 29 and later).
+# The extras come last because they file a ticket, archive a category and change settings, which
 # would show in the older shots.
 #
 # The extras seed also files the history the dashboard (02) and Reports (48)
 # need: two months of tickets with SLA tracking, one breached and one at risk.
 # The API cannot backdate, so one step in between moves those tickets in time
 # with SQL (frontend/scripts/screenshots/backdate.sql, against the screenshot
-# database only). The order is: capture 15, seed, capture 01 to 28, seed the
+# database only). The order is: capture 15, seed, capture 01 to 28 except 02, seed the
 # extras, backdate, capture 02 and 29 and later. The older shots are taken
 # before any history exists, so they look as they always did.
 #
@@ -24,7 +24,8 @@
 # Linux only. Chromium takes its fonts from fontconfig here, and that is how
 # Inter is mapped to system-ui. On macOS the mapping does not apply, so the
 # images would not match the set. On macOS, scripts/screenshots/docker.sh runs
-# this script in a Linux container (Docker Desktop) and takes the same arguments.
+# this script in a Linux container (Docker Desktop) and takes the same arguments,
+# --publish DIR included (DIR may be anywhere on the host).
 #
 # What a run writes:
 #   $SHOTS_OUT: default is a new directory under TMPDIR, printed at the start and
@@ -469,8 +470,7 @@ setup_db() {
       step "starting the local Postgres 16 cluster"
       pg_ctlcluster 16 main start >/dev/null 2>&1 || true
     fi
-    local i
-    for i in $(seq 1 30); do
+    for _ in $(seq 1 30); do
       pg_ready && break
       sleep 1
     done
@@ -502,8 +502,7 @@ start_clamd() {
   step "starting the scanner stand-in on 127.0.0.1:$clamd_port"
   FAKE_CLAMD_PORT="$clamd_port" node "$shots/fake-clamd.mjs" > "$out/clamd.log" 2>&1 &
   clamd_pid=$!
-  local i
-  for i in $(seq 1 20); do
+  for _ in $(seq 1 20); do
     if clamd_pong; then return 0; fi
     kill -0 "$clamd_pid" 2>/dev/null || break
     sleep 0.5
@@ -520,8 +519,7 @@ start_smtp() {
   step "starting the mail stand-in on 127.0.0.1:$smtp_port"
   FAKE_SMTP_PORT="$smtp_port" FAKE_SMTP_DIR="$work/mail" node "$shots/fake-smtp.mjs" > "$out/smtp.log" 2>&1 &
   smtp_pid=$!
-  local i
-  for i in $(seq 1 20); do
+  for _ in $(seq 1 20); do
     if port_open "$smtp_port"; then return 0; fi
     kill -0 "$smtp_pid" 2>/dev/null || break
     sleep 0.5
@@ -542,6 +540,8 @@ start_server() {
         SMTP_*|APP_ENV|SLA_ENABLED) unset "$v" ;;
       esac
     done
+    # The server gets its own DATABASE_URL; the run exports another one later (export_for_node).
+    # shellcheck disable=SC2030
     export DATABASE_URL="$db_url"
     export BASE_URL="http://localhost:$port"
     export HTTP_PORT="$port"
@@ -560,8 +560,7 @@ start_server() {
   ) > "$out/server.log" 2>&1 &
   server_pid=$!
 
-  local i
-  for i in $(seq 1 60); do
+  for _ in $(seq 1 60); do
     if curl -fsS -o /dev/null --max-time 2 "http://127.0.0.1:$port/health" 2>/dev/null; then
       return 0
     fi
@@ -582,6 +581,7 @@ export_for_node() {
   export SHOTS_OUT="$out"
   export SHOTS_PASSWORD="$password"
   export SHOTS_REPUTATION="${SHOTS_REPUTATION:-1}"
+  # shellcheck disable=SC2031
   export DATABASE_URL="$db_url"
   export SHOTS_MAIL_DIR="$work/mail"
   if [ -n "$chromium" ]; then export SHOTS_CHROMIUM="$chromium"; fi
