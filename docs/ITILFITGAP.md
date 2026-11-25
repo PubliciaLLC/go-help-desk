@@ -2,6 +2,7 @@
 
 **Date:** 2026-09-09
 **Baseline:** `docs/DESIGN.md` (v1–v4 roadmap) and the implementation on `main`
+at that date (see the note below for what 1.3.0-beta changed)
 **Yardstick:** ITIL 4 practices (ITIL v3 process names noted where they differ)
 
 > This is an assessment, not a scope proposal. Nothing here is committed work.
@@ -76,7 +77,9 @@ roadmap decisions, not oversights. The analysis is useful for three things:
    an open-source data-model decision to a commercial packaging decision. Worth
    decoupling. **[roadmap decision]** — see §5.
 
-**Headline scorecard: 2 Fit, 3 Partial, 11 Gap, 2 out of tool scope.**
+**Headline scorecard: 2 Fit, 4 Partial, 10 Gap, 2 out of tool scope.** (At
+the 2026-09-09 snapshot it was 2, 3, 11, 2; Measurement & Reporting moved from
+Gap to Partial when the Reports page shipped in 1.3.)
 
 ---
 
@@ -99,9 +102,11 @@ email and webhook notification out.
 - **No inbound email channel.** `internal/server/notify/email.go` is send-only.
   For most ITIL service desks email is the *primary* intake channel. This is
   the single highest-value addition in the whole analysis.
-- **No channel attribution.** Tickets do not record how they arrived, so
-  channel mix — a standard service desk metric — cannot be reported. A
-  `source_channel` column is a one-migration change.
+- **No channel attribution** (at the time). Tickets did not record how they
+  arrived, so channel mix — a standard service desk metric — could not be
+  reported. Since 1.3 each ticket records `source_channel` (web, API, MCP,
+  guest form or phone) and staff see it; channel mix is still not reported
+  (§3.13).
 - No self-service portal distinct from the submission form (no catalogue
   browse, no knowledge search-before-submit deflection).
 
@@ -399,10 +404,11 @@ obfuscation and SVG sanitization; HMAC-signed webhook payloads.
 This is a stronger showing than most tools at comparable maturity.
 
 **Minor gaps.**
-- **The audit log is write-only from a user's perspective.** `audit_log` is
-  populated and `auditstore.ListByEntity` exists, but no HTTP route exposes it —
-  there is no admin audit view and no per-ticket activity feed. An audit trail
-  nobody can read does not satisfy an auditor.
+- **The audit log was write-only from a user's perspective** (at the time).
+  `audit_log` was populated and `auditstore.ListByEntity` existed, but no HTTP
+  route exposed it — no admin audit view and no per-ticket activity feed. An
+  audit trail nobody can read does not satisfy an auditor. Fixed in 1.3
+  (#129): an admin audit view and a per-ticket Activity feed.
 - No data retention or purge policy (relevant to GDPR/records management).
 - No field-level encryption for sensitive ticket content; internal notes are the
   only confidentiality control.
@@ -497,7 +503,10 @@ is the most visible functional gap to an end user.
 **E. Operational data is captured but never surfaced.** Audit log, status
 history and SLA records are all written and none are readable. Three practices
 (Reporting, Continual Improvement, Information Security) are each partly
-blocked by what is essentially a missing read side.
+blocked by what is essentially a missing read side. *Largely fixed in 1.3:* the
+audit log is readable (#129), the SLA state is shown on the ticket and in the
+queue (#128), and the Reports page and dashboard read tickets and SLA records
+(#131, #675).
 
 ---
 
@@ -510,17 +519,19 @@ Arguably maintenance, not new scope.
 
 1. **Add a background scheduler** and wire auto-close and `EvaluateBreaches`
    into it. Fixes two behaviors `DESIGN.md` already promises. *(Cross-cutting
-   finding B.)*
+   finding B.)* **Done in 1.3** (#126).
 2. **Implement SLA pause during Pending** — specified in `DESIGN.md`,
-   unimplemented in `domain/sla/sla.go`.
+   unimplemented in `domain/sla/sla.go`. **Done in 1.3** (#127).
 3. **Render the green/amber/red SLA indicator** in the ticket queue — specified
-   in `DESIGN.md`, absent from the frontend.
+   in `DESIGN.md`, absent from the frontend. **Done in 1.3** (#128).
 4. **Expose the audit log** — an admin view plus a per-ticket activity feed. The
    data and the store method already exist; only a route and a page are missing.
+   **Done in 1.3** (#129).
 5. **Add `source_channel` to tickets.** One migration; enables channel-mix
-   reporting for free later.
+   reporting for free later. **Done in 1.3**; the recording is there, the
+   report is not (§3.13).
 
-### Tier 2 — aligned with the existing v3 scope, high return
+### Tier 2 — aligned with the v3 scope as it stood, high return (see §4 for where each is now)
 
 6. **Reporting.** Largely shipped in 1.3 (#131): SLA attainment, reopen rate,
    backlog aging, and volume by category and priority. Still open:
