@@ -54,4 +54,24 @@ describe('follow entries in the activity feed', () => {
     expect(await screen.findByText('Started following')).toBeTruthy()
     expect(screen.getByText('Stopped following')).toBeTruthy()
   })
+
+  it('says who added or removed whom, with the adder as the actor (#695)', async () => {
+    serve([
+      {
+        id: 'a1', action: 'followed', actor_id: 'u-jane', actor_name: 'Jane Staff',
+        created_at: '2026-10-14T09:00:00Z', after: { follower_user_id: 'u-bob' },
+        names: { 'u-bob': { name: 'Bob Staff' } },
+      },
+      {
+        id: 'a2', action: 'unfollowed', actor_id: 'u-jane', actor_name: 'Jane Staff',
+        created_at: '2026-10-14T09:30:00Z', before: { follower_user_id: 'u-bob' },
+        names: { 'u-bob': { name: 'Bob Staff' } },
+      },
+    ])
+    renderWithQuery(<AuditFeed ticketId="t1" />)
+
+    expect(await screen.findByText('Added Bob Staff as a follower')).toBeTruthy()
+    expect(screen.getByText('Removed Bob Staff as a follower')).toBeTruthy()
+    expect(screen.getAllByText('Jane Staff')).toHaveLength(2)
+  })
 })

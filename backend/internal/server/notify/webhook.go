@@ -110,6 +110,10 @@ type EventSource interface {
 	// is public. It reports false for a missing, deleted or internal reply, and
 	// never returns the text of a note.
 	PublicReplyBody(ctx context.Context, ticketID, replyID uuid.UUID) (string, bool, error)
+	// Placement reads the names behind the ids of a ticket state (category, type,
+	// item, group, assignee) as they are now, in one statement, for the Slack and
+	// Teams ticket.created message. A level that is not set or is gone is "".
+	Placement(ctx context.Context, st notification.TicketState) (notification.Placement, error)
 }
 
 // EventRewriter is implemented by an outbox that can replace the event of a
@@ -420,6 +424,7 @@ func (d *WebhookDispatcher) deliverQueued(ctx context.Context, ev notification.E
 		d.markDropped(ctx, hook.ID, DropFilter)
 		return nil
 	}
+	ev = d.withPlacement(ctx, hook, ev)
 	// rawBody re-marshals an event that was just decoded from JSON, so this
 	// cannot fail in practice and has no test; the mark is here so that if it
 	// ever does, the entry does not stay on "retrying".
@@ -461,6 +466,30 @@ func (d *WebhookDispatcher) deliverQueued(ctx context.Context, ev notification.E
 		err = &notification.RetryAfterError{Err: err, After: retryAfter}
 	}
 	return err
+}
+
+// withPlacement fills in the names a Slack or Teams ticket.created message
+// shows, from the ids the row holds, as they are at this attempt. The row keeps
+// ids only; nothing read here is stored.
+//
+// The lines are an addition to a message that is complete without them, so a
+// read that fails (or no source wired) sends the message without them and logs
+// it, rather than failing the attempt: a database that cannot answer one select
+// must not hold a notification back, and a failed attempt would leave the row's
+// content in the outbox past the scrub, which runs only after a failed POST.
+func (d *WebhookDispatcher) withPlacement(ctx context.Context, hook authstore.WebhookConfig, ev notification.Event) notification.Event {
+	if !showsPlacement(Format(hook.PayloadFormat)) || ev.Type != notification.EventTicketCreated ||
+		ev.Ticket == nil || d.queue == nil || d.queue.Source == nil {
+		return ev
+	}
+	p, err := d.queue.Source.Placement(ctx, *ev.Ticket)
+	if err != nil {
+		d.log.WarnContext(ctx, "webhook message sent without its category and assignee: names could not be read",
+			"webhook_id", hook.ID, "ticket_id", ev.TicketID, "error", err)
+		return ev
+	}
+	ev.Placement = &p
+	return ev
 }
 
 // shouldRetry reports whether another attempt could plausibly do better:

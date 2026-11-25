@@ -33,6 +33,12 @@ func renderSlack(s summary) ([]byte, error) {
 		b.WriteString(" — ")
 		b.WriteString(slackEscape(s.Subject))
 	}
+	// Where a new ticket landed, a line each. The ">" between levels is escaped
+	// with the rest, and shows as ">".
+	for _, l := range s.Placement {
+		b.WriteString("\n")
+		b.WriteString(slackEscape(l))
+	}
 	if s.Also != "" {
 		b.WriteString("\n")
 		b.WriteString(slackEscape(s.Also))

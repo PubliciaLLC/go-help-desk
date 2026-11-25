@@ -15,6 +15,7 @@ import { useAuthStore } from '@/store/auth'
 import { Layout } from '@/components/Layout'
 import { AttachmentUpload, type UploadState } from '@/components/AttachmentUpload'
 import { RequesterPicker } from '@/components/ticket/RequesterPicker'
+import { CtiDescription } from '@/components/ticket/CtiDescription'
 import { ME, reporterFields, type Requester } from '@/components/ticket/requester'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
@@ -29,6 +30,9 @@ import type { Assignment } from '@/api/types'
 import { overLimit } from '@/lib/fieldLimits'
 
 const PRIORITIES = ['critical', 'high', 'medium', 'low'] as const
+
+// The element the three selectors name in aria-describedby.
+const CTI_DESCRIPTION_ID = 'cti-description'
 
 // Staff and administrators are sent archived rows too, so they can recognise a
 // classification they know from older tickets. Nobody may newly pick one (the
@@ -162,6 +166,12 @@ export function NewTicketPage() {
   // server refuses every write to one, so the form must not offer it. This also
   // keeps a required inactive field from blocking submit.
   const visibleFields = ctiFields.filter((f) => f.visible_on_new && f.field_def?.active)
+
+  // The chosen rows, for the description beneath the chooser. Only staff and
+  // administrators choose an item, so a requester's itemId is always ''.
+  const chosenCategory = categories.find((c) => c.id === categoryId)
+  const chosenType = types.find((t) => t.id === typeId)
+  const chosenItem = items.find((i) => i.id === itemId)
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
@@ -313,62 +323,70 @@ export function NewTicketPage() {
                 <TextLimit value={description} />
               </div>
 
-              <div className={`grid grid-cols-1 gap-4 ${isStaffOrAdmin ? 'md:grid-cols-3' : 'md:grid-cols-2'}`}>
-                <div className="space-y-1">
-                  <Label htmlFor="category">Category *</Label>
-                  <Select
-                    id="category"
-                    value={categoryId}
-                    onChange={(e) => {
-                      setCategoryId(e.target.value)
-                      setTypeId('')
-                      setItemId('')
-                      setCustomFieldValues({})
-                    }}
-                    disabled={isUploading}
-                  >
-                    <option value="">Select…</option>
-                    {categories.map((c) => (
-                      <option key={c.id} value={c.id} disabled={!c.active}>{optionLabel(c)}</option>
-                    ))}
-                  </Select>
-                </div>
-
-                <div className="space-y-1">
-                  <Label htmlFor="type">Type</Label>
-                  <Select
-                    id="type"
-                    value={typeId}
-                    onChange={(e) => {
-                      setTypeId(e.target.value)
-                      setItemId('')
-                      setCustomFieldValues({})
-                    }}
-                    disabled={isUploading || !categoryId || types.length === 0}
-                  >
-                    <option value="">Select…</option>
-                    {types.map((t) => (
-                      <option key={t.id} value={t.id} disabled={!t.active}>{optionLabel(t)}</option>
-                    ))}
-                  </Select>
-                </div>
-
-                {isStaffOrAdmin && (
+              {/* The chooser and the text beneath it are one child of the form, so an
+                  empty description leaves no gap. */}
+              <div>
+                <div className={`grid grid-cols-1 gap-4 ${isStaffOrAdmin ? 'md:grid-cols-3' : 'md:grid-cols-2'}`}>
                   <div className="space-y-1">
-                    <Label htmlFor="item">Item</Label>
+                    <Label htmlFor="category">Category *</Label>
                     <Select
-                      id="item"
-                      value={itemId}
-                      onChange={(e) => { setItemId(e.target.value); setCustomFieldValues({}) }}
-                      disabled={isUploading || !typeId || items.length === 0}
+                      id="category"
+                      aria-describedby={CTI_DESCRIPTION_ID}
+                      value={categoryId}
+                      onChange={(e) => {
+                        setCategoryId(e.target.value)
+                        setTypeId('')
+                        setItemId('')
+                        setCustomFieldValues({})
+                      }}
+                      disabled={isUploading}
                     >
                       <option value="">Select…</option>
-                      {items.map((i) => (
-                        <option key={i.id} value={i.id} disabled={!i.active}>{optionLabel(i)}</option>
+                      {categories.map((c) => (
+                        <option key={c.id} value={c.id} disabled={!c.active}>{optionLabel(c)}</option>
                       ))}
                     </Select>
                   </div>
-                )}
+
+                  <div className="space-y-1">
+                    <Label htmlFor="type">Type</Label>
+                    <Select
+                      id="type"
+                      aria-describedby={CTI_DESCRIPTION_ID}
+                      value={typeId}
+                      onChange={(e) => {
+                        setTypeId(e.target.value)
+                        setItemId('')
+                        setCustomFieldValues({})
+                      }}
+                      disabled={isUploading || !categoryId || types.length === 0}
+                    >
+                      <option value="">Select…</option>
+                      {types.map((t) => (
+                        <option key={t.id} value={t.id} disabled={!t.active}>{optionLabel(t)}</option>
+                      ))}
+                    </Select>
+                  </div>
+
+                  {isStaffOrAdmin && (
+                    <div className="space-y-1">
+                      <Label htmlFor="item">Item</Label>
+                      <Select
+                        id="item"
+                        aria-describedby={CTI_DESCRIPTION_ID}
+                        value={itemId}
+                        onChange={(e) => { setItemId(e.target.value); setCustomFieldValues({}) }}
+                        disabled={isUploading || !typeId || items.length === 0}
+                      >
+                        <option value="">Select…</option>
+                        {items.map((i) => (
+                          <option key={i.id} value={i.id} disabled={!i.active}>{optionLabel(i)}</option>
+                        ))}
+                      </Select>
+                    </div>
+                  )}
+                </div>
+                <CtiDescription id={CTI_DESCRIPTION_ID} category={chosenCategory} type={chosenType} item={chosenItem} />
               </div>
 
               {isStaffOrAdmin && (

@@ -74,10 +74,11 @@ type CannedResponse struct {
 }
 
 type Category struct {
-	ID        uuid.UUID `json:"id"`
-	Name      string    `json:"name"`
-	SortOrder int32     `json:"sort_order"`
-	Active    bool      `json:"active"`
+	ID          uuid.UUID `json:"id"`
+	Name        string    `json:"name"`
+	SortOrder   int32     `json:"sort_order"`
+	Active      bool      `json:"active"`
+	Description string    `json:"description"`
 }
 
 type CustomFieldAssignment struct {
@@ -145,11 +146,12 @@ type InstanceSecret struct {
 }
 
 type Item struct {
-	ID        uuid.UUID `json:"id"`
-	TypeID    uuid.UUID `json:"type_id"`
-	Name      string    `json:"name"`
-	SortOrder int32     `json:"sort_order"`
-	Active    bool      `json:"active"`
+	ID          uuid.UUID `json:"id"`
+	TypeID      uuid.UUID `json:"type_id"`
+	Name        string    `json:"name"`
+	SortOrder   int32     `json:"sort_order"`
+	Active      bool      `json:"active"`
+	Description string    `json:"description"`
 }
 
 type NotificationOutbox struct {
@@ -350,11 +352,12 @@ type TicketTag struct {
 }
 
 type Type struct {
-	ID         uuid.UUID `json:"id"`
-	CategoryID uuid.UUID `json:"category_id"`
-	Name       string    `json:"name"`
-	SortOrder  int32     `json:"sort_order"`
-	Active     bool      `json:"active"`
+	ID          uuid.UUID `json:"id"`
+	CategoryID  uuid.UUID `json:"category_id"`
+	Name        string    `json:"name"`
+	SortOrder   int32     `json:"sort_order"`
+	Active      bool      `json:"active"`
+	Description string    `json:"description"`
 }
 
 type User struct {

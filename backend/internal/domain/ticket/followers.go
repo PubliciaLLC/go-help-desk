@@ -2,6 +2,7 @@ package ticket
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"slices"
 	"sort"
@@ -11,6 +12,7 @@ import (
 
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/audit"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 )
 
 // Following a ticket (#441, part D of #464).
@@ -47,31 +49,90 @@ type Follower struct {
 	CreatedAt   time.Time `json:"created_at"`
 }
 
+// ErrFollowerNotEligible is an attempt to add somebody who cannot follow: an
+// account that is deleted, disabled, a service account, not staff or an
+// administrator, or not there at all. One error for all of them, so the answer
+// does not tell the caller which (#695).
+var ErrFollowerNotEligible = errors.New("that account cannot follow a ticket: it must be an active staff member or administrator")
+
 // Follow makes the actor a follower of the ticket. Following twice is not an
 // error and writes nothing the second time.
 //
 // The audit entry commits with the row (ticket.Atomic): an entry kept apart
 // from the change it describes is not an audit trail.
 func (s *Service) Follow(ctx context.Context, ticketID uuid.UUID, actor Actor) error {
-	return s.setFollowing(ctx, ticketID, actor, true)
+	if actor.UserID == nil {
+		return ErrForbidden
+	}
+	return s.setFollowing(ctx, ticketID, *actor.UserID, actor, true)
 }
 
 // Unfollow removes the actor from the ticket's followers. Not following is not
 // an error.
 func (s *Service) Unfollow(ctx context.Context, ticketID uuid.UUID, actor Actor) error {
-	return s.setFollowing(ctx, ticketID, actor, false)
+	if actor.UserID == nil {
+		return ErrForbidden
+	}
+	return s.setFollowing(ctx, ticketID, *actor.UserID, actor, false)
 }
 
-func (s *Service) setFollowing(ctx context.Context, ticketID uuid.UUID, actor Actor, follow bool) error {
+// AddFollower makes target a follower of the ticket, on the actor's say-so
+// (#695). The actor must be a person (an active, non-service staff or admin
+// account) and so must the target, else ErrFollowerNotEligible. Adding
+// yourself is Follow. Adding somebody who already follows is not an error and
+// writes nothing. Nobody is mailed that they were added.
+//
+// Whether the target can see the ticket is not decided here: the domain does
+// not know ticket scope. The caller checks it first, as StillEntitled does.
+func (s *Service) AddFollower(ctx context.Context, ticketID, target uuid.UUID, actor Actor) error {
+	return s.setFollowing(ctx, ticketID, target, actor, true)
+}
+
+// CanFollow reports whether an account is somebody who can follow a ticket: an
+// active staff or admin account that is not a service account. AddFollower asks
+// the same question inside its transaction; the HTTP handler asks it first, so
+// it can look at the person's role before it checks what they may see.
+func (s *Service) CanFollow(ctx context.Context, userID uuid.UUID) (bool, error) {
+	return s.store.IsAssignableUser(ctx, userID)
+}
+
+// RemoveFollower removes target from the ticket's followers, whoever added
+// them. Not following is not an error.
+func (s *Service) RemoveFollower(ctx context.Context, ticketID, target uuid.UUID, actor Actor) error {
+	return s.setFollowing(ctx, ticketID, target, actor, false)
+}
+
+// setFollowing adds or removes target as the actor. When they are the same
+// person it is exactly what it always was. When they are not, the actor must
+// be a person who may choose (staff or admin, not a service account), and the
+// audit entry also names whose follow it was (follower_user_id), because the
+// actor is no longer the subject.
+func (s *Service) setFollowing(ctx context.Context, ticketID, target uuid.UUID, actor Actor, follow bool) error {
 	if actor.UserID == nil {
 		// The scheduler and other system actors are not people.
 		return ErrForbidden
 	}
-	uid := *actor.UserID
+	other := target != *actor.UserID
+	if other && actor.Role != user.RoleStaff && actor.Role != user.RoleAdmin {
+		return ErrForbidden
+	}
 	return s.atomic.InTx(ctx, func(st Store, au audit.Store, ch *notification.Changes) error {
 		t, err := st.GetByID(ctx, ticketID)
 		if err != nil {
 			return err
+		}
+		// IsAssignableUser is "an active staff or admin account that is not a
+		// service account", which is exactly who may follow, and who may
+		// choose followers. Removing needs it of the actor only when it is
+		// somebody else's follow: leaving on your own is always allowed.
+		if follow || other {
+			ok, perr := st.IsAssignableUser(ctx, *actor.UserID)
+			if perr != nil {
+				return perr
+			}
+			if !ok {
+				return ErrForbidden
+			}
 		}
 		var (
 			changed bool
@@ -81,21 +142,27 @@ func (s *Service) setFollowing(ctx context.Context, ticketID uuid.UUID, actor Ac
 			kind    notification.EventType
 		)
 		if follow {
-			// IsAssignableUser is "an active staff or admin account that is not
-			// a service account", which is exactly who may follow.
-			ok, perr := st.IsAssignableUser(ctx, uid)
-			if perr != nil {
-				return perr
+			if other {
+				ok, perr := st.IsAssignableUser(ctx, target)
+				if perr != nil {
+					return perr
+				}
+				if !ok {
+					return ErrFollowerNotEligible
+				}
 			}
-			if !ok {
-				return ErrForbidden
-			}
-			changed, err = st.AddFollower(ctx, ticketID, uid)
+			changed, err = st.AddFollower(ctx, ticketID, target)
 			action, before, after = AuditActionFollowed, map[string]any{"following": false}, map[string]any{"following": true}
+			if other {
+				after["follower_user_id"] = target.String()
+			}
 			kind = notification.EventTicketFollowed
 		} else {
-			changed, err = st.RemoveFollower(ctx, ticketID, uid)
+			changed, err = st.RemoveFollower(ctx, ticketID, target)
 			action, before, after = AuditActionUnfollowed, map[string]any{"following": true}, map[string]any{"following": false}
+			if other {
+				before["follower_user_id"] = target.String()
+			}
 			kind = notification.EventTicketUnfollowed
 		}
 		if err != nil {
@@ -107,7 +174,7 @@ func (s *Service) setFollowing(ctx context.Context, ticketID uuid.UUID, actor Ac
 		if err := au.Create(ctx, auditEntry(actor.UserID, "ticket", ticketID, action, before, after)); err != nil {
 			return fmt.Errorf("auditing %s: %w", action, err)
 		}
-		raiseFollow(ch, t, actor.UserID, uid, kind)
+		raiseFollow(ch, t, actor.UserID, target, kind)
 		return nil
 	})
 }

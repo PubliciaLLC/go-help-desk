@@ -21,6 +21,12 @@ type fakeSource struct {
 	replies map[uuid.UUID]fakeReply // by reply id
 	err     error
 	asked   []uuid.UUID // reply ids whose text was asked for
+
+	// What Placement answers, and what it was asked, for the created message's
+	// names (webhook_placement_test.go).
+	placement    func(notification.TicketState) notification.Placement
+	placementErr error
+	placeAsked   []notification.TicketState
 }
 
 type fakeReply struct {
@@ -42,6 +48,19 @@ func (f *fakeSource) TicketFacts(_ context.Context, id uuid.UUID) (TicketFacts, 
 	}
 	t, ok := f.facts[id]
 	return t, ok, nil
+}
+
+func (f *fakeSource) Placement(_ context.Context, st notification.TicketState) (notification.Placement, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.placeAsked = append(f.placeAsked, st)
+	if f.placementErr != nil {
+		return notification.Placement{}, f.placementErr
+	}
+	if f.placement == nil {
+		return notification.Placement{}, nil
+	}
+	return f.placement(st), nil
 }
 
 func (f *fakeSource) PublicReplyBody(_ context.Context, ticketID, replyID uuid.UUID) (string, bool, error) {

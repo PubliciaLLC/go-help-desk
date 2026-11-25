@@ -55,12 +55,20 @@ async function openAdmin(page: Page, path: string) {
   await page.goto(path)
 }
 
-// Room to spare, not just a fit. The same page measures about 11px taller on
-// the Linux CI runner than on a Mac (system fonts lay the sidebar out
-// differently), and a test that passes with 0.5px to spare on one fails on the
-// other. Every heading, and the last link, must sit this far above the bottom
-// of the nav.
+// Room to spare, not just a fit. Every heading, and the last link, must sit
+// this far above the bottom of the nav.
 const HEADROOM = 24
+
+// The tallest a row of the sidebar is on a fine pointer: the dense links and
+// the Admin toggle are 28px (one 20px line and 4px above and below). A row
+// taller than this has a label on a second line. The sidebar budget is counted
+// in one-line rows, and which labels wrap depends on the font: on the Linux CI
+// runner, where system-ui is DejaVu Sans, "Canned Responses" (132.6px) once did
+// not fit the 130px beside its icon, the Tickets section came out 20px taller,
+// and System lost its headroom at 768 (16px of 24) while the same page passed
+// on a Mac. The fit has to hold in the widest default sans-serif, so a label
+// that wraps is its own failure, and says which one.
+const ONE_LINE_ROW = 28
 
 test.describe('the headings fit with headroom to spare, notice bar showing', () => {
   // One page in each section, so each section gets its turn as the open one.
@@ -86,6 +94,13 @@ test.describe('the headings fit with headroom to spare, notice bar showing', () 
         for (const s of SECTIONS) {
           await expect(nav.getByRole('button', { name: s.name })).toHaveAttribute('aria-expanded', String(s.name === p.open))
         }
+
+        const wrapped = await nav.evaluate((el, oneLine) =>
+          Array.from(el.querySelectorAll('a, button'))
+            .filter((e) => e.getClientRects().length > 0 && e.getBoundingClientRect().height > oneLine)
+            .map((e) => e.textContent?.trim()),
+        ONE_LINE_ROW)
+        expect(wrapped, 'these sidebar labels wrap onto a second line, which the 768px budget does not allow').toEqual([])
 
         const navBox = (await nav.boundingBox())!
         const navBottom = navBox.y + navBox.height

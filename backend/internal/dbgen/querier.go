@@ -546,6 +546,12 @@ type Querier interface {
 	// the token is never copied into the outbox.
 	GetPendingRegistrationByID(ctx context.Context, id uuid.UUID) (PendingRegistration, error)
 	GetPendingRegistrationByToken(ctx context.Context, token uuid.UUID) (PendingRegistration, error)
+	// The names behind a ticket's classification and holder, for a Slack or Teams
+	// ticket.created message: one statement, one round trip, whatever is set. A
+	// NULL id, a row that is gone and a deleted account all read as '' and the
+	// caller leaves that level out. An assignee's name is the display name only,
+	// and a deleted account has none to show.
+	GetPlacementNames(ctx context.Context, arg GetPlacementNamesParams) (GetPlacementNamesRow, error)
 	GetPlugin(ctx context.Context, id string) (Plugin, error)
 	// The count in a key's live window, without counting an attempt. No row back
 	// (never used, or its window has ended) means nothing has been spent.
@@ -654,6 +660,22 @@ type Querier interface {
 	// same filter; the database already refuses a service account a subject, so
 	// that one is belt and braces.
 	GetUserByEmail(ctx context.Context, email string) (User, error)
+	// The row that holds this address, whatever it is: live or deleted, person or
+	// service account. GetUserByEmail is the login lookup and hides deleted rows
+	// and service accounts; the SAML sign-in has to see them, because which of
+	// the two holds the address decides what happens.
+	//
+	// Compared ignoring case. The unique index on users.email is case-sensitive,
+	// and every write has lower-cased the address only since v1.2.0, so an older
+	// row can be 'Legacy@Example.com' and an exact match would miss it and let a
+	// second account be made for the same person. Nothing in the schema stops
+	// 'A@x' and 'a@x' both existing (only legacy data can: every write
+	// lower-cases now), so more than one row can match. The order is the answer
+	// to "which one is the holder": a live row over a deleted one; then the row
+	// whose address is exactly the lower-cased input, which is the one the unique
+	// index sees as holding it; then a row SAML did not create over one it did, so
+	// a deleted local account keeps blocking; then the oldest.
+	GetUserByEmailAnyState(ctx context.Context, lower string) (User, error)
 	GetUserByID(ctx context.Context, id uuid.UUID) (User, error)
 	GetUserByIDAdmin(ctx context.Context, id uuid.UUID) (User, error)
 	GetUserByOIDCSubject(ctx context.Context, oidcSubject string) (User, error)
@@ -990,6 +1012,10 @@ type Querier interface {
 	ListWebhookConfigs(ctx context.Context) ([]WebhookConfig, error)
 	// No event column: the history shows outcomes, never content.
 	ListWebhookDeliveries(ctx context.Context, webhookID uuid.UUID) ([]ListWebhookDeliveriesRow, error)
+	// Whether a live account holds this address, ignoring case. The unique index
+	// only refuses an exact match, so a legacy mixed-case live row would not stop
+	// a second live account being made beside it.
+	LiveUserHoldsEmail(ctx context.Context, lower string) (bool, error)
 	// KPI reports (#131)
 	// The local date of now in tz. Run before any other KPI query so that an
 	// unknown zone (SQLSTATE 22023) fails here, and the store maps it to
@@ -1105,6 +1131,27 @@ type Querier interface {
 	// hashing wins, and zero rows means exactly that. updated_at is left alone;
 	// the account did not change.
 	RehashUserPassword(ctx context.Context, arg RehashUserPasswordParams) (int64, error)
+	// Frees an address held by a deleted account, so a new account can have it:
+	// the old row's address becomes 'deleted-<id>@invalid' (a reserved top-level
+	// domain: it cannot receive mail) and its SAML and OIDC subjects are cleared.
+	// The OIDC one matters: oidc_subject is unique across every row, deleted
+	// included, so a retired row that kept it would stop the person ever signing
+	// in with OIDC again. The row keeps its id, so the tickets, replies and audit
+	// entries that point at it stay on it. Only a deleted row is ever touched.
+	// saml_created_only narrows it to rows SAML created (a SAML sign-in recreates
+	// those and leaves a deleted local account blocking); an administrator
+	// creating an account passes false. Matched ignoring case, like
+	// GetUserByEmailAnyState, so legacy rows that differ only in case are all
+	// released by one call, and every id comes back so each can be audited.
+	ReleaseDeletedUserEmail(ctx context.Context, arg ReleaseDeletedUserEmailParams) ([]uuid.UUID, error)
+	// Replaces the SAML subject of an account that was created by SAML, when the
+	// identity provider sends a NameID the account does not know. The conditions
+	// are asked at the write, not only by the caller, so an account that was
+	// deleted, disabled or changed kind between the read and this statement is
+	// not relinked on the strength of the older read. Writes the subject and the
+	// name and nothing else, so the role, the groups and the MFA state it carries
+	// are not touched. An empty display name leaves the stored one alone.
+	RelinkSAMLSubject(ctx context.Context, arg RelinkSAMLSubjectParams) (User, error)
 	RemoveGroupMember(ctx context.Context, arg RemoveGroupMemberParams) (int64, error)
 	RemoveGroupScope(ctx context.Context, arg RemoveGroupScopeParams) (int64, error)
 	RemoveTicketFollower(ctx context.Context, arg RemoveTicketFollowerParams) (int64, error)

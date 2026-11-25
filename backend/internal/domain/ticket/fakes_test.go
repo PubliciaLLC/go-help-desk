@@ -373,6 +373,12 @@ func (f *fakeStore) CTIIsCoherent(context.Context, uuid.UUID, *uuid.UUID, *uuid.
 	return true, nil
 }
 
+// PlacementNames: this fake has no catalogue, so no level has a name. The real
+// read is SQL and is exercised against a real database.
+func (f *fakeStore) PlacementNames(context.Context, notification.TicketState) (notification.Placement, error) {
+	return notification.Placement{}, nil
+}
+
 // ArchivedCTINode: this fake has no catalogue, so nothing is archived. The real
 // rule lives in SQL and is exercised against a real database.
 func (f *fakeStore) ArchivedCTINode(context.Context, *uuid.UUID, *uuid.UUID, *uuid.UUID) (string, error) {

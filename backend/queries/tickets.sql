@@ -1181,3 +1181,17 @@ WHERE
   AND (sqlc.narg(assignee_group_id)::uuid IS NULL OR t.assignee_group_id = sqlc.narg(assignee_group_id)::uuid)
   AND COALESCE(t.resolved_at, t.closed_at) IS NULL
 GROUP BY t.assignee_group_id, g.name;
+
+-- name: GetPlacementNames :one
+-- The names behind a ticket's classification and holder, for a Slack or Teams
+-- ticket.created message: one statement, one round trip, whatever is set. A
+-- NULL id, a row that is gone and a deleted account all read as '' and the
+-- caller leaves that level out. An assignee's name is the display name only,
+-- and a deleted account has none to show.
+SELECT
+    COALESCE((SELECT c.name FROM categories c WHERE c.id = sqlc.arg('category_id')::uuid), '')::text AS category,
+    COALESCE((SELECT ty.name FROM types ty WHERE ty.id = sqlc.narg('type_id')::uuid), '')::text AS type_name,
+    COALESCE((SELECT it.name FROM items it WHERE it.id = sqlc.narg('item_id')::uuid), '')::text AS item,
+    COALESCE((SELECT g.name FROM groups g WHERE g.id = sqlc.narg('group_id')::uuid), '')::text AS group_name,
+    COALESCE((SELECT u.display_name FROM users u
+              WHERE u.id = sqlc.narg('user_id')::uuid AND u.deleted_at IS NULL), '')::text AS assignee;

@@ -10,6 +10,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { TextLimit } from '@/components/TextLimit'
+import { CtiDescription } from '@/components/ticket/CtiDescription'
 import { isOverLimit } from '@/lib/textLimit'
 import { MarkdownEditor } from '@/components/editor/MarkdownEditor'
 import { Select } from '@/components/ui/select'
@@ -265,6 +266,7 @@ export function GuestTicketPage() {
                 <Label htmlFor="category">Category *</Label>
                 <Select
                   id="category"
+                  aria-describedby="cti-description"
                   value={categoryId}
                   onChange={(e) => chooseCategory(e.target.value)}
                 >
@@ -273,6 +275,8 @@ export function GuestTicketPage() {
                     <option key={c.id} value={c.id}>{c.name}</option>
                   ))}
                 </Select>
+                {/* Public: this is the text of a category any visitor can open. */}
+                <CtiDescription id="cti-description" category={categories.find((c) => c.id === categoryId)} />
               </div>
 
               {guestFields.map((f) => (

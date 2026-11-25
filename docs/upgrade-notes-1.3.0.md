@@ -322,6 +322,18 @@ Until now the largest file anyone could attach was 25 MB, fixed in the code. It 
 
 Archiving was possible only through the API (`PATCH` with `active`). Each category, type and item row now has an Archive button, and an archived row has Restore. Archive asks first: the entry can no longer be chosen for new tickets, and tickets already filed under it keep it. Archived rows stay in the tree, greyed and labelled "Archived". Archiving does not cascade to the rows beneath. When deleting an entry is refused because tickets use it, the message now points to Archive.
 
+### Descriptions on Categories, Types and Items
+
+Each category, type and item can have an optional **Description**: a line or two of guidance that says what belongs under it. The most specific one of the choices made shows beneath the Category / Type / Item selectors on the **New ticket** page (including when staff file for someone else), on the public **guest form** (`/submit`, where only the category is chosen) and in the **Classification** card's Edit mode on a ticket. It updates as the person changes any selector: the item's text if the item has one, otherwise the type's, otherwise the category's, and nothing at all when none of them has one.
+
+**Nothing changes until you write one.** Every existing entry starts with no description, and the form looks exactly as before. Migration `000069` adds the column; its down migration drops it.
+
+- **Where to set it:** **Admin → Categories**. Create forms have a Description box, and an expanded category, type or item has one with its own Save. Plain text, at most **500 characters** (characters, not bytes), line breaks kept. It is never shown as HTML or Markdown: `<b>x</b>` appears as those characters. Leading and trailing white space is not counted or stored. A longer text is refused with `400`; saving an empty box clears it.
+- **Every active description is public.** While guest submission is on, the catalogue routes (`GET /api/v1/categories`, `/categories/{id}/types` and `.../items`) answer without a sign-in and carry the description of **every active category, type and item**. A guest only ever chooses a category, and a requester never chooses an item, but both can read all of the text by calling those routes; any signed-in user can read it whether or not guest submission is on. Archived entries are served to staff and administrators only. Do not put anything in a description you would not put on a public web page.
+- **Archived parents now hide their children from non-staff.** `GET /categories/{id}/types` and `.../items` used to return the still-active types of an archived category (and items of an archived type) to a guest or a requester who knew the id, because archiving does not cascade. They now return an empty list; staff and administrators still see everything. This is a small correction to an existing route, found while adding descriptions. One visible effect: a requester's view of a ticket whose category (or type) was archived later no longer shows its type and item names (the category already showed a dash), and the filter chips of a requester who filters by an archived category lose their type and item names the same way (`useFilterLookups`). Staff, administrators and the reclassify card are unchanged. A failure to look the parent up is a `500`, never an unfiltered list.
+- **API (additive):** a `description` string (empty when none) on every category, type and item the API returns: `/admin/categories` and its `types` and `items`, the catalogue the forms read (`/categories`, `/categories/{id}/types`, `.../items`) and the MCP `list_categories` tree. `POST` and `PATCH` on the admin routes accept an optional `description`; on `PATCH` an absent key leaves it unchanged. A client that ignores unknown keys needs no change. Tickets and webhook or event payloads are unchanged: they carry ids, not descriptions.
+- **Archiving and deleting** work as before; an archived entry keeps its description. Creating or editing a category, type or item is not written to the audit log, and a description edit is not either.
+
 ### Administrators Can Edit the Wording of the Emails (#158)
 
 Under **Admin → System → Email → Templates** an administrator edits the subject and body of all 24 emails, and a shared header and footer that go around every one. Each email, and the header and footer, can also have an optional HTML part; with none, the email is plain text exactly as before. With nothing edited, every email is byte for byte what it was before the editor existed.
@@ -453,6 +465,7 @@ Staff and administrators can now **follow a ticket** (a Follow button on the tic
 - **Followers are emailed under the *Activity on tickets I'm assigned to or follow* switch**, and the administrator's override of it (`staff_email_activity_override`) applies to them. Nobody is emailed about their own change, and nobody is emailed twice for one event whatever mix of assignee, group member and follower they are.
 - **People only.** An API key, an OAuth client or a service user cannot follow or unfollow: `403 session_required`. Reading the list, `GET /api/v1/tickets/{id}/followers`, works for staff and administrators, and for a key with `tickets:read`.
 - **Staff always see who follows a ticket.** There is no setting to hide the list.
+- **Staff and administrators can add another staff member or administrator as a follower, and remove any follower (#695).** On the ticket page, use *Add follower* and the remove button beside a name; over the API, `PUT` and `DELETE /api/v1/tickets/{id}/followers/{userId}` (`204`, idempotent). Session only, like following: an API key or OAuth client gets `403 session_required`, and a requester `403`. The person added must be an active staff member or administrator (`422 follower_not_eligible` otherwise) who can see the ticket under ticket scope (`422 follower_cannot_view_ticket` otherwise). **The person added is not emailed**; they hear about later activity like any follower. The audit entry names who added or removed whom (`follower_user_id`), and the opt-in `ticket.followed` and `ticket.unfollowed` webhook events carry the adder as `ActorID` and the person as `user_id`, as they already did. No migration, no setting.
 - **Following is audited** (`followed`, `unfollowed`). Administrators see those entries on the ticket's Activity feed and in the admin-wide audit view. **Staff do not see them on a ticket's Activity feed, until an administrator turns on the new setting `staff_can_view_follow_audit`** (Admin → System → Privacy → Audit log: *Staff can view follow history*; off by default, session only). Requesters never see them.
 - A follower who can no longer see the ticket (ticket scope was turned on, or their groups changed) is skipped when the mail is sent, and **keeps following**, so they are mailed again if they can see it again.
 - **Reassigning a ticket ends the old assignee's follow.** If you followed a ticket you were assigned, and it is then assigned to someone else or to nobody (or your account is deleted, for tickets that are still open), your follow is removed and recorded as `unfollowed` with whoever moved the ticket as the actor. Click Follow again to keep the mail. Moving a ticket between groups does not touch anyone's follow.
@@ -466,6 +479,14 @@ Admin, Webhooks has a History button per hook: its last 25 deliveries with the o
 This adds a database table through a migration that runs at start-up.
 
 A retry that is dropped (the hook was disabled, paused because its API key, or that key's owner, is no longer active, or unsubscribed from the event, its ticket filter no longer admits the ticket, or the body cannot be built) now shows in History as **Dropped** with the reason. Before, its entry stayed on "Retrying" for ever. **Migration 000051** adds the `dropped` result and a `drop_reason` column to the history table; existing entries are unchanged, and the down migration turns dropped entries into `other`. The history API adds `result: "dropped"` and a `drop_reason` field, present only on dropped entries. Changing a hook's URL still clears the whole history, as before, so after a URL change you see an empty History rather than a dropped entry (`url_changed` appears only for an attempt that was in flight at that moment).
+
+### Webhooks: Slack and Teams new-ticket messages name the category and who holds it
+
+A `ticket.created` message to a Slack or Teams hook now has up to two more lines under the subject: the classification as `Category > Type > Item` (only the levels the ticket has), and `Group: IT Support · Assignee: Jordan Blake` (only the parts it has), or `Unassigned` when it has neither. In Teams each is a subtle line of the same card, so a long name wraps. Nothing else is added, and Discord, Jira and every other event are unchanged.
+
+Every Slack and Teams hook that gets the message gets both lines, whatever events it lists: who holds a new ticket is a fact about the ticket as filed, including where routing placed it, and is not a separate `ticket.assigned` notice. A later reassignment is not in the created message and still reaches only hooks that list `ticket.assigned`. A Redeliver names the ticket's current holder, as it already uses the current subject.
+
+The names are read when the message is sent, from the ids the ticket was filed with, so a category, group or person renamed in between is named as it is then. The raw JSON body, its fields and the OpenAPI schemas are unchanged, there is no migration, and nothing new is stored. If the names cannot be read the message goes without the lines and the reason is logged.
 
 ### Webhooks: a ticket filter (#413)
 
@@ -815,6 +836,47 @@ New accounts, sign-ins that create or link an account, and password resets refus
 - **Allowed domains:** entries must be ASCII. Saving an entry with a non-ASCII character is refused with `400`; use the `xn--` form for an internationalised domain. If you already have such an entry, replace it.
 - **Existing users with a non-ASCII domain:** an allowed-domains list is compared with the `xn--` form of such a domain, so putting `xn--bcher-kva.de` in the list admits `a@bücher.de`. This only widens matching. It matters for OIDC (checked on every sign-in). To find the accounts: `SELECT email FROM users WHERE oidc_subject <> '' AND split_part(email,'@',2) ~ '[^\x01-\x7f]';`. The save-time `400` names the `xn--` form for an entry you typed in Unicode (#620).
 - **What to check:** `SELECT count(*) FROM users WHERE email ~ '[^\x01-\x7f]'`. Zero means nothing changes for you.
+
+### SAML: Accounts Could Sign In Only Once With Entra; Fixed, and a Deleted Account's Address Can Be Used Again
+
+**What was wrong.** The help desk asked the identity provider for a *transient* NameID, and Microsoft Entra ID answers that with a new random value at every sign-in. The NameID is the key of the account (`users.saml_subject`), so the first sign-in created the account and every later one looked like a new person whose address was already taken: "Another account here already uses the email address your identity provider sent." In effect a SAML account worked for exactly one sign-in. Other identity providers that hand out a different NameID each time failed the same way.
+
+**What changed.**
+
+- **The sign-in request now asks for a persistent NameID** (`urn:oasis:names:tc:SAML:2.0:nameid-format:persistent`), and the SP metadata says so. Entra then sends a stable identifier for each user and application. The format in the request overrides the setting in the Entra application, so there is nothing to change there. Download the SP metadata again only if your identity provider keeps a copy of it.
+- **Existing SAML accounts reconnect at their next sign-in, by email address.** When the NameID is one no account knows but a live account that SAML created holds the address in the assertion, that account is relinked to the new NameID and signed in. Its role, groups and tickets are untouched. This repairs every account created before 1.3.0 without any step from you, and it keeps an identity provider that still sends a different NameID each time working. A disabled account is still refused (`account_disabled`) and is not relinked.
+- **A local account is never taken over.** An address held by an account that SAML did not create (a local password account, an administrator above all, or a service account) still refuses the SAML sign-in with `email_taken`, and the login page now says an account with that address already exists and was not created by single sign-on (or is held by a removed account), and to ask an administrator.
+- **A deleted SAML account is gone.** If someone whose SAML-created account was deleted signs in through SAML again, they get a new account (role User). The old row stays, with its id, tickets and audit history; its address becomes `deleted-<id>@invalid` and its SAML subject is cleared, in the same transaction that creates the new account. Both rows get an audit entry (`email_released`, `replaced_deleted_user`; ids only). A deleted *local* account still blocks its address.
+- **An administrator can create an account over a deleted one.** `POST /admin/users` (Admin → Users → New user) with an address that only deleted accounts hold, of any kind, releases the address the same way (the old row also gives up its SAML and OIDC subjects) and creates the account in one step; before, it answered `409 email_taken` with no way forward in the web interface. **To bring a deleted SAML user back, they sign in through SAML.** The New user form makes a *local* account, and a SAML sign-in refuses to take over a local account (`email_taken`); with SAML restricting passwords to administrators, a non-administrator made that way could not sign in at all. An address held by a live account still answers `409 email_taken`, and its message is now "an account with that email address already exists". Self-signup, guest submission and OIDC still treat a deleted account's address as taken.
+- **Two first sign-ins of one person at once** (a double click, two tabs) now end with one account and no error.
+- **Addresses are matched ignoring case.** Accounts written before 1.2.0 can have a mixed-case address; a SAML sign-in and the New user form find, relink or release them like any other, and do not make a second account beside one. Other doors (signup, OIDC, editing an address) still compare exactly. If an address exists twice in different capitals (legacy data only), the sign-in uses the live one whose address is exactly lower-case, then one SAML did not create, then the oldest; check `SELECT lower(email), count(*) FROM users GROUP BY 1 HAVING count(*) > 1;`. A sign-in does not rewrite an address whose only difference is case, so a legacy `Name@x` keeps its spelling; a deleted local twin in other capitals does not block a deleted SAML-created account that holds the lower-case address.
+- **After a retirement, search by the old address stops finding that row.** The retired row shows `deleted-<id>@invalid`, so the audit log and ticket search by the old address no longer reach it. Its history is reached by the row's id.
+
+**An identity provider that refuses persistent.** It answers the request with a SAML status error (`InvalidNameIDPolicy`). The sign-in then lands on the login page with "Your identity provider cannot issue the persistent identifier this help desk asks for. Ask an administrator to check the single sign-on setup." Allow persistent identifiers for the application at the provider. Any other failed response is still a plain 403 page.
+
+**What your identity provider must send.** A NameID (opaque is fine) and the person's address as an attribute (`email`, `mail`, the LDAP `mail` OID or Entra's `…/claims/emailaddress`). Without the address an opaque NameID cannot name a mailbox, and a first sign-in is refused with `invalid_email` (also when an allowed-domains list is set).
+
+**Trust.** Reconnecting by address makes the identity provider's address attribute the identity for every SAML-created account. Anyone who can make the provider assert an address can sign in as the SAML-created account that holds it, a promoted administrator and an account later given a password or MFA included. Check which attribute is mapped to the address and that users cannot edit it at the provider. An account that SAML did not create is never taken over this way.
+
+**Not verified here:** sign-in against a real Microsoft Entra ID tenant. The persistent request, the matching and the race are tested against Postgres and the library, not against Entra.
+
+**See which accounts this concerns** (read only):
+
+```sql
+-- every SAML-created account; each one has a stored NameID that may be a dead transient value
+SELECT id, email, role, disabled, deleted_at, left(saml_subject, 12) AS subject_start, created_at
+FROM users WHERE saml_subject <> '' ORDER BY created_at;
+
+-- addresses stored with capitals (written before 1.2.0): matched ignoring case, listed so you know
+SELECT id, email, deleted_at FROM users WHERE email <> lower(email);
+
+-- one person, whatever state the row is in
+SELECT id, email, role, disabled, deleted_at, saml_subject <> '' AS saml_created, password_hash <> '' AS has_password
+FROM users WHERE lower(email) = lower('person@example.com');
+
+-- addresses already retired by the rule above (deleted accounts that gave their address up)
+SELECT id, email, deleted_at FROM users WHERE email LIKE 'deleted-%@invalid' ORDER BY deleted_at;
+```
 
 ### SAML and sign-in settings (#618, #619)
 

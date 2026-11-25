@@ -716,7 +716,7 @@ func (s *Server) registerTools() {
 
 	s.mcp.AddTool(mcpgo.NewTool(
 		"list_categories",
-		mcpgo.WithDescription("List the Category/Type/Item catalogue used when opening a ticket"),
+		mcpgo.WithDescription("List the Category/Type/Item catalogue used when opening a ticket. Each entry has a description (plain text, empty when none) saying what belongs under it."),
 		mcpgo.WithBoolean("include_inactive", mcpgo.Description("Include retired entries (default false)")),
 	), scoped(mcpRead, s.handleListCategories))
 

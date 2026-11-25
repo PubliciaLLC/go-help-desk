@@ -182,12 +182,12 @@ export async function listCategories(): Promise<Category[]> {
   return res.data
 }
 
-export async function createCategory(input: { name: string; sort_order?: number }): Promise<Category> {
+export async function createCategory(input: { name: string; description?: string; sort_order?: number }): Promise<Category> {
   const res = await api.post<Category>('/admin/categories', input)
   return res.data
 }
 
-export async function updateCategory(id: string, patch: { name?: string; sort_order?: number; active?: boolean }): Promise<Category> {
+export async function updateCategory(id: string, patch: { name?: string; description?: string; sort_order?: number; active?: boolean }): Promise<Category> {
   const res = await api.patch<Category>(`/admin/categories/${seg(id)}`, patch)
   return res.data
 }
@@ -201,12 +201,12 @@ export async function listTypes(categoryId: string): Promise<TicketType[]> {
   return res.data
 }
 
-export async function createType(categoryId: string, input: { name: string; sort_order?: number }): Promise<TicketType> {
+export async function createType(categoryId: string, input: { name: string; description?: string; sort_order?: number }): Promise<TicketType> {
   const res = await api.post<TicketType>(`/admin/categories/${seg(categoryId)}/types`, input)
   return res.data
 }
 
-export async function updateType(categoryId: string, typeId: string, patch: { name?: string; sort_order?: number; active?: boolean }): Promise<TicketType> {
+export async function updateType(categoryId: string, typeId: string, patch: { name?: string; description?: string; sort_order?: number; active?: boolean }): Promise<TicketType> {
   const res = await api.patch<TicketType>(`/admin/categories/${seg(categoryId)}/types/${seg(typeId)}`, patch)
   return res.data
 }
@@ -223,7 +223,7 @@ export async function listItems(categoryId: string, typeId: string): Promise<Tic
 export async function createItem(
   categoryId: string,
   typeId: string,
-  input: { name: string; sort_order?: number }
+  input: { name: string; description?: string; sort_order?: number }
 ): Promise<TicketItem> {
   const res = await api.post<TicketItem>(
     `/admin/categories/${seg(categoryId)}/types/${seg(typeId)}/items`,
@@ -232,7 +232,7 @@ export async function createItem(
   return res.data
 }
 
-export async function updateItem(categoryId: string, typeId: string, itemId: string, patch: { name?: string; sort_order?: number; active?: boolean }): Promise<TicketItem> {
+export async function updateItem(categoryId: string, typeId: string, itemId: string, patch: { name?: string; description?: string; sort_order?: number; active?: boolean }): Promise<TicketItem> {
   const res = await api.patch<TicketItem>(`/admin/categories/${seg(categoryId)}/types/${seg(typeId)}/items/${seg(itemId)}`, patch)
   return res.data
 }

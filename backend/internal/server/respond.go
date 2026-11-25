@@ -86,6 +86,12 @@ func handleError(w http.ResponseWriter, err error) {
 		Error(w, http.StatusBadRequest, "body_too_long", err.Error())
 		return
 	}
+	// Adding a follower who cannot follow (#695). 422: the request is
+	// well-formed, and what it names is not somebody who can.
+	if errors.Is(err, ticket.ErrFollowerNotEligible) {
+		Error(w, http.StatusUnprocessableEntity, "follower_not_eligible", err.Error())
+		return
+	}
 	if errors.Is(err, ticket.ErrInvalidTextFormat) {
 		Error(w, http.StatusBadRequest, "invalid_format", err.Error())
 		return
