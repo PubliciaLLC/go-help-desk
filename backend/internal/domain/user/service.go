@@ -254,8 +254,11 @@ func (s *Service) newUser(in CreateUserInput) (User, error) {
 		Role:        in.Role,
 		SAMLSubject: in.SAMLSubject,
 		OIDCSubject: in.OIDCSubject,
-		CreatedAt:   time.Now(),
-		UpdatedAt:   time.Now(),
+		// What the column's default gives the row, so the create answers
+		// (setup, the New user form) say "device" and not "" (#709).
+		Theme:     ThemeDevice,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
 	}
 	if err := u.Validate(); err != nil {
 		return User{}, err

@@ -57,3 +57,20 @@ func TestService_SetTheme(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, user.ThemeDark, got.Theme)
 }
+
+// A new account is answered as "device", the value the column's default gives
+// it, and not as "": the create answers (setup, the admin's New user form) hand
+// back the user as built, before any read of the row.
+func TestUserService_Create_StartsOnDevice(t *testing.T) {
+	svc := user.NewService(newFakeUserStore())
+	in := user.CreateUserInput{Email: "theme@example.com", DisplayName: "Theme", Role: user.RoleUser, Password: "secret123"}
+
+	u, err := svc.Create(context.Background(), in)
+	require.NoError(t, err)
+	require.Equal(t, user.ThemeDevice, u.Theme)
+
+	in.Email = "theme2@example.com"
+	u, err = svc.CreateByAdmin(context.Background(), in, nil)
+	require.NoError(t, err)
+	require.Equal(t, user.ThemeDevice, u.Theme)
+}
