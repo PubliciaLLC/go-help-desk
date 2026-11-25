@@ -16,6 +16,7 @@ import { Layout } from '@/components/Layout'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { ApiKeysSection } from '@/components/ApiKeysSection'
+import { AppearanceSection } from '@/components/AppearanceSection'
 import { EmailNotificationsSection } from '@/components/EmailNotificationsSection'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { Input } from '@/components/ui/input'
@@ -581,6 +582,7 @@ export function AccountPage() {
           <h1 className="text-xl font-semibold text-gray-900">Your account</h1>
           <p className="mt-1 text-sm text-gray-500">{user?.email}</p>
         </div>
+        <AppearanceSection />
         <EmailNotificationsSection />
         <PasswordSection />
         <PasskeySection />

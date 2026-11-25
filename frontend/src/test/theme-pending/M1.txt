@@ -1,0 +1,20 @@
+# M1: files still carrying palette colours. Delete this file when none are left (see ../theme-colours.test.ts).
+components/ApiKeysSection.tsx
+components/EmailNotificationsSection.tsx
+components/InsecureConfigBanner.tsx
+components/Layout.tsx
+components/MFAEnrollForm.tsx
+components/PasskeyEnrollForm.tsx
+components/ServerNoticeBar.tsx
+components/TextLimit.tsx
+pages/AccountPage.tsx
+pages/AfterUpgradePage.tsx
+pages/ForgotPasswordPage.tsx
+pages/GuestTicketPage.tsx
+pages/GuestTicketViewPage.tsx
+pages/GuestTrackPage.tsx
+pages/LoginPage.tsx
+pages/ResetPasswordPage.tsx
+pages/SetupPage.tsx
+pages/SignupPage.tsx
+pages/VerifyEmailPage.tsx

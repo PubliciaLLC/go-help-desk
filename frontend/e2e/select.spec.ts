@@ -47,7 +47,7 @@ test('#561: a select focused from the keyboard shows a ring outside its border',
   const m = await select.evaluate((el) => {
     const cs = getComputedStyle(el)
     const probe = document.createElement('span')
-    probe.style.color = 'hsl(var(--ring))'
+    probe.style.color = 'var(--ring)'
     document.body.appendChild(probe)
     const ring = getComputedStyle(probe).color
     probe.remove()

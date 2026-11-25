@@ -1,0 +1,16 @@
+# M3: files still carrying palette colours. Delete this file when none are left (see ../theme-colours.test.ts).
+components/AuditDiff.tsx
+components/admin/CredentialAuditContext.tsx
+components/admin/CustomFieldAuditContext.tsx
+components/ticket/AttachmentList.tsx
+components/ticket/AuditFeed.tsx
+components/ticket/ClassificationPanel.tsx
+components/ticket/CtiDescription.tsx
+components/ticket/CustomFieldsPanel.tsx
+components/ticket/FollowersPanel.tsx
+components/ticket/LinkedTicketsPanel.tsx
+components/ticket/ReplyComposer.tsx
+pages/admin/AdminAuditPage.tsx
+pages/admin/GroupsPage.tsx
+pages/admin/UserDetailPage.tsx
+pages/admin/UsersPage.tsx

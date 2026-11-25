@@ -119,12 +119,13 @@ describe('whitespace', () => {
   })
 })
 
+// `main`: the sidebar's appearance switch (#709) has a live region of its own, which comes first in the document.
 describe('the label', () => {
   it('is a polite live region that is in the page before it has anything to say', () => {
     setRole('staff')
     search.value = { view: 'me' }
     const { container } = renderWithQuery(<TicketListPage />)
-    const region = container.querySelector('[aria-live="polite"]')
+    const region = container.querySelector('main [aria-live="polite"]')
     expect(region).not.toBeNull()
     expect(region!.textContent).toBe('')
   })
@@ -133,7 +134,7 @@ describe('the label', () => {
     setRole('staff')
     search.value = { view: 'search' }
     const { container } = renderWithQuery(<TicketListPage />)
-    const region = container.querySelector('[aria-live="polite"]')
+    const region = container.querySelector('main [aria-live="polite"]')
     const label = await screen.findByText('Searching all tickets you can see')
     expect(label).toBe(region)
   })
