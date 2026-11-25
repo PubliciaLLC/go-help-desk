@@ -91,6 +91,7 @@ test.describe('the switch, signed in', () => {
   test('there is no animated switch: transitions are off for one frame', async ({ page }) => {
     await signedIn(page, 'light')
     await page.goto('/dashboard')
+    await expect(page.getByRole('group', { name: 'Appearance' })).toBeVisible()
     const seen = await page.evaluate(
       () =>
         new Promise<{ during: boolean; after: boolean }>((resolve) => {
@@ -158,6 +159,7 @@ test.describe('the pages before sign-in', () => {
     await signedIn(page, 'dark')
     await page.setViewportSize({ width: 1280, height: 900 })
     await page.goto('/dashboard')
+    await expect(page.getByRole('group', { name: 'Appearance' })).toBeVisible()
     expect(await dark(page)).toBe(true)
 
     await page.route('**/api/v1/me', (route) => route.fulfill(unauthenticated))

@@ -47,6 +47,12 @@ interface ThemeState {
 }
 
 export const useThemeStore = create<ThemeState>((set, get) => {
+  // Saves are numbered as they are sent. The answer of an older save that comes
+  // back after a newer one has been answered says nothing the account does not
+  // already know, so it must not put the older theme back in the auth store.
+  let sent = 0
+  let confirmed = 0
+
   /** Sets the preference and puts the resolved theme on the page. */
   function show(preference: ThemePreference) {
     set({ preference })
@@ -63,6 +69,7 @@ export const useThemeStore = create<ThemeState>((set, get) => {
 
     async setPreference(next) {
       const prev = get().preference
+      const seq = ++sent
       set({ error: null })
       show(next)
       writeStored(next)
@@ -73,15 +80,22 @@ export const useThemeStore = create<ThemeState>((set, get) => {
       try {
         const saved = await updateAppearance(next)
         // The auth store now holds the saved theme. adoptServer ignores this
-        // update: a save is still counted as pending until the line below.
-        useAuthStore.getState().setUser(saved)
+        // update: a save is still counted as pending until the line below. Not
+        // for a person who has signed out since, nor for an answer older than
+        // one already taken.
+        if (seq > confirmed && useAuthStore.getState().user?.id === saved.id) {
+          confirmed = seq
+          useAuthStore.getState().setUser(saved)
+        }
         set((s) => ({ error: null, saveCount: s.saveCount + 1 }))
       } catch {
-        // Put the old value back, unless a newer choice has been made since: that
-        // one has its own save and says what the person wants.
+        // Put back what the server last confirmed (never a value that was only
+        // clicked, as `prev` may be), unless a newer choice has been made since:
+        // that one has its own save and says what the person wants.
         if (get().preference === next) {
-          show(prev)
-          writeStored(prev)
+          const back = useAuthStore.getState().user?.theme ?? prev
+          show(back)
+          writeStored(back)
           set({ error: SAVE_ERROR })
         }
       } finally {
@@ -98,6 +112,11 @@ export const useThemeStore = create<ThemeState>((set, get) => {
 
     adoptLocal(p) {
       show(p)
+      // This tab's copy of the account must agree, or the next unrelated update
+      // of the user (enabling MFA re-sets it from the same copy) would look like
+      // the account's value and undo the change.
+      const { user, setUser } = useAuthStore.getState()
+      if (user && user.theme !== p) setUser({ ...user, theme: p })
     },
 
     setSystemDark(dark) {

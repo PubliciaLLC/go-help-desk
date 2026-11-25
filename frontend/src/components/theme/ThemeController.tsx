@@ -19,7 +19,10 @@ export function ThemeController() {
     // Every way a person gets into the auth store (requireAuth, sign-in, SSO
     // return, the saved answer of a switch) arrives here.
     const unsubscribe = useAuthStore.subscribe((state, prev) => {
-      if (state.user !== prev.user) adoptServer(state.user?.theme)
+      // Only when the person or their theme changed: an unrelated update of the
+      // same user (a new object with the same theme) must not undo what this
+      // tab or another one has chosen since.
+      if (state.user?.id !== prev.user?.id || state.user?.theme !== prev.user?.theme) adoptServer(state.user?.theme)
     })
 
     // A change of the stored value in another tab. That tab has already saved it

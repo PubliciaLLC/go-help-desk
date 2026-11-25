@@ -90,10 +90,18 @@ export function applyTheme(t: ResolvedTheme, doc: Document = document): void {
 export function withLightTheme<T>(fn: () => T, doc: Document = document): T {
   const html = doc.documentElement
   const wasDark = html.classList.contains('dark')
+  // Transitions off while the class is removed: an element with
+  // transition-colors would otherwise answer getComputedStyle with the dark
+  // value it is fading from. Same mechanism as applyTheme.
+  const hadAttr = html.hasAttribute('data-theme-switching')
+  html.setAttribute('data-theme-switching', '')
   if (wasDark) html.classList.remove('dark')
   try {
     return fn()
   } finally {
     if (wasDark) html.classList.add('dark')
+    // Computed with transitions still off, so the way back is not a fade either.
+    void html.offsetHeight
+    if (!hadAttr) html.removeAttribute('data-theme-switching')
   }
 }

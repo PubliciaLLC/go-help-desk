@@ -203,9 +203,14 @@ describe('withLightTheme', () => {
     expect(html.classList.contains('dark')).toBe(false)
   })
 
-  it('does not start a theme switch (it is not a change of theme)', () => {
+  it('turns transitions off while it runs, so a computed style is the light value and not the start of a fade, and leaves nothing behind', () => {
     html.classList.add('dark')
-    withLightTheme(() => undefined)
+    let during: boolean | null = null
+    withLightTheme(() => { during = html.hasAttribute('data-theme-switching') })
+    expect(during).toBe(true)
+    expect(html.hasAttribute('data-theme-switching')).toBe(false)
+    // Also when fn throws.
+    expect(() => withLightTheme(() => { throw new Error('x') })).toThrow('x')
     expect(html.hasAttribute('data-theme-switching')).toBe(false)
   })
 })

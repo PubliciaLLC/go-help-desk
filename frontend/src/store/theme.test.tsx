@@ -177,6 +177,87 @@ describe('choosing while signed in', () => {
   })
 })
 
+describe('saves that overlap or arrive late', () => {
+  beforeEach(() => useAuthStore.setState({ user: user('light') }))
+
+  it('puts back the last value the server confirmed, not the value before the failed click', async () => {
+    // Server holds light. Dark is clicked, then Match my device; dark fails
+    // first (ignored, a newer choice exists), then device fails. Going back to
+    // "dark" would show a value that was never saved.
+    let failDark: (e: Error) => void = () => {}
+    let failDevice: (e: Error) => void = () => {}
+    vi.mocked(updateAppearance)
+      .mockImplementationOnce(() => new Promise((_, rej) => { failDark = rej }))
+      .mockImplementationOnce(() => new Promise((_, rej) => { failDevice = rej }))
+    render(<ThemeController />)
+    const a = useThemeStore.getState().setPreference('dark')
+    const b = useThemeStore.getState().setPreference('device')
+    await act(async () => { failDark(new Error('a')); await a })
+    await act(async () => { failDevice(new Error('b')); await b })
+
+    expect(useThemeStore.getState().preference).toBe('light')
+    expect(isDark()).toBe(false)
+    expect(stored()).toBe('light')
+    expect(useThemeStore.getState().error).toBe(SAVE_ERROR)
+  })
+
+  it('leaves the auth store with the newest saved theme when the answers arrive out of order', async () => {
+    let answerDark: (u: User) => void = () => {}
+    let answerLight: (u: User) => void = () => {}
+    vi.mocked(updateAppearance)
+      .mockImplementationOnce(() => new Promise((res) => { answerDark = res }))
+      .mockImplementationOnce(() => new Promise((res) => { answerLight = res }))
+    useAuthStore.setState({ user: user('device') })
+    render(<ThemeController />)
+    const a = useThemeStore.getState().setPreference('dark')
+    const b = useThemeStore.getState().setPreference('light')
+    await act(async () => { answerLight(user('light')); await b })
+    await act(async () => { answerDark(user('dark')); await a })
+
+    expect(useAuthStore.getState().user?.theme).toBe('light')
+    expect(useThemeStore.getState().preference).toBe('light')
+    expect(isDark()).toBe(false)
+  })
+
+  it('does not put a signed-out user back when an answer arrives after sign-out', async () => {
+    let answer: (u: User) => void = () => {}
+    vi.mocked(updateAppearance).mockImplementationOnce(() => new Promise((res) => { answer = res }))
+    render(<ThemeController />)
+    const saving = useThemeStore.getState().setPreference('dark')
+    act(() => useAuthStore.getState().clear())
+    await act(async () => { answer(user('dark')); await saving })
+
+    expect(useAuthStore.getState().user).toBeNull()
+    expect(useThemeStore.getState().preference).toBe('dark')
+  })
+})
+
+describe('an unrelated change to the signed-in user', () => {
+  it('does not undo a theme another tab chose', () => {
+    useAuthStore.setState({ user: user('light') })
+    render(<ThemeController />)
+    // Another tab saved dark and wrote it to storage; this tab follows.
+    act(() => { window.dispatchEvent(new StorageEvent('storage', { key: THEME_KEY, newValue: 'dark' })) })
+    expect(useThemeStore.getState().preference).toBe('dark')
+    expect(useAuthStore.getState().user?.theme).toBe('dark')
+
+    // Enabling MFA (AccountPage) re-sets the user from its own copy.
+    act(() => useAuthStore.getState().setUser({ ...useAuthStore.getState().user!, mfa_enabled: true }))
+
+    expect(useThemeStore.getState().preference).toBe('dark')
+    expect(isDark()).toBe(true)
+    expect(stored()).toBe('dark')
+  })
+
+  it('does not re-apply the account value when only another field changed', () => {
+    useAuthStore.setState({ user: user('light') })
+    render(<ThemeController />)
+    act(() => useThemeStore.setState({ preference: 'dark' })) // a local change not yet reflected in the user
+    act(() => useAuthStore.getState().setUser({ ...useAuthStore.getState().user!, display_name: 'Sam P.' }))
+    expect(useThemeStore.getState().preference).toBe('dark')
+  })
+})
+
 describe('signing in', () => {
   it("the account's value replaces what this browser had, and is stored", () => {
     window.localStorage.setItem(THEME_KEY, 'dark')

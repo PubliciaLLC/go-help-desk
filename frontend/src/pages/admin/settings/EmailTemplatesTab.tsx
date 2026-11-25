@@ -165,6 +165,7 @@ const escapeText = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;')
 // other: nothing is saved until the person presses Save, and the server checks
 // them the same way. The header opens a layout that the footer closes, so a
 // pair of them brands every mail that has an HTML part.
+// theme-ok-begin: starter HTML for an email, which mail clients draw in fixed colours and never theme
 const HEADER_STARTER = `<!DOCTYPE html>
 <html>
 <body style="margin:0;padding:0;background:#f4f4f5;font-family:Arial,Helvetica,sans-serif;color:#18181b">
@@ -182,6 +183,7 @@ const FOOTER_STARTER = `
 </body>
 </html>
 `
+// theme-ok-end
 
 // The template's own text as paragraphs, with its link made clickable.
 function contentStarter(detail: EmailTemplateDetail, text: string): string {

@@ -129,7 +129,7 @@
     --muted-strong: var(--color-gray-700);
     --overlay: oklch(0 0 0 / 0.6);
     --code: oklch(1 0 0 / 0.1);
-    --highlight: color-mix(in oklab, var(--color-yellow-400) 20%, transparent);
+    --highlight: color-mix(in oklab, var(--color-yellow-400) 35%, transparent);
     --inverse: var(--color-gray-100);
     --inverse-foreground: var(--color-gray-900);
 

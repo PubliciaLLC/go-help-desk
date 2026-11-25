@@ -1,4 +1,4 @@
-import { readFileSync, existsSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
 import { describe, expect, it } from 'vitest'
 
 // #709: the arbiter of the colour tokens. It reads the token definitions out of
@@ -141,11 +141,18 @@ type Rgb = [number, number, number]
 const clip = (c: number) => Math.min(1, Math.max(0, c))
 const lin = (c: Lab): Rgb => labToLin(c).map(clip) as Rgb
 
-/** `top` painted over an opaque `under`, as linear sRGB. */
+const encode = (c: number) => (c <= 0.0031308 ? 12.92 * c : 1.055 * c ** (1 / 2.4) - 0.055)
+
+/**
+ * `top` painted over an opaque `under`, returned as linear sRGB (what the
+ * luminance formula wants). The blend itself is done on the gamma-encoded sRGB
+ * values, which is what a browser does when it composites a translucent colour:
+ * blending in linear light would call a 20% tint far lighter than it looks.
+ */
 function composite(top: Lab, under: Lab): Rgb {
-  const t = lin(top)
-  const u = lin(under)
-  return [0, 1, 2].map((i) => t[i] * top.alpha + u[i] * (1 - top.alpha)) as Rgb
+  const t = lin(top).map(encode)
+  const u = lin(under).map(encode)
+  return [0, 1, 2].map((i) => toLin(t[i] * top.alpha + u[i] * (1 - top.alpha))) as Rgb
 }
 const luminance = ([r, g, b]: Rgb) => 0.2126 * r + 0.7152 * g + 0.0722 * b
 function contrast(a: Rgb, b: Rgb): number {
@@ -216,13 +223,16 @@ const SOLIDS: [string, string][] = [
   ['inverse-foreground', 'inverse'],
 ]
 
-// In the light theme three text colours measure just under 4.5:1 on `muted`
-// (gray-100): fg-faint 4.39, danger-fg 4.33, success-fg 4.49. Moving them a shade
-// darker would change 400 uses across the app that sit on white, where they pass,
-// so they are not asserted on `muted` in light. Text on a muted chip or a muted
-// hover fill uses fg-muted, danger-fg-strong or success-fg-strong instead
-// (those pairs are asserted below); axe checks the rendered pages.
-const NOT_ON_MUTED_IN_LIGHT = new Set(['fg-faint', 'danger-fg', 'success-fg'])
+// In the light theme some text colours measure just under 4.5:1 on a tinted
+// surface: on `muted` (gray-100) fg-faint 4.39, danger-fg 4.33, success-fg 4.49;
+// on `selected` (blue-50) fg-faint 4.44. Moving them a shade darker would change
+// 400 uses across the app that sit on white, where they pass, so these pairs are
+// not asserted in light. They are not allowed in practice either:
+// theme-colours.test.ts fails on a line that puts one of these text colours on
+// that surface (a muted chip or hover fill uses fg-muted, danger-fg-strong or
+// success-fg-strong; those pairs are asserted below), and axe checks the
+// rendered pages.
+const NOT_IN_LIGHT = new Set(['fg-faint|muted', 'danger-fg|muted', 'success-fg|muted', 'fg-faint|selected'])
 
 // [foreground token, surface token, minimum ratio]
 const PAIRS: [string, string, number][] = [
@@ -242,6 +252,10 @@ const PAIRS: [string, string, number][] = [
   // Selected text on its own fill.
   ['selected-fg', 'selected', 4.5],
   ['selected-fg', 'selected-strong', 4.5],
+  // Quiet text inside a selected row or chip (its count, its icon).
+  ['fg-faint', 'selected', 4.5],
+  ['fg-muted', 'selected', 4.5],
+  ['fg-muted', 'selected-strong', 4.5],
   // The strong text of each family on its tint.
   ...FAMILIES.map((f): [string, string, number] => [`${f}-fg-strong`, `${f}-soft`, 4.5]),
   ['attention-fg', 'attention-soft', 4.5],
@@ -262,7 +276,7 @@ const PAIRS: [string, string, number][] = [
 ]
 
 describe.each<Theme>(['light', 'dark'])('contrast tokens, %s theme', (theme) => {
-  const pairs = PAIRS.filter(([fg, bg]) => !(theme === 'light' && bg === 'muted' && NOT_ON_MUTED_IN_LIGHT.has(fg)))
+  const pairs = PAIRS.filter(([fg, bg]) => !(theme === 'light' && NOT_IN_LIGHT.has(`${fg}|${bg}`)))
   it.each(pairs)('%s on %s is at least %d:1', (fg, bg, min) => {
     const got = ratio(theme, fg, bg)
     expect(got, `${fg} on ${bg} is ${got.toFixed(2)}:1, needs ${min}:1`).toBeGreaterThanOrEqual(min)
@@ -328,11 +342,7 @@ describe('code highlighting colours', () => {
   for (const theme of ['light', 'dark'] as Theme[]) {
     const set = hljsFor(rules, theme === 'dark')
 
-    // The dark set is M6's work. While M6's pending list exists the test only
-    // checks the dark rules that are there; once it is deleted, a dark set
-    // covering every light class is required.
-    const m6Open = existsSync('src/test/theme-pending/M6.txt')
-    if (theme === 'dark' && !m6Open) {
+    if (theme === 'dark') {
       it('has a dark set for every class the light set colours', () => {
         const lightSet = hljsFor(rules, false)
         for (const cls of lightSet.keys()) expect(set.has(cls), `.hljs-${cls} has no dark colour`).toBe(true)
