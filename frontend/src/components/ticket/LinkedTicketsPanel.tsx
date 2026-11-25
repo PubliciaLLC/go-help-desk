@@ -298,13 +298,13 @@ export function LinkedTicketsPanel({ ticketId }: LinkedTicketsPanelProps) {
     <Card>
       <CardHeader className="pb-2">
         <div className="flex items-center justify-between">
-          <CardTitle className="text-xs font-semibold uppercase tracking-wider text-gray-400">
+          <CardTitle className="text-xs font-semibold uppercase tracking-wider text-fg-faint">
             Linked Tickets
           </CardTitle>
           <div className="flex flex-wrap items-center justify-end gap-x-1">
             {childIds.length > 0 && !showResolveChildren && (
               <button
-                className="min-h-6 rounded px-2 py-1 text-xs text-blue-600 hover:underline"
+                className="min-h-6 rounded px-2 py-1 text-xs text-link hover:underline"
                 onClick={() => { setShowResolveChildren(true); setChildReport(null); setError('') }}
               >
                 Resolve all children
@@ -312,7 +312,7 @@ export function LinkedTicketsPanel({ ticketId }: LinkedTicketsPanelProps) {
             )}
             {!showForm && (
               <button
-                className="min-h-6 rounded px-2 py-1 text-xs text-blue-600 hover:underline"
+                className="min-h-6 rounded px-2 py-1 text-xs text-link hover:underline"
                 onClick={() => setShowForm(true)}
               >
                 Add link
@@ -325,7 +325,7 @@ export function LinkedTicketsPanel({ ticketId }: LinkedTicketsPanelProps) {
         {/* List */}
         <div className="space-y-2">
           {sortedLinks.length === 0 && !showForm && (
-            <p className="text-xs text-gray-400">No linked tickets</p>
+            <p className="text-xs text-fg-faint">No linked tickets</p>
           )}
           {sortedLinks.map(link => {
             const otherId = link.source_id === ticketId ? link.target_id : link.source_id
@@ -342,18 +342,18 @@ export function LinkedTicketsPanel({ ticketId }: LinkedTicketsPanelProps) {
                       params={{ id: other.ticket.id }}
                       className="flex min-h-6 min-w-0 items-center"
                     >
-                      <span className="block truncate text-xs font-medium text-blue-600 hover:underline" title={`${other.ticket.tracking_number} · ${other.ticket.subject}`}>
+                      <span className="block truncate text-xs font-medium text-link hover:underline" title={`${other.ticket.tracking_number} · ${other.ticket.subject}`}>
                         {other.ticket.tracking_number} · {other.ticket.subject}
                       </span>
                     </Link>
                   ) : (
-                    <span className="text-xs text-gray-400">Ticket not visible to you</span>
+                    <span className="text-xs text-fg-faint">Ticket not visible to you</span>
                   )}
                 </div>
                 <button
                   onClick={() => removeMutation.mutate(link)}
                   disabled={removeMutation.isPending}
-                  className="flex h-6 w-6 shrink-0 items-center justify-center text-gray-400 hover:text-gray-600"
+                  className="flex h-6 w-6 shrink-0 items-center justify-center text-fg-faint hover:text-fg-muted"
                   aria-label={
                     other && 'ticket' in other
                       ? `Remove link to ${other.ticket.tracking_number}`
@@ -369,13 +369,13 @@ export function LinkedTicketsPanel({ ticketId }: LinkedTicketsPanelProps) {
 
         {/* Errors from removing a link surface here even when the add form is
             closed, since removal is available whenever a link is listed. */}
-        {error && <p className="text-xs text-red-600">{error}</p>}
+        {error && <p className="text-xs text-danger-fg">{error}</p>}
 
         {/* Resolve all children: the notes are asked for once and every child
             gets the same ones. */}
         {showResolveChildren && (
           <div className="space-y-2 pt-2 border-t">
-            <label htmlFor="child-resolution-notes" className="text-xs text-gray-500 block">
+            <label htmlFor="child-resolution-notes" className="text-xs text-fg-faint block">
               Resolution notes for all children
             </label>
             <textarea
@@ -384,12 +384,12 @@ export function LinkedTicketsPanel({ ticketId }: LinkedTicketsPanelProps) {
               onChange={(e) => setChildNotes(e.target.value)}
               rows={3}
               placeholder="Notes recorded on every child that is not already resolved"
-              className="w-full rounded-md border border-gray-200 bg-white px-3 py-2 text-xs text-gray-800 placeholder-gray-400 focus:border-blue-400 focus:outline-none focus:ring-1 focus:ring-blue-400"
+              className="w-full rounded-md border border-border bg-background px-3 py-2 text-xs text-fg placeholder:text-fg-faint focus:border-ring focus:outline-none focus:ring-1 focus:ring-ring"
             />
             {openChildCount === 0 ? (
-              <p className="text-xs text-gray-500">All children are already resolved.</p>
+              <p className="text-xs text-fg-faint">All children are already resolved.</p>
             ) : (
-              <p className="text-xs text-gray-500">
+              <p className="text-xs text-fg-faint">
                 {`${openChildCount} open ${openChildCount === 1 ? 'child' : 'children'} will be resolved`}
                 {childIds.length > openChildCount &&
                   ` (${childIds.length - openChildCount} already resolved or closed ${childIds.length - openChildCount === 1 ? 'is' : 'are'} skipped)`}
@@ -397,7 +397,7 @@ export function LinkedTicketsPanel({ ticketId }: LinkedTicketsPanelProps) {
               </p>
             )}
             {parentChildIds.length > 0 && (
-              <p className="text-xs text-amber-700">
+              <p className="text-xs text-warning-fg">
                 {`${parentChildIds.length} of these children ${parentChildIds.length === 1 ? 'has' : 'have'} children of their own`}
                 {parentChildIds.length <= 5 && ` (${parentChildLabels.join(', ')})`}
                 {'; resolve those from their own ticket.'}
@@ -430,7 +430,7 @@ export function LinkedTicketsPanel({ ticketId }: LinkedTicketsPanelProps) {
         {childReport && (
           <div
             role={childReport.refused.length > 0 ? 'alert' : 'status'}
-            className={`text-xs ${childReport.refused.length > 0 ? 'text-red-600' : 'text-green-700'}`}
+            className={`text-xs ${childReport.refused.length > 0 ? 'text-danger-fg' : 'text-success-fg'}`}
           >
             <p>
               {`${childReport.resolved} of ${childReport.total} resolved`}
@@ -452,7 +452,7 @@ export function LinkedTicketsPanel({ ticketId }: LinkedTicketsPanelProps) {
           <div className="space-y-2 pt-2 border-t">
             {/* Relation select */}
             <div>
-              <label htmlFor="relation-select" className="text-xs text-gray-500 block mb-1">Relation</label>
+              <label htmlFor="relation-select" className="text-xs text-fg-faint block mb-1">Relation</label>
               <Select
                 id="relation-select"
                 className="h-8 text-xs w-full"
@@ -474,11 +474,11 @@ export function LinkedTicketsPanel({ ticketId }: LinkedTicketsPanelProps) {
 
             {/* Ticket picker */}
             <div>
-              <label htmlFor="ticket-search-input" className="text-xs text-gray-500 block mb-1">Ticket</label>
+              <label htmlFor="ticket-search-input" className="text-xs text-fg-faint block mb-1">Ticket</label>
               <div ref={pickerRef} className="relative">
                 {selectedTicket ? (
                   <div className="flex items-center gap-2 text-xs">
-                    <span className="bg-blue-100 text-blue-800 rounded-full px-2 py-0.5">
+                    <span className="bg-selected-strong text-selected-fg rounded-full px-2 py-0.5">
                       {selectedTicket.tracking_number} · {selectedTicket.subject}
                     </span>
                     <button
@@ -487,7 +487,7 @@ export function LinkedTicketsPanel({ ticketId }: LinkedTicketsPanelProps) {
                         setResolveAsResolve(false)
                         setResolutionNotes(null)
                       }}
-                      className="text-gray-400 hover:text-gray-600"
+                      className="text-fg-faint hover:text-fg-muted"
                       aria-label="Clear ticket"
                     >
                       <XIcon className="h-3 w-3" />
@@ -507,16 +507,16 @@ export function LinkedTicketsPanel({ ticketId }: LinkedTicketsPanelProps) {
                       onFocus={() => setPickerOpen(true)}
                       onKeyDown={handleSearchKeyDown}
                       placeholder="Tracking number or subject…"
-                      className="h-8 w-full rounded-md border border-gray-200 bg-white px-3 text-xs text-gray-800 placeholder-gray-400 focus:border-blue-400 focus:outline-none focus:ring-1 focus:ring-blue-400"
+                      className="h-8 w-full rounded-md border border-border bg-background px-3 text-xs text-fg placeholder:text-fg-faint focus:border-ring focus:outline-none focus:ring-1 focus:ring-ring"
                     />
 
                     {/* Suggestions dropdown */}
                     {pickerOpen && filteredSuggestions.length > 0 && (
-                      <ul className="absolute z-10 mt-1 w-full rounded-md border bg-white py-1 shadow-lg text-xs">
+                      <ul className="absolute z-10 mt-1 w-full rounded-md border bg-popover py-1 shadow-lg text-xs">
                         {filteredSuggestions.map(t => (
                           <li
                             key={t.id}
-                            className="cursor-pointer px-3 py-1.5 hover:bg-blue-50 text-gray-700"
+                            className="cursor-pointer px-3 py-1.5 hover:bg-selected text-fg-soft"
                             onMouseDown={(e) => {
                               e.preventDefault()
                               setSelectedTicket(t)
@@ -536,7 +536,7 @@ export function LinkedTicketsPanel({ ticketId }: LinkedTicketsPanelProps) {
 
                     {/* "No matches" message */}
                     {pickerOpen && searchInput.trim() && filteredSuggestions.length === 0 && (
-                      <div className="absolute z-10 mt-1 w-full rounded-md border bg-white px-3 py-2 shadow-lg text-xs text-gray-500">
+                      <div className="absolute z-10 mt-1 w-full rounded-md border bg-popover px-3 py-2 shadow-lg text-xs text-fg-faint">
                         No tickets match "{searchInput.trim()}"
                       </div>
                     )}
@@ -561,20 +561,20 @@ export function LinkedTicketsPanel({ ticketId }: LinkedTicketsPanelProps) {
                     }}
                     className="w-4 h-4"
                   />
-                  <span className="text-xs text-gray-700">Also resolve this ticket as a duplicate</span>
+                  <span className="text-xs text-fg-soft">Also resolve this ticket as a duplicate</span>
                 </label>
 
                 {/* Resolution notes textarea - only when resolve is checked */}
                 {resolveAsResolve && (
                   <div>
-                    <label htmlFor="resolution-notes" className="text-xs text-gray-500 block mb-1">Resolution notes</label>
+                    <label htmlFor="resolution-notes" className="text-xs text-fg-faint block mb-1">Resolution notes</label>
                     <textarea
                       id="resolution-notes"
                       value={resolutionNotes ?? duplicateResolutionNotes(selectedTicket.tracking_number)}
                       onChange={(e) => setResolutionNotes(e.target.value)}
                       rows={3}
                       placeholder="Notes explaining why this is a duplicate"
-                      className="w-full rounded-md border border-gray-200 bg-white px-3 py-2 text-xs text-gray-800 placeholder-gray-400 focus:border-blue-400 focus:outline-none focus:ring-1 focus:ring-blue-400"
+                      className="w-full rounded-md border border-border bg-background px-3 py-2 text-xs text-fg placeholder:text-fg-faint focus:border-ring focus:outline-none focus:ring-1 focus:ring-ring"
                     />
                   </div>
                 )}

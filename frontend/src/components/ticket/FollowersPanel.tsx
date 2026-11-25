@@ -173,22 +173,22 @@ export function FollowersPanel({ ticketId }: { ticketId: string }) {
   return (
     <Card>
       <CardHeader className="pb-2">
-        <CardTitle className="text-xs font-semibold uppercase tracking-wider text-gray-400">
+        <CardTitle className="text-xs font-semibold uppercase tracking-wider text-fg-faint">
           Followers
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-3">
-        {isLoading && <p className="text-xs text-gray-400">Loading…</p>}
-        {isError && <p className="text-xs text-red-600">Could not load followers</p>}
+        {isLoading && <p className="text-xs text-fg-faint">Loading…</p>}
+        {isError && <p className="text-xs text-danger-fg">Could not load followers</p>}
         {!isLoading && !isError && followers.length === 0 && (
-          <p className="text-xs text-gray-400">Nobody is following this ticket.</p>
+          <p className="text-xs text-fg-faint">Nobody is following this ticket.</p>
         )}
         <ul ref={listRef} className="space-y-1">
           {followers.map((f) => (
-            <li key={f.user_id} className="flex items-start justify-between gap-2 text-xs text-gray-700">
+            <li key={f.user_id} className="flex items-start justify-between gap-2 text-xs text-fg-soft">
               <span className="min-w-0 wrap-anywhere">
                 <span className="font-medium">{f.display_name}</span>
-                {me?.id === f.user_id && <span className="text-gray-400"> (you)</span>}
+                {me?.id === f.user_id && <span className="text-fg-faint"> (you)</span>}
               </span>
               {/* My own row has the Unfollow button below. */}
               {me?.id !== f.user_id && (
@@ -197,7 +197,7 @@ export function FollowersPanel({ ticketId }: { ticketId: string }) {
                   data-remove
                   aria-label={`Remove ${f.display_name} as a follower`}
                   aria-disabled={busy || undefined}
-                  className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded text-gray-500 hover:bg-gray-100 hover:text-gray-700 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 aria-disabled:opacity-50 pointer-coarse:h-11 pointer-coarse:w-11"
+                  className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded text-fg-faint hover:bg-muted hover:text-fg-soft focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 aria-disabled:opacity-50 pointer-coarse:h-11 pointer-coarse:w-11"
                   // Not `disabled`: that would take focus off the button.
                   onClick={(e) => {
                     if (busy) return
@@ -221,7 +221,7 @@ export function FollowersPanel({ ticketId }: { ticketId: string }) {
           {following ? 'Unfollow' : 'Follow'}
         </Button>
         <div className="space-y-1">
-          <label htmlFor={pickerId} className="text-xs text-gray-500">Person to add as follower</label>
+          <label htmlFor={pickerId} className="text-xs text-fg-faint">Person to add as follower</label>
           <div className="flex gap-2">
             <Select
               id={pickerId}
@@ -248,7 +248,7 @@ export function FollowersPanel({ ticketId }: { ticketId: string }) {
           </div>
         </div>
         <p role="status" aria-live="polite" className="sr-only">{announcement}</p>
-        {error && <p role="alert" className="text-xs text-red-600">{error}</p>}
+        {error && <p role="alert" className="text-xs text-danger-fg">{error}</p>}
       </CardContent>
     </Card>
   )

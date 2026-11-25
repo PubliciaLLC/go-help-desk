@@ -175,12 +175,12 @@ export function QuarantineBanner({ attachments }: { attachments: Attachment[] })
   if (count === 0) return null
 
   return (
-    <div role="alert" className="rounded-md border border-red-700 bg-red-600 px-4 py-3 text-white">
+    <div role="alert" className="rounded-md border border-danger bg-danger px-4 py-3 text-danger-foreground">
       <p className="text-sm font-semibold">
         ⚠ {count} {count === 1 ? 'attachment' : 'attachments'} on this ticket{' '}
         {count === 1 ? 'was' : 'were'} identified as malicious by the scanner and quarantined.
       </p>
-      <p className="mt-1 text-sm text-red-50">
+      <p className="mt-1 text-sm text-danger-foreground">
         Each is stored inside a password-protected archive and will not download without a
         confirmation. Treat them as live samples.
       </p>
@@ -215,11 +215,11 @@ function OrdinaryRow({ ticketId, attachment }: RowProps) {
     <div className="space-y-1">
       <a
         href={attachmentDownloadUrl(ticketId, attachment.id)}
-        className="flex min-h-6 items-start gap-2 text-sm text-blue-600 hover:underline"
+        className="flex min-h-6 items-start gap-2 text-sm text-link hover:underline"
         download={attachment.filename}
         title={attachment.filename}
       >
-        <span aria-hidden="true" className="shrink-0 text-gray-400">↓</span>
+        <span aria-hidden="true" className="shrink-0 text-fg-faint">↓</span>
         <span className="min-w-0 wrap-anywhere">{attachment.filename}</span>
       </a>
       <ContentLine attachment={attachment} />
@@ -242,20 +242,20 @@ function QuarantinedRow({ ticketId, attachment }: RowProps) {
   const [confirming, setConfirming] = useState(false)
 
   return (
-    <div className="rounded-md border border-red-300 bg-red-50 p-2">
+    <div className="rounded-md border border-danger-border bg-danger-soft p-2">
       <div className="flex items-start gap-2">
         {/* The icon and the word, not the colour alone: colour fails a
             colourblind reader and fails completely in a screenshot. */}
-        <span aria-hidden="true" className="shrink-0 font-semibold text-red-700">
+        <span aria-hidden="true" className="shrink-0 font-semibold text-danger-fg-strong">
           ⚠
         </span>
         <div className="min-w-0 flex-1 space-y-1">
-          <p className="break-all text-sm font-medium text-red-900">{attachment.filename}</p>
-          <p className="text-xs text-red-800">
+          <p className="break-all text-sm font-medium text-danger-fg-strong">{attachment.filename}</p>
+          <p className="text-xs text-danger-fg-strong">
             Identified as malicious by the scanner:{' '}
             <span className="font-mono font-semibold">{attachment.virus_name}</span>
           </p>
-          <p className="text-xs text-red-800">
+          <p className="text-xs text-danger-fg-strong">
             Stored in a password-protected archive · password:{' '}
             <code className="font-mono font-semibold">{QUARANTINE_PASSWORD}</code>
           </p>
@@ -287,7 +287,7 @@ function ContentLine({ attachment }: { attachment: Attachment }) {
   if (detected === null) return null
 
   if (!attachment.mismatch) {
-    return <p className="text-xs text-gray-500">Content: {contentLabel(detected)}</p>
+    return <p className="text-xs text-fg-faint">Content: {contentLabel(detected)}</p>
   }
 
   // Deliberately none of the infected tier's vocabulary. Nothing found
@@ -302,7 +302,7 @@ function ContentLine({ attachment }: { attachment: Attachment }) {
   const claimed = !wrapped && dot > 0 ? attachment.filename.slice(dot) : ''
 
   return (
-    <p className="text-xs font-medium text-amber-700">
+    <p className="text-xs font-medium text-warning-fg">
       Content looks like {contentLabel(detected)}
       {claimed && `, not a ${claimed} file`}
       {wrapped && ' — stored in an archive'}.
@@ -325,8 +325,8 @@ function HashLine({ attachment }: { attachment: Attachment }) {
 
   return (
     <>
-      <p className="flex flex-wrap items-center gap-1.5 text-xs text-gray-500">
-        <span className="text-gray-400">SHA-256</span>
+      <p className="flex flex-wrap items-center gap-1.5 text-xs text-fg-faint">
+        <span className="text-fg-faint">SHA-256</span>
         <code className="font-mono" title={hash}>
           {hash.slice(0, 12)}…
         </code>
@@ -334,7 +334,7 @@ function HashLine({ attachment }: { attachment: Attachment }) {
           type="button"
           aria-label="Copy SHA-256"
           onClick={() => void navigator.clipboard?.writeText(hash)}
-          className="min-h-6 rounded border border-gray-300 px-2 py-1 text-[10px] font-medium text-gray-600 hover:bg-gray-100"
+          className="min-h-6 rounded border border-border-strong px-2 py-1 text-[10px] font-medium text-fg-muted hover:bg-muted"
         >
           Copy
         </button>
@@ -353,7 +353,7 @@ function HashLine({ attachment }: { attachment: Attachment }) {
             href={attachment.reputation_url}
             target="_blank"
             rel="noreferrer noopener"
-            className="inline-flex min-h-6 items-center text-blue-600 hover:underline"
+            className="inline-flex min-h-6 items-center text-link hover:underline"
           >
             Look up on VirusTotal ↗
           </a>
@@ -381,7 +381,7 @@ function HashLine({ attachment }: { attachment: Attachment }) {
           attributed, and a line of boilerplate carrying them on every row
           would satisfy those assertions for free. */}
       {attachment.reputation_url && (
-        <p className="text-[11px] text-gray-400">
+        <p className="text-[11px] text-fg-faint">
           Opens in your browser.{' '}
           {isQuarantined(attachment)
             ? 'This instance sends the hash only to the services switched on in the admin settings, which may be none.'
@@ -472,12 +472,12 @@ function ReputationLine({ ticketId, attachment }: RowProps) {
             aria-expanded={expanded}
             aria-controls={listId}
             onClick={() => setExpanded((open) => !open)}
-            className="inline-flex min-h-6 items-center text-xs font-medium text-blue-700 underline-offset-2 hover:underline"
+            className="inline-flex min-h-6 items-center text-xs font-medium text-link underline-offset-2 hover:underline"
           >
             {expanded ? 'Hide' : 'Show'} all {providers.length} services {expanded ? '▴' : '▾'}
           </button>
           {expanded && (
-            <ul id={listId} className="space-y-2 border-l-2 border-red-200 pl-2">
+            <ul id={listId} className="space-y-2 border-l-2 border-danger-border pl-2">
               {providers.map((p) => (
                 <ProviderLine
                   key={p.provider_key}
@@ -530,7 +530,7 @@ function ProviderLine({
         who={who}
         label={label}
       />
-      <p className="flex flex-wrap items-center gap-1.5 text-xs text-gray-400">
+      <p className="flex flex-wrap items-center gap-1.5 text-xs text-fg-faint">
         {askedStamp(verdict.fetched_at)}
         {/* This service's own page for the hash, beside its own verdict.
             Absent for one with no per-hash page — CIRCL — because a link to a
@@ -541,7 +541,7 @@ function ProviderLine({
             href={verdict.link_url}
             target="_blank"
             rel="noreferrer noopener"
-            className="inline-flex min-h-6 items-center text-blue-600 hover:underline"
+            className="inline-flex min-h-6 items-center text-link hover:underline"
           >
             Open {named ?? 'the report'} ↗
           </a>
@@ -649,7 +649,7 @@ function ReputationVerdict({
         typeof rep.detected === 'number' && typeof rep.total === 'number' && rep.total > 0
       if (!counted) {
         return (
-          <p className="text-xs font-medium text-amber-700">
+          <p className="text-xs font-medium text-warning-fg">
             {who} returned no engine counts, so there is no verdict to show.
             {analysed}
           </p>
@@ -659,13 +659,13 @@ function ReputationVerdict({
       const counts = `${rep.detected} of ${rep.total} engines`
       if (rep.state === 'clean') {
         return (
-          <p className="text-xs text-gray-600">
+          <p className="text-xs text-fg-muted">
             {label}: {counts} flagged this file.{analysed}
           </p>
         )
       }
       return (
-        <p className="text-xs font-medium text-red-800">
+        <p className="text-xs font-medium text-danger-fg">
           {label}: {counts} flagged this file
           {/* The provider's consensus name, which a malware author has a hand
               in choosing. A text node, like virus_name above it. */}
@@ -717,7 +717,7 @@ function ReputationVerdict({
         // decision to revisit: a named feed is the one thing in this feature
         // that would have earned the green.
         return (
-          <p className="text-xs font-medium text-amber-700">
+          <p className="text-xs font-medium text-warning-fg">
             {label}: known file — {feedPhrases(feeds)}. Context on the sample, not a second
             opinion: a catalogue records where a file has been distributed, and our own scanner
             identified this one.
@@ -732,7 +732,7 @@ function ReputationVerdict({
       // reassuring rendering, because the source is what the reassurance was
       // resting on.
       return (
-        <p className="text-xs font-medium text-amber-700">
+        <p className="text-xs font-medium text-warning-fg">
           {who} reports this file as known but names no catalogue, so there is nothing behind the
           claim. That is not a clean result.
         </p>
@@ -741,7 +741,7 @@ function ReputationVerdict({
 
     case 'unseen':
       return (
-        <p className="text-xs font-medium text-amber-700">
+        <p className="text-xs font-medium text-warning-fg">
           {who} has never seen this file. That is not a clean result: nobody has ever submitted it
           for analysis.
         </p>
@@ -749,7 +749,7 @@ function ReputationVerdict({
 
     case 'unscanned':
       return (
-        <p className="text-xs font-medium text-amber-700">
+        <p className="text-xs font-medium text-warning-fg">
           {who} knows this file but holds no verdict for it — it has not been analysed. That is not
           a clean result.
         </p>
@@ -765,7 +765,7 @@ function ReputationVerdict({
       // been rejected has to be able to see that. Hiding it behind a sibling's
       // good answer is how a dead integration goes unnoticed for a month.
       return (
-        <p className="text-xs text-gray-500">
+        <p className="text-xs text-fg-faint">
           {label}: the lookup did not complete, so no verdict came back. It is worth checking the
           service’s key and allowance.
         </p>
@@ -775,7 +775,7 @@ function ReputationVerdict({
       // Unreachable through the type and handled anyway. A state this
       // frontend does not recognise is not a verdict, and the safe reading of
       // one is the same as a lookup that did not finish.
-      return <p className="text-xs text-gray-500">{label}: not checked.</p>
+      return <p className="text-xs text-fg-faint">{label}: not checked.</p>
   }
 }
 
@@ -852,12 +852,12 @@ function CheckAgain({
           the one case that can, and a sentence with a blank in it is worse
           than no sentence. */}
       {!ready && next && (
-        <p className="text-xs text-gray-500">
+        <p className="text-xs text-fg-faint">
           Checked within the last seven days. It can be checked again on {formatDate(next)}.
         </p>
       )}
       {refusal && (
-        <p role="status" className="text-xs font-medium text-amber-700">
+        <p role="status" className="text-xs font-medium text-warning-fg">
           {refusal}
         </p>
       )}
@@ -906,13 +906,13 @@ function QuarantineConfirmation({ ticketId, attachment, open, onOpenChange }: Co
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
       <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 z-40 bg-black/40" />
-        <Dialog.Content className="fixed left-1/2 top-1/2 z-50 w-[90vw] max-w-md -translate-x-1/2 -translate-y-1/2 rounded-lg border-2 border-red-600 bg-white p-5 shadow-lg focus:outline-none">
-          <Dialog.Title className="text-base font-semibold text-red-900">
+        <Dialog.Overlay className="fixed inset-0 z-40 bg-overlay" />
+        <Dialog.Content className="fixed left-1/2 top-1/2 z-50 w-[90vw] max-w-md -translate-x-1/2 -translate-y-1/2 rounded-lg border-2 border-danger bg-card p-5 shadow-lg focus:outline-none">
+          <Dialog.Title className="text-base font-semibold text-danger-fg">
             ⚠ This file was identified as malicious
           </Dialog.Title>
           <Dialog.Description asChild>
-            <div className="mt-2 space-y-2 text-sm text-gray-700">
+            <div className="mt-2 space-y-2 text-sm text-fg-soft">
               <p>
                 <span className="break-all font-mono font-semibold">{attachment.filename}</span> was
                 identified as{' '}
@@ -925,7 +925,7 @@ function QuarantineConfirmation({ ticketId, attachment, open, onOpenChange }: Co
                 run by accident. Unwrapping it produces a live sample.
               </p>
               {attachment.sha256 && (
-                <p className="break-all font-mono text-xs text-gray-500">
+                <p className="break-all font-mono text-xs text-fg-faint">
                   SHA-256 {attachment.sha256}
                 </p>
               )}
@@ -937,7 +937,7 @@ function QuarantineConfirmation({ ticketId, attachment, open, onOpenChange }: Co
             </Button>
             <a
               href={attachmentDownloadUrl(ticketId, attachment.id)}
-              className="inline-flex h-8 items-center justify-center rounded-md bg-red-600 px-3 text-xs font-medium text-white hover:bg-red-700"
+              className="inline-flex h-8 items-center justify-center rounded-md bg-danger px-3 text-xs font-medium text-danger-foreground hover:bg-danger-hover"
               download={attachment.filename}
             >
               Download anyway

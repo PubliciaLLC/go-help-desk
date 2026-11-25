@@ -27,9 +27,9 @@ const SERVICE_ROLES: Role[] = ['staff', 'user']
 
 function SectionCard({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <div className="min-w-0 rounded-lg border bg-white">
+    <div className="min-w-0 rounded-lg border bg-card">
       <div className="border-b px-5 py-3">
-        <h2 className="text-sm font-semibold text-gray-700">{title}</h2>
+        <h2 className="text-sm font-semibold text-fg-soft">{title}</h2>
       </div>
       <div className="px-5 py-4 space-y-4">{children}</div>
     </div>
@@ -47,7 +47,7 @@ function keyLabel(p: Passkey): string {
 function FieldRow({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="space-y-1">
-      <Label className="text-xs text-gray-500">{label}</Label>
+      <Label className="text-xs text-fg-faint">{label}</Label>
       {children}
     </div>
   )
@@ -237,30 +237,30 @@ export function UserDetailPage() {
         <div>
           <button
             onClick={() => navigate({ to: '/admin/users' })}
-            className="mb-3 flex items-center gap-1.5 text-sm text-gray-500 hover:text-gray-800"
+            className="mb-3 flex items-center gap-1.5 text-sm text-fg-faint hover:text-fg"
           >
             <ArrowLeftIcon className="h-3.5 w-3.5" />
             Back to Users
           </button>
           <div className="flex flex-wrap items-center gap-3">
-            <h1 className="min-w-0 text-2xl font-bold text-gray-900 wrap-anywhere">{user.display_name}</h1>
+            <h1 className="min-w-0 text-2xl font-bold text-fg wrap-anywhere">{user.display_name}</h1>
             {isService && <Badge variant="secondary" className="text-xs">Service</Badge>}
             {user.disabled && (
               <Badge variant="secondary" className="text-xs">Disabled</Badge>
             )}
           </div>
           {isService ? (
-            <p className="mt-1 text-sm text-gray-500">
+            <p className="mt-1 text-sm text-fg-faint">
               The account an OAuth client acts as. It never signs in. Renaming it renames the
               client, its groups are the client&apos;s ticket scope, and disabling it stops the
               client. It is deleted by deleting the client on the{' '}
-              <Link to="/admin/oauth-clients" className="text-blue-600 hover:underline">
+              <Link to="/admin/oauth-clients" className="text-link hover:underline">
                 OAuth clients
               </Link>{' '}
               page.
             </p>
           ) : (
-            <p className="mt-1 text-sm text-gray-500 wrap-anywhere">{user.email}</p>
+            <p className="mt-1 text-sm text-fg-faint wrap-anywhere">{user.email}</p>
           )}
         </div>
 
@@ -296,9 +296,9 @@ export function UserDetailPage() {
               </Select>
             </FieldRow>
             {user.disabled && (
-              <p className="text-xs text-amber-600">Enable the account to edit profile fields.</p>
+              <p className="text-xs text-warning-fg">Enable the account to edit profile fields.</p>
             )}
-            {profileError && <p role="alert" className="text-sm text-red-600">{profileError}</p>}
+            {profileError && <p role="alert" className="text-sm text-danger-fg">{profileError}</p>}
             <div className="flex items-center gap-3 pt-1">
               <Button
                 size="sm"
@@ -307,7 +307,7 @@ export function UserDetailPage() {
               >
                 {profileMutation.isPending ? 'Saving…' : 'Save profile'}
               </Button>
-              {profileSaved && <span className="text-sm text-green-600">Saved.</span>}
+              {profileSaved && <span className="text-sm text-success-fg">Saved.</span>}
             </div>
           </SectionCard>
 
@@ -316,36 +316,36 @@ export function UserDetailPage() {
             {/* Info grid */}
             <div className="grid grid-cols-2 gap-3 text-sm">
               <div>
-                <p className="text-xs text-gray-400 mb-0.5">Member since</p>
-                <p className="font-medium text-gray-800">
+                <p className="text-xs text-fg-faint mb-0.5">Member since</p>
+                <p className="font-medium text-fg">
                   {new Date(user.created_at).toLocaleDateString(undefined, { dateStyle: 'medium' })}
                 </p>
               </div>
               <div>
-                <p className="text-xs text-gray-400 mb-0.5">Login type</p>
-                <p className="font-medium text-gray-800">{authTypeLabel(user.auth_type, true)}</p>
+                <p className="text-xs text-fg-faint mb-0.5">Login type</p>
+                <p className="font-medium text-fg">{authTypeLabel(user.auth_type, true)}</p>
               </div>
               {!isService && (
               <div>
-                <p className="text-xs text-gray-400 mb-0.5">MFA</p>
+                <p className="text-xs text-fg-faint mb-0.5">MFA</p>
                 <div className="flex items-center gap-1.5">
                   {hasSecondFactor ? (
                     <>
-                      <ShieldCheckIcon className="h-4 w-4 text-green-600" />
-                      <span className="font-medium text-green-700">Enrolled</span>
+                      <ShieldCheckIcon className="h-4 w-4 text-success-fg" />
+                      <span className="font-medium text-success-fg">Enrolled</span>
                     </>
                   ) : (
                     <>
-                      <ShieldOffIcon className="h-4 w-4 text-gray-400" />
-                      <span className="font-medium text-gray-500">Not enrolled</span>
+                      <ShieldOffIcon className="h-4 w-4 text-fg-faint" />
+                      <span className="font-medium text-fg-faint">Not enrolled</span>
                     </>
                   )}
                 </div>
               </div>
               )}
               <div>
-                <p className="text-xs text-gray-400 mb-0.5">Status</p>
-                <p className={`font-medium ${user.disabled ? 'text-red-600' : 'text-green-700'}`}>
+                <p className="text-xs text-fg-faint mb-0.5">Status</p>
+                <p className={`font-medium ${user.disabled ? 'text-danger-fg' : 'text-success-fg'}`}>
                   {user.disabled ? 'Disabled' : 'Active'}
                 </p>
               </div>
@@ -355,13 +355,13 @@ export function UserDetailPage() {
               {/* Passkeys: one at a time (#615) */}
               {!isService && !isOwnAccount && passkeys.length > 0 && (
                 <div className="space-y-2">
-                  <p className="text-sm font-medium text-gray-700">Passkeys</p>
+                  <p className="text-sm font-medium text-fg-soft">Passkeys</p>
                   <ul className="divide-y rounded-md border">
                     {passkeys.map((p) => (
                       <li key={p.id} className="flex items-center justify-between gap-2 px-4 py-2.5">
                         <div className="min-w-0">
-                          <p className="truncate text-sm text-gray-800" title={keyLabel(p)}>{keyLabel(p)}</p>
-                          <p className="text-xs text-gray-500">
+                          <p className="truncate text-sm text-fg" title={keyLabel(p)}>{keyLabel(p)}</p>
+                          <p className="text-xs text-fg-faint">
                             {p.backup_eligible ? 'Synced' : 'This device only'}
                             {' · '}
                             added {new Date(p.created_at).toLocaleDateString()}
@@ -372,7 +372,7 @@ export function UserDetailPage() {
                         <Button
                           variant="ghost"
                           size="sm"
-                          className="text-red-600 hover:bg-red-50 hover:text-red-700"
+                          className="text-danger-fg hover:bg-danger-soft hover:text-danger-fg-strong"
                           onClick={() => setPendingKey(p)}
                           aria-label={`Remove ${keyLabel(p)}`}
                         >
@@ -381,12 +381,12 @@ export function UserDetailPage() {
                       </li>
                     ))}
                   </ul>
-                  {keyError && <p role="alert" className="text-sm text-red-600">{keyError}</p>}
+                  {keyError && <p role="alert" className="text-sm text-danger-fg">{keyError}</p>}
                 </div>
               )}
 
               {isOwnAccount && hasSecondFactor && (
-                <p className="text-xs text-gray-500">
+                <p className="text-xs text-fg-faint">
                   Manage your own authenticator and passkeys on the Account page. Another administrator can reset yours.
                 </p>
               )}
@@ -395,8 +395,8 @@ export function UserDetailPage() {
               {hasSecondFactor && !isOwnAccount && (
                 <div className="flex items-center justify-between">
                   <div>
-                    <p className="text-sm font-medium text-gray-700">Reset MFA</p>
-                    <p className="text-xs text-gray-500">Clears the authenticator and every passkey, and signs them out everywhere — user re-enrols on next login.</p>
+                    <p className="text-sm font-medium text-fg-soft">Reset MFA</p>
+                    <p className="text-xs text-fg-faint">Clears the authenticator and every passkey, and signs them out everywhere — user re-enrols on next login.</p>
                   </div>
                   <Button
                     variant="outline"
@@ -410,16 +410,16 @@ export function UserDetailPage() {
               )}
 
               {actionError && (
-                <p role="alert" className="text-sm text-red-600">{actionError}</p>
+                <p role="alert" className="text-sm text-danger-fg">{actionError}</p>
               )}
 
               {/* Enable / Disable */}
               <div className="flex items-center justify-between">
                 <div>
-                  <p className="text-sm font-medium text-gray-700">
+                  <p className="text-sm font-medium text-fg-soft">
                     {user.disabled ? 'Enable account' : 'Disable account'}
                   </p>
-                  <p className="text-xs text-gray-500">
+                  <p className="text-xs text-fg-faint">
                     {isService
                       ? user.disabled
                         ? 'Let the OAuth client work again.'
@@ -432,7 +432,7 @@ export function UserDetailPage() {
                 <Button
                   variant="outline"
                   size="sm"
-                  className={user.disabled ? 'text-green-700 border-green-300 hover:bg-green-50' : 'text-red-600 border-red-200 hover:bg-red-50'}
+                  className={user.disabled ? 'text-success-fg border-success-border hover:bg-success-soft' : 'text-danger-fg border-danger-border hover:bg-danger-soft hover:text-danger-fg-strong'}
                   onClick={() => toggleDisabledMutation.mutate(!user.disabled)}
                   disabled={toggleDisabledMutation.isPending}
                 >
@@ -445,7 +445,7 @@ export function UserDetailPage() {
               {/* Password reset */}
               {user.has_password && !isService && (
                 <div className="space-y-2 border-t pt-3">
-                  <p className="text-sm font-medium text-gray-700">Reset password</p>
+                  <p className="text-sm font-medium text-fg-soft">Reset password</p>
                   <div className="flex gap-2">
                     <Input
                       type="password"
@@ -463,17 +463,17 @@ export function UserDetailPage() {
                       {passwordMutation.isPending ? 'Setting…' : 'Set password'}
                     </Button>
                   </div>
-                  <label className="flex items-center gap-2 text-sm text-gray-600">
+                  <label className="flex items-center gap-2 text-sm text-fg-muted">
                     <input
                       type="checkbox"
-                      className="h-4 w-4 rounded border-gray-300"
+                      className="h-4 w-4 rounded border-border-strong"
                       checked={revokeKeys}
                       onChange={(e) => setRevokeKeys(e.target.checked)}
                     />
                     Also revoke this person&apos;s API keys
                   </label>
-                  {passwordError && <p role="alert" className="text-sm text-red-600">{passwordError}</p>}
-                  {passwordSaved && <p className="text-sm text-green-600">Password updated.</p>}
+                  {passwordError && <p role="alert" className="text-sm text-danger-fg">{passwordError}</p>}
+                  {passwordSaved && <p className="text-sm text-success-fg">Password updated.</p>}
                 </div>
               )}
             </div>
@@ -483,21 +483,21 @@ export function UserDetailPage() {
         {/* ── Groups ─────────────────────────────────────────────────────── */}
         <SectionCard title="Groups">
           {user.groups.length === 0 ? (
-            <p className="text-sm text-gray-400">Not a member of any groups.</p>
+            <p className="text-sm text-fg-faint">Not a member of any groups.</p>
           ) : (
             <div className="divide-y rounded-md border">
               {user.groups.map((g) => (
                 <div key={g.id} className="flex items-center justify-between gap-2 px-4 py-2.5">
                   <div className="min-w-0 wrap-anywhere">
-                    <span className="text-sm font-medium text-gray-800">{g.name}</span>
+                    <span className="text-sm font-medium text-fg">{g.name}</span>
                     {g.description && (
-                      <span className="ml-2 text-xs text-gray-400">{g.description}</span>
+                      <span className="ml-2 text-xs text-fg-faint">{g.description}</span>
                     )}
                   </div>
                   <Button
                     variant="ghost"
                     size="sm"
-                    className="shrink-0 text-gray-400 hover:text-red-600"
+                    className="shrink-0 text-fg-faint hover:text-danger-fg"
                     onClick={() => removeFromGroupMutation.mutate(g.id)}
                     disabled={removeFromGroupMutation.isPending}
                   >
@@ -529,19 +529,19 @@ export function UserDetailPage() {
               </Button>
             </div>
           )}
-          {groupError && <p role="alert" className="text-sm text-red-600">{groupError}</p>}
+          {groupError && <p role="alert" className="text-sm text-danger-fg">{groupError}</p>}
         </SectionCard>
 
         {/* ── Danger zone ─────────────────────────────────────────────────── */}
-        <div className="rounded-lg border border-red-200 bg-red-50 px-5 py-4">
-          <h2 className="text-sm font-semibold text-red-700 mb-1">Danger zone</h2>
-          <p className="text-sm text-red-600 mb-3">
+        <div className="rounded-lg border border-danger-border bg-danger-soft px-5 py-4">
+          <h2 className="text-sm font-semibold text-danger-fg-strong mb-1">Danger zone</h2>
+          <p className="text-sm text-danger-fg-strong mb-3">
             Permanently deletes this account. Tickets and replies they created are preserved but
             will show a removed user. This cannot be undone — disable the account instead if
             you may need to restore access.
           </p>
           {deleteMutation.isError && (
-            <p role="alert" className="text-sm font-medium text-red-700 mb-3">
+            <p role="alert" className="text-sm font-medium text-danger-fg-strong mb-3">
               {extractError(deleteMutation.error)}
               {extractErrorCode(deleteMutation.error) === 'service_account' && (
                 <>
@@ -556,7 +556,7 @@ export function UserDetailPage() {
           <Button
             size="sm"
             variant="outline"
-            className="border-red-300 text-red-600 hover:bg-red-100"
+            className="border-danger-border text-danger-fg hover:bg-danger-soft hover:text-danger-fg-strong"
             onClick={() => setConfirmDelete(true)}
           >
             Delete user

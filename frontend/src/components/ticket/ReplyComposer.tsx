@@ -50,8 +50,8 @@ function CannedResponsePicker({ responses, onSelect, onClose, containerRef }: Ca
     : responses
 
   return (
-    <div className="absolute z-10 mt-1 w-80 rounded-md border border-gray-200 bg-white shadow-lg">
-      <div className="border-b border-gray-100 p-2">
+    <div className="absolute z-10 mt-1 w-80 rounded-md border border-border bg-popover shadow-lg">
+      <div className="border-b border-border p-2">
         <Input
           autoFocus
           placeholder="Filter by name…"
@@ -62,19 +62,19 @@ function CannedResponsePicker({ responses, onSelect, onClose, containerRef }: Ca
       </div>
       <div className="max-h-56 overflow-y-auto py-1">
         {responses.length === 0 ? (
-          <p className="px-3 py-2 text-xs text-gray-400">No canned responses available for this ticket.</p>
+          <p className="px-3 py-2 text-xs text-fg-faint">No canned responses available for this ticket.</p>
         ) : filtered.length === 0 ? (
-          <p className="px-3 py-2 text-xs text-gray-400">No matches</p>
+          <p className="px-3 py-2 text-xs text-fg-faint">No matches</p>
         ) : (
           filtered.map((r) => (
             <button
               key={r.id}
               type="button"
-              className="block w-full px-3 py-2 text-left hover:bg-gray-50"
+              className="block w-full px-3 py-2 text-left hover:bg-subtle"
               onClick={() => onSelect(r.body)}
             >
-              <div className="text-sm font-medium text-gray-900">{r.name}</div>
-              <div className="truncate text-xs text-gray-400" title={r.body}>{r.body}</div>
+              <div className="text-sm font-medium text-fg">{r.name}</div>
+              <div className="truncate text-xs text-fg-faint" title={r.body}>{r.body}</div>
             </button>
           ))
         )}
@@ -231,7 +231,7 @@ export function ReplyComposer({ ticketId, isStaffOrAdmin }: ReplyComposerProps) 
                   // customer; unticking it restores the default.
                   setNotify(!e.target.checked)
                 }}
-                className="h-4 w-4 rounded border-gray-300"
+                className="h-4 w-4 rounded border-border-strong"
                 disabled={busy}
               />
               Internal note (not visible to customer)
@@ -243,7 +243,7 @@ export function ReplyComposer({ ticketId, isStaffOrAdmin }: ReplyComposerProps) 
                   type="checkbox"
                   checked={notify}
                   onChange={(e) => setNotify(e.target.checked)}
-                  className="h-4 w-4 rounded border-gray-300"
+                  className="h-4 w-4 rounded border-border-strong"
                   disabled={busy}
                 />
                 Send ticket update email to customer
@@ -267,7 +267,7 @@ export function ReplyComposer({ ticketId, isStaffOrAdmin }: ReplyComposerProps) 
           maxBytes={me?.attachment_max_bytes ?? user?.attachment_max_bytes}
         />
 
-        {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
+        {error && <p role="alert" className="text-sm text-danger-fg">{error}</p>}
 
         <Button
           onClick={() => mutation.mutate()}
