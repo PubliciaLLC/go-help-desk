@@ -1,10 +1,9 @@
--- Migration 000072: the person's own appearance choice (#709, 1.3.0): light,
+-- Migration 000071: the person's own appearance choice (#709, 1.3.0): light,
 -- dark, or device (follow the browser's prefers-color-scheme). See docs/DESIGN.md,
 -- Appearance (dark mode).
 --
--- 000072 is a placeholder number. 000070 (CC recipients) and 000071 (branding
--- icon) are being built in parallel; whichever branch merges later renumbers.
--- Nothing here depends on the number.
+-- Numbering: written as a placeholder and renumbered to 000071 when it was merged
+-- after the branding icon (000070). Nothing here depends on the number.
 --
 -- NOT NULL DEFAULT 'device': "I never chose" has one spelling, and every account
 -- that existed before the column reads as device, which is what 1.2 looked like.

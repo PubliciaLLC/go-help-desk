@@ -1620,9 +1620,8 @@ until this ships.
   operating system switches to dark at sunset, an open tab follows without a
   reload.
 - **Column.** `users.theme text NOT NULL DEFAULT 'device'` with
-  `CHECK (theme IN ('light','dark','device'))`. The migration's number is the
-  next free one when it merges (000070 today; the CC-recipient and
-  branding-icon work may take numbers first): nothing depends on the number.
+  `CHECK (theme IN ('light','dark','device'))`. It is migration 000071
+  (000070 is the branding icon); nothing depends on the number.
   The constant default is a catalogue change only, no table rewrite.
 - **Upgrade.** Every existing account reads `device`, which is what 1.2 looked
   like for anyone whose device is light, and dark for anyone whose device is

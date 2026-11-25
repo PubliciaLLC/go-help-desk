@@ -10,8 +10,8 @@ import (
 )
 
 const (
-	migrationThemeUp   = "migrations/000072_user_theme.up.sql"
-	migrationThemeDown = "migrations/000072_user_theme.down.sql"
+	migrationThemeUp   = "migrations/000071_user_theme.up.sql"
+	migrationThemeDown = "migrations/000071_user_theme.down.sql"
 )
 
 // The user_theme migration (#709) runs here, verbatim, against a TEMP stand-in
