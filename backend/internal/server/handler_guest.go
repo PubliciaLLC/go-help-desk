@@ -69,11 +69,15 @@ func (s *Server) handleGuestCreateTicket(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// No type_id or item_id. DESIGN.md gives a guest the category only, and
-	// accepting them cost more than a mismatched form: they went to the
-	// database unvalidated, so a random uuid hit a foreign key AFTER NextSeq
-	// had consumed a tracking number — an unauthenticated 500 that burns a
-	// number from the sequence on every call.
+	// No type_id or item_id unless guests_can_choose_type_item is on (#711).
+	// DESIGN.md gives a guest the category only by default, and accepting them
+	// unchecked cost more than a mismatched form: they went to the database
+	// unvalidated, so a random uuid hit a foreign key AFTER NextSeq had
+	// consumed a tracking number — an unauthenticated 500 that burns a number
+	// from the sequence on every call. They are raw here so that, while the
+	// setting is off, whatever a client sends under those names is ignored as
+	// it always was, a malformed value included; once it is on they are
+	// parsed and checked before anything is written (see guestPick).
 	//
 	// custom_fields takes only the fields an administrator offered to guests on
 	// this category (customfield.Service.GuestFields), and anything else is a
@@ -83,6 +87,8 @@ func (s *Server) handleGuestCreateTicket(w http.ResponseWriter, r *http.Request)
 		Description string          `json:"description"`
 		Format      json.RawMessage `json:"format"` // optional; see restTextFormat
 		CategoryID  uuid.UUID       `json:"category_id"`
+		TypeID      json.RawMessage `json:"type_id"`
+		ItemID      json.RawMessage `json:"item_id"`
 		GuestEmail  string          `json:"guest_email"`
 		GuestName   string          `json:"guest_name"`
 		GuestPhone  string          `json:"guest_phone"`
@@ -138,6 +144,17 @@ func (s *Server) handleGuestCreateTicket(w http.ResponseWriter, r *http.Request)
 		Error(w, http.StatusBadRequest, "bad_request", "category_id is not a category open to guests")
 		return
 	}
+	// The Type and Item, only while an administrator lets guests choose them
+	// (#711). Refused before anything is written, like every other check here.
+	// The rest of the chain (the item belongs to the type, nothing archived) is
+	// the ticket service's, the same code staff go through.
+	var typeID, itemID *uuid.UUID
+	if s.adminSvc.GuestsCanChooseTypeItem(ctx) {
+		if typeID, itemID, err = s.guestPick(ctx, body.CategoryID, body.TypeID, body.ItemID); err != nil {
+			Error(w, http.StatusBadRequest, "bad_request", err.Error())
+			return
+		}
+	}
 	// Refused before anything is written, so a bad value spends no tracking
 	// number (#627).
 	if err := s.customFields.CheckGuestValues(ctx, body.CategoryID, body.CustomFields); err != nil {
@@ -152,12 +169,14 @@ func (s *Server) handleGuestCreateTicket(w http.ResponseWriter, r *http.Request)
 		DescriptionFormat: descFormat,
 		SourceChannel:     ticket.ChannelGuest,
 		CategoryID:        body.CategoryID,
+		TypeID:            typeID,
+		ItemID:            itemID,
 		Priority:          ticket.PriorityMedium,
 		GuestEmail:        &email,
 		GuestName:         name,
 		GuestPhone:        strings.TrimSpace(body.GuestPhone),
 		TrackingPrefix:    s.adminSvc.TicketPrefix(ctx),
-		AutoAssign:        s.Routing(ctx, body.CategoryID, nil), // a guest picks a category and nothing below it
+		AutoAssign:        s.Routing(ctx, body.CategoryID, typeID), // nil unless they were let choose one (#711)
 	}
 	t, err := s.tickets.Create(ctx, in)
 	if err != nil {
@@ -199,6 +218,52 @@ func (s *Server) handleGuestCreateTicket(w http.ResponseWriter, r *http.Request)
 	JSON(w, http.StatusCreated, guestJSON(map[string]string{
 		"tracking_number": string(t.TrackingNumber),
 	}))
+}
+
+// guestPick reads the Type and Item a guest chose, for a form whose setting
+// allows it (#711). Both are optional. A malformed id, a type that is not one of
+// this category or is archived is an error the guest is told; an item is checked
+// against its type, and for being archived, by ticket.Service.Create, which
+// every ticket goes through. Not called while the setting is off, so that an id
+// sent then is ignored as it always was.
+func (s *Server) guestPick(ctx context.Context, categoryID uuid.UUID, rawType, rawItem json.RawMessage) (typeID, itemID *uuid.UUID, err error) {
+	if typeID, err = optionalID("type_id", rawType); err != nil {
+		return nil, nil, err
+	}
+	if itemID, err = optionalID("item_id", rawItem); err != nil {
+		return nil, nil, err
+	}
+	if typeID == nil {
+		return nil, itemID, nil // an item with no type is the service's refusal
+	}
+	ty, err := s.categories.GetType(ctx, *typeID)
+	if err != nil || ty.CategoryID != categoryID {
+		return nil, nil, errors.New("type_id does not belong to category_id")
+	}
+	if !ty.Active {
+		return nil, nil, errors.New("type_id is not an active type")
+	}
+	return typeID, itemID, nil
+}
+
+// optionalID parses a JSON string that is a UUID, or nothing: an absent key,
+// null and "" all read as no choice.
+func optionalID(name string, raw json.RawMessage) (*uuid.UUID, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	var s *string
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return nil, fmt.Errorf("%s is not a valid id", name)
+	}
+	if s == nil || *s == "" {
+		return nil, nil
+	}
+	id, err := uuid.Parse(*s)
+	if err != nil {
+		return nil, fmt.Errorf("%s is not a valid id", name)
+	}
+	return &id, nil
 }
 
 // guestValuesNotSaved is the answer to a guest whose ticket was filed but whose

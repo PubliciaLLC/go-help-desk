@@ -303,7 +303,8 @@ func (s *Server) handleCreateTicket(w http.ResponseWriter, r *http.Request) {
 
 	// Role-based field restrictions:
 	//   - Guest: category only, no type or item; name + email required
-	//   - User (authenticated non-staff): category + type only, no item
+	//   - User (authenticated non-staff): category + type, and the item only
+	//     while users_can_choose_item is on (#711)
 	//   - Staff/Admin: full CTI, no restrictions
 	isStaffOrAdmin := !isGuest && (a.Role == user.RoleAdmin || a.Role == user.RoleStaff)
 
@@ -333,8 +334,14 @@ func (s *Server) handleCreateTicket(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else if !isStaffOrAdmin {
-		// Regular authenticated user: no item allowed
-		body.ItemID = nil
+		// Regular authenticated user: no item unless an administrator has
+		// said so (#711). Dropped, not refused, while it is off: a ticket
+		// filed under the category and type is what they have always got. When
+		// it is on the item is validated below with everything else, by the
+		// ticket service, the same code staff go through.
+		if !s.adminSvc.UsersCanChooseItem(r.Context()) {
+			body.ItemID = nil
+		}
 
 		// And no priority. A reporter setting their own ticket to critical is
 		// a queue every account holder can jump, which is why the guest form

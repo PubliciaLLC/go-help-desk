@@ -152,7 +152,9 @@ func TestAdminCTI_DescriptionRoundTrip(t *testing.T) {
 
 // The lists the ticket forms read carry `description`: for staff, for a
 // reporting user, and for a guest with no session at all (while guest
-// submission is on, the public catalogue is public, and so is the text).
+// submission is on, the public catalogue is public, and so is the text). A
+// guest reads the type and item levels only while guests may choose them
+// (#711); with that off they read the category's text and nothing below it.
 func TestCatalogue_ListsCarryDescription(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
@@ -194,8 +196,25 @@ func TestCatalogue_ListsCarryDescription(t *testing.T) {
 	t.Run("a reporting user", func(t *testing.T) {
 		read(t, func(p string) *http.Response { return h.doAsUser(t, http.MethodGet, p, nil) })
 	})
-	t.Run("a guest with no session", func(t *testing.T) {
+	t.Run("a guest with no session, while guests may choose the Type and Item", func(t *testing.T) {
+		require.NoError(t, h.adminSvc.SetBool(ctx, admin.KeyGuestsCanChooseTypeItem, true))
 		read(t, func(p string) *http.Response { return h.doUnauth(t, http.MethodGet, p, nil) })
+	})
+	t.Run("a guest with no session, while they may not: the category's text only", func(t *testing.T) {
+		require.NoError(t, h.adminSvc.SetBool(ctx, admin.KeyGuestsCanChooseTypeItem, false))
+		var cats, types, items []described
+		decode(t, h.doUnauth(t, http.MethodGet, "/api/v1/categories", nil), &cats)
+		var got string
+		for _, c := range cats {
+			if c.ID == cat.ID.String() {
+				got = c.Description
+			}
+		}
+		require.Equal(t, "Category text", got)
+		decode(t, h.doUnauth(t, http.MethodGet, typesPath, nil), &types)
+		require.Empty(t, types)
+		decode(t, h.doUnauth(t, http.MethodGet, itemsPath, nil), &items)
+		require.Empty(t, items)
 	})
 }
 

@@ -19,6 +19,8 @@ func TestCatalogue_ArchivedParentServesNoChildrenToNonStaff(t *testing.T) {
 	defer cleanup()
 	ctx := context.Background()
 	require.NoError(t, h.adminSvc.SetBool(ctx, admin.KeyGuestSubmissionEnabled, true))
+	// A guest lists types and items only while guests may choose them (#711).
+	require.NoError(t, h.adminSvc.SetBool(ctx, admin.KeyGuestsCanChooseTypeItem, true))
 
 	cat, err := h.categorySvc.CreateCategoryWithDescription(ctx, "Retired", "Category text", 90)
 	require.NoError(t, err)

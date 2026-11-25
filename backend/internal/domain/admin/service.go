@@ -271,6 +271,30 @@ func (s *Service) GuestAttachmentsEnabled(ctx context.Context) bool {
 	return v
 }
 
+// UsersCanChooseItem reports whether a signed-in requester may choose the Item
+// when filing a ticket (#711). Off by default, upgrades included: the row is
+// absent until an administrator saves it, and absent reads false. Staff and
+// administrators always may and do not consult it.
+func (s *Service) UsersCanChooseItem(ctx context.Context) bool {
+	v, _ := s.GetBool(ctx, KeyUsersCanChooseItem)
+	return v
+}
+
+// GuestsCanChooseTypeItem reports whether a guest may choose the Type and the
+// Item on the guest form (#711). Off by default, upgrades included.
+//
+// Like GuestAttachmentsEnabled it is only ever true while guest submission is
+// on, read here rather than in each caller so that "dependent on guest
+// submission" is a property of the setting and not something a handler has to
+// remember. The stored value is kept while submission is off.
+func (s *Service) GuestsCanChooseTypeItem(ctx context.Context) bool {
+	if !s.GuestSubmissionEnabled(ctx) {
+		return false
+	}
+	v, _ := s.GetBool(ctx, KeyGuestsCanChooseTypeItem)
+	return v
+}
+
 // GuestAttachmentMaxMB is a guest's per-file maximum in megabytes (#445), 1 to
 // 100, 5 until an administrator says otherwise. Unset, unreadable or out of
 // range reads as the default: a damaged row must not quietly lift the cap.

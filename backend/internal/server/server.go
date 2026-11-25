@@ -827,6 +827,14 @@ func (s *Server) categoryIsActive(ctx context.Context, id uuid.UUID) (bool, erro
 	return c.Active, nil
 }
 
+// guestClosedOut is true for an anonymous caller while guests may not choose
+// the Type and Item (#711), which is what the Type and Item lists answer with
+// nothing for. A signed-in requester is not: their lists are unchanged, because
+// the names are how their own ticket shows the classification staff gave it.
+func (s *Server) guestClosedOut(r *http.Request) bool {
+	return authmw.GetActor(r) == nil && !s.adminSvc.GuestsCanChooseTypeItem(r.Context())
+}
+
 // handleListPublicTypes returns only active types for a category.
 func (s *Server) handleListPublicTypes(w http.ResponseWriter, r *http.Request) {
 	catID, err := uuid.Parse(chi.URLParam(r, "id"))
@@ -835,6 +843,13 @@ func (s *Server) handleListPublicTypes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	staff := catalogueIsFullyVisible(r)
+	// A guest is offered no types unless an administrator lets guests choose
+	// them (#711): the same empty answer as under an archived parent, so a
+	// refusal is not a different answer to learn from.
+	if s.guestClosedOut(r) {
+		JSON(w, http.StatusOK, []category.Type{})
+		return
+	}
 	// Archiving does not cascade, so an archived category's types are still
 	// active. Anyone but staff is offered nothing under a retired parent.
 	if !staff {
@@ -864,6 +879,10 @@ func (s *Server) handleListPublicItems(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	staff := catalogueIsFullyVisible(r)
+	if s.guestClosedOut(r) { // see handleListPublicTypes
+		JSON(w, http.StatusOK, []category.Item{})
+		return
+	}
 	if !staff {
 		// The category in the path is not looked up (see the OpenAPI note), so the
 		// type's own category is the one that counts.
@@ -920,6 +939,9 @@ func (s *Server) handleGetSiteConfig(w http.ResponseWriter, r *http.Request) {
 		"version":                   version.Version,
 		"guest_submission_enabled":  s.adminSvc.GuestSubmissionEnabled(r.Context()),
 		"guest_attachments_enabled": s.adminSvc.GuestAttachmentsEnabled(r.Context()),
+		// The effective value (#711), so the guest form knows whether to offer
+		// a Type and an Item. What opening /submit shows anyone anyway.
+		"guests_can_choose_type_item": s.adminSvc.GuestsCanChooseTypeItem(r.Context()),
 	}
 	if cfg["guest_attachments_enabled"] == true {
 		cfg["guest_attachment_max_bytes"] = s.guestAttachmentMaxBytes(r.Context())

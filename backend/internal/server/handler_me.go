@@ -74,6 +74,11 @@ type meUser struct {
 	// every role, so the client can refuse an oversize file before sending it
 	// (#673). Not a guest's limit, which is lower and is on /site.
 	AttachmentMaxBytes int64 `json:"attachment_max_bytes"`
+	// CanChooseItem is whether the new-ticket page offers this person an Item
+	// selector (#711): always for staff and administrators, and for a requester
+	// whatever users_can_choose_item says. Always present, so a client can tell
+	// false from an old server. Not on the public /site, which anyone can read.
+	CanChooseItem bool `json:"can_choose_item"`
 }
 
 // switchState is one email switch as it applies to this person: whether they
@@ -99,6 +104,7 @@ func (s *Server) meView(ctx context.Context, u user.User) meUser {
 		APIKeyMaxLifetimeYears: s.adminSvc.APIKeyMaxLifetimeYears(ctx),
 		AttachmentMaxBytes:     s.attachmentMaxBytes(ctx),
 	}
+	v.CanChooseItem = u.Role != user.RoleUser || s.adminSvc.UsersCanChooseItem(ctx)
 	v.CanCreateAPIKeys = u.Role == user.RoleAdmin || (u.Role == user.RoleStaff && s.adminSvc.StaffCanCreateAPIKeys(ctx))
 	v.CanUseAvailableQueue = s.adminSvc.AvailableQueueAllowed(ctx, string(u.Role))
 	if u.Role == user.RoleUser {
