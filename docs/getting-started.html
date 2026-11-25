@@ -194,7 +194,7 @@ SESSION_SECRET=&lt;at-least-32-random-chars&gt;</code></pre>
 </div>
 
 <div class="callout callout-note">
-  <p><strong>Uploads refused on a fresh Linux install?</strong> <span class="badge-new">New in 1.3.0</span> On a fresh Linux host Docker used to create <code>docker/data/attachments</code> owned by <code>root</code>, which the app cannot write to, so every upload was refused with <code>503 attachments_unavailable</code> and administrators saw an <em>Attachment uploads are disabled</em> banner. The <code>attachments-init</code> container now prevents that. A 1.2 install keeps the owner it already had, so there is nothing to do there. If an existing install has the problem, run this from the repository root (the directory that holds <code>docker</code>) and upload again; no restart is needed:</p>
+  <p><strong>Uploads refused on a fresh Linux install?</strong> <span class="badge-new">New in 1.3.0</span> On a fresh Linux host Docker creates <code>docker/data/attachments</code> owned by <code>root</code>, which the app cannot write to, so every upload was refused with <code>503 attachments_unavailable</code> and administrators saw an <em>Attachment uploads are disabled</em> banner. The <code>attachments-init</code> container now corrects that before the app starts. A 1.2 install keeps the owner it already had, so there is nothing to do there. If an existing install has the problem, running the 1.3.0 Compose file (<code>docker compose up -d</code>) fixes the owner the same way, because <code>attachments-init</code> changes any owner that is not 100:101. To fix it without restarting, run this from the repository root (the directory that holds <code>docker</code>) and upload again:</p>
   <pre><code>sudo chown -R 100:101 docker/data/attachments</code></pre>
 </div>
 
@@ -327,8 +327,8 @@ ln -sfn "$(brew --prefix)/opt/docker-buildx/bin/docker-buildx" ~/.docker/cli-plu
 <h3 id="reverse-proxy">Behind a reverse proxy</h3>
 <p>The Compose file publishes the app directly on port 8080. If you put nginx, Caddy or another proxy in front of it:</p>
 <ul>
-  <li><strong>Set <code>BASE_URL</code> to the public <code>https</code> address</strong> people use, for example <code>https://helpdesk.example.com</code>, with no trailing slash. It is what email links, guest and password-reset links, passkeys (which need a domain name) and the SAML Entity ID and ACS URL are built from, and the common name of the SAML certificate that is generated for you is its host. The server ignores forwarding headers such as <code>X-Forwarded-For</code>.</li>
-  <li><strong>Apply the change with <code>docker compose up -d</code>.</strong> <code>docker compose restart</code> does not re-read <code>.env</code>; <code>up -d</code> recreates the app container with the new value.</li>
+  <li><strong>Set <code>BASE_URL</code> to the public <code>https</code> address</strong> people use, for example <code>https://helpdesk.example.com</code>, with no trailing slash. It is what email links, guest and password-reset links, passkeys (which need a domain name) and the SAML Entity ID and ACS URL are built from, and the common name of the SAML certificate is the host of <code>BASE_URL</code> at the time the certificate is generated. The server does not take the client address from forwarding headers such as <code>X-Forwarded-For</code>.</li>
+  <li><strong>Apply the change with <code>docker compose up -d</code></strong>, run from the <code>docker</code> directory, as the upgrade steps do.</li>
   <li><strong>Allow uploads through.</strong> The proxy must accept a request body of the per-file upload limit plus 1 MB (<code>client_max_body_size</code> in nginx, which is 1 MB unless you raise it), and a read timeout at least as long as the upload's transfer deadline. See <a href="admin-guide.html#admin-file-size">File size</a> in the Admin Guide.</li>
 </ul>
 
