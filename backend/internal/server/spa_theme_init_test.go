@@ -41,6 +41,39 @@ func TestSPAHandler_ServesThemeInit(t *testing.T) {
 	require.Equal(t, "no-cache", res.Header.Get("Cache-Control"))
 }
 
+// Revalidation should cost a 304, not the file again: the answer carries an
+// ETag of the content, and a request that holds it is told nothing changed.
+// A different script has a different tag.
+func TestSPAHandler_ThemeInitRevalidates(t *testing.T) {
+	serve := func(script string, inm string) *httptest.ResponseRecorder {
+		ui := fstest.MapFS{
+			"index.html":    &fstest.MapFile{Data: []byte("<!doctype html>")},
+			"theme-init.js": &fstest.MapFile{Data: []byte(script)},
+		}
+		req := httptest.NewRequest(http.MethodGet, "/theme-init.js", nil)
+		if inm != "" {
+			req.Header.Set("If-None-Match", inm)
+		}
+		rr := httptest.NewRecorder()
+		server.NewSPAHandler(ui).ServeHTTP(rr, req)
+		return rr
+	}
+
+	first := serve("(function(){})()", "")
+	tag := first.Header().Get("ETag")
+	require.NotEmpty(t, tag)
+	require.Equal(t, "no-cache", first.Header().Get("Cache-Control"))
+
+	again := serve("(function(){})()", tag)
+	require.Equal(t, http.StatusNotModified, again.Code)
+	require.Empty(t, again.Body.String())
+	require.Equal(t, "no-cache", again.Header().Get("Cache-Control"))
+
+	changed := serve("(function(){ /* new */ })()", tag)
+	require.Equal(t, http.StatusOK, changed.Code, "an upgraded script must not be answered 304 for the old tag")
+	require.NotEqual(t, tag, changed.Header().Get("ETag"))
+}
+
 // Without the file (a build that lacks it) the answer is a 404, never
 // index.html: the browser would otherwise run a page of HTML as a script, and
 // the console would say a syntax error where the truth is "missing file".

@@ -25,6 +25,7 @@ import { useAuthStore } from './auth'
 // to the actions below. Nothing else writes `preference`.
 
 export const SAVE_ERROR = "Couldn't save your appearance. Try again."
+const ERROR_FOR_MS = 5000
 
 interface ThemeState {
   /** What the person chose: light, dark, or follow the device. */
@@ -37,6 +38,9 @@ interface ThemeState {
   error: string | null
   /** Counts successful saves; the switch shows "Saved." for a moment after it moves. */
   saveCount: number
+  /** Labelled switches on the page (Your account). They announce errors; the icon switches then stay quiet. */
+  labelledSwitches: number
+  trackLabelled: (delta: 1 | -1) => void
   /** The person's choice, from a switch. Applies, remembers, and saves when signed in. */
   setPreference: (next: ThemePreference) => Promise<void>
   /** The account's value, from /me or a sign-in answer. Absent (an older server) changes nothing. */
@@ -66,6 +70,8 @@ export const useThemeStore = create<ThemeState>((set, get) => {
     saving: false,
     error: null,
     saveCount: 0,
+    labelledSwitches: 0,
+    trackLabelled: (delta) => set((s) => ({ labelledSwitches: s.labelledSwitches + delta })),
 
     async setPreference(next) {
       const prev = get().preference
@@ -97,6 +103,10 @@ export const useThemeStore = create<ThemeState>((set, get) => {
           show(back)
           writeStored(back)
           set({ error: SAVE_ERROR })
+          // A message that stays until the next choice would sit there for good.
+          setTimeout(() => {
+            if (get().error === SAVE_ERROR) set({ error: null })
+          }, ERROR_FOR_MS)
         }
       } finally {
         set((s) => ({ pending: s.pending - 1, saving: s.pending - 1 > 0 }))

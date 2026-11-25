@@ -3,7 +3,8 @@ import { isPublicPath } from '@/lib/publicPaths'
 import { ThemeSwitch } from './ThemeSwitch'
 
 // The root route's component (#709): the page, plus the appearance switch in the
-// top right corner of every page that has no sidebar to hold it. Mounted once
+// top right corner of every page that has no sidebar to hold it. Absolute, so it
+// stays at the top of a long page (a guest's thread) instead of floating over the text. Mounted once
 // here so the nine page files do not each have to remember it.
 export function RootShell() {
   const pathname = useRouterState({ select: (s) => s.location.pathname })
@@ -11,7 +12,7 @@ export function RootShell() {
     <>
       <Outlet />
       {isPublicPath(pathname) && (
-        <div className="fixed right-3 top-3 z-30">
+        <div className="absolute right-3 top-3 z-30">
           <ThemeSwitch variant="icons" />
         </div>
       )}

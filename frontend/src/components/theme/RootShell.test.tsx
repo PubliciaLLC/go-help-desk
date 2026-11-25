@@ -43,9 +43,9 @@ describe('the root shell', () => {
     expect(screen.queryByRole('group', { name: 'Appearance' })).toBeNull()
   })
 
-  it('puts it in the top right corner, above the page', async () => {
+  it('puts it in the top right corner of the page (absolute, so it scrolls away with it), above the content', async () => {
     await renderAt('/login')
-    const corner = screen.getByRole('group', { name: 'Appearance' }).closest('.fixed')!
+    const corner = screen.getByRole('group', { name: 'Appearance' }).closest('.absolute')!
     expect(corner.className).toMatch(/\btop-3\b/)
     expect(corner.className).toMatch(/\bright-3\b/)
     expect(corner.className).toMatch(/\bz-30\b/)

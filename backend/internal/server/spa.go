@@ -1,6 +1,8 @@
 package server
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"io/fs"
 	"net/http"
 	"strings"
@@ -56,10 +58,15 @@ func (s *SPAHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		// leave browsers on the old one. A build without it is a 404: the
 		// fallback below would hand the browser a page of HTML to run as a
 		// script.
-		if _, err := fs.Stat(s.fs, path); err != nil {
+		body, err := fs.ReadFile(s.fs, path)
+		if err != nil {
 			http.NotFound(w, r)
 			return
 		}
+		// An ETag of the content, so the revalidation is a 304 and an upgraded
+		// script is a new tag.
+		sum := sha256.Sum256(body)
+		w.Header().Set("ETag", `"`+hex.EncodeToString(sum[:8])+`"`)
 		w.Header().Set("Cache-Control", "no-cache")
 		w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
 		s.root.ServeHTTP(w, r)

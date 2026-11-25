@@ -190,6 +190,7 @@ function AssigneePanel({ ticketId, assigneeUserId, assigneeGroupId, users, haveS
       <div className="flex gap-2">
         <Select
           className="h-8 text-xs flex-1"
+          aria-label={mode === 'user' ? 'Staff member to assign' : 'Group to assign'}
           value={selectedId}
           onChange={(e) => setSelectedId(e.target.value)}
         >

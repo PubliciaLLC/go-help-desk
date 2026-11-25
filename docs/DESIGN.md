@@ -1779,17 +1779,42 @@ the tokens:
 - **Contrast.** Every text token reaches WCAG AA (4.5:1) on every surface it is
   used on, in both themes; the focus `ring`, the chart colours and the status
   dots reach 3:1 against the card (WCAG 1.4.11). Input borders are not held to
-  3:1, as before; a field is identified by its label. Some light classes did not: `text-gray-400` (2.5:1 on
-  white) is now `fg-faint`, which is gray-500 in light; `text-red-500`,
-  `text-green-600`, white on `bg-green-600` and white on `bg-yellow-500` likewise
-  move to the nearest shade that passes. These are the only intended changes to
-  the light theme. A unit test computes every pair from the token definitions;
-  an axe check runs on key pages in both themes.
-- **Guard.** A unit test fails on any Tailwind palette colour class, arbitrary
-  colour value (`bg-[#...]`) or colour literal in a `.ts`/`.tsx` file under
-  `src/` (tests excepted). A literal that is data rather than styling (the
-  default status colour) is kept with a `theme-ok:` comment on its line giving
-  the reason. New code cannot bring a light-only colour back.
+  3:1, as before; a field is identified by its label. Three text colours
+  measure just under 4.5:1 on a gray-100 chip in the light theme (`fg-faint`
+  4.39, `danger-fg` 4.33, `success-fg` 4.49) and `fg-faint` 4.44 on the
+  selected tint; they are not allowed there (see Guard), and a chip uses
+  `fg-muted` or the `-strong` level of its family.
+- **Intended changes to the light theme.** Those are the only ones:
+  - Colours that failed AA move to the nearest shade that passes:
+    `text-gray-400` (2.5:1 on white) is now `fg-faint`, which is gray-500;
+    `text-red-500` is red-600; `text-green-600` and white on `bg-green-600` are
+    green-700; white on `bg-yellow-500` becomes dark text on amber-500.
+  - Near-duplicates are merged: `text-gray-800` is `fg` (gray-900), the
+    `-900`/`-950` text of a family is its `-fg-strong`, and `border-gray-200`
+    and `border-gray-100` are the default border colour.
+  - The shadcn classes the UI components always used now produce CSS (Tailwind
+    v4 generates a colour utility only for a registered colour). So cards and
+    inputs and outline buttons are white (`bg-card`, `bg-background`); ghost and
+    outline buttons gain their hover fill (gray-100); input focus rings are
+    blue-500, and so is the primary button's (it was blue-600); body text is
+    `#101828` (it was `#020817`); the page behind the shell is gray-50.
+  A unit test computes every pair from the token definitions; an axe check
+  runs on key pages in both themes.
+- **Guard.** A unit test fails on any Tailwind palette colour class (including
+  the inset-ring, inset-shadow, text-shadow and drop-shadow families), arbitrary
+  colour value (`bg-[#...]`, `text-[red]`, `bg-(--x)`, an arbitrary property
+  such as `[background-color:#fff]`, a colour inside a longer value), colour
+  literal (a hex anywhere in a string, a named colour in a `style` or a `fill`,
+  a canvas `fillStyle`) in a `.ts`/`.tsx` file under `src/` (tests excepted),
+  and on a palette utility, raw palette variable or literal colour in a
+  stylesheet outside the token blocks. It also fails on a class string that
+  puts `fg-faint`, `danger-fg` or `success-fg` on a gray-100/gray-200 or
+  selected tint. A literal that is data rather than styling (the default status
+  colour) is kept with a `theme-ok:` comment on its line giving the reason; a
+  block that must stay literal (the starter HTML of an email, which mail
+  clients draw in fixed colours) is bracketed by `theme-ok-begin:` and
+  `theme-ok-end`. The number of such places is capped. New code cannot bring a
+  light-only colour back.
 
 #### Charts and exports
 

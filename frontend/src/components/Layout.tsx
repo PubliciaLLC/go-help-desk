@@ -377,15 +377,20 @@ function SidebarContent({ user, adminNav, branding, onNavigate, onLogout }: Side
           dense
         />
         {/* The appearance switch (#709) shares the Sign out row, so the sidebar
-            is no taller. Sign out gives up the width the switch needs. */}
-        <div className="flex items-center gap-1">
-          <Button variant="ghost" size="sm" className="h-7 min-w-0 flex-1 justify-start gap-2 pointer-coarse:h-8" onClick={onLogout}>
+            is no taller. Sign out gives up the width the switch needs; if the two
+            cannot fit (a touch screen's larger targets), the switch wraps under it
+            rather than squeezing "Sign out" onto two lines. */}
+        <div className="flex flex-wrap items-center gap-1">
+          <Button variant="ghost" size="sm" className="h-7 min-w-fit flex-1 justify-start gap-2 whitespace-nowrap pointer-coarse:h-8" onClick={onLogout}>
             <LogOutIcon className="h-4 w-4" />
             Sign out
           </Button>
-          {/* 28px segments plus their frame are 34px: the 3px margins take the
-              difference out of the footer's own padding, so the row stays 28px. */}
-          <ThemeSwitch variant="icons" className="-my-[3px]" />
+          {/* With a fine pointer the switch is 28px of segment plus a 1px
+              padding and 1px border each side, 32px. The 2px negative margins
+              take the difference out of the footer's own padding and the gap
+              above, so the row stays 28px. A coarse pointer's segments are 44px
+              tall: no negative margin, the row grows to fit them. */}
+          <ThemeSwitch variant="icons" className="-my-[2px] pointer-coarse:my-0" />
         </div>
       </div>
     </>

@@ -20,6 +20,7 @@ export function TicketLifecycleSection({ draft }: { draft: SettingsDraft }) {
         <div className="flex items-center gap-2">
           <Input
             type="number" min={0} className="w-20 text-right"
+            aria-label="Reopen window in days"
             value={num('reopen_window_days')}
             onChange={(e) => setNum('reopen_window_days', Math.max(0, parseInt(e.target.value, 10) || 0))}
           />
@@ -47,6 +48,7 @@ export function TicketLifecycleSection({ draft }: { draft: SettingsDraft }) {
       >
         <Select
           className="w-44"
+          aria-label="Reopen target status"
           value={str('reopen_target_status_name')}
           onChange={(e) => setStr('reopen_target_status_name', e.target.value)}
         >

@@ -139,6 +139,20 @@ describe('choosing while signed in', () => {
     expect(useThemeStore.getState().saving).toBe(false)
   })
 
+  it('forgets the error by itself after five seconds', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+    try {
+      vi.mocked(updateAppearance).mockRejectedValue(new Error('boom'))
+      render(<ThemeController />)
+      await act(() => useThemeStore.getState().setPreference('dark'))
+      expect(useThemeStore.getState().error).toBe(SAVE_ERROR)
+      await act(() => vi.advanceTimersByTimeAsync(5100))
+      expect(useThemeStore.getState().error).toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('forgets an old error when the next choice starts', async () => {
     useThemeStore.setState({ error: SAVE_ERROR })
     vi.mocked(updateAppearance).mockResolvedValue(user('dark'))

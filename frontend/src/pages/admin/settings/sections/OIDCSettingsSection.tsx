@@ -95,7 +95,7 @@ function OIDCSection() {
         <label className="block text-sm font-medium text-fg-soft">
           Enable OIDC login
         </label>
-        <Toggle checked={enabled} onChange={setEnabled} />
+        <Toggle label="Enable OIDC login" checked={enabled} onChange={setEnabled} />
       </div>
 
       <div className="space-y-1">

@@ -23,10 +23,20 @@ export function ThemeSwitch({ variant, className }: { variant: 'icons' | 'labell
   const error = useThemeStore((s) => s.error)
   const saveCount = useThemeStore((s) => s.saveCount)
   const setPreference = useThemeStore((s) => s.setPreference)
+  const labelledElsewhere = useThemeStore((s) => s.labelledSwitches > 0)
+  const trackLabelled = useThemeStore((s) => s.trackLabelled)
   // Two switches are on screen at once (the desktop sidebar and the drawer), so
   // each needs its own radio group name or the browser would treat them as one.
   const name = useId()
   const labelled = variant === 'labelled'
+
+  // The labelled switch (Your account) announces errors; the one in the sidebar
+  // then stays quiet so a screen reader does not hear the same sentence twice.
+  useEffect(() => {
+    if (!labelled) return
+    trackLabelled(1)
+    return () => trackLabelled(-1)
+  }, [labelled, trackLabelled])
 
   // "Saved." for a moment after a save lands, in the labelled form. Raised while
   // rendering, when the store's count moves past the one this switch last saw
@@ -48,7 +58,16 @@ export function ThemeSwitch({ variant, className }: { variant: 'icons' | 'labell
 
   return (
     <div className={cn('flex flex-col', labelled ? 'items-start' : 'items-end', className)}>
-      <fieldset className={cn('m-0 min-w-0 border-0 p-0', labelled ? 'flex flex-wrap gap-2' : 'inline-flex rounded-md border border-border bg-card p-0.5')}>
+      <fieldset
+        // The icon form has no room for a line of text, so a failed save shows as a
+        // tooltip and a red frame (and is read out, below).
+        title={!labelled && error ? error : undefined}
+        className={cn(
+          'm-0 min-w-0 border-0 p-0',
+          labelled ? 'flex flex-wrap gap-2' : 'inline-flex rounded-md border bg-card p-px',
+          !labelled && (error ? 'border-danger-border' : 'border-border'),
+        )}
+      >
         <legend className="sr-only">Appearance</legend>
         {OPTIONS.map(({ value, label, Icon }) => (
           <label
@@ -58,7 +77,11 @@ export function ThemeSwitch({ variant, className }: { variant: 'icons' | 'labell
               'flex cursor-pointer items-center justify-center rounded transition-colors has-[:focus-visible]:ring-2 has-[:focus-visible]:ring-ring',
               labelled
                 ? 'gap-2 rounded-md border border-border-strong px-3 py-2 text-sm has-[:checked]:border-ring has-[:checked]:bg-selected has-[:checked]:text-selected-fg'
-                : 'h-7 w-7 pointer-coarse:h-11 pointer-coarse:w-11 has-[:checked]:bg-muted has-[:checked]:text-fg has-[:checked]:shadow-sm',
+                : // The checked option is told apart by colour and a border, not by a fill
+                  // alone (a gray on white is 1.1:1, under the 3:1 WCAG asks of a state
+                  // indicator). 32px wide on a coarse pointer: three of them and Sign out
+                  // fit the sidebar's row; the height stays 44px.
+                  'h-7 w-7 border border-transparent pointer-coarse:h-11 pointer-coarse:w-8 has-[:checked]:border-ring has-[:checked]:bg-selected has-[:checked]:text-selected-fg',
               !labelled && 'text-fg-faint hover:text-fg',
               labelled && 'text-fg-soft',
             )}
@@ -78,10 +101,10 @@ export function ThemeSwitch({ variant, className }: { variant: 'icons' | 'labell
       </fieldset>
       {/* Always rendered, so a screen reader hears the text when it appears. */}
       <span
-        aria-live="polite"
+        aria-live={labelled || !labelledElsewhere ? 'polite' : undefined}
         className={cn(
-          !message && 'sr-only',
-          message && error && (labelled ? 'mt-2 text-sm text-danger-fg' : 'mt-1 max-w-48 text-right text-[10px] leading-tight text-danger-fg'),
+          (!message || !labelled) && 'sr-only',
+          message && error && labelled && 'mt-2 text-sm text-danger-fg',
           message && !error && 'mt-2 text-sm text-success-fg',
         )}
       >

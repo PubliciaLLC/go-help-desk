@@ -92,6 +92,49 @@ describe.each(['icons', 'labelled'] as const)('the %s switch', (variant) => {
   })
 })
 
+describe('the icons switch', () => {
+  it('marks the checked option by more than a fill: the selected colours and a ring-coloured border', () => {
+    useThemeStore.setState({ preference: 'dark' })
+    render(<ThemeSwitch variant="icons" />)
+    const cls = radio('Dark').closest('label')!.className
+    expect(cls).toContain('has-[:checked]:bg-selected')
+    expect(cls).toContain('has-[:checked]:text-selected-fg')
+    expect(cls).toContain('has-[:checked]:border-ring')
+  })
+
+  it('keeps its segments narrow enough on a coarse pointer for Sign out to share the row', () => {
+    render(<ThemeSwitch variant="icons" />)
+    const cls = radio('Dark').closest('label')!.className
+    expect(cls).toContain('pointer-coarse:h-11')
+    expect(cls).toContain('pointer-coarse:w-8')
+  })
+
+  it('leaves the announcing to the labelled switch when both are on the page', async () => {
+    useAuthStore.setState({ user: { id: 'u', email: 'a@b.c', display_name: 'A', role: 'user', mfa_enabled: false, created_at: '', updated_at: '' } })
+    vi.mocked(updateAppearance).mockRejectedValue(new Error('x'))
+    const { container } = render(
+      <>
+        <div data-testid="side"><ThemeSwitch variant="icons" /></div>
+        <div data-testid="main"><ThemeSwitch variant="labelled" /></div>
+      </>,
+    )
+    await userEvent.click(within(screen.getByTestId('main')).getByRole('radio', { name: 'Dark' }))
+    const live = container.querySelectorAll('[aria-live="polite"]')
+    expect(live).toHaveLength(1)
+    expect(live[0].textContent).toBe(SAVE_ERROR)
+    expect(screen.getByTestId('side').textContent).toContain(SAVE_ERROR) // still in the page for a screen reader to read, just not announced twice
+  })
+
+  it('shows a failed save as a tooltip and a red frame, without growing the row', async () => {
+    useAuthStore.setState({ user: { id: 'u', email: 'a@b.c', display_name: 'A', role: 'user', mfa_enabled: false, created_at: '', updated_at: '' } })
+    vi.mocked(updateAppearance).mockRejectedValue(new Error('x'))
+    render(<ThemeSwitch variant="icons" />)
+    await userEvent.click(screen.getByRole('radio', { name: 'Dark' }))
+    expect(group().getAttribute('title')).toBe(SAVE_ERROR)
+    expect(group().className).toContain('border-danger-border')
+  })
+})
+
 describe('two switches on one page', () => {
   it('do not share a radio group', async () => {
     render(
