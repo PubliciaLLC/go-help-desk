@@ -280,7 +280,7 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [configured, live, metadata_url, metadata_xml, cert_pem, sp_metadata_url]
+                required: [configured, live, metadata_url, metadata_xml, cert_pem, sp_metadata_url, sp_acs_url]
                 properties:
                   configured:
                     type: boolean
@@ -308,7 +308,14 @@ paths:
                     description: The service provider certificate in PEM form. Empty when unset.
                   sp_metadata_url:
                     type: string
-                    description: This server's SAML metadata URL, built from the server's base URL.
+                    description: >-
+                      This server's SAML metadata URL, built from the server's base URL. It is the
+                      Entity ID to give the identity provider.
+                  sp_acs_url:
+                    type: string
+                    description: >-
+                      This server's SAML assertion consumer service (ACS) URL, built from the
+                      server's base URL. Give it to the identity provider.
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -371,9 +378,10 @@ paths:
           $ref: '#/components/responses/NoContent'
         '200':
           description: >-
-            Saved, with a warning. The body is {warning}: either the identity
-            provider metadata could not be loaded, or the save would strand some
-            administrators (who are named in the warning).
+            Saved, with a warning. The body is {warning}: the identity
+            provider metadata could not be loaded, the save would strand some
+            administrators (who are named in the warning), or saml_enabled is on and
+            the save leaves SAML not loaded (staff and users cannot sign in).
           content:
             application/json:
               schema:
@@ -6120,6 +6128,13 @@ paths:
         - If the write leaves some administrators unable to sign in by any method,
           it is applied and the answer is 200 with a warning that names them. If it
           would leave no administrator able to sign in, it is refused with 400.
+        - saml_enabled means "staff and users must use SAML" (administrators keep
+          password sign-in). When, after the write and the reload above,
+          saml_enabled is true and SAML is not loaded, staff and users cannot sign in
+          at all. The write is still applied, and the answer is 200 with a warning
+          to that effect. This is checked only when the body sets saml_enabled or
+          names a SAML metadata, certificate or key field, so a save that removes the
+          SAML configuration while saml_enabled is on says so too.
         Session only: an API key or OAuth client that sends any of the keys below,
         anywhere in the body, is refused with 403 session_required, and nothing is
         written. Every other key is open to a machine credential that has
@@ -6160,11 +6175,13 @@ paths:
       responses:
         '200':
           description: |
-            The write was applied, with a warning. It is one or both of: the write
+            The write was applied, with a warning. It is one or more of: the write
             leaves some administrators unable to sign in (the warning names them),
-            or it turned ticket_scope_enforced from off to on while some
+            it turned ticket_scope_enforced from off to on while some
             OAuth clients have a service user in no group (the warning names the
-            clients, which will see no tickets). Nothing is refused for either.
+            clients, which will see no tickets), a SAML configuration could not be
+            loaded, or saml_enabled is on while SAML is not loaded (staff and users
+            cannot sign in). Nothing is refused for any of them.
           content:
             application/json:
               schema:

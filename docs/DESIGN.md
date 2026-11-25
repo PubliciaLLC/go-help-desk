@@ -1967,19 +1967,77 @@ export function useSettingsDraft(): SettingsDraft
     null`, a `useState` initialiser. A page opened with the dump already
     cached (from another settings page) is seeded in its first render and
     shows its sections at once, with no spinner.
-  - The seeding effect is today's (`if (settings) setLocal(settings)`).
-  - `isLoading` is `query.isLoading || (query.data !== undefined && local
-    === null)`. It is true while the read is in flight, and for the one
-    render between the data arriving and the effect copying it. The shell
+  - Since the third change below, `local` is a `seeded` flag, set by the
+    effect when the dump has been seen (and initially true when the dump is
+    cached); the draft itself is composed from the layers.
+  - `isLoading` is `query.isLoading || (query.data !== undefined &&
+    !seeded)`. It is true while the read is in flight, and for the one
+    render between the data arriving and the effect seeing it. The shell
     shows its spinner in both, so no section mounts on an empty draft.
-  - The accessors and `buildSettingsPatch` read `local ?? {}`. A failed read
-    has no data, so `isLoading` is false and the page renders with an empty
-    draft, as today.
+  - The accessors and `buildSettingsPatch` read the composed draft, empty
+    for a failed read. A failed read has no data, so `isLoading` is false and
+    the page renders with an empty draft, as today.
 
   No section changes. A section that seeds its own state at mount sees the
   stored value, whichever way the page was opened.
+- **A third change: the draft is layers, so a refetch does not overwrite what
+  the operator has edited (`fix/saml-settings-save`).** The seeding effect used
+  to copy every fresh dump over the whole draft, so any refetch silently reset
+  an unsaved edit, and with it anything that was only shown while that edit
+  stood. Two things refetch the dump: the window regaining focus (the query's
+  `staleTime` is 0, so for instance closing the certificate file picker
+  refetches), and, since this change, "Save SAML config", which also
+  invalidates `['admin', 'settings']` because the save changes the `saml_*`
+  keys the dump carries. The hook no longer copies the dump into `local`. A
+  key's value is the first of these layers that has it:
+  - **edits**: what the operator last set, for the keys they changed
+    (`setBool`, `setNum`, `setStr`, `setStrArr`, `toggleStrArr`);
+  - **sent**: the keys the save in flight carries, with the values the
+    operator set, from the send until the save settles. When the PATCH answers
+    they become the values the server now holds (for the guest figure that can
+    be a clamp of what was typed);
+  - **saved**: what earlier saves wrote whose fresh fetch failed (otherwise
+    absent): the dump is then older than what was saved, so this stays as the
+    base under the edits, the form keeps showing what was saved and is not
+    dirty, until the next dump takes over. Any dump fetched after that save
+    settled does so at once (a fetch that changed nothing counts), also one
+    that lands while a later save is in flight: it is newer than what the
+    earlier save wrote, and `sent` still covers the keys of the later one;
+  - **the dump**: the query's data.
+
+  What is under the edits (sent, then saved, then the dump) is the base an edit
+  is judged against. Setting a key compares the new value, by content, with its
+  base. Equal: the edit is deleted. Otherwise it is recorded. So a key put back
+  to what the dump holds is not held and another administrator's later change to
+  it comes through. A key the save in flight carries is always held as an edit,
+  whatever its value, so setting it again, toggling it, or a dump that arrives
+  meanwhile cannot drop it: it is judged when the save settles. When the dump
+  changes and when a save settles, the other edits that equal their base are
+  dropped. A successful save drops the edits equal to what it sent; the rest
+  stay, and a key put back to its pre-save value during the save stays an edit
+  and is saved next. The save settles after the fresh settings have been
+  asked for: if the dump's own stamp (`dataUpdatedAt`) advanced past the one read when
+  the PATCH answered (no comparison with a separately taken timestamp), `sent`
+  is dropped; if not (the fetch failed), `sent` joins `saved`. A refused save
+  gives back only the keys it sent, with the operator's values, as edits (before
+  anything is dropped); `saved` is left as it was, so what an earlier save wrote
+  does not become an unsaved edit. The page is still dirty and Save sends them
+  again. A second click on Save while one is in flight is ignored. A toggle of
+  an array starts from the draft's current value in whichever layer holds it,
+  including the window between the PATCH answer and the fresh settings.
+  `dirty` is the patch of the composed draft against the base (the dump with
+  `saved` over it), and a key whose edit equals the base never makes it dirty.
+  This applies to every System page, not only Authentication. The write-only
+  keys in `secrets` and `cleared` are not part of the draft. A successful save
+  clears the ones its patch carried: a box is emptied if it still holds what it
+  held when the patch was built, so a removal save also discards a key typed
+  under the ticked "remove" (the patch carries `''` for it), and a key typed over
+  it, or a key typed or ticked for another setting, while the save was on its
+  way stays.
+  Separately, "Save SAML config" empties the private key box once saved (the
+  key is write-only and is not sent again).
 - **`dirty`** is `!isPending && Object.keys(buildSettingsPatch(…)).length > 0`.
-  While `local` is `null` the patch is empty, so a page that is still loading
+  While there is no dump the patch is empty, so a page that is still loading
   is never dirty.
 
 Sections receive the draft as one prop, `draft: SettingsDraft`, instead of
@@ -2028,8 +2086,8 @@ before the dialog opens, and Stay leaves the drawer closed.
 **Loading and errors.** Each page with a draft shows the shell's spinner
 while `draft.isLoading`, which covers the unseeded render described above. A
 query that is already cached (from another settings page) is seeded in the
-first render and shows at once. The existing seeding effect updates the draft
-when the background refetch lands, as it does today; a section that copied a
+first render and shows at once. The seeding effect updates the untouched keys of the draft
+when the background refetch lands, and keeps the edited ones; a section that copied a
 value into its own state at mount keeps that copy, as it does today after a
 tab switch. A failed read renders the page as today, with an empty draft.
 There is no new empty state: every section already renders its own unset
@@ -2173,6 +2231,16 @@ apply to each page, as they did to each tab:
     in the render where the query's data first appears, `isLoading` is still
     true. With the dump already in the cache, `isLoading` is false and the
     accessors return the stored values in the first render.
+  - An edit survives a refetch of the dump; a key the operator did not
+    edit follows it; a successful save clears the edited keys, so the next
+    refetch is followed in full; an edit made while a save is pending is kept
+    and still dirty, also when it was set back to its pre-save value; an edit
+    put back to the stored value, with no save pending, is not held; a refused
+    save keeps every value it sent, dirty, also after the same value was set
+    again or another key's fetch landed meanwhile; a refused save after one
+    whose fetch failed gives back only its own keys; a save whose fresh fetch
+    failed still shows what was saved (the clamped figure, for the guest size)
+    and is not dirty; a second Save in flight is ignored.
   - A refused save keeps the edits and `dirty`.
   - The `email_required` message is shown.
   - `aboutClients` is set only when the patch turns `ticket_scope_enforced`
@@ -2184,6 +2252,15 @@ apply to each page, as they did to each tab:
 - *Each page saves only its own keys*: edit one setting on General and save.
   The `PATCH` body is exactly that key. Repeat on File Attachments with a
   reputation key typed.
+- *The SAML section*: with `saml_enabled` off the form is shown, with the
+  certificate and private key controls; the toggle is labelled "Require SAML
+  for staff and users"; the Entity ID and the ACS URL are shown with copy
+  buttons. After switching the toggle on without saving, "Save SAML config"
+  makes the page refetch its settings (a second visible setting changed in
+  the mocked dump reaches the page) and leaves the toggle on, and the page
+  Save sends `saml_enabled`. A save that answers a warning shows it. The copy
+  buttons say "Copied" in a status line, and say "Copy failed, select the
+  text" when the clipboard is missing or refuses.
 - *A section that seeds at mount sees the stored value*: with
   `attachment_allowed_types` stored as `["application/pdf"]` (different from
   `DEFAULT_ALLOWED_TYPES`), File Attachments' allowed-types box shows
@@ -2949,7 +3026,7 @@ on a passkey-grade assertion, otherwise a passkey step follows the SSO.
 ### SAML (Optional, Off by Default)
 
 - Configured under **Admin → System → Authentication** with the IdP's metadata, given as a URL the server fetches or as the metadata XML pasted or uploaded on the settings page (readable after saving: it is public data), and a service-provider certificate and key (the key is write-only). The IdP registers this instance from `GET /api/v1/auth/saml/metadata`. Sign-in starts at `GET /api/v1/auth/saml/login`, which always opens a new request at the IdP (even when the browser still holds a hand-over cookie) and accepts no return address. It returns to `POST /api/v1/auth/saml/acs`, then always to `GET /api/v1/auth/saml/complete` ([#390](https://github.com/PubliciaLLC/go-help-desk/issues/390); pinned by `TestSAMLLogin_RedirectsToTheIdP`, `TestSAMLLogin_IgnoresReturnToParameters` and `TestSAMLLogin_StartsFreshEvenWithAHandoverCookie`). IdP-initiated sign-in is not accepted. The login page shows a **Sign in with SAML** button, a plain link to `GET /api/v1/auth/saml/login`, when `GET /auth/providers` reports SAML enabled (the middleware is loaded, whatever `saml_enabled` says) ([#393](https://github.com/PubliciaLLC/go-help-desk/issues/393), [#421](https://github.com/PubliciaLLC/go-help-desk/issues/421)).
-- **SAML runs whenever the IdP metadata (a URL or XML), the certificate and the key are all set**; otherwise its routes answer `503 saml_not_configured`. There is no on/off switch for SAML itself. The settings page only shows the SAML fields while the "Enable SAML login" (`saml_enabled`) toggle is on, so it steers an operator configuring SAML toward also turning off password login for non-administrators; the toggle only takes effect when the settings are saved (the SAML fields have their own "Save SAML config"), so it can be switched back off after the SAML config is saved.
+- **SAML runs whenever the IdP metadata (a URL or XML), the certificate and the key are all set**; otherwise its routes answer `503 saml_not_configured`. There is no on/off switch for SAML itself: **"Save SAML config" (`PUT /admin/saml`) is what switches SAML on**. The settings page therefore **always shows the SAML form** (IdP metadata, service-provider certificate, private key, and "Save SAML config"), whatever `saml_enabled` says. It also always shows the two values the administrator gives the identity provider: the **Entity ID** (`<BASE_URL>/api/v1/auth/saml/metadata`, the SP metadata URL) and the **ACS URL** (`<BASE_URL>/api/v1/auth/saml/acs`), each with a copy button. `GET /admin/saml` returns both, built from the server's base URL: `sp_metadata_url` and `sp_acs_url`. The toggle is a separate posture, labelled "Require SAML for staff and users" (see `saml_enabled` below); it is saved by the page's own Save, not by "Save SAML config".
 - **IdP metadata: a URL or XML (#461).** `saml_metadata_url` and `saml_metadata_xml` are alternatives. A save that would leave both set is refused: `400 saml_metadata_conflict` on `PUT /admin/saml`, and `400 bad_request` on the settings PATCH. Pasted XML is parsed before anything is saved, by the parser a fetched URL goes through (`samlsp.ParseMetadata`). A document that does not parse, is not SAML metadata, has no `IDPSSODescriptor` (most often this instance's own SP metadata pasted by mistake), or has no signing certificate that parses as X.509 (the certificates the SP verifies every assertion against; such metadata loads, so it would otherwise count as reachable for the lockout guard and then refuse every sign-in) is refused with `invalid_saml_metadata`, and one over 256 KiB with `saml_metadata_too_large`. Go's XML decoder resolves no external entities, fetches no DTD and expands no declared entity, so a pasted document cannot make the server read a file or a URL (pinned by `TestParseIdPMetadataXML_FetchesNoExternalEntity`). The settings page's upload button only fills the text box, so pasted and uploaded XML are the same input. Saved XML is never refreshed: when the IdP rotates its signing certificate, paste its new metadata. A URL is fetched again at each save and each restart, and **every hour** by `Server.RefreshSAML` (from the same hourly goroutine that sweeps expired sessions) under the rules in the next bullet. Pasted XML may declare any `encoding` in its XML declaration, UTF-16 included (a UTF-16 file keeps its declaration when a browser reads its text): the text is already UTF-8, so the declaration is rewritten to `UTF-8` for parsing only and the stored XML is exactly what was pasted. A metadata URL that serves real UTF-16 bytes is not decoded. **Certificate expiry warning:** `GET /admin/security-warnings` carries `saml_idp_certificate: {expires_at, expired}` when the live IdP metadata's signing certificate is expired or expires within 30 days (absent otherwise, and while SAML is not loaded). With several signing certificates (an IdP mid-rollover) the latest expiry decides. The banner shows it amber before expiry and red after. Metadata cannot be refreshed from pasted XML, so this is the only signal; prefer the URL if your IdP has one (Google Workspace offers only a download). The private key stays write-only; the XML is returned by `GET /admin/saml` and the settings dump.
 - **The hourly refresh may not move the trust anchor unattended (#619).** What the IdP's metadata says decides which certificate signs anyone in, so an automatic re-fetch is limited; a save by an administrator is not. Each tick, under the reload lock (below), `RefreshSAML` compares the stored settings with the settings the running middleware was built from:
   - **They differ** (saved on another replica, or nothing has loaded yet): the stored settings are loaded exactly as a save loads them, over http or https, with no further test. They are the administrator's choice. "Nothing has loaded yet" includes an IdP that was unreachable at boot: each hourly tick retries the startup load, at startup's trust level (no refresh rules), and the `http_url` warning still applies while the stored URL is not https.
@@ -2963,7 +3040,7 @@ on a passkey-grade assertion, otherwise a passkey step follows the SSO.
   - A `saml_metadata_refresh` of `entity_id_changed` or `new_certificate` clears on the next commit of any kind: the administrator's re-save, or a later refresh that passes (for instance when the added certificate is withdrawn).
   - Pinned by `TestRefreshSAML_*` and `TestNewSAMLMiddleware_HTTPSOnly`.
 - **Reloads are serialised (#619).** Reading the stored settings, building from them (a network fetch of up to 15 seconds) and committing are done under one lock per provider (`samlReloadMu`, `oidcReloadMu`), held by startup, the hourly refresh, the `PATCH /admin/settings` reload, and the `PUT /admin/saml` and `PUT /admin/oidc` saves. An older reload therefore cannot commit after a newer one and put the old configuration back live (pinned by `TestReloadSAML_ANewerReloadIsNotOverwrittenByAnOlderSlowOne` and `TestReloadOIDC_ANewerReloadIsNotOverwrittenByAnOlderSlowOne`). The hourly refresh holds the SAML lock across its metadata fetch, so a SAML save or a settings PATCH that reloads can wait up to 15 seconds, about once an hour; the lock is deliberately not narrowed to the commit.
-- **`saml_enabled`** (the "Enable SAML login" toggle) is a separate, stricter posture an operator opts into: it removes password login for non-administrators (`user.IsLocalAuthAllowed`; refused with `403 saml_required`), and `GET /auth/providers` says so with `local_admin_only` (true exactly when `saml_enabled` is on; `local` stays true, since the password form is still offered). `GET /auth/providers` is JSON, and its `saml` and `oidc` entries mean *loaded and able to sign someone in now*, not *switched on*: an identity provider that did not answer no longer gets a button that leads to a 503 (#421).
+- **`saml_enabled`** (the "Require SAML for staff and users" toggle) is a separate, stricter posture an operator opts into: it removes password login for non-administrators (`user.IsLocalAuthAllowed`; refused with `403 saml_required`), and `GET /auth/providers` says so with `local_admin_only` (true exactly when `saml_enabled` is on; `local` stays true, since the password form is still offered). `GET /auth/providers` is JSON, and its `saml` and `oidc` entries mean *loaded and able to sign someone in now*, not *switched on*: an identity provider that did not answer no longer gets a button that leads to a 503 (#421). The toggle's hint says that SAML is switched on by "Save SAML config", and that this switch only turns off password sign-in for staff and users (administrators keep password sign-in). **A save that leaves it on while SAML is not loaded still succeeds, with a warning.** Then every staff and user password sign-in is refused and `GET /auth/providers` offers no SAML button, so those accounts have no way in. `PATCH /admin/settings` answers `200 {"warning": "..."}` (the same field the stranding and OAuth-client warnings use) when, after the save has been applied and SAML reloaded, `saml_enabled` is true, SAML is not loaded, and the body set `saml_enabled` or any SAML metadata, certificate or key field (so removing the SAML config while the switch is on says so too). `PUT /admin/saml` adds the same sentence when its save leaves SAML not loaded while `saml_enabled` is true. It is a warning and not a refusal: administrators are unaffected (they keep password sign-in), so no instance is locked out, and the setting is the administrator's to choose; the settings page shows the warning after its Save. No warning when SAML is loaded, and none when `saml_enabled` is false. Pinned by `TestPatchSettings_SAMLEnabledWithoutLiveSAMLWarns`.
 - **Admin failsafe**: administrators can still sign in with a local password.
 - **NameID format: persistent (1.3.0).** The authentication request asks the identity provider for a **persistent** NameID (`NameIDPolicy Format="urn:oasis:names:tc:SAML:2.0:nameid-format:persistent"`), and the SP metadata advertises it. The NameID is the account's permanent key (`users.saml_subject`), so it has to be the same value every time the same person signs in. The library's default is `transient`, which Microsoft Entra ID (and others) answer with a random value for every sign-in; before 1.3.0 that made every SAML account work for exactly one sign-in, because the second sign-in carried a NameID no account knew and its address was already held (`email_taken`). A format named in the request overrides the one set in the identity provider's own application settings, so there is nothing for an administrator to change on that side. An identity provider that cannot issue a persistent NameID answers with a SAML status error such as `InvalidNameIDPolicy`; the ACS answers by redirecting to `/login?error=saml_nameid_format` (every other failed response keeps the library's plain `403`; the library checks destination, `InResponseTo`, issue time and issuer before the status but not the signature, so an unsigned or unproven error response can trigger this one fixed redirect, which shows nothing from the response), and the login page says the provider cannot issue the identifier this help desk asks for and to ask an administrator. The remedy is to allow persistent identifiers for the application at the provider (pinned by `TestACSError_*`). **What the identity provider must send:** a NameID of any non-empty value (opaque is fine) and the user's address as an attribute (`email`, `mail`, the LDAP `mail` OID or Entra ID's `…/claims/emailaddress`), as before. The address is what finds an account again if the NameID ever changes, so an assertion with no address attribute and an opaque NameID creates nobody (`invalid_email`; the address is validated before the domain allowlist, so the answer is the same with an allowlist set).
 - **First sign-in provisioning and account matching.** Each assertion is matched to an account in this order, and the first step that applies decides. The address is normalised like every other address here (`ValidateEmail`: trimmed, lower-cased, brackets and needless quotes removed) and compared **ignoring case** (`lower(email)`). The unique constraint on `users.email` is case-sensitive and addresses were lower-cased on write only from v1.2.0, so an older row can be mixed case and `A@x` and `a@x` can both exist (legacy data only: nothing writes such a pair now). When several rows match, the holder is chosen in this order: a live row over a deleted one; then the row whose address is exactly the lower-cased one (the one the unique index sees as holding it); then a row SAML did not create over one it did, so a deleted local account blocks when no row is exact; then the oldest. The exact row is decided before the kind, so among deleted rows the exact lower-case row decides, and a deleted local twin in other capitals neither blocks a deleted SAML-created row that is exact nor is written. The choice is therefore the same whichever row is older.

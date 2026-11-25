@@ -271,7 +271,10 @@ export interface SAMLConfig {
   // when the metadata is given by URL or not at all.
   metadata_xml: string
   cert_pem: string
+  // What to give the identity provider: the Entity ID and the ACS URL, built
+  // from the server's base URL.
   sp_metadata_url: string
+  sp_acs_url: string
 }
 
 export async function getSAMLConfig(): Promise<SAMLConfig> {

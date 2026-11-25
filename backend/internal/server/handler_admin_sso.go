@@ -253,6 +253,22 @@ func (s *Server) reloadSSOAfterSettings(ctx context.Context, body map[string]jso
 	return warning
 }
 
+// samlRequiredButNotLoadedWarning says so when saml_enabled ("staff and users
+// must use SAML") is on while SAML is not loaded: every password sign-in of
+// theirs is refused with 403 saml_required and the login page has no SAML
+// button, so they have no way in. Administrators keep password sign-in, so the
+// instance is not locked out; a warning, not a refusal, as the setting is the
+// administrator's to choose. Read after the save has been applied and SAML
+// reloaded, so a body that sets saml_enabled together with a SAML
+// configuration that loads is not warned about.
+func (s *Server) samlRequiredButNotLoadedWarning(ctx context.Context) string {
+	if !s.adminSvc.SAMLEnabled(ctx) || s.samlReachableNow() {
+		return ""
+	}
+	return "Password sign-in is limited to administrators, but SAML is not loaded: staff and users cannot sign in. " +
+		"Save a working SAML configuration, or turn off \"Require SAML for staff and users\"."
+}
+
 // GET /api/v1/admin/saml
 //
 // `configured` is "the saved settings are complete", `live` is "the SAML
@@ -267,6 +283,7 @@ func (s *Server) handleGetSAMLConfig(w http.ResponseWriter, r *http.Request) {
 		"metadata_xml":    s.adminSvc.GetSAMLMetadataXML(r.Context()),
 		"cert_pem":        certPEM,
 		"sp_metadata_url": s.cfg.BaseURL + "/api/v1/auth/saml/metadata",
+		"sp_acs_url":      s.cfg.BaseURL + "/api/v1/auth/saml/acs",
 	})
 }
 
@@ -382,13 +399,15 @@ func (s *Server) handleSaveSAMLConfig(w http.ResponseWriter, r *http.Request) {
 			reloadWarning = warning + " " + reloadWarning
 		}
 		JSON(w, http.StatusOK, map[string]any{
-			"warning": reloadWarning,
+			"warning": joinWarnings(reloadWarning, s.samlRequiredButNotLoadedWarning(ctx)),
 		})
 		return
 	}
 	if mw != nil {
 		slog.Info("SAML middleware loaded", "metadata_url", c.MetadataURL, "metadata_xml", c.MetadataXML != "")
 	}
+
+	warning = joinWarnings(warning, s.samlRequiredButNotLoadedWarning(ctx))
 
 	if warning != "" {
 		JSON(w, http.StatusOK, map[string]any{"warning": warning})

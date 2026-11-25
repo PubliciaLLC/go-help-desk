@@ -866,6 +866,13 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	// a client that hangs up must not leave the provider on the old ones.
 	warning = joinWarnings(warning, s.reloadSSOAfterSettings(context.WithoutCancel(r.Context()), body))
 
+	// saml_enabled on while SAML is not loaded leaves staff and users no way in.
+	// Said when this save is what made it so: it set the switch, or changed a
+	// SAML field and the reload left SAML unloaded.
+	if _, setsSwitch := body[admin.KeySAMLEnabled]; setsSwitch || touchesSAML(body) {
+		warning = joinWarnings(warning, s.samlRequiredButNotLoadedWarning(context.WithoutCancel(r.Context())))
+	}
+
 	if warning != "" {
 		JSON(w, http.StatusOK, map[string]any{"warning": warning})
 		return
