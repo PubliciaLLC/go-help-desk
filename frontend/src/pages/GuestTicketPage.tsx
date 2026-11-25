@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { listPublicCategories } from '@/api/tickets'
+import { listPublicCategories, listPublicItems, listPublicTypes } from '@/api/tickets'
+import { getSiteConfig } from '@/api/admin'
 import { createGuestTicket, listGuestFields } from '@/api/guest'
 import type { GuestField } from '@/api/types'
 import { overLimit } from '@/lib/fieldLimits'
@@ -55,6 +56,8 @@ export function GuestTicketPage() {
   const [subject, setSubject] = useState('')
   const [description, setDescription] = useState('')
   const [categoryId, setCategoryId] = useState('')
+  const [typeId, setTypeId] = useState('')
+  const [itemId, setItemId] = useState('')
   const [fieldValues, setFieldValues] = useState<Record<string, string>>({})
   const [name, setName] = useState('')
   const [email, setEmail] = useState('')
@@ -66,6 +69,23 @@ export function GuestTicketPage() {
   const { data: categories = [] } = useQuery({
     queryKey: ['public-categories'],
     queryFn: listPublicCategories,
+  })
+
+  // Whether this instance lets a guest choose the Type and the Item (#711).
+  // Off, absent or not yet answered is the category-only form, and no list below
+  // the category is asked for: the server answers those with nothing anyway.
+  const { data: site } = useQuery({ queryKey: ['site-config'], queryFn: getSiteConfig, retry: false })
+  const canChooseTypeItem = site?.guests_can_choose_type_item === true
+
+  const { data: types = [] } = useQuery({
+    queryKey: ['public-types', categoryId],
+    queryFn: () => listPublicTypes(categoryId),
+    enabled: canChooseTypeItem && !!categoryId,
+  })
+  const { data: items = [] } = useQuery({
+    queryKey: ['public-items', categoryId, typeId],
+    queryFn: () => listPublicItems(categoryId, typeId),
+    enabled: canChooseTypeItem && !!categoryId && !!typeId,
   })
 
   // The custom fields an administrator chose to offer visitors under this
@@ -91,6 +111,8 @@ export function GuestTicketPage() {
 
   function chooseCategory(id: string) {
     setCategoryId(id)
+    setTypeId('')
+    setItemId('')
     // Another category may not offer these fields, and the server refuses a
     // field it did not offer, so nothing typed for one is carried to the next.
     setFieldValues({})
@@ -127,6 +149,8 @@ export function GuestTicketPage() {
         subject,
         description,
         category_id: categoryId,
+        type_id: canChooseTypeItem ? (typeId || undefined) : undefined,
+        item_id: canChooseTypeItem ? (itemId || undefined) : undefined,
         guest_name: name.trim(),
         guest_email: email.trim(),
         guest_phone: phone.trim() || undefined,
@@ -262,21 +286,67 @@ export function GuestTicketPage() {
                 <TextLimit value={description} />
               </div>
 
-              <div className="space-y-1">
-                <Label htmlFor="category">Category *</Label>
-                <Select
-                  id="category"
-                  aria-describedby="cti-description"
-                  value={categoryId}
-                  onChange={(e) => chooseCategory(e.target.value)}
-                >
-                  <option value="">Select…</option>
-                  {categories.map((c) => (
-                    <option key={c.id} value={c.id}>{c.name}</option>
-                  ))}
-                </Select>
-                {/* Public: this is the text of a category any visitor can open. */}
-                <CtiDescription id="cti-description" category={categories.find((c) => c.id === categoryId)} />
+              {/* The chooser and the text beneath it are one child of the form,
+                  so an empty description leaves no gap. */}
+              <div>
+                <div className="space-y-4">
+                  <div className="space-y-1">
+                    <Label htmlFor="category">Category *</Label>
+                    <Select
+                      id="category"
+                      aria-describedby="cti-description"
+                      value={categoryId}
+                      onChange={(e) => chooseCategory(e.target.value)}
+                    >
+                      <option value="">Select…</option>
+                      {categories.map((c) => (
+                        <option key={c.id} value={c.id}>{c.name}</option>
+                      ))}
+                    </Select>
+                  </div>
+
+                  {canChooseTypeItem && (
+                    <>
+                      <div className="space-y-1">
+                        <Label htmlFor="type">Type</Label>
+                        <Select
+                          id="type"
+                          aria-describedby="cti-description"
+                          value={typeId}
+                          onChange={(e) => { setTypeId(e.target.value); setItemId('') }}
+                          disabled={!categoryId || types.length === 0}
+                        >
+                          <option value="">Select…</option>
+                          {types.map((t) => (
+                            <option key={t.id} value={t.id}>{t.name}</option>
+                          ))}
+                        </Select>
+                      </div>
+                      <div className="space-y-1">
+                        <Label htmlFor="item">Item</Label>
+                        <Select
+                          id="item"
+                          aria-describedby="cti-description"
+                          value={itemId}
+                          onChange={(e) => setItemId(e.target.value)}
+                          disabled={!typeId || items.length === 0}
+                        >
+                          <option value="">Select…</option>
+                          {items.map((i) => (
+                            <option key={i.id} value={i.id}>{i.name}</option>
+                          ))}
+                        </Select>
+                      </div>
+                    </>
+                  )}
+                </div>
+                {/* Public: this is the text of a row any visitor can open. */}
+                <CtiDescription
+                  id="cti-description"
+                  category={categories.find((c) => c.id === categoryId)}
+                  type={types.find((t) => t.id === typeId)}
+                  item={items.find((i) => i.id === itemId)}
+                />
               </div>
 
               {guestFields.map((f) => (

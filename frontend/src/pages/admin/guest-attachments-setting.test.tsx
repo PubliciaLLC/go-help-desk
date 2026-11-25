@@ -77,7 +77,7 @@ describe('the guest attachments settings', () => {
     await renderSettings({ guest_submission_enabled: false, guest_attachments_enabled: true })
     expect(toggle().disabled).toBe(true)
     expect(slider().disabled).toBe(true)
-    expect(screen.getByText(/only takes effect while guest submission is on/i)).toBeTruthy()
+    expect(screen.getAllByText(/only takes effect while guest submission is on/i).length).toBeGreaterThan(0)
   })
 
   it('is enabled once guest submission is on, and the slider follows the switch', async () => {

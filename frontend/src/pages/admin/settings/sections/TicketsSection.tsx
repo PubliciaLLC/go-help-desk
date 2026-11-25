@@ -1,10 +1,10 @@
 import { Section } from '@/components/admin/Section'
-import { SettingRow } from '@/pages/admin/settings/primitives'
+import { SettingRow, Toggle } from '@/pages/admin/settings/primitives'
 import { Input } from '@/components/ui/input'
 import type { SettingsDraft } from '@/pages/admin/settings/useSettingsDraft'
 
 export function TicketsSection({ draft }: { draft: SettingsDraft }) {
-  const { str, setStr } = draft
+  const { str, setStr, bool, setBool } = draft
   return (
     <Section title="Tickets">
       <SettingRow
@@ -17,6 +17,17 @@ export function TicketsSection({ draft }: { draft: SettingsDraft }) {
           maxLength={8}
           className="w-32 font-mono"
           aria-label="Tracking number prefix"
+        />
+      </SettingRow>
+      {/* Off unless saved (#711): an absent row reads off, here and on the server. */}
+      <SettingRow
+        label="Users may choose the Item"
+        description="Show signed-in requesters an Item selector under Type on the new-ticket page, with the same description and custom fields staff get. Off by default: requesters choose a Category and a Type, and staff assign the Item afterwards."
+      >
+        <Toggle
+          label="Users may choose the Item"
+          checked={bool('users_can_choose_item')}
+          onChange={(v) => setBool('users_can_choose_item', v)}
         />
       </SettingRow>
     </Section>

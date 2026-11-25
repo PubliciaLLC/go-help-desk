@@ -44,6 +44,10 @@ export interface User {
    *  administrator, for staff while an administrator ticks Staff, false for a
    *  requester. Only on /me; absent reads as no. */
   can_use_available_queue?: boolean
+  /** Whether the new-ticket page offers an Item selector (#711): always for
+   *  staff and administrators, for a requester while Users may choose the Item
+   *  is on. Only on /me; absent reads as staff and administrators only. */
+  can_choose_item?: boolean
   /** Whether SLA tracking is on. Only on /me, only for staff and
    *  administrators. Absent means unknown (a requester, or the server could not
    *  read the setting), never off: the ticket list shows its SLA filter,

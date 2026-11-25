@@ -31,6 +31,18 @@ export function SubmissionsSection({ draft }: { draft: SettingsDraft }) {
           onChange={(v) => setBool('guest_attachments_enabled', v)}
         />
       </SettingRow>
+      {/* Dependent on guest submission, like the row above (#711). */}
+      <SettingRow
+        label="Guests may choose the Type and Item"
+        description="Show guests a Type and an Item selector under Category on the guest form, with the same descriptions. Off by default: guests choose a Category only. It only takes effect while guest submission is on, and it makes the names and descriptions of every active type and item public to anyone who can open the form."
+      >
+        <Toggle
+          label="Guests may choose the Type and Item"
+          checked={bool('guests_can_choose_type_item')}
+          disabled={!bool('guest_submission_enabled')}
+          onChange={(v) => setBool('guests_can_choose_type_item', v)}
+        />
+      </SettingRow>
       <div className="border-t px-5 py-4 space-y-2">
         <div className="text-sm text-gray-500">
           The largest file a guest may attach. It can never exceed the per-file limit for every upload, {overallMB} MB, set under System → File Attachments.
