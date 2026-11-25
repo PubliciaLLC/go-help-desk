@@ -6,6 +6,11 @@ set -euo pipefail
 
 cd "$GHD_REPO"
 
+# The repository is mounted read-only (docker.sh), but screenshots.sh restores a
+# tracked file with git checkout, which writes the index. Work on a copy of it.
+cp "$(git rev-parse --path-format=absolute --git-path index)" /tmp/ghd-index
+export GIT_INDEX_FILE=/tmp/ghd-index
+
 pg_ctlcluster 16 main start
 for _ in $(seq 1 30); do
   pg_isready -q -h /var/run/postgresql && break
