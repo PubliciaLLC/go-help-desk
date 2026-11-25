@@ -446,6 +446,37 @@ func TestUploadSiteIcon_Refusals(t *testing.T) {
 			400, "invalid_background", "#ffffff"},
 		{"bad background, a name", newIconUpload(iconPNG(t, iconDisc(600))).withBackground("white"),
 			400, "invalid_background", "hex colour"},
+
+		// An upload that breaks two rules gets the code of the one checked first.
+		// The order is documented (openapi.yaml, uploadSiteIcon): the form, the
+		// field, the colour, the file's size, its type, its header, its shape
+		// (not square, then too small, then too large), and last what decoding
+		// would cost. A refusal that depended on anything else would send the
+		// administrator to fix the wrong thing first.
+		{"colour before type: bad background and SVG", newIconUpload(svg).withBackground("#fff"),
+			400, "invalid_background", "#ffffff"},
+		{"colour before size: bad background and over 5 MB", newIconUpload(overByte).withBackground("white"),
+			400, "invalid_background", "hex colour"},
+		{"colour before shape: bad background and not square", newIconUpload(iconPNG(t, iconSolid(800, 600, color.RGBA{A: 255}))).withBackground("#12345"),
+			400, "invalid_background", "#ffffff"},
+		{"size before type: over 5 MB and SVG", newIconUpload(append(append([]byte{}, svg...), make([]byte, siteicon.MaxUploadBytes)...)),
+			400, "file_too_large", "5 MB"},
+		{"type before shape: SVG that is not square", newIconUpload([]byte(`<svg xmlns="http://www.w3.org/2000/svg" width="800" height="600"/>`)),
+			400, "invalid_type", "PNG, JPG, or GIF"},
+		{"header before shape: garbage that is not square", newIconUpload(append([]byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1A, '\n'}, make([]byte, 24)...)),
+			400, "invalid_image", "could not be read"},
+		{"shape before size: not square and too small", newIconUpload(iconPNG(t, iconSolid(300, 200, color.RGBA{A: 255}))),
+			400, "icon_not_square", "300 × 200"},
+		{"shape before size: not square and too large", newIconUpload(iconPNGHeader(5000, 4000, 8, 6)),
+			400, "icon_not_square", "5000 × 4000"},
+		{"too small before too large: square checks in order", newIconUpload(iconPNG(t, iconSolid(100, 100, color.RGBA{A: 255}))),
+			400, "icon_too_small", "100 × 100"},
+		{"shape before the decode budget: not square and over it", newIconUpload(iconPNGHeader(4096, 4000, 16, 6)),
+			400, "icon_not_square", "4096 × 4000"},
+		{"size before the decode budget: too large and over it", newIconUpload(iconPNGHeader(5000, 5000, 16, 6)),
+			400, "icon_too_large", "5000 × 5000"},
+		{"shape before the decode: not square and truncated", newIconUpload(iconPNGHeader(800, 600, 8, 6)),
+			400, "icon_not_square", "800 × 600"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
