@@ -560,9 +560,10 @@ describe('a known verdict on a quarantined file', () => {
  *
  * A family rather than one Tailwind shade, because the requirement is about
  * what the line communicates: a rewrite that swaps emerald for green has
- * changed nothing.
+ * changed nothing. `success` is the theme token family (text-success-fg) that
+ * replaced the green palette classes (#709).
  */
-const REASSURING = ['emerald', 'green', 'teal', 'lime']
+const REASSURING = ['emerald', 'green', 'teal', 'lime', 'success']
 
 /**
  * The colour family of the line carrying a given piece of wording.
@@ -577,7 +578,7 @@ function verdictColour(row: HTMLElement, wording: RegExp): string {
   )
   expect(lines.length, `expected exactly one line on the row matching ${wording}`).toBe(1)
 
-  const colour = (lines[0].getAttribute('class') ?? '').match(/\btext-([a-z]+)-\d{3}\b/)
+  const colour = (lines[0].getAttribute('class') ?? '').match(/\btext-([a-z]+)-(?:\d{3}|fg(?:-strong)?)\b/)
   expect(colour, 'the verdict line carries no text colour at all').not.toBeNull()
   return colour![1]
 }

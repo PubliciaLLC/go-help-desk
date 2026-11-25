@@ -42,7 +42,7 @@ test.describe('at 320px', () => {
       'SAML is required for staff and users but is not working, so they cannot sign in. Administrators can still sign in with a password.',
     )
     // Red: something is broken now.
-    await expect(card.getByRole('listitem')).toHaveClass(/border-red-200/)
+    await expect(card.getByRole('listitem')).toHaveClass(/border-danger-border/)
     const link = card.getByRole('link', { name: 'Authentication → SAML' })
     await expect(link).toHaveAttribute('href', '/admin/settings/authentication')
 
