@@ -429,6 +429,15 @@ func (s *Service) SetEmailPreferences(ctx context.Context, id uuid.UUID, p Email
 	return s.store.SetEmailPreferences(ctx, id, p)
 }
 
+// SetTheme changes the caller's own appearance choice (#709). A value that is
+// not one of the three never reaches the store.
+func (s *Service) SetTheme(ctx context.Context, id uuid.UUID, t Theme) error {
+	if !t.Valid() {
+		return ErrInvalidTheme
+	}
+	return s.store.SetTheme(ctx, id, t)
+}
+
 // ValidateDisplayName is the display-name rule UpdateProfile applies, for a
 // caller that has to know the answer before it writes anything else (#419).
 // It returns the name as it would be stored.

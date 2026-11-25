@@ -37,6 +37,9 @@ type Store interface {
 	// SetEmailPreferences writes only the switches the patch names, for the
 	// same reason UpdateProfile is narrow (#441).
 	SetEmailPreferences(ctx context.Context, id uuid.UUID, p EmailPreferencesPatch) error
+	// SetTheme writes only the appearance choice (#709), for the same reason,
+	// and leaves updated_at alone. No live row is ErrNotFound.
+	SetTheme(ctx context.Context, id uuid.UUID, t Theme) error
 	// SetPasswordHash, SetMFA and SyncFederated each write the one thing they
 	// name. The whole-row Update below carries a copy of every column, so a
 	// caller that reads, thinks, and then writes puts back whatever changed

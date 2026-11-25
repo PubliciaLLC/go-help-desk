@@ -6,6 +6,10 @@ import (
 	"strings"
 )
 
+// themeInitPath is the same-origin script index.html loads to set the theme
+// before first paint (#709). A file because the CSP is script-src 'self'.
+const themeInitPath = "theme-init.js"
+
 // SPAHandler serves a React SPA from an fs.FS. Any path that does not match a
 // known file falls back to index.html so that client-side routing works.
 type SPAHandler struct {
@@ -45,6 +49,21 @@ func (s *SPAHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/")
 	if path == "" {
 		path = "index.html"
+	}
+	if path == themeInitPath {
+		// The script that sets the theme before first paint (#709). It is not
+		// hashed into the build, so it must be revalidated or an upgrade would
+		// leave browsers on the old one. A build without it is a 404: the
+		// fallback below would hand the browser a page of HTML to run as a
+		// script.
+		if _, err := fs.Stat(s.fs, path); err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
+		s.root.ServeHTTP(w, r)
+		return
 	}
 	if _, err := fs.Stat(s.fs, path); err != nil {
 		// File not found → serve index.html for client-side routing.

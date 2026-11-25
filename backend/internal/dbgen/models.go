@@ -382,6 +382,7 @@ type User struct {
 	EmailNotifyGroup    bool         `json:"email_notify_group"`
 	MustChangePassword  bool         `json:"must_change_password"`
 	EmailNotifySla      bool         `json:"email_notify_sla"`
+	Theme               string       `json:"theme"`
 }
 
 type WebauthnCredential struct {

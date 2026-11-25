@@ -171,6 +171,13 @@ UPDATE users
 SET email = $2, display_name = $3, updated_at = now()
 WHERE users.id = $1 AND users.deleted_at IS NULL;
 
+-- name: SetUserTheme :execrows
+-- The person's own appearance choice (#709): light, dark or device.
+-- Narrow for the reason SetUserEmailPreferences is: UpdateUser writes a whole
+-- row from an earlier read. updated_at is left alone; the account did not change.
+UPDATE users SET theme = sqlc.arg('theme')
+WHERE id = sqlc.arg('id') AND deleted_at IS NULL;
+
 -- name: SetUserEmailPreferences :exec
 -- The person's staff-email switches (#441, and the SLA-alerts switch of #670),
 -- each changed only when given.

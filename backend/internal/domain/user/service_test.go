@@ -38,8 +38,9 @@ type fakeUserStore struct {
 
 	// Call counters, so tests can assert that a rejected login neither
 	// created nor mutated a user record.
-	creates int
-	updates int
+	creates   int
+	updates   int
+	themeSets int
 
 	// Injectable getter failures, to simulate a transient database error.
 	errGetByOIDC  error
@@ -300,6 +301,20 @@ func (f *fakeUserStore) SetEmailPreferences(_ context.Context, id uuid.UUID, p u
 	if p.Group != nil {
 		u.EmailNotifyGroup = *p.Group
 	}
+	f.byID[id] = u
+	f.byEmail[u.Email] = u
+	return nil
+}
+
+// SetTheme writes only the theme, and counts the calls so a test can show that a
+// refused value never reached the store (#709).
+func (f *fakeUserStore) SetTheme(_ context.Context, id uuid.UUID, t user.Theme) error {
+	f.themeSets++
+	u, ok := f.byID[id]
+	if !ok {
+		return errFakeNotFound
+	}
+	u.Theme = t
 	f.byID[id] = u
 	f.byEmail[u.Email] = u
 	return nil
