@@ -232,7 +232,7 @@
 <p>Each file has <code>id</code>, <code>filename</code>, <code>mime_type</code>, <code>size_bytes</code>, <code>created_at</code>, <code>detected_mime</code>, <code>sha256</code>, <code>virus_name</code>, <code>mismatch</code> and <code>quarantined</code>. <code>quarantined</code> is <code>true</code> when the scanner identified the file as malicious, and <code>virus_name</code> says what it found. <code>mismatch</code> is <code>true</code> when the content contradicts the file's name, and <code>null</code> when the file was never inspected. Attachments are download-only in the web interface, and there is no tool that returns their content. A ticket the caller may not see is answered with the same "not found" message as one that does not exist.</p>
 
 <h3><code>list_categories</code></h3>
-<p>The Category, Type and Item catalogue, as a tree, for composing <code>create_ticket</code>.</p>
+<p>The Category, Type and Item catalogue, as a tree, for composing <code>create_ticket</code>. Every entry carries a <code>description</code>: plain text, <code>""</code> when an administrator wrote none. <span class="badge-new">New in 1.3.0</span></p>
 <table>
   <thead><tr><th>Parameter</th><th>Type</th><th>Description</th></tr></thead>
   <tbody>
