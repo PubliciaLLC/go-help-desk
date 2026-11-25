@@ -52,7 +52,7 @@ export function AuditLogSettingsSection({ draft }: { draft: SettingsDraft }) {
             value={has('audit_retention_days') ? num('audit_retention_days') : 0}
             onChange={(e) => setNum('audit_retention_days', Math.max(0, parseInt(e.target.value, 10) || 0))}
           />
-          <span className="text-sm text-gray-500">
+          <span className="text-sm text-fg-faint">
             {(has('audit_retention_days') ? num('audit_retention_days') : 0) > 0
               ? 'days'
               : 'days — 0 keeps everything'}

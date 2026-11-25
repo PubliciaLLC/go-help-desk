@@ -51,7 +51,7 @@ export function GuestSizeSlider({ value, onChange, instanceMaxMB, disabled }: {
 
   return (
     <div className="w-full max-w-md space-y-1">
-      <label htmlFor={id} className="block text-sm font-medium text-gray-700">
+      <label htmlFor={id} className="block text-sm font-medium text-fg-soft">
         Largest file a guest may attach
       </label>
       <input
@@ -68,15 +68,15 @@ export function GuestSizeSlider({ value, onChange, instanceMaxMB, disabled }: {
         onKeyDown={onKeyDown}
         className="w-full"
       />
-      <div data-testid="guest-size-ticks" className="flex justify-between text-xs text-gray-500" aria-hidden="true">
+      <div data-testid="guest-size-ticks" className="flex justify-between text-xs text-fg-faint" aria-hidden="true">
         {[MIN, max].map((t) => <span key={t}>{t} MB</span>)}
       </div>
-      <p className="text-sm text-gray-700" aria-hidden="true">{mb} MB</p>
+      <p className="text-sm text-fg-soft" aria-hidden="true">{mb} MB</p>
       {capped && (
         <p
           id={noteId}
           role="note"
-          className="rounded border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800"
+          className="rounded border border-warning-border bg-warning-soft px-3 py-2 text-xs text-warning-fg-strong"
         >
           Saved as {stored} MB. Every upload is limited to {max} MB, so guests are held to {max} MB until you raise that limit or lower this one.
         </p>

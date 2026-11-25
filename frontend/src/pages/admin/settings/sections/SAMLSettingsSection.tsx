@@ -32,13 +32,13 @@ function CopyValue({ label, value }: { label: string; value: string }) {
   }
   return (
     <div className="flex flex-col gap-1 sm:flex-row sm:items-center sm:gap-3">
-      <span className="text-xs font-medium text-gray-500 sm:w-20 sm:shrink-0">{label}</span>
-      <code className="min-w-0 flex-1 font-mono text-xs text-gray-700 wrap-anywhere">{value}</code>
+      <span className="text-xs font-medium text-fg-faint sm:w-20 sm:shrink-0">{label}</span>
+      <code className="min-w-0 flex-1 font-mono text-xs text-fg-soft wrap-anywhere">{value}</code>
       <div className="flex items-center gap-2">
         <Button type="button" variant="outline" size="sm" aria-label={`Copy ${label}`} onClick={copy}>
           Copy
         </Button>
-        <span role="status" className={cn('text-xs', result === 'failed' ? 'text-red-600' : 'text-green-600')}>
+        <span role="status" className={cn('text-xs', result === 'failed' ? 'text-danger-fg' : 'text-success-fg')}>
           {result === 'copied' && 'Copied'}
           {result === 'failed' && 'Copy failed, select the text'}
         </span>
@@ -169,13 +169,13 @@ function SAMLSection() {
     setReplacing(false)
   }
 
-  if (isLoading) return <div className="py-4 text-center text-sm text-gray-400">Loading…</div>
+  if (isLoading) return <div className="py-4 text-center text-sm text-fg-faint">Loading…</div>
 
   return (
     <div className="space-y-4 px-5 py-4">
       <span className={cn(
         'inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium',
-        saml?.configured ? 'bg-green-100 text-green-800' : 'bg-gray-100 text-gray-600'
+        saml?.configured ? 'bg-success-soft text-success-fg-strong' : 'bg-muted text-fg-muted'
       )}>
         {saml?.configured ? 'Configured' : 'Not configured'}
       </span>
@@ -184,14 +184,14 @@ function SAMLSection() {
           SAML is configured too: the IdP is usually set up first, and these are
           what it asks for. */}
       <div className="space-y-2">
-        <p className="text-sm font-medium text-gray-700">Give these to your identity provider</p>
+        <p className="text-sm font-medium text-fg-soft">Give these to your identity provider</p>
         <CopyValue label="Entity ID" value={saml?.sp_metadata_url ?? ''} />
         <CopyValue label="ACS URL" value={saml?.sp_acs_url ?? ''} />
       </div>
 
       <fieldset className="space-y-2">
-        <legend className="text-sm font-medium text-gray-700">IdP metadata</legend>
-        <div className="flex items-center gap-4 text-sm text-gray-700">
+        <legend className="text-sm font-medium text-fg-soft">IdP metadata</legend>
+        <div className="flex items-center gap-4 text-sm text-fg-soft">
           <label className="flex items-center gap-1.5">
             <input type="radio" name="saml-metadata-source" checked={metadataSource === 'url'}
               onChange={() => setMetadataSource('url')} />
@@ -205,7 +205,7 @@ function SAMLSection() {
         </div>
         {metadataSource === 'url' ? (
           <div className="space-y-1">
-            <label htmlFor="saml-metadata-url" className="block text-sm text-gray-600">IdP metadata URL</label>
+            <label htmlFor="saml-metadata-url" className="block text-sm text-fg-muted">IdP metadata URL</label>
             <Input
               id="saml-metadata-url"
               placeholder="https://idp.example.com/saml/metadata"
@@ -216,12 +216,12 @@ function SAMLSection() {
           </div>
         ) : (
           <div className="space-y-1">
-            <label htmlFor="saml-metadata-xml" className="block text-sm text-gray-600">IdP metadata XML</label>
+            <label htmlFor="saml-metadata-xml" className="block text-sm text-fg-muted">IdP metadata XML</label>
             <textarea
               id="saml-metadata-xml"
               rows={10}
               placeholder="<EntityDescriptor …>"
-              className="w-full max-w-lg rounded border border-gray-300 p-2 font-mono text-xs text-gray-600"
+              className="w-full max-w-lg rounded border border-border-strong bg-background p-2 font-mono text-xs text-fg-muted"
               value={metadataXML}
               onChange={(e) => setMetadataXML(e.target.value)}
             />
@@ -236,7 +236,7 @@ function SAMLSection() {
                 // So the same file can be chosen again after an edit.
                 e.target.value = ''
               }} />
-            <p className="max-w-lg text-xs text-gray-500">
+            <p className="max-w-lg text-xs text-fg-faint">
               Paste the metadata XML, or upload the file your identity provider gave you. It is checked when you save,
               and shown here again afterwards. It is not refreshed: when your identity provider&apos;s signing
               certificate changes, paste its new metadata.
@@ -246,12 +246,12 @@ function SAMLSection() {
       </fieldset>
 
       <div className="space-y-2">
-        <p className="text-sm font-medium text-gray-700">SP certificate</p>
+        <p className="text-sm font-medium text-fg-soft">SP certificate</p>
         {saml?.cert_pem ? (
           <div className="space-y-2">
-            <p className="text-sm text-gray-700">
+            <p className="text-sm text-fg-soft">
               <span className="font-medium">{saml.cert_generated ? 'Generated automatically' : 'Uploaded certificate'}</span>
-              {saml.cert_not_after && <span className="text-gray-500"> · Expires {formatDay(saml.cert_not_after)}</span>}
+              {saml.cert_not_after && <span className="text-fg-faint"> · Expires {formatDay(saml.cert_not_after)}</span>}
             </p>
             <div className="flex flex-wrap items-center gap-2">
               <a
@@ -268,14 +268,14 @@ function SAMLSection() {
                 Regenerate
               </Button>
             </div>
-            <p className="max-w-lg text-xs text-gray-500">
+            <p className="max-w-lg text-xs text-fg-faint">
               Your identity provider may ask for this certificate. The private key is kept on the server and is never shown.
             </p>
-            {regenerated && <p role="status" className="text-sm text-green-600">New certificate generated. Give it to your identity provider if it saved the old one.</p>}
+            {regenerated && <p role="status" className="text-sm text-success-fg">New certificate generated. Give it to your identity provider if it saved the old one.</p>}
           </div>
         ) : (
           <div className="space-y-2">
-            <p className="max-w-lg text-sm text-gray-600">
+            <p className="max-w-lg text-sm text-fg-muted">
               A certificate and private key are created automatically when you save the identity provider&apos;s metadata.
             </p>
             {!replacing && (
@@ -285,15 +285,15 @@ function SAMLSection() {
         )}
 
         {replacing && (
-          <div className="space-y-3 rounded-md border border-gray-200 bg-white p-3">
-            <p className="max-w-lg text-xs text-gray-500">
+          <div className="space-y-3 rounded-md border border-border bg-card p-3">
+            <p className="max-w-lg text-xs text-fg-faint">
               Use your own certificate and private key instead. Upload both; they are saved together by Save SAML config.
             </p>
             <div className="space-y-1">
-              <label className="block text-sm font-medium text-gray-700">Certificate (PEM)</label>
+              <label className="block text-sm font-medium text-fg-soft">Certificate (PEM)</label>
               <div className="flex items-center gap-2">
                 <Button variant="outline" size="sm" onClick={() => certFileRef.current?.click()}>Upload .pem / .crt</Button>
-                {certPEM && <span title={certPEM} className="text-xs text-gray-500 truncate max-w-xs font-mono">{certPEM.split('\n')[0]}…</span>}
+                {certPEM && <span title={certPEM} className="text-xs text-fg-faint truncate max-w-xs font-mono">{certPEM.split('\n')[0]}…</span>}
               </div>
               <input ref={certFileRef} type="file" accept=".pem,.crt,.cer" className="hidden"
                 aria-label="SP certificate file"
@@ -306,15 +306,15 @@ function SAMLSection() {
               {certPEM && (
                 <textarea rows={4}
                   aria-label="SP certificate"
-                  className="mt-1 w-full max-w-lg rounded border border-gray-300 p-2 font-mono text-xs text-gray-600"
+                  className="mt-1 w-full max-w-lg rounded border border-border-strong bg-background p-2 font-mono text-xs text-fg-muted"
                   value={certPEM} onChange={(e) => setCertPEM(e.target.value)} />
               )}
             </div>
             <div className="space-y-1">
-              <label className="block text-sm font-medium text-gray-700">Private key (PEM)</label>
+              <label className="block text-sm font-medium text-fg-soft">Private key (PEM)</label>
               <div className="flex items-center gap-2">
                 <Button variant="outline" size="sm" onClick={() => keyFileRef.current?.click()}>Upload .pem / .key</Button>
-                {keyPEM && <span className="text-xs text-gray-500 font-mono">{keyPEM.split('\n')[0]}…</span>}
+                {keyPEM && <span className="text-xs text-fg-faint font-mono">{keyPEM.split('\n')[0]}…</span>}
               </div>
               <input ref={keyFileRef} type="file" accept=".pem,.key" className="hidden"
                 aria-label="SP private key file"
@@ -326,7 +326,7 @@ function SAMLSection() {
               {keyPEM && (
                 <textarea rows={4}
                   aria-label="SP private key"
-                  className="mt-1 w-full max-w-lg rounded border border-gray-300 p-2 font-mono text-xs text-gray-600"
+                  className="mt-1 w-full max-w-lg rounded border border-border-strong bg-background p-2 font-mono text-xs text-fg-muted"
                   value={keyPEM} onChange={(e) => setKeyPEM(e.target.value)} />
               )}
             </div>
@@ -357,9 +357,9 @@ function SAMLSection() {
         <Button size="sm" onClick={() => saveMutation.mutate()} disabled={saveMutation.isPending}>
           {saveMutation.isPending ? 'Saving…' : 'Save SAML config'}
         </Button>
-        {saveError && <p role="alert" className="text-sm text-red-600">{saveError}</p>}
-        {saved && !warning && <p className="text-sm text-green-600">SAML config saved.</p>}
-        {warning && <p className="text-sm text-amber-600">{warning}</p>}
+        {saveError && <p role="alert" className="text-sm text-danger-fg">{saveError}</p>}
+        {saved && !warning && <p className="text-sm text-success-fg">SAML config saved.</p>}
+        {warning && <p className="text-sm text-warning-fg">{warning}</p>}
       </div>
     </div>
   )
@@ -370,9 +370,9 @@ export function SAMLSettingsSection({ draft }: { draft: SettingsDraft }) {
   return (
     <Section title="SAML">
       <div>
-        <div className="bg-gray-50">
+        <div className="bg-subtle">
           <div className="px-5 pt-3 pb-0">
-            <p className="text-xs font-medium uppercase tracking-wider text-gray-400">SAML configuration</p>
+            <p className="text-xs font-medium uppercase tracking-wider text-fg-faint">SAML configuration</p>
           </div>
           <SAMLSection />
         </div>

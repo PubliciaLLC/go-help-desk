@@ -18,7 +18,7 @@ export function APIKeysSettingsSection({ draft }: { draft: SettingsDraft }) {
         />
       </SettingRow>
       <div className="border-t px-5 py-4 space-y-2">
-        <div className="text-sm text-gray-500">
+        <div className="text-sm text-fg-faint">
           Every new API key must expire, and no later than this. It is checked when a key is created, so lowering it
           does not break keys that already exist; they are marked in the key lists so they can be rotated. Choosing
           Never lets keys be made with no expiry.

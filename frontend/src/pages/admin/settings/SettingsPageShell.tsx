@@ -25,8 +25,8 @@ export function SettingsPageShell({ title, description, tabs, draft, wide, child
     <Layout>
       <div className="space-y-6">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">{title}</h1>
-          <p className="mt-1 text-sm text-gray-500">{description}</p>
+          <h1 className="text-2xl font-bold text-fg">{title}</h1>
+          <p className="mt-1 text-sm text-fg-faint">{description}</p>
         </div>
 
         {tabs && <SettingsTabs page={title} tabs={tabs} />}
@@ -36,7 +36,7 @@ export function SettingsPageShell({ title, description, tabs, draft, wide, child
         ) : (
           <>
             {warning && (
-              <div role="status" className="max-w-2xl rounded-md border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+              <div role="status" className="max-w-2xl rounded-md border border-warning-border bg-warning-soft px-4 py-3 text-sm text-warning-fg-strong">
                 <p>{warning.text}</p>
                 {warning.aboutClients && (
                   <p className="mt-1">

@@ -35,7 +35,7 @@ export function StaffEmailSection({ draft }: { draft: SettingsDraft }) {
   const { str, setStr } = draft
   return (
     <Section title="Staff email about tickets">
-      <div className="px-5 py-4 text-sm text-gray-500">
+      <div className="px-5 py-4 text-sm text-fg-faint">
         Staff are emailed when a ticket is assigned to them or their group, when a requester replies on a ticket
         that is theirs, and when an SLA target on one of their tickets is breached or at risk. Each person chooses on their profile; their own switches start on. Nobody is emailed about
         their own action. These settings decide for everyone: "Use each person's choice" leaves it to them,

@@ -35,17 +35,17 @@ export function AttachmentSizeLimitSection({ value, onChange, scanning, guestMB 
             value={shown}
             onChange={onChange}
           />
-          <span className="pb-6 text-sm text-gray-500">MB</span>
+          <span className="pb-6 text-sm text-fg-faint">MB</span>
         </div>
-        <p className="text-sm text-gray-500">
+        <p className="text-sm text-fg-faint">
           Applies to every upload: staff, requesters and guests. Guests are held to the lower of this and their own limit, set under System → Guest Access.
         </p>
-        <p data-testid="guest-limit-line" className="text-sm text-gray-500">
+        <p data-testid="guest-limit-line" className="text-sm text-fg-faint">
           Guests: up to {guestHeld} MB.
           {guestMB > shown && ` Their own limit is ${guestMB} MB; this one is lower, so it applies.`}
         </p>
         {scanning && shown > ATTACHMENT_MAX_MB_DEFAULT && (
-          <p className="text-xs text-gray-500">
+          <p className="text-xs text-fg-faint">
             Your virus scanner must accept files this large. clamd 0.105 and later accept up to 100 MB unless
             StreamMaxLength or MaxFileSize was lowered; an older clamd stops at 25 MB. A file the scanner cannot
             take is refused while scanning is required, and stored unscanned while it is permissive.

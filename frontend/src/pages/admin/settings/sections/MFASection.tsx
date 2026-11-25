@@ -32,12 +32,12 @@ export function MFASection({ draft }: { draft: SettingsDraft }) {
                 >
                   <input
                     type="checkbox"
-                    className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                    className="h-4 w-4 rounded border-border-strong text-primary focus:ring-ring"
                     checked={viaPasskey || strArr('mfa_enforced_roles').includes(r)}
                     disabled={viaPasskey}
                     onChange={(e) => toggleStrArr('mfa_enforced_roles', r, e.target.checked)}
                   />
-                  <span className="text-sm capitalize text-gray-700">{r}</span>
+                  <span className="text-sm capitalize text-fg-soft">{r}</span>
                 </label>
               )
             })}
@@ -54,12 +54,12 @@ export function MFASection({ draft }: { draft: SettingsDraft }) {
               <label key={r} className="flex items-center gap-1.5 cursor-pointer select-none">
                 <input
                   type="checkbox"
-                  className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+                  className="h-4 w-4 rounded border-border-strong text-primary focus:ring-ring"
                   aria-label={`Require passkeys for ${r}`}
                   checked={strArr('passkey_required_roles').includes(r)}
                   onChange={(e) => toggleStrArr('passkey_required_roles', r, e.target.checked)}
                 />
-                <span className="text-sm capitalize text-gray-700">{r}</span>
+                <span className="text-sm capitalize text-fg-soft">{r}</span>
               </label>
             ))}
           </div>

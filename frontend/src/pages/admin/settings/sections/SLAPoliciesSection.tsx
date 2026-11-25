@@ -14,10 +14,10 @@ import { cn } from '@/lib/utils'
 
 const PRIORITIES = ['critical', 'high', 'medium', 'low'] as const
 const PRIORITY_COLORS: Record<string, string> = {
-  critical: 'bg-red-100 text-red-700',
-  high: 'bg-orange-100 text-orange-700',
-  medium: 'bg-yellow-100 text-yellow-700',
-  low: 'bg-blue-100 text-blue-700',
+  critical: 'bg-danger-soft text-danger-fg-strong',
+  high: 'bg-attention-soft text-attention-fg',
+  medium: 'bg-warning-soft text-warning-fg-strong',
+  low: 'bg-info-soft text-info-fg-strong',
 }
 
 type PolicyForm = {
@@ -53,9 +53,9 @@ function PolicyFormFields({
 }) {
   const id = useId()
   return (
-    <div className="space-y-3 rounded border bg-blue-50 p-3">
+    <div className="space-y-3 rounded border bg-selected p-3">
       <div className="space-y-1">
-        <label htmlFor={`${id}-name`} className="block text-sm font-medium text-gray-900">Policy name</label>
+        <label htmlFor={`${id}-name`} className="block text-sm font-medium text-fg">Policy name</label>
         <Input
           id={`${id}-name`}
           ref={nameRef}
@@ -66,7 +66,7 @@ function PolicyFormFields({
       </div>
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         <div className="space-y-1">
-          <label htmlFor={`${id}-priority`} className="block text-sm font-medium text-gray-900">Priority</label>
+          <label htmlFor={`${id}-priority`} className="block text-sm font-medium text-fg">Priority</label>
           <Select
             id={`${id}-priority`}
             className="h-9 text-sm"
@@ -80,7 +80,7 @@ function PolicyFormFields({
           </Select>
         </div>
         <div className="space-y-1">
-          <label htmlFor={`${id}-category`} className="block text-sm font-medium text-gray-900">Category</label>
+          <label htmlFor={`${id}-category`} className="block text-sm font-medium text-fg">Category</label>
           <Select
             id={`${id}-category`}
             className="h-9 text-sm"
@@ -96,7 +96,7 @@ function PolicyFormFields({
       </div>
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         <div className="space-y-1">
-          <label htmlFor={`${id}-response`} className="block text-sm font-medium text-gray-900">Response target</label>
+          <label htmlFor={`${id}-response`} className="block text-sm font-medium text-fg">Response target</label>
           <div className="flex items-center gap-2">
             <Input
               id={`${id}-response`}
@@ -104,11 +104,11 @@ function PolicyFormFields({
               value={form.response_target_min}
               onChange={(e) => setForm((f) => ({ ...f, response_target_min: Math.max(1, parseInt(e.target.value, 10) || 1) }))}
             />
-            <span className="text-xs text-gray-500">min</span>
+            <span className="text-xs text-fg-faint">min</span>
           </div>
         </div>
         <div className="space-y-1">
-          <label htmlFor={`${id}-resolution`} className="block text-sm font-medium text-gray-900">Resolution target</label>
+          <label htmlFor={`${id}-resolution`} className="block text-sm font-medium text-fg">Resolution target</label>
           <div className="flex items-center gap-2">
             <Input
               id={`${id}-resolution`}
@@ -116,7 +116,7 @@ function PolicyFormFields({
               value={form.resolution_target_min}
               onChange={(e) => setForm((f) => ({ ...f, resolution_target_min: Math.max(1, parseInt(e.target.value, 10) || 1) }))}
             />
-            <span className="text-xs text-gray-500">min</span>
+            <span className="text-xs text-fg-faint">min</span>
           </div>
         </div>
       </div>
@@ -290,28 +290,28 @@ export function SLAPoliciesSection() {
   })
 
   return (
-    <div className="border-t bg-gray-50">
+    <div className="border-t bg-subtle">
       <div className="px-5 pt-3 pb-0">
-        <p className="text-xs font-medium uppercase tracking-wider text-gray-400">SLA Policies</p>
+        <p className="text-xs font-medium uppercase tracking-wider text-fg-faint">SLA Policies</p>
       </div>
       <div className="px-5 py-4 space-y-3">
         {failed.map((f) => {
           const name = f.vars.form.name || 'unnamed policy'
           return (
-            <div key={f.key} className="flex items-start justify-between gap-3 rounded border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+            <div key={f.key} className="flex items-start justify-between gap-3 rounded border border-danger-border bg-danger-soft p-3 text-sm text-danger-fg-strong">
               <span role="alert">Saving '{name}' failed: {extractError(f.error)}</span>
               <span className="flex shrink-0 gap-3">
-                <button aria-label={`Reopen '${name}'`} className="text-xs font-medium text-red-700 underline" onClick={() => reopen(f)}>Reopen</button>
-                <button aria-label={`Dismiss '${name}'`} className="text-xs text-red-700 hover:underline" onClick={() => discard(f.key)}>Dismiss</button>
+                <button aria-label={`Reopen '${name}'`} className="text-xs font-medium text-danger-fg-strong underline" onClick={() => reopen(f)}>Reopen</button>
+                <button aria-label={`Dismiss '${name}'`} className="text-xs text-danger-fg-strong hover:underline" onClick={() => discard(f.key)}>Dismiss</button>
               </span>
             </div>
           )
         })}
         {rows.length > 0 ? (
-          <div className="overflow-x-auto rounded border bg-white">
+          <div className="overflow-x-auto rounded border bg-card">
             <table className="w-full text-sm">
-              <thead className="border-b bg-gray-50">
-                <tr className="text-left text-xs font-medium text-gray-500">
+              <thead className="border-b bg-subtle">
+                <tr className="text-left text-xs font-medium text-fg-faint">
                   <th className="px-3 py-2">Name</th>
                   <th className="px-3 py-2">Priority</th>
                   <th className="px-3 py-2">Category</th>
@@ -325,11 +325,11 @@ export function SLAPoliciesSection() {
                   const isEditing = editingId === p.id
                   const marked = isEditing || saving
                   return (
-                    <tr key={p.id} aria-current={marked ? 'true' : undefined} className={marked ? 'bg-blue-50' : 'hover:bg-gray-50'}>
+                    <tr key={p.id} aria-current={marked ? 'true' : undefined} className={marked ? 'bg-selected' : 'hover:bg-subtle'}>
                       <td className="px-3 py-2 font-medium">
                         {p.name}
-                        {isEditing && <span className="ml-2 text-xs font-normal text-blue-700">Editing</span>}
-                        {saving && <span className="ml-2 text-xs font-normal text-blue-700">Saving…</span>}
+                        {isEditing && <span className="ml-2 text-xs font-normal text-selected-fg">Editing</span>}
+                        {saving && <span className="ml-2 text-xs font-normal text-selected-fg">Saving…</span>}
                       </td>
                       <td className="px-3 py-2">
                         {p.priority ? (
@@ -337,22 +337,22 @@ export function SLAPoliciesSection() {
                             {p.priority}
                           </span>
                         ) : (
-                          <span className="text-gray-600">Any priority</span>
+                          <span className="text-fg-muted">Any priority</span>
                         )}
                       </td>
-                      <td className="px-3 py-2 text-gray-600">
+                      <td className="px-3 py-2 text-fg-muted">
                         {p.category_id
                           ? (categories.find((c) => c.id === p.category_id)?.name ?? '—')
                           : 'All categories'}
                       </td>
-                      <td className="px-3 py-2 tabular-nums text-gray-600">{fmtMin(p.response_target_min)}</td>
-                      <td className="px-3 py-2 tabular-nums text-gray-600">{fmtMin(p.resolution_target_min)}</td>
+                      <td className="px-3 py-2 tabular-nums text-fg-muted">{fmtMin(p.response_target_min)}</td>
+                      <td className="px-3 py-2 tabular-nums text-fg-muted">{fmtMin(p.resolution_target_min)}</td>
                       <td className="px-3 py-2">
                         {!isEditing && !unsaved && (
                           <div className="flex gap-3">
-                            <button className="text-xs text-blue-600 hover:underline" onClick={() => startEdit(p)}>Edit</button>
+                            <button className="text-xs text-link hover:underline" onClick={() => startEdit(p)}>Edit</button>
                             <button
-                              className="text-xs text-red-600 hover:underline disabled:opacity-40"
+                              className="text-xs text-danger-fg hover:underline disabled:opacity-40"
                               onClick={() => { setFormError(''); setPendingDelete(p) }}
                               disabled={deleteMutation.isPending}
                             >
@@ -368,7 +368,7 @@ export function SLAPoliciesSection() {
             </table>
           </div>
         ) : (
-          !showAdd && editingId === null && <p className="text-sm text-gray-500">No SLA policies defined.</p>
+          !showAdd && editingId === null && <p className="text-sm text-fg-faint">No SLA policies defined.</p>
         )}
         {(showAdd || editingId !== null) && (
           <PolicyFormFields
@@ -385,7 +385,7 @@ export function SLAPoliciesSection() {
             onCancel={() => { setFormError(''); setShowAdd(false); setEditingId(null) }}
           />
         )}
-        {formError && <p role="alert" className="text-sm text-red-600">{formError}</p>}
+        {formError && <p role="alert" className="text-sm text-danger-fg">{formError}</p>}
         {!showAdd && editingId === null && (
           <Button size="sm" variant="outline" onClick={startAdd}>+ Add policy</Button>
         )}
