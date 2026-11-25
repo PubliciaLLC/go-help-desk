@@ -129,7 +129,7 @@
   <tbody>
     <tr><td>Local accounts</td><td>All roles</td><td>On</td></tr>
     <tr><td>Second factor (TOTP or passkey)</td><td>Password sign-ins, all roles</td><td>Off: <em>Multi-factor authentication → Enable MFA</em></td></tr>
-    <tr><td>SAML 2.0</td><td>All roles</td><td>Off: <em>SAML → Enable SAML login</em></td></tr>
+    <tr><td>SAML 2.0</td><td>All roles</td><td>Off until <em>SAML → Save SAML config</em> loads it. <em>Require SAML for staff and users</em> then turns off password sign-in for staff and users</td></tr>
     <tr><td>OIDC</td><td>All roles</td><td>Off: <em>OIDC / OpenID Connect → Enable OIDC login</em></td></tr>
     <tr><td>Self-service signup</td><td>New reporting users</td><td>Off: <em>Registration → Allow self-service signup</em></td></tr>
     <tr><td>Guest links</td><td>People without an account</td><td>Off: <em>Guest Access → Submissions → Guest submission</em></td></tr>
@@ -180,8 +180,11 @@
 
 <p>Repeated wrong passwords for one address are throttled: after <code>AUTH_RATE_LIMIT_PER_MINUTE</code> failures in a minute (10 by default), further attempts get <code>429</code>. Wrong current-password guesses on the change-password route are throttled the same way, per account, against a separate counter; the correct password always works.</p>
 
-<h3>When SAML login is enabled</h3>
-<p>Turning on <em>Enable SAML login</em> removes password sign-in for Staff and User accounts. Administrators keep it as a failsafe: if the identity provider is unavailable, an administrator can still sign in with their password on the normal login page. Enabling OIDC does not remove password sign-in for anyone.</p>
+<h3 id="auth-saml-required">When SAML is required <span class="badge-new">New in 1.3.0</span></h3>
+<p>The switch <em>Require SAML for staff and users</em> removes password sign-in for Staff and User accounts. It does not switch SAML on: <em>Save SAML config</em> does that (see <a href="#auth-saml">SAML 2.0 SSO</a>). The switch is saved by the page's own <em>Save changes</em>. Administrators keep password sign-in as a failsafe: if the identity provider is unavailable, an administrator can still sign in with their password on the normal login page. Turning on OIDC does not remove password sign-in for anyone.</p>
+<p>A save that leaves the switch on while SAML is not loaded succeeds, with a warning. Staff and users then have no way in: their password sign-in is refused and the login page has no SAML button. While that holds, administrators see a red server problem, <em>Staff and users cannot sign in: SAML is required but is not working</em>, with a link to <em>Admin → System → Authentication → SAML</em>. It goes away by itself once SAML loads or you turn the switch off. Its cause is one of two: the identity provider's metadata, the certificate or the key is missing, or all of them are saved and SAML could not be loaded (the metadata could not be fetched or was refused, or the certificate and key do not work together). The server tries again every hour, and saving the SAML configuration tries again at once. It is also an item on the <a href="admin-guide.html#admin-server-warnings">dashboard health card</a>.</p>
+<img src="../screenshots/57-server-notice-saml.png" alt="The server problem notice on the Tickets page for an administrator: Staff and users cannot sign in: SAML is required but is not working, with its explanation and a link, Open System, Authentication, SAML" loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
+<p style="margin:0.4rem 0 1.25rem;font-size:0.85rem;color:var(--muted);">The red notice administrators see while SAML is required but is not working.</p>
 
 
 <h2 id="auth-mfa">Second factor: authenticator app and passkeys</h2>
@@ -231,44 +234,40 @@
 
 <h2 id="auth-saml">SAML 2.0 SSO</h2>
 
-<p>Go Help Desk acts as a SAML 2.0 Service Provider (SP) and works with any standards-compliant Identity Provider. It is configured entirely under <em>Admin → System → Authentication → SAML</em>. Saving the settings loads the IdP metadata, either by fetching it from a URL or from XML you paste or upload, and applies the change at once, with no restart.</p>
+<p>Go Help Desk acts as a SAML 2.0 Service Provider (SP) and works with any standards-compliant Identity Provider. It is configured entirely under <em>Admin → System → Authentication → SAML</em>. <em>Save SAML config</em> loads the IdP metadata, either by fetching it from a URL or from XML you paste or upload, and applies the change at once, with no restart. That save is what switches SAML on: there is no separate on/off switch for it.</p>
+<p>The form is always shown, before SAML is set up too, because the identity provider is usually configured first. At the top, <em>Give these to your identity provider</em> lists the two values to register, each with a <em>Copy</em> button:</p>
+<ul>
+  <li><strong>Entity ID</strong>: <code>&lt;BASE_URL&gt;/api/v1/auth/saml/metadata</code>, which is also where your SP metadata is served.</li>
+  <li><strong>ACS URL</strong>: <code>&lt;BASE_URL&gt;/api/v1/auth/saml/acs</code>.</li>
+</ul>
+<p>They are built from <code>BASE_URL</code>, so set that to the address people use before you register the help desk.</p>
 
 <h3>General setup</h3>
 
 <div class="step">
   <div class="step-num">1</div>
   <div class="step-body">
-    <h4>Generate an SP certificate and private key</h4>
-    <p>The SP presents a certificate to the IdP for request signing and response verification.</p>
-    <pre><code>openssl req -x509 -newkey rsa:4096 \
-  -keyout saml.key -out saml.crt \
-  -days 3650 -nodes \
-  -subj "/CN=Go Help Desk"</code></pre>
+    <h4>Register the SP with your IdP</h4>
+    <p>Give the IdP the <strong>Entity ID</strong> and the <strong>ACS URL</strong> shown on the page (the values above). You do not create a certificate or key: the help desk generates them for you, see step 2.</p>
+    <p>Configure the IdP to send two things. The first is a NameID, which can be any value. This help desk asks for a <em>persistent</em> one (<code>urn:oasis:names:tc:SAML:2.0:nameid-format:persistent</code>) in every sign-in request, and the request overrides the NameID format set in the IdP's own application settings. The second is the person's email address <strong>as an attribute</strong>: <code>email</code>, <code>mail</code>, the LDAP mail attribute (<code>urn:oid:0.9.2342.19200300.100.1.3</code>) or Microsoft Entra ID's <code>emailaddress</code> claim. An opaque NameID cannot name a mailbox, so a first sign-in with no address attribute is refused (<code>invalid_email</code>). An IdP that cannot issue a persistent NameID sends the person back to the login page, which says so (<code>saml_nameid_format</code>); allow persistent identifiers for the application at the IdP. With Microsoft Entra ID you do not need to add an <code>email</code> or <code>displayName</code> claim: its default claims are read.</p>
+    <p>For the display name, Go Help Desk reads <code>displayName</code> (or Entra ID's <code>displayname</code> claim), then <code>cn</code>, then <code>name</code>, then the given name (<code>givenName</code>, <code>firstName</code> or Entra ID's <code>givenname</code> claim) and surname (<code>sn</code>, <code>lastName</code> or Entra ID's <code>surname</code> claim) together, or either alone if only one is sent, then Entra ID's <code>name</code> claim (last, because Entra fills it with the user principal name, not a person's name), and finally the email address. Each sign-in rewrites the stored name from these, so an identity provider that starts sending a name changes the display name at the next sign-in.</p>
   </div>
 </div>
 
 <div class="step">
   <div class="step-num">2</div>
   <div class="step-body">
-    <h4>Register the SP with your IdP</h4>
-    <p>Your SP metadata, which is also the SP entity ID, is at:</p>
-    <pre><code>&lt;BASE_URL&gt;/api/v1/auth/saml/metadata</code></pre>
-    <p>The ACS (Assertion Consumer Service) URL is:</p>
-    <pre><code>&lt;BASE_URL&gt;/api/v1/auth/saml/acs</code></pre>
-    <p>Configure the IdP to send the user's email address, as an attribute named <code>email</code> (or <code>mail</code>), or as an email-format NameID. With Microsoft Entra ID you do not need to add an <code>email</code> or <code>displayName</code> claim: its default claims are read. The email is read from <code>email</code>, <code>mail</code>, the LDAP mail attribute (<code>urn:oid:0.9.2342.19200300.100.1.3</code>) or Microsoft Entra ID's <code>emailaddress</code> claim, falling back to the NameID. For the display name, Go Help Desk reads <code>displayName</code> (or Entra ID's <code>displayname</code> claim), then <code>cn</code>, then <code>name</code>, then the given name (<code>givenName</code>, <code>firstName</code> or Entra ID's <code>givenname</code> claim) and surname (<code>sn</code>, <code>lastName</code> or Entra ID's <code>surname</code> claim) together, or either alone if only one is sent, then Entra ID's <code>name</code> claim (last, because Entra fills it with the user principal name, not a person's name), and finally the email address. Each sign-in rewrites the stored name from these, so an identity provider that starts sending a name changes the display name at the next sign-in.</p>
+    <h4>Enter the settings and save</h4>
+    <p>Under <em>Admin → System → Authentication → SAML</em>, choose how to give the IdP metadata, either <em>URL</em> (<em>IdP metadata URL</em>) or <em>XML</em> (paste it into <em>IdP metadata XML</em>, or use <em>Upload .xml</em> to load a file into the same box). Then click <strong>Save SAML config</strong>. That loads SAML and, on the first save that has metadata and no certificate yet, generates the certificate and private key. The <em>SP certificate</em> block then reads <strong>Generated automatically</strong> with its expiry date, and offers <em>Download certificate</em>, <em>Replace…</em> and <em>Regenerate</em> (see <a href="#auth-saml-cert">The SP certificate</a>). <em>Require SAML for staff and users</em> is a separate switch, off until you choose to turn it on; leave it off while you test.</p>
+    <img src="../screenshots/56-system-authentication-saml.png" alt="The SAML section of Admin, System, Authentication: Entity ID and ACS URL with copy buttons, the identity provider metadata as XML, the SP certificate marked Generated automatically with its expiry and Download certificate, Replace and Regenerate buttons, Save SAML config, and the Require SAML for staff and users switch" loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
+    <p style="margin:0.4rem 0 1.25rem;font-size:0.85rem;color:var(--muted);">Paste or link the IdP metadata and save: the certificate and key are created for you.</p>
+    <p>The two metadata choices are alternatives: a save that would leave both set is refused (<code>saml_metadata_conflict</code>). Pasted XML is checked before anything is saved. It is refused (<code>invalid_saml_metadata</code>) if it is not SAML metadata, has no identity provider section (often this server's own metadata pasted by mistake), or has no signing certificate; and a document over 256 KiB is refused (<code>saml_metadata_too_large</code>). The XML is shown again after saving, and it is never refreshed: when your identity provider changes its signing certificate, paste its new metadata. A URL is fetched again at each save and each restart, and every hour; the hourly refresh reads only <code>https</code> URLs and never trusts a new signing certificate by itself, so after your identity provider rolls its certificate an administrator has to save the SAML settings again. A save that would leave no administrator able to sign in is refused.</p>
+    <p>To turn the requirement on, tick <em>Require SAML for staff and users</em> and click <em>Save changes</em> at the foot of the page. <em>Save SAML config</em> does not save that switch. See <a href="#auth-saml-required">When SAML is required</a>.</p>
   </div>
 </div>
 
 <div class="step">
   <div class="step-num">3</div>
-  <div class="step-body">
-    <h4>Enter the settings</h4>
-    <p>Under <em>Admin → System → Authentication → SAML</em>, turn on <em>Enable SAML login</em>, then choose how to give the IdP metadata, either <em>URL</em> (<em>IdP metadata URL</em>) or <em>XML</em> (paste it into <em>IdP metadata XML</em>, or use <em>Upload .xml</em> to load a file into the same box). Then fill in <em>SP certificate (PEM)</em> and <em>SP private key (PEM)</em>, and save. The two metadata choices are alternatives: a save that would leave both set is refused (<code>saml_metadata_conflict</code>). Pasted XML is checked before anything is saved. It is refused (<code>invalid_saml_metadata</code>) if it is not SAML metadata, has no identity provider section (often this server's own metadata pasted by mistake), or has no signing certificate; and a document over 256 KiB is refused (<code>saml_metadata_too_large</code>). The XML is shown again after saving, and it is never refreshed: when your identity provider changes its signing certificate, paste its new metadata. A URL is fetched again at each save and each restart. A save that would leave no administrator able to sign in is refused.</p>
-  </div>
-</div>
-
-<div class="step">
-  <div class="step-num">4</div>
   <div class="step-body">
     <h4>Test with a non-admin account</h4>
     <p>Open a private browser window and click <em>Sign in with SAML</em> on the login page. Keep your administrator session open until it works; your administrator password still signs you in either way.</p>
@@ -286,10 +285,10 @@
         <ul>
           <li><strong>Single sign-on URL</strong>: <code>&lt;BASE_URL&gt;/api/v1/auth/saml/acs</code></li>
           <li><strong>Audience URI (SP Entity ID)</strong>: <code>&lt;BASE_URL&gt;/api/v1/auth/saml/metadata</code></li>
-          <li><strong>Name ID format</strong>: EmailAddress</li>
+          <li><strong>Name ID format</strong>: Persistent. The help desk asks for a persistent NameID in every sign-in request. How Okta answers when this setting says something else has not been checked, so match it here.</li>
         </ul>
       </li>
-      <li>Under <em>Attribute Statements</em>, add:
+      <li>Under <em>Attribute Statements</em>, add (the address must arrive as the <code>email</code> attribute, not only as the NameID):
         <ul>
           <li><code>email</code> → <code>user.email</code></li>
           <li><code>givenName</code> → <code>user.firstName</code></li>
@@ -315,11 +314,12 @@
           <li><strong>Reply URL (ACS)</strong>: <code>&lt;BASE_URL&gt;/api/v1/auth/saml/acs</code></li>
         </ul>
       </li>
-      <li>Under <em>Attributes &amp; Claims</em>, add claims named <code>email</code> (the user's email address) and <code>displayName</code> (their display name), with no namespace.</li>
+      <li>Under <em>Attributes &amp; Claims</em>, leave the default claims: the <code>emailaddress</code> claim is read as the email address and the name claims as the display name. Make sure every user who should sign in has an email address in Entra, because a first sign-in without an address attribute is refused (<code>invalid_email</code>). You do not need to change the Name ID: the help desk asks for a persistent one, which Entra then sends as a stable identifier for each user and application, and the request overrides the setting in the Entra application. Read the <a href="#auth-saml-trust">trust note</a> below.</li>
       <li>Under <em>SAML Certificates</em>, copy the <strong>App Federation Metadata Url</strong>.</li>
       <li>Paste that URL into <em>IdP metadata URL</em>.</li>
       <li>Under <em>Users and groups</em>, assign the users or groups that should have access.</li>
     </ol>
+    <p>Sign-in against a real Microsoft Entra ID tenant has not been verified: the persistent request and the account matching are tested against the library and a database, not against Entra.</p>
   </div>
 </details>
 
@@ -334,12 +334,12 @@
         <ul>
           <li><strong>ACS URL</strong>: <code>&lt;BASE_URL&gt;/api/v1/auth/saml/acs</code></li>
           <li><strong>Entity ID</strong>: <code>&lt;BASE_URL&gt;/api/v1/auth/saml/metadata</code></li>
-          <li><strong>Name ID format</strong>: EMAIL</li>
+          <li><strong>Name ID format</strong>: PERSISTENT. The help desk asks for a persistent NameID in every sign-in request. How Google answers when this setting says something else has not been checked, so match it here.</li>
         </ul>
       </li>
       <li>Under <em>Attribute mapping</em>:
         <ul>
-          <li>Primary Email → <code>email</code></li>
+          <li>Primary Email → <code>email</code> (required: the address must arrive as an attribute, not as the NameID)</li>
           <li>First name → <code>givenName</code></li>
           <li>Last name → <code>sn</code></li>
         </ul>
@@ -350,16 +350,45 @@
   </div>
 </details>
 
-<h3>Just-in-time user provisioning</h3>
+<h3 id="auth-saml-matching">Just-in-time provisioning and account matching <span class="badge-new">New in 1.3.0</span></h3>
 <p>When someone signs in through SAML for the first time, an account is created from the assertion with the <em>User</em> role, provided their email domain is on the <em>Allowed email domains</em> list (an empty list allows any domain; entries and addresses must be ASCII, see <a href="upgrading-1.3.0.html#ascii-email">Addresses must be ASCII</a>). Promote accounts to Staff or Admin from <em>Admin → People → Users</em>.</p>
 
-<p>Later sign-ins update the user's email address and name from the IdP, but never their role.</p>
+<p>After each sign-in the help desk decides which account the assertion belongs to. The email address is compared ignoring case. The first step that applies decides:</p>
+<ol>
+  <li><strong>By NameID.</strong> A live account that already has this NameID signs in. Its email address and display name are refreshed from the assertion, but never its role. A disabled account is refused (<code>account_disabled</code>).</li>
+  <li><strong>By address, a live account that SAML created: it is relinked.</strong> No account has this NameID, but a live SAML-created account holds the address. It is the same person arriving under a new NameID, so the account is relinked to the new one and the person signs in as that account, with the role, groups, tickets and second-factor state it had. This is how accounts from before 1.3.0 reconnect at their next sign-in. A disabled account is not relinked and is refused (<code>account_disabled</code>).</li>
+  <li><strong>By address, a deleted account that SAML created: a new account.</strong> Someone whose SAML-created account was deleted gets a new account with the <em>User</em> role. The old row keeps its tickets and history, and its address is retired to <code>deleted-&lt;id&gt;@invalid</code>, in the same step that creates the new account.</li>
+  <li><strong>No account holds the address:</strong> a new account is created, as above.</li>
+  <li><strong>A local or service account holds the address: refused.</strong> SAML never takes over an account it did not create, an administrator least of all. The sign-in is refused with <code>email_taken</code> and nothing is written. The login page says an account with that address already exists and was not created by single sign-on, or is held by a removed account, and to ask an administrator.</li>
+</ol>
+<p>Two first sign-ins of one person at the same moment, such as a double click or two tabs, end with one account and no error.</p>
+<p>A deleted local account still blocks its address. To bring back a deleted SAML user, have them sign in through SAML again. <em>Add User</em> over a deleted account's address creates a <em>local</em> account, which a SAML sign-in then refuses (<code>email_taken</code>); see <a href="admin-guide.html#admin-users">Admin Guide: Users</a>.</p>
 
-<h3>SP certificate rotation</h3>
-<p>Generate a new certificate and key, add the new certificate to your IdP's configuration (most IdPs accept a secondary certificate during a transition), then upload the new certificate and key under <em>Admin → System → Authentication → SAML</em> and save.</p>
+<div class="callout callout-warn" id="auth-saml-trust">
+  <p><strong>Trust: the IdP's address attribute is the identity of every SAML-created account.</strong> Anyone who can make your identity provider assert an address can sign in as the SAML-created account that holds it. That includes a promoted administrator, and an account that was later given a password or a second factor. Check which attribute your identity provider maps to the email address, and that users cannot edit it there. An account that SAML did not create is never taken over this way.</p>
+</div>
+
+<h3 id="auth-saml-errors">Sign-in errors on the login page</h3>
+<p>These codes arrive as <code>/login?error=…</code>, and the login page shows a fixed message for each.</p>
+<ul>
+  <li><code>saml_nameid_format</code>: the identity provider cannot issue the persistent NameID this help desk asks for. Allow persistent identifiers for the application at the provider.</li>
+  <li><code>email_taken</code>: an account with that address exists and was not created by single sign-on, or a removed account holds it. An administrator has to sort it out.</li>
+  <li><code>invalid_email</code>: the assertion carried no usable email address. See step 1 above.</li>
+</ul>
+
+<h3 id="auth-saml-cert">The SP certificate <span class="badge-new">New in 1.3.0</span></h3>
+<p>SAML needs a certificate and private key for this instance, and the server creates them. You never run <code>openssl</code>. On the first <em>Save SAML config</em> that has IdP metadata and no stored pair, it generates a self-signed RSA 2048 certificate with SHA-256, valid for 10 years, with the host of <code>BASE_URL</code> as its common name and <em>Go Help Desk</em> as its organisation. The certificate is published in the SP metadata as both the signing and the encryption key. The private key decrypts encrypted assertions (Microsoft Entra ID encrypts them) and signs the SAML library's own cookies. Sign-in requests are not signed. A certificate and key you already had are kept: an upgrade does not replace them.</p>
+<p>The <em>SP certificate</em> block shows <strong>Generated automatically</strong> (or <strong>Uploaded certificate</strong> if you supplied the pair) with its expiry, and these buttons:</p>
+<ul>
+  <li><strong>Download certificate</strong>: the public certificate, for an identity provider that wants it. The private key is kept on the server and is never shown or returned.</li>
+  <li><strong>Replace…</strong>: reveals the two upload boxes, <em>Certificate (PEM)</em> and <em>Private key (PEM)</em>. They are saved together by <em>Save SAML config</em>; a certificate or a key on its own is refused (<code>invalid_cert_key</code>).</li>
+  <li><strong>Regenerate</strong>: asks you to confirm, then creates a new pair, replaces the stored one and reloads SAML with it at once.</li>
+</ul>
+<p>To rotate the certificate, click <em>Regenerate</em> (or <em>Replace…</em> with your own pair), then give the new certificate to your identity provider if it saved the old one, using <em>Download certificate</em>. Until it has the new one, sign-in through that provider may stop working. Most identity providers accept a second certificate during the changeover. The help desk does not warn you before the SP certificate expires; ten years is its answer.</p>
+<p>Generating and regenerating are recorded in the audit log as <code>saml_cert_generated</code> and <code>saml_cert_regenerated</code> on the setting, with the expiry and the certificate's fingerprint, never the key. Over the API, <code>GET /api/v1/admin/saml</code> returns <code>sp_acs_url</code>, <code>cert_not_after</code> and <code>cert_generated</code>, and <code>PUT /api/v1/admin/saml</code> takes <code>cert_pem</code> and <code>key_pem</code> together or not at all, or <code>regenerate_cert: true</code> on its own. See the <a href="api-reference.html">API Reference</a>.</p>
 
 <div class="callout callout-warn">
-  <p><strong>Administrator failsafe.</strong> Administrators can always sign in with their local password on the login page, even with SAML login enabled. Do not lose your administrator password.</p>
+  <p><strong>Administrator failsafe.</strong> Administrators can always sign in with their local password on the login page, even while SAML is required. Do not lose your administrator password.</p>
 </div>
 
 
