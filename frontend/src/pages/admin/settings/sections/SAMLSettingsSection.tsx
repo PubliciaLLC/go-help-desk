@@ -5,6 +5,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { getSAMLConfig, saveSAMLConfig } from '@/api/admin'
 import { extractError } from '@/api/client'
 import { Button } from '@/components/ui/button'
+import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { Input } from '@/components/ui/input'
 import { cn } from '@/lib/utils'
 import type { SettingsDraft } from '@/pages/admin/settings/useSettingsDraft'
@@ -46,6 +47,12 @@ function CopyValue({ label, value }: { label: string; value: string }) {
   )
 }
 
+// A calendar day in the reader's locale; an expiry is read as a date, and its
+// time of day is not worth the width on a phone.
+function formatDay(iso: string): string {
+  return new Date(iso).toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' })
+}
+
 function SAMLSection() {
   const qc = useQueryClient()
   const certFileRef = useRef<HTMLInputElement>(null)
@@ -60,6 +67,12 @@ function SAMLSection() {
   const [saveError, setSaveError] = useState('')
   const [saved, setSaved] = useState(false)
   const [warning, setWarning] = useState('')
+  // The administrator is replacing the generated pair with their own: only
+  // then are the upload controls on the page.
+  const [replacing, setReplacing] = useState(false)
+  const [confirmRegenerate, setConfirmRegenerate] = useState(false)
+  const [regenerateError, setRegenerateError] = useState('')
+  const [regenerated, setRegenerated] = useState(false)
 
   const { data: saml, isLoading } = useQuery({
     queryKey: ['admin', 'saml'],
@@ -79,7 +92,6 @@ function SAMLSection() {
       setMetadataURL(saml.metadata_url)
       setMetadataXML(saml.metadata_xml)
       setMetadataSource(saml.metadata_xml ? 'xml' : 'url')
-      setCertPEM(saml.cert_pem)
     }
   }, [saml])
   /* eslint-enable react-hooks/set-state-in-effect */
@@ -91,28 +103,29 @@ function SAMLSection() {
   }
 
   const saveMutation = useMutation({
-    // key_pem is only included when this session actually uploaded or typed
-    // one: getSAMLConfig never returns the stored private key at all (see its
-    // own comment), so the local keyPEM state starts blank and stays that way
-    // until the admin replaces it. Sending it as "" whenever it was merely
-    // left alone used to backfill from the stored value on the server side —
-    // that backfill no longer happens (see #300), so doing so now would
-    // clear the working key on every ordinary save that isn't also a key
-    // rotation.
+    // The certificate and key are the server's to make (when the metadata is
+    // first saved), so a save sends neither unless the administrator is
+    // replacing them with their own, and then whichever of the two they gave
+    // (the server refuses a half pair and says so). key_pem is never returned by
+    // getSAMLConfig, and a save that omits it keeps the stored key (see #300).
     mutationFn: () => saveSAMLConfig({
       // One source or the other, never both: the server refuses a save that
       // leaves both set, so the unchosen one is cleared explicitly.
       metadata_url: metadataSource === 'url' ? metadataURL : '',
       metadata_xml: metadataSource === 'xml' ? metadataXML : '',
-      cert_pem: certPEM,
-      ...(keyPEM ? { key_pem: keyPEM } : {}),
+      ...(replacing && certPEM ? { cert_pem: certPEM } : {}),
+      ...(replacing && keyPEM ? { key_pem: keyPEM } : {}),
     }),
     onSuccess: (res) => {
       setSaved(true)
       setSaveError('')
       // The key is write-only: once saved it does not stay in the page, and the
-      // next save leaves it out (the server keeps the stored one).
+      // next save leaves it out (the server keeps the stored one). The upload
+      // controls go away with it.
+      setCertPEM('')
       setKeyPEM('')
+      setReplacing(false)
+      setRegenerated(false)
       setWarning(res.warning ?? '')
       setTimeout(() => setSaved(false), 3000)
       qc.invalidateQueries({ queryKey: ['admin', 'saml'] })
@@ -124,6 +137,37 @@ function SAMLSection() {
     },
     onError: (err) => setSaveError(extractError(err)),
   })
+
+  // A new pair, replacing the stored one. Sent alone: the server refuses it
+  // together with an upload, and the metadata form's own edits are not part of
+  // it (they are saved by Save SAML config).
+  const regenerateMutation = useMutation({
+    mutationFn: () => saveSAMLConfig({ regenerate_cert: true }),
+    onSuccess: (res) => {
+      setConfirmRegenerate(false)
+      setRegenerateError('')
+      setRegenerated(true)
+      setReplacing(false)
+      setWarning(res.warning ?? '')
+      qc.invalidateQueries({ queryKey: ['admin', 'saml'] })
+      qc.invalidateQueries({ queryKey: ['admin', 'settings'] })
+      // The reload with the new pair can be what makes SAML work.
+      qc.invalidateQueries({ queryKey: ['security-warnings'] })
+    },
+    onError: (err) => setRegenerateError(extractError(err)),
+  })
+
+  function startReplacing() {
+    setCertPEM('')
+    setKeyPEM('')
+    setReplacing(true)
+  }
+
+  function stopReplacing() {
+    setCertPEM('')
+    setKeyPEM('')
+    setReplacing(false)
+  }
 
   if (isLoading) return <div className="py-4 text-center text-sm text-gray-400">Loading…</div>
 
@@ -201,50 +245,113 @@ function SAMLSection() {
         )}
       </fieldset>
 
-      <div className="space-y-1">
-        <label className="block text-sm font-medium text-gray-700">
-          SP certificate (PEM)
-          {saml?.configured && !certPEM && <span className="ml-2 text-xs font-normal text-gray-400">already configured</span>}
-        </label>
-        <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" onClick={() => certFileRef.current?.click()}>Upload .pem / .crt</Button>
-          {certPEM && <span title={certPEM} className="text-xs text-gray-500 truncate max-w-xs font-mono">{certPEM.split('\n')[0]}…</span>}
-        </div>
-        <input ref={certFileRef} type="file" accept=".pem,.crt,.cer" className="hidden"
-          onChange={(e) => {
-            const f = e.target.files?.[0]
-            if (f) readFile(f, setCertPEM)
-            // So the same file can be chosen again after an edit.
-            e.target.value = ''
-          }} />
-        {certPEM && (
-          <textarea rows={4}
-            className="mt-1 w-full max-w-lg rounded border border-gray-300 p-2 font-mono text-xs text-gray-600"
-            value={certPEM} onChange={(e) => setCertPEM(e.target.value)} />
+      <div className="space-y-2">
+        <p className="text-sm font-medium text-gray-700">SP certificate</p>
+        {saml?.cert_pem ? (
+          <div className="space-y-2">
+            <p className="text-sm text-gray-700">
+              <span className="font-medium">{saml.cert_generated ? 'Generated automatically' : 'Uploaded certificate'}</span>
+              {saml.cert_not_after && <span className="text-gray-500"> · Expires {formatDay(saml.cert_not_after)}</span>}
+            </p>
+            <div className="flex flex-wrap items-center gap-2">
+              <a
+                href={`data:application/x-pem-file;charset=utf-8,${encodeURIComponent(saml.cert_pem)}`}
+                download="saml-sp-certificate.pem"
+                className="inline-flex h-8 items-center justify-center rounded-md border border-input bg-background px-3 text-xs font-medium hover:bg-accent hover:text-accent-foreground"
+              >
+                Download certificate
+              </a>
+              {!replacing && (
+                <Button type="button" variant="outline" size="sm" onClick={startReplacing}>Replace…</Button>
+              )}
+              <Button type="button" variant="outline" size="sm" onClick={() => { setRegenerateError(''); setConfirmRegenerate(true) }}>
+                Regenerate
+              </Button>
+            </div>
+            <p className="max-w-lg text-xs text-gray-500">
+              Your identity provider may ask for this certificate. The private key is kept on the server and is never shown.
+            </p>
+            {regenerated && <p role="status" className="text-sm text-green-600">New certificate generated. Give it to your identity provider if it saved the old one.</p>}
+          </div>
+        ) : (
+          <div className="space-y-2">
+            <p className="max-w-lg text-sm text-gray-600">
+              A certificate and private key are created automatically when you save the identity provider&apos;s metadata.
+            </p>
+            {!replacing && (
+              <Button type="button" variant="outline" size="sm" onClick={startReplacing}>Replace…</Button>
+            )}
+          </div>
+        )}
+
+        {replacing && (
+          <div className="space-y-3 rounded-md border border-gray-200 bg-white p-3">
+            <p className="max-w-lg text-xs text-gray-500">
+              Use your own certificate and private key instead. Upload both; they are saved together by Save SAML config.
+            </p>
+            <div className="space-y-1">
+              <label className="block text-sm font-medium text-gray-700">Certificate (PEM)</label>
+              <div className="flex items-center gap-2">
+                <Button variant="outline" size="sm" onClick={() => certFileRef.current?.click()}>Upload .pem / .crt</Button>
+                {certPEM && <span title={certPEM} className="text-xs text-gray-500 truncate max-w-xs font-mono">{certPEM.split('\n')[0]}…</span>}
+              </div>
+              <input ref={certFileRef} type="file" accept=".pem,.crt,.cer" className="hidden"
+                aria-label="SP certificate file"
+                onChange={(e) => {
+                  const f = e.target.files?.[0]
+                  if (f) readFile(f, setCertPEM)
+                  // So the same file can be chosen again after an edit.
+                  e.target.value = ''
+                }} />
+              {certPEM && (
+                <textarea rows={4}
+                  aria-label="SP certificate"
+                  className="mt-1 w-full max-w-lg rounded border border-gray-300 p-2 font-mono text-xs text-gray-600"
+                  value={certPEM} onChange={(e) => setCertPEM(e.target.value)} />
+              )}
+            </div>
+            <div className="space-y-1">
+              <label className="block text-sm font-medium text-gray-700">Private key (PEM)</label>
+              <div className="flex items-center gap-2">
+                <Button variant="outline" size="sm" onClick={() => keyFileRef.current?.click()}>Upload .pem / .key</Button>
+                {keyPEM && <span className="text-xs text-gray-500 font-mono">{keyPEM.split('\n')[0]}…</span>}
+              </div>
+              <input ref={keyFileRef} type="file" accept=".pem,.key" className="hidden"
+                aria-label="SP private key file"
+                onChange={(e) => {
+                  const f = e.target.files?.[0]
+                  if (f) readFile(f, setKeyPEM)
+                  e.target.value = ''
+                }} />
+              {keyPEM && (
+                <textarea rows={4}
+                  aria-label="SP private key"
+                  className="mt-1 w-full max-w-lg rounded border border-gray-300 p-2 font-mono text-xs text-gray-600"
+                  value={keyPEM} onChange={(e) => setKeyPEM(e.target.value)} />
+              )}
+            </div>
+            <Button type="button" variant="ghost" size="sm" onClick={stopReplacing}>Cancel</Button>
+          </div>
         )}
       </div>
 
-      <div className="space-y-1">
-        <label className="block text-sm font-medium text-gray-700">
-          SP private key (PEM)
-          {saml?.configured && !keyPEM && <span className="ml-2 text-xs font-normal text-gray-400">already configured — upload to replace</span>}
-        </label>
-        <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" onClick={() => keyFileRef.current?.click()}>Upload .pem / .key</Button>
-          {keyPEM && <span className="text-xs text-gray-500 font-mono">{keyPEM.split('\n')[0]}…</span>}
-        </div>
-        <input ref={keyFileRef} type="file" accept=".pem,.key" className="hidden"
-          onChange={(e) => {
-            const f = e.target.files?.[0]
-            if (f) readFile(f, setKeyPEM)
-            e.target.value = ''
-          }} />
-        {keyPEM && (
-          <textarea rows={4}
-            className="mt-1 w-full max-w-lg rounded border border-gray-300 p-2 font-mono text-xs text-gray-600"
-            value={keyPEM} onChange={(e) => setKeyPEM(e.target.value)} />
-        )}
-      </div>
+      <ConfirmDialog
+        open={confirmRegenerate}
+        onOpenChange={(open) => { if (!regenerateMutation.isPending) setConfirmRegenerate(open) }}
+        title="Regenerate the SP certificate?"
+        description={
+          <>
+            This creates a new certificate and private key and replaces the current ones, and SAML is reloaded with them
+            at once. If your identity provider saved the current certificate, it must be given the new certificate
+            (download it afterwards) or sign-in through it may stop working.
+          </>
+        }
+        confirmLabel="Regenerate"
+        destructive={false}
+        isPending={regenerateMutation.isPending}
+        error={regenerateError}
+        onConfirm={() => regenerateMutation.mutate()}
+      />
 
       <div className="flex items-center gap-3 pt-1">
         <Button size="sm" onClick={() => saveMutation.mutate()} disabled={saveMutation.isPending}>

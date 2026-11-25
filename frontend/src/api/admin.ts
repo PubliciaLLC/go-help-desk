@@ -270,7 +270,15 @@ export interface SAMLConfig {
   // The IdP metadata as pasted, returned as stored (it is public data). Empty
   // when the metadata is given by URL or not at all.
   metadata_xml: string
+  // The service-provider certificate, public: what an identity provider that
+  // wants it is given. The private key is never returned by any endpoint. The
+  // server makes the pair when the IdP metadata is first saved.
   cert_pem: string
+  // When the stored certificate expires; null when none is stored.
+  cert_not_after: string | null
+  // True for a certificate the server generated, false for an uploaded one (and
+  // when none is stored).
+  cert_generated: boolean
   // What to give the identity provider: the Entity ID and the ACS URL, built
   // from the server's base URL.
   sp_metadata_url: string
@@ -292,11 +300,16 @@ export async function getSAMLConfig(): Promise<SAMLConfig> {
 // metadata_url and metadata_xml are alternatives (#461): the server refuses a
 // save that would leave both set, so the source the admin did not choose is
 // sent as "" rather than left out.
+//
+// cert_pem and key_pem are sent together or not at all, and only when the
+// administrator replaces the generated pair with their own. regenerate_cert
+// replaces the pair with a newly generated one and is sent alone.
 export async function saveSAMLConfig(input: {
   metadata_url?: string
   metadata_xml?: string
   cert_pem?: string
   key_pem?: string
+  regenerate_cert?: boolean
 }): Promise<{ warning?: string }> {
   const res = await api.put<{ warning?: string }>('/admin/saml', input)
   return res.data ?? {}

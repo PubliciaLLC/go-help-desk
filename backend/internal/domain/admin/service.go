@@ -3,6 +3,7 @@ package admin
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"strconv"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/publiciallc/go-help-desk/backend/internal/antivirus"
 
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/audit"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
@@ -217,6 +219,19 @@ func (s *Service) SetSAMLConfig(ctx context.Context, metadataURL, certPEM, keyPE
 		return fmt.Errorf("saving saml_key_pem: %w", err)
 	}
 	return nil
+}
+
+// SetSAMLSPPair stores a generated SAML service-provider certificate and key,
+// with the audit entry that records it, in one transaction. With ifAbsent it
+// writes only when neither is stored yet and reports whether it did: a first
+// save yields to a pair another server stored a moment earlier. Without it the
+// pair replaces the stored one (a regeneration).
+func (s *Service) SetSAMLSPPair(ctx context.Context, certPEM, keyPEM string, ifAbsent bool, e audit.Entry) (bool, error) {
+	w, ok := s.store.(SPPairStore)
+	if !ok {
+		return false, errors.New("the settings store cannot write the SAML SP pair atomically")
+	}
+	return w.SetSAMLSPPair(ctx, certPEM, keyPEM, ifAbsent, e)
 }
 
 // GetSAMLMetadataXML returns the pasted IdP metadata, or "" when the metadata

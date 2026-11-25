@@ -335,6 +335,11 @@ var shownKeys = map[string]bool{
 	"requesternamemask": true,
 	// A client's secret being replaced (#622): the fact, not the secret.
 	"credentialreplaced": true,
+	// A generated SAML service-provider certificate (saml_cert_generated and
+	// saml_cert_regenerated): when it expires and its SHA-256 fingerprint. Both
+	// are public, they are what the identity provider shows. The private key is
+	// never written.
+	"certnotafter": true, "certfingerprint": true,
 	// A deleted account giving up its address to a new one (email_released,
 	// replaced_deleted_user): the two user ids, which are UUIDs, and a SAML
 	// account being relinked to a new NameID (saml_relinked): the flag. Neither

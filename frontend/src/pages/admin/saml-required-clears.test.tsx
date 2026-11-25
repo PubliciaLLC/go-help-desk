@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
-import { screen, waitFor } from '@testing-library/react'
+import { screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { renderWithQuery } from '@/test/render'
 import { api } from '@/api/client'
@@ -33,10 +33,13 @@ const PROBLEM = { saml_required_not_loaded: { reason: 'not_loaded' } }
 let settings: Record<string, unknown>
 // What the server answers for the security warnings right now.
 let warnings: Record<string, unknown>
+// A stored certificate, which is what puts Regenerate on the page.
+let storedCert: string
 
 beforeEach(() => {
   settings = { saml_enabled: true, saml_metadata_url: 'https://idp.example.com/metadata', password_rehash_grace_days: 30 }
   warnings = { insecure_secrets: [], ...PROBLEM }
+  storedCert = ''
   useAuthStore.setState({
     user: {
       id: 'u-1',
@@ -52,7 +55,7 @@ beforeEach(() => {
     if (url === '/admin/settings') return Promise.resolve({ data: { ...settings } })
     if (url === '/admin/saml')
       return Promise.resolve({
-        data: { configured: true, live: false, metadata_url: '', metadata_xml: '', cert_pem: '', sp_metadata_url: '', sp_acs_url: '' },
+        data: { configured: true, live: false, metadata_url: '', metadata_xml: '', cert_pem: storedCert, cert_generated: !!storedCert, sp_metadata_url: '', sp_acs_url: '' },
       })
     if (url === '/admin/security-warnings') return Promise.resolve({ data: { ...warnings } })
     if (url === '/site') return Promise.resolve({ data: {} })
@@ -98,6 +101,19 @@ describe('the SAML required notice clears when the fix is saved', () => {
 
     await user.click(screen.getByRole('switch', { name: TOGGLE }))
     await user.click(screen.getAllByRole('button', { name: 'Save changes' }).at(-1)!)
+    await noBar()
+  })
+
+  it('after "Regenerate" reloads SAML with the new pair', async () => {
+    storedCert = '-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----'
+    vi.spyOn(api, 'put').mockImplementation((() => {
+      warnings = { insecure_secrets: [] }
+      return Promise.resolve({ data: undefined })
+    }) as never)
+    const user = await openPage()
+
+    await user.click(screen.getByRole('button', { name: 'Regenerate' }))
+    await user.click(within(await screen.findByRole('dialog')).getByRole('button', { name: 'Regenerate' }))
     await noBar()
   })
 })

@@ -7,10 +7,15 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"time"
 
+	"github.com/google/uuid"
+
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/admin"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/audit"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
+	authmw "github.com/publiciallc/go-help-desk/backend/internal/middleware"
 )
 
 // Admin SSO configuration for OIDC and SAML. Both write credentials that
@@ -269,6 +274,62 @@ func (s *Server) samlRequiredButNotLoadedWarning(ctx context.Context) string {
 		"Save a working SAML configuration, or turn off \"Require SAML for staff and users\"."
 }
 
+// generateSPPair makes the service-provider certificate and key and stores them,
+// with their audit entry, in one transaction (admin.Service.SetSAMLSPPair), then
+// puts them in c. The caller holds samlReloadMu.
+//
+// Stored before SAML is built, not with the rest of the save, because that is
+// what keeps two servers sharing one database from each making a pair. Unless
+// regenerating, the write happens only if no certificate or key is stored yet;
+// when another server got there first nothing is written, and c takes the pair
+// that is stored instead, so both saves load the same certificate. The cost is
+// that a save refused later (it would strand every administrator) leaves the
+// pair it generated: harmless, and the next save finds it and keeps it.
+//
+// The private key goes to the store and to c, which builds the middleware, and
+// nowhere else: not the log, not the audit entry, not a response.
+func (s *Server) generateSPPair(ctx context.Context, actor uuid.UUID, c *samlSettings, regenerate bool) error {
+	var host string
+	if u, err := url.Parse(s.cfg.BaseURL); err == nil {
+		host = u.Hostname()
+	}
+	now := time.Now()
+	certPEM, keyPEM, err := auth.GenerateSPCertificate(host, now)
+	if err != nil {
+		return err
+	}
+	info, _ := auth.SPCertificateInfo(certPEM)
+	action := auditActionSAMLCertGenerated
+	if regenerate {
+		action = auditActionSAMLCertRegenerated
+	}
+	written, err := s.adminSvc.SetSAMLSPPair(ctx, certPEM, keyPEM, !regenerate, audit.Entry{
+		ID: uuid.New(), ActorID: &actor, EntityType: auditEntitySetting,
+		EntityID: settingEntityID(admin.KeySAMLCertPEM), Action: action,
+		After: map[string]any{
+			"source":           "generated",
+			"cert_not_after":   info.NotAfter.UTC().Format(time.RFC3339),
+			"cert_fingerprint": info.SHA256,
+		},
+		CreatedAt: now,
+	})
+	if err != nil {
+		return err
+	}
+	if written {
+		c.CertPEM, c.KeyPEM = certPEM, keyPEM
+		slog.Info("SAML SP certificate generated", "regenerated", regenerate, "fingerprint", info.SHA256)
+		return nil
+	}
+	_, c.CertPEM, c.KeyPEM = s.adminSvc.GetSAMLConfig(ctx)
+	return nil
+}
+
+const (
+	auditActionSAMLCertGenerated   = "saml_cert_generated"
+	auditActionSAMLCertRegenerated = "saml_cert_regenerated"
+)
+
 // GET /api/v1/admin/saml
 //
 // `configured` is "the saved settings are complete", `live` is "the SAML
@@ -276,12 +337,22 @@ func (s *Server) samlRequiredButNotLoadedWarning(ctx context.Context) string {
 func (s *Server) handleGetSAMLConfig(w http.ResponseWriter, r *http.Request) {
 	metadataURL, certPEM, _ := s.adminSvc.GetSAMLConfig(r.Context())
 	configured := s.adminSvc.SAMLConfigured(r.Context())
+	// The expiry and where the certificate came from are read off the
+	// certificate itself. null when none is stored (or what is stored cannot be
+	// read: the pair is then refused at the next save anyway).
+	var notAfter any
+	info, hasCert := auth.SPCertificateInfo(certPEM)
+	if hasCert {
+		notAfter = info.NotAfter.UTC().Format(time.RFC3339)
+	}
 	JSON(w, http.StatusOK, map[string]any{
 		"configured":      configured,
 		"live":            s.samlReachableNow(),
 		"metadata_url":    metadataURL,
 		"metadata_xml":    s.adminSvc.GetSAMLMetadataXML(r.Context()),
 		"cert_pem":        certPEM,
+		"cert_not_after":  notAfter,
+		"cert_generated":  hasCert && info.Generated,
 		"sp_metadata_url": s.cfg.BaseURL + "/api/v1/auth/saml/metadata",
 		"sp_acs_url":      s.cfg.BaseURL + "/api/v1/auth/saml/acs",
 	})
@@ -293,6 +364,10 @@ func (s *Server) handleGetSAMLConfig(w http.ResponseWriter, r *http.Request) {
 // retains the existing value from the database, so callers never need to
 // re-upload a key they did not change. To clear a field, send it as an
 // explicit empty string; to clear all SAML config, send all four that way.
+//
+// The service-provider certificate and key are generated when the save has IdP
+// metadata and no pair is stored, and regenerate_cert replaces the stored pair
+// with a new one (see generateSPPair).
 func (s *Server) handleSaveSAMLConfig(w http.ResponseWriter, r *http.Request) {
 	var body struct {
 		// Pointers, not plain strings: JSON has no way to tell "omitted" from
@@ -309,9 +384,17 @@ func (s *Server) handleSaveSAMLConfig(w http.ResponseWriter, r *http.Request) {
 		MetadataXML *string `json:"metadata_xml"`
 		CertPEM     *string `json:"cert_pem"`
 		KeyPEM      *string `json:"key_pem"`
+		// RegenerateCert replaces the stored pair with a newly generated one.
+		RegenerateCert bool `json:"regenerate_cert"`
 	}
 	if err := DecodeJSON(r, &body); err != nil {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
+		return
+	}
+	// One request, one source for the pair.
+	if body.RegenerateCert && (body.CertPEM != nil || body.KeyPEM != nil) {
+		Error(w, http.StatusBadRequest, "invalid_cert_key",
+			"regenerate_cert cannot be combined with cert_pem or key_pem")
 		return
 	}
 
@@ -339,13 +422,21 @@ func (s *Server) handleSaveSAMLConfig(w http.ResponseWriter, r *http.Request) {
 		c.KeyPEM = *body.KeyPEM
 	}
 
-	// Validate the cert/key pair when either is present.
-	if c.CertPEM != "" || c.KeyPEM != "" {
+	// Validate the cert/key pair when either is present. A regeneration replaces
+	// whatever is stored, so what is stored is not looked at.
+	checkPair := func() bool {
+		if body.RegenerateCert || (c.CertPEM == "" && c.KeyPEM == "") {
+			return true
+		}
 		if _, err := tls.X509KeyPair([]byte(c.CertPEM), []byte(c.KeyPEM)); err != nil {
 			Error(w, http.StatusBadRequest, "invalid_cert_key",
 				"certificate and private key do not match or are invalid: "+err.Error())
-			return
+			return false
 		}
+		return true
+	}
+	if !checkPair() {
+		return
 	}
 
 	// Refused before anything is built or saved. Otherwise an unparseable
@@ -357,6 +448,22 @@ func (s *Server) handleSaveSAMLConfig(w http.ResponseWriter, r *http.Request) {
 	if code, msg := c.metadataRefusal(); code != "" {
 		Error(w, http.StatusBadRequest, code, msg)
 		return
+	}
+
+	// No pair yet, and something to use it for: make one. After the refusals
+	// above, so a request that is refused generates nothing. The pair is stored
+	// here, as it is generated (see generateSPPair), so two servers saving at
+	// once make one.
+	if body.RegenerateCert || (c.CertPEM == "" && c.KeyPEM == "" && (c.MetadataURL != "" || c.MetadataXML != "")) {
+		if err := s.generateSPPair(ctx, authmw.GetActor(r).UserID, &c, body.RegenerateCert); err != nil {
+			handleError(w, err)
+			return
+		}
+		// Another server's pair, when it stored one first: held to the same rule
+		// as any other pair.
+		if !checkPair() {
+			return
+		}
 	}
 
 	// Built against the CANDIDATE fields, before anything is persisted — same

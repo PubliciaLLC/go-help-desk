@@ -27,6 +27,8 @@ import { AuthenticationSettingsPage } from './settings/AuthenticationSettingsPag
 const ENTITY_ID = 'https://hd.example.com/api/v1/auth/saml/metadata'
 const ACS = 'https://hd.example.com/api/v1/auth/saml/acs'
 const TOGGLE = 'Require SAML for staff and users'
+const CERT = '-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n'
+const KEY = '-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----'
 
 let settings: Record<string, unknown>
 let samlConfig: Record<string, unknown>
@@ -39,6 +41,8 @@ beforeEach(() => {
     metadata_url: '',
     metadata_xml: '',
     cert_pem: '',
+    cert_not_after: null,
+    cert_generated: false,
     sp_metadata_url: ENTITY_ID,
     sp_acs_url: ACS,
   }
@@ -79,15 +83,16 @@ const toggle = () => screen.getByRole('switch', { name: TOGGLE })
 const pageSave = () => screen.getAllByRole('button', { name: 'Save changes' }).at(-1)!
 
 describe('SAML section', () => {
-  it('shows the whole form with the switch off, certificate and key included', async () => {
+  it('shows the whole form with the switch off, and no certificate to upload until asked', async () => {
     await openPage()
     expect(toggle().getAttribute('aria-checked')).toBe('false')
     expect(screen.getByRole('button', { name: 'Save SAML config' })).toBeTruthy()
     expect(screen.getByLabelText('IdP metadata URL')).toBeTruthy()
-    expect(screen.getByText(/SP certificate \(PEM\)/)).toBeTruthy()
-    expect(screen.getByRole('button', { name: 'Upload .pem / .crt' })).toBeTruthy()
-    expect(screen.getByText(/SP private key \(PEM\)/)).toBeTruthy()
-    expect(screen.getByRole('button', { name: 'Upload .pem / .key' })).toBeTruthy()
+    expect(screen.getByText(/created automatically when you save/i)).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Upload .pem / .crt' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Upload .pem / .key' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Regenerate' })).toBeNull()
+    expect(screen.queryByRole('link', { name: 'Download certificate' })).toBeNull()
   })
 
   it('names the switch for what it does, and says what turns SAML on', async () => {
@@ -118,6 +123,8 @@ describe('SAML section', () => {
       response: { data: { error: { code: 'invalid_cert_key', message: 'certificate and private key do not match' } } },
     })
     const { user, container } = await openPage()
+    // The file inputs are on the page only while the administrator is replacing the pair.
+    await user.click(screen.getByRole('button', { name: 'Replace…' }))
     const KEY = '-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----'
     const keyInput = () => container.querySelector('input[type="file"][accept=".pem,.key"]') as HTMLInputElement
     const file = new File([KEY], 'sp.key', { type: 'application/x-pem-file' })
@@ -134,6 +141,7 @@ describe('SAML section', () => {
 
   it('resets the certificate file input, so the same file can be chosen again', async () => {
     const { user, container } = await openPage()
+    await user.click(screen.getByRole('button', { name: 'Replace…' }))
     const CERT = '-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----'
     const certInput = container.querySelector('input[type="file"][accept=".pem,.crt,.cer"]') as HTMLInputElement
 
@@ -181,22 +189,29 @@ describe('SAML section', () => {
   it('does not send the private key again after it has been saved', async () => {
     const put = vi.spyOn(api, 'put').mockResolvedValue({ data: undefined })
     const { user, container } = await openPage()
-    const KEY = '-----BEGIN PRIVATE KEY-----\nAAAA\n-----END PRIVATE KEY-----'
 
+    await user.click(screen.getByRole('button', { name: 'Replace…' }))
+    await user.upload(
+      container.querySelector('input[type="file"][accept=".pem,.crt,.cer"]') as HTMLInputElement,
+      new File([CERT], 'sp.crt', { type: 'application/x-pem-file' }),
+    )
     await user.upload(
       container.querySelector('input[type="file"][accept=".pem,.key"]') as HTMLInputElement,
       new File([KEY], 'sp.key', { type: 'application/x-pem-file' }),
     )
-    await waitFor(() => expect(container.querySelector('textarea')).not.toBeNull())
+    await waitFor(() => expect(container.querySelectorAll('textarea').length).toBeGreaterThan(0))
     await user.click(screen.getByRole('button', { name: 'Save SAML config' }))
     await waitFor(() => expect(put).toHaveBeenCalledTimes(1))
-    expect(put.mock.calls[0][1]).toMatchObject({ key_pem: KEY })
+    expect(put.mock.calls[0][1]).toMatchObject({ cert_pem: CERT, key_pem: KEY })
 
-    // The key is not kept in the page: no box shows it, and the next save leaves it out.
+    // The key is not kept in the page: no box shows it, the upload controls are
+    // put away, and the next save leaves both halves out.
     await waitFor(() => expect(container.querySelector('textarea')).toBeNull())
+    expect(screen.queryByRole('button', { name: 'Upload .pem / .key' })).toBeNull()
     await user.click(screen.getByRole('button', { name: 'Save SAML config' }))
     await waitFor(() => expect(put).toHaveBeenCalledTimes(2))
     expect(Object.keys(put.mock.calls[1][1] as object)).not.toContain('key_pem')
+    expect(Object.keys(put.mock.calls[1][1] as object)).not.toContain('cert_pem')
   })
 
   it('sends saml_enabled with the page Save, and not with Save SAML config', async () => {
@@ -225,5 +240,129 @@ describe('SAML section', () => {
 
     const note = await screen.findByText(warning)
     expect(note.closest('[role="status"]')).not.toBeNull()
+  })
+})
+
+// The service-provider certificate: the server makes it when the IdP metadata is
+// first saved. The page shows it, offers its public half for download, and keeps
+// the upload controls and the regeneration out of the way until asked for.
+describe('SAML service-provider certificate', () => {
+  const generated = () => {
+    samlConfig = {
+      ...samlConfig,
+      configured: true,
+      cert_pem: CERT,
+      cert_not_after: '2036-11-24T12:00:00Z',
+      cert_generated: true,
+    }
+  }
+
+  it('says a generated certificate is generated automatically, with its expiry and a download', async () => {
+    generated()
+    const { container } = await openPage()
+    await screen.findByText('Generated automatically')
+    expect(screen.getByText(/Expires/).textContent).toMatch(/2036/)
+
+    const download = screen.getByRole('link', { name: 'Download certificate' }) as HTMLAnchorElement
+    expect(download.getAttribute('download')).toBe('saml-sp-certificate.pem')
+    expect(decodeURIComponent(download.getAttribute('href')!.split(',')[1])).toBe(CERT)
+
+    // Nothing to upload, and the key is not mentioned beyond where it is kept.
+    expect(screen.queryByRole('button', { name: 'Upload .pem / .crt' })).toBeNull()
+    expect(container.textContent).not.toMatch(/PRIVATE KEY/)
+    expect(container.querySelector('textarea')).toBeNull()
+  })
+
+  it('calls an uploaded certificate uploaded, with the same expiry and download', async () => {
+    generated()
+    samlConfig.cert_generated = false
+    await openPage()
+    await screen.findByText('Uploaded certificate')
+    expect(screen.queryByText('Generated automatically')).toBeNull()
+    expect(screen.getByText(/Expires/).textContent).toMatch(/2036/)
+    expect(screen.getByRole('link', { name: 'Download certificate' })).toBeTruthy()
+  })
+
+  it('shows the upload controls only after Replace…, and puts them away again on Cancel', async () => {
+    generated()
+    const { user } = await openPage()
+    await screen.findByText('Generated automatically')
+
+    await user.click(screen.getByRole('button', { name: 'Replace…' }))
+    expect(screen.getByRole('button', { name: 'Upload .pem / .crt' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Upload .pem / .key' })).toBeTruthy()
+
+    await user.click(screen.getByRole('button', { name: 'Cancel' }))
+    expect(screen.queryByRole('button', { name: 'Upload .pem / .crt' })).toBeNull()
+  })
+
+  it('saves without the certificate or key when nothing was replaced', async () => {
+    generated()
+    const put = vi.spyOn(api, 'put').mockResolvedValue({ data: undefined })
+    const { user } = await openPage()
+    await screen.findByText('Generated automatically')
+
+    await user.click(screen.getByRole('button', { name: 'Save SAML config' }))
+    await waitFor(() => expect(put).toHaveBeenCalled())
+    expect(Object.keys(put.mock.calls[0][1] as object).sort()).toEqual(['metadata_url', 'metadata_xml'])
+  })
+
+  it('asks before regenerating, and sends nothing when cancelled', async () => {
+    generated()
+    const put = vi.spyOn(api, 'put').mockResolvedValue({ data: undefined })
+    const { user } = await openPage()
+    await screen.findByText('Generated automatically')
+
+    await user.click(screen.getByRole('button', { name: 'Regenerate' }))
+    const dialog = await screen.findByRole('dialog')
+    expect(dialog.textContent).toMatch(/identity provider/i)
+    expect(dialog.textContent).toMatch(/new certificate/i)
+
+    await user.click(within(dialog).getByRole('button', { name: 'Cancel' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    expect(put).not.toHaveBeenCalled()
+  })
+
+  it('regenerates on confirm: sends only regenerate_cert, then loads the new certificate', async () => {
+    generated()
+    const NEW = '-----BEGIN CERTIFICATE-----\nNEWNEW\n-----END CERTIFICATE-----\n'
+    const put = vi.spyOn(api, 'put').mockImplementation((() => {
+      samlConfig = { ...samlConfig, cert_pem: NEW, cert_not_after: '2036-12-01T12:00:00Z' }
+      return Promise.resolve({ data: undefined })
+    }) as never)
+    const { user } = await openPage()
+    await screen.findByText('Generated automatically')
+
+    await user.click(screen.getByRole('button', { name: 'Regenerate' }))
+    const dialog = await screen.findByRole('dialog')
+    await user.click(within(dialog).getByRole('button', { name: 'Regenerate' }))
+
+    await waitFor(() => expect(put).toHaveBeenCalledTimes(1))
+    expect(put.mock.calls[0][1]).toEqual({ regenerate_cert: true })
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull())
+    // The page carries the new certificate, not the old one.
+    await waitFor(() => {
+      const href = (screen.getByRole('link', { name: 'Download certificate' }) as HTMLAnchorElement).getAttribute('href')!
+      expect(decodeURIComponent(href.split(',')[1])).toBe(NEW)
+    })
+    expect(screen.getByText(/new certificate generated/i)).toBeTruthy()
+  })
+
+  it("shows the server's message in the dialog when it refuses, and keeps it open", async () => {
+    generated()
+    vi.spyOn(api, 'put').mockRejectedValue({
+      isAxiosError: true,
+      message: 'Request failed with status code 500',
+      response: { data: { error: { code: 'internal_error', message: 'no luck' } } },
+    })
+    const { user } = await openPage()
+    await screen.findByText('Generated automatically')
+
+    await user.click(screen.getByRole('button', { name: 'Regenerate' }))
+    const dialog = await screen.findByRole('dialog')
+    await user.click(within(dialog).getByRole('button', { name: 'Regenerate' }))
+
+    expect((await within(dialog).findByRole('alert')).textContent).toContain('no luck')
+    expect(screen.getByRole('dialog')).toBeTruthy()
   })
 })

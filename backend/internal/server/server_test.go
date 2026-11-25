@@ -179,10 +179,42 @@ func newIsolatedHarness(t *testing.T) (*harness, func()) {
 	return newHarnessOn(t, testutil.NewIsolatedDB, 0, "", nil, true)
 }
 
+// newCommittedHarness is newIsolatedHarness without the one rolled-back
+// transaction: the server runs on the database's connection pool, every write
+// commits, and requests may overlap on connections of their own.
+//
+// For a test about several requests arriving at once. The ordinary harness
+// puts everything in one transaction, which is one connection, and requests
+// that overlap on it fail with "bad connection" or a lost session. The database
+// is the test's own and is dropped at cleanup, so nothing it commits is seen by
+// any other test. h.tx is nil.
+func newCommittedHarness(t *testing.T) (*harness, func()) {
+	t.Helper()
+	return newHarnessMode(t, testutil.NewIsolatedDB, 0, "", nil, true, true)
+}
+
 func newHarnessOn(t *testing.T, openDB func(*testing.T) (*testutil.DB, func()), authRateLimit int, clamAVAddr string, mutate func(*config.Config), passkeysOn bool) (*harness, func()) {
 	t.Helper()
+	return newHarnessMode(t, openDB, authRateLimit, clamAVAddr, mutate, passkeysOn, false)
+}
+
+func newHarnessMode(t *testing.T, openDB func(*testing.T) (*testutil.DB, func()), authRateLimit int, clamAVAddr string, mutate func(*config.Config), passkeysOn bool, committed bool) (*harness, func()) {
+	t.Helper()
 	db, closeDB := openDB(t)
-	q, tx, rollback := testutil.TxQueriesTx(t, db)
+	var (
+		q        *dbgen.Queries
+		tx       *sql.Tx
+		rollback = func() {}
+		// adminDB lets the settings store write the SAML pair and its audit
+		// entry in a transaction of its own; the harness transaction is the
+		// transaction otherwise.
+		adminDB *sql.DB
+	)
+	if committed {
+		q, adminDB = db.Queries, db.SQL
+	} else {
+		q, tx, rollback = testutil.TxQueriesTx(t, db)
+	}
 
 	ctx := context.Background()
 
@@ -190,15 +222,17 @@ func newHarnessOn(t *testing.T, openDB func(*testing.T) (*testutil.DB, func()), 
 	// against a database that already has users, and the suite can be pointed at
 	// one (CLAUDE.md: the development database). Every test starts from the
 	// unset state; the delete rolls back with the rest.
-	_, err := tx.ExecContext(ctx, `DELETE FROM settings WHERE key LIKE 'staff_email_%_override'`)
-	require.NoError(t, err)
+	if !committed {
+		_, err := tx.ExecContext(ctx, `DELETE FROM settings WHERE key LIKE 'staff_email_%_override'`)
+		require.NoError(t, err)
+	}
 
 	// Stores
 	uStore := userstore.New(q)
 	tStore := ticketstore.New(q).WithReplyLimits(ticketstore.DefaultReplyCap, harnessReplyTimeout)
 	cStore := categorystore.New(q)
 	gStore := groupstore.New(q)
-	aStore := adminstore.New(q)
+	aStore := adminstore.NewWithDB(q, adminDB)
 	auStore := auditstore.New(q)
 	authSt := authstore.New(q)
 	cfStore := customfieldstore.New(q, nil)

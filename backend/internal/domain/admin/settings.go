@@ -3,6 +3,8 @@ package admin
 import (
 	"context"
 	"slices"
+
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/audit"
 )
 
 // Well-known setting keys. The settings table uses JSONB values so any
@@ -490,6 +492,14 @@ type Store interface {
 	Get(ctx context.Context, key string) ([]byte, error) // returns raw JSON value
 	Set(ctx context.Context, key string, value []byte) error
 	List(ctx context.Context) (map[string][]byte, error)
+}
+
+// SPPairStore is what a Store implements to write the SAML service-provider
+// certificate and key together with the audit entry that records it, in one
+// transaction (see Service.SetSAMLSPPair). A separate interface because only the
+// database store can; the settings fakes need not.
+type SPPairStore interface {
+	SetSAMLSPPair(ctx context.Context, certPEM, keyPEM string, ifAbsent bool, e audit.Entry) (written bool, err error)
 }
 
 // KnownKeys is every setting PATCH /admin/settings accepts: each Key constant

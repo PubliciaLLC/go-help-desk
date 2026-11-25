@@ -1335,6 +1335,10 @@ type Querier interface {
 	// of two.
 	SetSLAResolvedAndFirstResponse(ctx context.Context, arg SetSLAResolvedAndFirstResponseParams) (int64, error)
 	SetSetting(ctx context.Context, arg SetSettingParams) error
+	// Writes the value only when the setting is an empty string or not there yet.
+	// The row lock on the conflicting row is the gate: a second writer waits for
+	// the first to commit and then finds the value filled, so it affects no row.
+	SetSettingIfEmpty(ctx context.Context, arg SetSettingIfEmptyParams) (int64, error)
 	// The person's staff-email switches (#441, and the SLA-alerts switch of #670),
 	// each changed only when given.
 	// Narrow for the reason UpdateUserProfile is: UpdateUser writes a whole row
