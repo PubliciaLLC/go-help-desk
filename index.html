@@ -193,6 +193,14 @@ docker compose up -d      <span style="color:#22c55e"># pulls the published imag
 
       <div class="feature-card">
         <div class="feature-icon">
+          <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+        </div>
+        <h3>Followers, category descriptions and a SAML fix</h3>
+        <p>Staff can add another staff member or administrator as a follower of a ticket and remove any follower. Administrators can write a short description on each category, type and item, shown beneath the chooser when someone files a ticket. SAML accounts also now reconnect at their next sign-in, and the SAML certificate is generated for you. <a href="docs/tickets.html#tickets-follow">Following →</a> <a href="docs/admin-guide.html#admin-cti">Descriptions →</a> <a href="docs/upgrading-1.3.0.html#saml-signin">SAML fix →</a></p>
+      </div>
+
+      <div class="feature-card">
+        <div class="feature-icon">
           <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><rect x="5" y="2" width="14" height="20" rx="2" ry="2"/><line x1="12" y1="18" x2="12.01" y2="18"/></svg>
         </div>
         <h3>Works on a phone</h3>
@@ -364,7 +372,7 @@ docker compose up -d      <span style="color:#22c55e"># pulls the published imag
           <svg width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
         </div>
         <h3>SSO &amp; MFA</h3>
-        <p>Local accounts, SAML 2.0 and OIDC sign-in. Administrators keep password sign-in when SAML login is on. A second factor by authenticator app (TOTP) or passkey / security key.</p>
+        <p>Local accounts, SAML 2.0 and OIDC sign-in. Administrators keep password sign-in when SAML is required, and the SAML certificate is generated for you. A second factor by authenticator app (TOTP) or passkey / security key.</p>
       </div>
 
       <div class="feature-card">

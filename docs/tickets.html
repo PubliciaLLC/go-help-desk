@@ -181,6 +181,10 @@
   <li>Changing the Category clears the Type and Item selections.</li>
   <li>Changing the Type clears the Item selection.</li>
 </ul>
+<p><span class="badge-new">New in 1.3.0</span> If an administrator wrote a description for the choice you made, it appears beneath the selectors. The item's description shows if it has one, otherwise the type's, otherwise the category's, and it updates as you change a selector. A requester has no Item selector, so they see at most the type's. Nothing shows when none of them has one. The same text also appears on the <a href="#tickets-guest">guest form</a> (category only) and in the Classification card's Edit mode when you change a ticket's category, type or item.</p>
+
+<img src="../screenshots/54-new-ticket-cti-description.png" width="1308" height="288" alt="New ticket form with Category Hardware, Type Laptop and Item Screen chosen, and beneath them the type's description: A company laptop that is damaged, slow or will not start. Include the asset tag from the sticker underneath." loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
+<p style="margin:0.4rem 0 1.25rem;font-size:0.85rem;color:var(--muted);">The most specific description of your choice shows beneath the chooser.</p>
 
 <h3>Fields by role</h3>
 <table>
@@ -195,9 +199,9 @@
   </tbody>
 </table>
 
-<h3>Guest ticket submission <span class="badge-new">New in 1.3.0</span></h3>
+<h3 id="tickets-guest">Guest ticket submission <span class="badge-new">New in 1.3.0</span></h3>
 
-<p>Guest submission is off by default. When it is enabled (<em>Admin → System → Guest Access</em>), the public form at <code>/submit</code> is reachable without logging in. Required: <strong>name</strong>, <strong>email</strong>, <strong>subject</strong> and <strong>category</strong>, which must be an active one. Phone is optional. Type, Item and priority are not shown and are not accepted: priority is always Medium on a guest ticket.</p>
+<p>Guest submission is off by default. When it is enabled (<em>Admin → System → Guest Access</em>), the public form at <code>/submit</code> is reachable without logging in. Required: <strong>name</strong>, <strong>email</strong>, <strong>subject</strong> and <strong>category</strong>, which must be an active one. If an administrator wrote a description for the category, it shows beneath the category choice. Phone is optional. Type, Item and priority are not shown and are not accepted: priority is always Medium on a guest ticket.</p>
 
 <img src="../screenshots/28-guest-submit.png" alt="The guest submission form at /submit: name, email, optional phone, subject, a description editor with a formatting toolbar, and category. There are no type, item or priority fields" width="2880" height="1800" loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
 
@@ -425,14 +429,17 @@
 
 <h2 id="tickets-follow">Following a ticket</h2>
 
-<p>Staff and admins can follow a ticket to be emailed about it without being assigned to it. On the ticket page, the <strong>Followers</strong> card lists who follows the ticket and has a <em>Follow</em> button, which becomes <em>Unfollow</em> once you follow. It only ever changes your own follow.</p>
+<p>Staff and admins can follow a ticket to be emailed about it without being assigned to it. On the ticket page, the <strong>Followers</strong> card lists who follows the ticket and has a <em>Follow</em> button, which becomes <em>Unfollow</em> once you follow. <span class="badge-new">New in 1.3.0</span> The card also lets you add another staff member or administrator as a follower, and remove any follower.</p>
+<img src="../screenshots/53-ticket-followers.png" width="684" height="540" alt="The Followers card of a ticket: Alex Rivera with a remove button, Jordan Blake marked as you, an Unfollow button, and a Person to add as follower list with an Add button" loading="lazy" style="width:100%;height:auto;max-width:480px;border:1px solid var(--border);border-radius:8px;" />
+<p style="margin:0.4rem 0 1.25rem;font-size:0.85rem;color:var(--muted);">Staff can follow a ticket themselves, add another staff member or administrator, and remove any follower.</p>
 <ul>
+  <li><strong>Adding and removing someone else.</strong> Under <strong>Person to add as follower</strong>, choose a person and click <strong>Add</strong>. The list offers only other active staff members and administrators who do not follow the ticket yet (you are left out, because <em>Follow</em> is for you). A × button beside each name, except yours, removes that follower. Anyone on staff can remove any follower, whoever added them. The person you add must be able to see the ticket, so someone outside the ticket's scope is refused and the card says why. <strong>The person you add is not emailed about being added.</strong> They see their name in the list and are emailed about later activity like any other follower. The Activity feed records who added or removed whom, for example <em>Added Bob as a follower by Jane</em>; the visibility rule below applies to those entries too.</li>
   <li><strong>What a follower is emailed about.</strong> The ticket being assigned, its requester replying, and the ticket being reopened. These come under your <em>Activity on tickets I'm assigned to or follow</em> switch (see <a href="#tickets-staff-email">Email to staff</a>), and an administrator's override of that switch applies to followers too. You are never emailed about your own change, and never twice for one event.</li>
   <li><strong>You are not mailed as a follower of a ticket you hold.</strong> The assignee is not mailed as a follower, and neither are the members of an assigned group when the group itself is being mailed. For those events, their own switches decide.</li>
   <li><strong>Reassigning ends the old assignee's follow.</strong> If you followed a ticket you were assigned, and it is then assigned to someone else or to nobody, your follow is removed. Click <em>Follow</em> again to keep the mail. Moving a ticket between groups does not touch anyone's follow.</li>
   <li><strong>If you can no longer see the ticket</strong> (for example, staff were limited to their group scope), you are skipped when mail is sent but keep following, and are mailed again if you can see it again.</li>
   <li><strong>Everyone on staff can see the list of followers.</strong> Following and unfollowing are written to the ticket's Activity feed. Administrators always see those entries; staff see them only if an administrator has turned on <em>Staff can view follow history</em> (see <a href="admin-guide.html#admin-settings-audit">the Admin Guide</a>). Requesters never see followers or follow entries.</li>
-  <li><strong>People only.</strong> An API key, an OAuth client or a service user cannot follow a ticket. Over the API, <code>PUT</code> and <code>DELETE /api/v1/tickets/{id}/follow</code> follow and unfollow, and <code>GET /api/v1/tickets/{id}/followers</code> lists them.</li>
+  <li><strong>People only.</strong> An API key, an OAuth client or a service user cannot follow a ticket. Over the API, <code>PUT</code> and <code>DELETE /api/v1/tickets/{id}/follow</code> follow and unfollow, and <code>GET /api/v1/tickets/{id}/followers</code> lists them. To add or remove someone else, <code>PUT</code> and <code>DELETE /api/v1/tickets/{id}/followers/{userId}</code> answer <code>204</code> and are safe to repeat. They need a signed-in person: a key or OAuth client gets <code>403 session_required</code>, and a requester gets <code>403</code>. An add is refused with <code>422 follower_not_eligible</code> when the person is not an active staff member or administrator, and <code>422 follower_cannot_view_ticket</code> when they cannot see the ticket.</li>
 </ul>
 
 
@@ -472,6 +479,7 @@
 
 <h3>What requesters can and cannot see</h3>
 <p>A requester sees the ticket's current state and its public replies. They do not see the Activity feed (which now also lists replies and notes) or the status timeline of their own ticket (the API refuses those requests with <code>403</code>), and the conversation no longer shows status-change events. They receive only these ticket fields: id, tracking number, subject, description, status, priority, category, type, item, created and resolved dates, the assignee's id, and resolution notes. Everything else is withheld, including the assigned group, the reporter, guest contact details, the closed and last-updated dates, its Pending timing, and the reopen count. A guest's view is the same, and it no longer includes the last-updated date.</p>
+<p><span class="badge-new">New in 1.3.0</span> If an administrator archives a ticket's category or type after the ticket was filed, the requester no longer sees the ticket's type and item names. Staff and administrators still see them.</p>
 
 
 <h2 id="tickets-formatting">Formatting text</h2>
@@ -787,14 +795,18 @@
 <p>Every number and every row follows ticket scope. With <em>Limit staff to their group scope</em> on, a staff member's numbers, rows and trend include only the tickets their scope lets them open. A requester's dashboard is as it was, plus <em>Your tickets</em>, and every count on it is of their own tickets.</p>
 
 <h3 id="tickets-dashboard-health">The health card</h3>
-<p>Administrators see a card at the top of the dashboard that lists up to four things that need attention, each with a link to where it is fixed:</p>
+<p>Administrators see a card at the top of the dashboard that lists up to five things that need attention, each with a link to where it is fixed:</p>
 <ul>
   <li>A newer release is available. The link opens the release notes in a new tab.</li>
   <li>SLA tracking is on, but its breach and at-risk alerts are off. The link goes to <em>Admin → System → Email → Notifications → SLA alerts</em>.</li>
   <li>The passkey requirement is suspended because passkeys are unavailable. The link goes to <em>Admin → System → Authentication → Multi-factor authentication</em>.</li>
+  <li><span class="badge-new">New in 1.3.0</span> <em>SAML is required for staff and users but is not working, so they cannot sign in. Administrators can still sign in with a password.</em> This shows only while <em>Require SAML for staff and users</em> is on and SAML is not loaded. The link goes to <em>Admin → System → Authentication → SAML</em>. It clears by itself once SAML loads or the requirement is turned off.</li>
   <li>The attachment scanner is unreachable while scanning is on. The link goes to <em>Admin → System → File Attachments → Malware scanning</em>.</li>
 </ul>
-<p>When there is nothing to report, the card is one line: <em>No problems to report.</em> If the card cannot load, it says so and offers <em>Retry</em>. It never says all is well when it could not check. It has no Hide button: it states what is true now. The release, passkey and scanner items also appear in the banner at the top of every page, which does have a Hide button. The SLA alerts item is shown on the card only.</p>
+<img src="../screenshots/58-dashboard-health-saml.png" width="2016" height="312" alt="The Health card on the dashboard with two items: an amber item that SLA tracking is on but its alerts are off, and a red item that SAML is required for staff and users but is not working" loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
+<p style="margin:0.4rem 0 1.25rem;font-size:0.85rem;color:var(--muted);">The health card with an amber SLA alerts item and the red SAML item.</p>
+
+<p>When there is nothing to report, the card is one line: <em>No problems to report.</em> If the card cannot load, it says so and offers <em>Retry</em>. It never says all is well when it could not check. It has no Hide button: it states what is true now. The release, passkey, SAML and scanner items also appear in the banner at the top of every page, which does have a Hide button. The SLA alerts item is shown on the card only.</p>
 
 <h3 id="tickets-dashboard-phone">On a phone</h3>
 <p>The queue numbers wrap into two columns, and <em>Needs attention</em> and the trend stack under the status cards.</p>
@@ -860,7 +872,7 @@
 
 <ul>
   <li><strong>Long text wraps and is never cut.</strong> A word or link with no break in it, such as a 300-character URL in a reply, wraps at the edge of its box, down to a 320-pixel-wide screen. This holds for everything a person wrote on a ticket: the subject, description, replies and internal notes, author names, attachment filenames, the requester line, the activity feed and its diffs, the status history, followers, the assignee, status names, category, type and item names, custom-field labels and values, tags, and the requester picker. The text is never shortened, rewritten or turned into a link, so it stays whole and can be copied.</li>
-  <li><strong>Fifteen compact places still end in "…"</strong> because they are one-line rows or chips where wrapping would break the row. None is text a person wrote on a ticket, and each, except the SAML private key, shows its full text when you hover over it: in the Linked tickets panel, the linked ticket line; in the desktop ticket table, the subject; in the reply box, a pending upload's filename and the preview in the canned-response picker; in the page frame, the signed-in email at the foot of the sidebar and the brand name in the mobile top bar; on the Dashboard, each client's name and email in the By Client cards; on the Reports page, each bar chart row's label (Backlog, Workload, and the Volume bars by category and priority); on the Account page, a passkey's label; in the authenticator-app setup, the secret under the QR code; on a ticket, each attachment's SHA-256, cut to its first 12 characters; on the Canned responses admin page, the body preview, cut to 80 characters; and on the Authentication page under System, the SAML certificate (its first line, with the whole text on hover) and the SAML private key (its first line followed by "…", with no hover text on purpose, because the key is a secret). A touch screen shows no hover text, so the two ticket rows also open the ticket, where the text wraps in full.</li>
+  <li><strong>Fifteen compact places still end in "…"</strong> because they are one-line rows or chips where wrapping would break the row. None is text a person wrote on a ticket, and each, except the SAML private key, shows its full text when you hover over it: in the Linked tickets panel, the linked ticket line; in the desktop ticket table, the subject; in the reply box, a pending upload's filename and the preview in the canned-response picker; in the page frame, the signed-in email at the foot of the sidebar and the brand name in the mobile top bar; on the Dashboard, each client's name and email in the By Client cards; on the Reports page, each bar chart row's label (Backlog, Workload, and the Volume bars by category and priority); on the Account page, a passkey's label; in the authenticator-app setup, the secret under the QR code; on a ticket, each attachment's SHA-256, cut to its first 12 characters; on the Canned responses admin page, the body preview, cut to 80 characters; and on the Authentication page under System, once you choose a file under <em>Replace…</em> for the SAML pair, the certificate (its first line, with the whole text on hover) and the private key (its first line followed by "…", with no hover text on purpose, because the key is a secret). A touch screen shows no hover text, so the two ticket rows also open the ticket, where the text wraps in full.</li>
   <li><strong>The header buttons get their own row.</strong> On a narrow screen (below tablet width) the ticket page's action buttons sit on a row under the title and tracking number, which keep the full width.</li>
 </ul>
 

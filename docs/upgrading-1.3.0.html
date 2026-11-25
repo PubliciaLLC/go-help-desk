@@ -90,6 +90,7 @@
       <li><a href="#mcp-origin">MCP origin check</a></li>
       <li><a href="#mcp-reply">MCP replies email</a></li>
       <li><a href="#archived-nodes">Archived categories, types and items</a></li>
+      <li><a href="#cti-descriptions">Category descriptions</a></li>
       <li><a href="#service-users">OAuth service users</a></li>
       <li><a href="#staff-email">Staff email</a></li>
       <li><a href="#followers">Followers</a></li>
@@ -101,6 +102,8 @@
       <li><a href="#api-changes">Other API changes</a></li>
       <li><a href="#admin-screens">Routing and paged Users</a></li>
       <li><a href="#saml-metadata">SAML metadata XML</a></li>
+      <li><a href="#saml-signin">SAML sign-in fixed</a></li>
+      <li><a href="#saml-settings">SAML settings and certificate</a></li>
       <li><a href="#staff-search">Ticket list views</a></li>
       <li><a href="#ticket-search">Filters and sorting</a></li>
       <li><a href="#reply-search">Reply search</a></li>
@@ -223,9 +226,10 @@
     <tr><td>MCP refuses requests from another origin; Streamable HTTP added</td><td>Browser-based MCP clients, proxies that add <code>Origin</code></td></tr>
     <tr><td>A public reply through MCP emails the requester</td><td>Anyone with an agent connected over MCP</td></tr>
     <tr><td>Nobody can newly file into an archived category, type or item</td><td>Staff, administrators, scripts that file or reclassify</td></tr>
+    <tr><td>Optional descriptions on categories, types and items (migration 000069); archived parents hide their children from requesters and guests</td><td>Administrators; requesters and guests; API clients of the catalogue routes</td></tr>
     <tr><td>OAuth clients act through a service user</td><td>Administrators who use OAuth clients</td></tr>
     <tr><td>Staff are emailed about their tickets</td><td>Every staff member and administrator, once an administrator turns it on (it starts off on an upgraded install)</td></tr>
-    <tr><td>Staff can follow a ticket</td><td>Staff and administrators</td></tr>
+    <tr><td>Staff can follow a ticket, and add or remove other staff as followers</td><td>Staff and administrators</td></tr>
     <tr><td>Reopening a ticket flags it, raises priority once, restarts the SLA and mails staff; requesters see less</td><td>Staff, administrators, requesters, scripts that read the audit routes</td></tr>
     <tr><td>Change priority, Assign to me, Resolve all children</td><td>Staff and administrators</td></tr>
     <tr><td>Webhooks: the raw JSON body holds only ids, notes are their own event, failed deliveries are retried, a history, a ticket filter</td><td>Anyone who receives webhooks</td></tr>
@@ -234,6 +238,9 @@
     <tr><td>Other API changes: unknown settings keys refused, new answer shapes</td><td>Scripts and integrations</td></tr>
     <tr><td>New Admin → Tickets → Routing page; Admin → People → Users is paged</td><td>Administrators; scripts that save the auto-assignment settings</td></tr>
     <tr><td>SAML accepts pasted metadata XML and reads more name claims</td><td>Administrators who set up SAML; SAML users whose display name may change</td></tr>
+    <tr><td>SAML sign-in fixed: the sign-in request asks for a persistent NameID; existing SAML accounts reconnect by email address at their next sign-in; a deleted SAML account is retired and a new one created; <em>New user</em> works over a deleted account; addresses are matched ignoring case</td><td>Administrators who use SAML (Microsoft Entra ID above all); SAML users; anyone who relies on the address attribute at the identity provider (see the trust note)</td></tr>
+    <tr><td>SAML settings: the form is always shown, the switch is now <em>Require SAML for staff and users</em>, the Entity ID and ACS URL have copy buttons, a warning when SAML is required but not loaded, and that state is a red server problem</td><td>Administrators</td></tr>
+    <tr><td>The SAML service-provider certificate and key are generated for you; an existing pair is kept; <code>regenerate_cert</code></td><td>Administrators who set up SAML; scripts that call <code>PUT /api/v1/admin/saml</code></td></tr>
     <tr><td>The ticket list's queues become sidebar views (Assigned to Me, My Group's Tickets, Available and Search); Available is for administrators unless Staff is ticked under Admin → System → Privacy</td><td>Staff and administrators; scoped staff lose unassigned tickets from their default list. <code>scope=assigned_to_me</code>, <code>my_groups</code> and <code>visible</code> and the <code>held_by</code> filter are new</td></tr>
     <tr><td>Ticket list filters, sortable columns and a free-text requester filter; new scope <code>requester_search:read</code>; <code>reporter_id</code>, <code>requester</code> and <code>assignee_group_id</code> now combine</td><td>Everyone who uses the ticket list; scripts that call <code>GET /api/v1/tickets</code>; owners of API keys and OAuth clients that need requester search</td></tr>
     <tr><td>Search can include replies; the server builds the reply index in the background after the first start; an optional <code>prepare-reply-search</code> command for very large installs; the server refuses arguments it does not know</td><td>Everyone who searches; administrators of installs with many replies; anyone who passes arguments to the server</td></tr>
@@ -243,6 +250,8 @@
     <tr><td>Staff can have API keys; every new key expires; keys cannot create keys, create OAuth clients or write users; three more settings are session-only; webhooks made by a key pause with it</td><td>Administrators, staff, and every script that uses an API key</td></tr>
     <tr><td>Long text wraps on phones, and the ticket header buttons get their own row</td><td>Staff and requesters on phones</td></tr>
     <tr><td>Open tickets assigned to a deleted user go back to the unassigned queue</td><td>Staff on an install upgraded from 1.2.x</td></tr>
+    <tr><td>Slack and Teams new-ticket messages name the classification and who holds the ticket</td><td>Anyone who reads those channels</td></tr>
+    <tr><td>Docker Compose fixes the owner of the attachments directory (an <code>attachments-init</code> service runs first)</td><td>Fresh Linux Compose installs; anyone who sees an extra exited container</td></tr>
     <tr><td>The server logs which migrations ran</td><td>Operators</td></tr>
     <tr><td>Rolling back to 1.2.0 is possible by hand, and costs data and security fixes</td><td>Operators who need to go back</td></tr>
     <tr><td>Guests can no longer upload until an administrator turns on <em>Guests may attach files</em></td><td>Administrators; scripts that upload as a guest</td></tr>
@@ -270,6 +279,8 @@
   <li><strong>Refused sign-ins say why.</strong> When a single sign-on is refused, the login page shows a plain message for the reason, such as an address already held by another account or a domain that is not allowed. The message is chosen from the refusal code, never from text in the address bar.</li>
   <li><strong>Provider-wrapped addresses are matched.</strong> On a first OIDC sign-in, the address is matched by its parsed form, so an address sent as <code>&lt;a@example.com&gt;</code> finds the account for <code>a@example.com</code> instead of creating a second one. The sign-in is refused instead when that account is an administrator, or is already linked to SAML or to another OIDC identity.</li>
   <li><strong>Identity-provider lockout guard.</strong> A SAML or OIDC settings change that would leave no administrator able to sign in is refused. <a href="https://github.com/PubliciaLLC/go-help-desk/blob/v1.3.0/docs/DESIGN.md#identity-provider-lockout-guard-300">Design notes</a></li>
+  <li><strong>SAML sign-in works more than once.</strong> The sign-in request asks for a persistent NameID, existing SAML accounts reconnect by email address at their next sign-in, and a deleted SAML account's address can be used again. <a href="#saml-signin">Details</a></li>
+  <li><strong>Less SAML setup.</strong> The service-provider certificate and key are generated for you, the SAML form is always shown, the switch is now <em>Require SAML for staff and users</em>, and SAML that is required but not working shows as a red server problem. <a href="#saml-settings">Details</a></li>
   <li><strong>Signup asks later.</strong> The display name and password are chosen when the email is verified. <a href="#signup">Details</a></li>
   <li><strong>Guest submission works.</strong> A visitor files a ticket at <code>/submit</code> without an account, receives a per-ticket link, and can reply through it. A guest can attach files from the guest page once an administrator turns that on; it is off by default (<a href="#guest-attachments">Details</a>). <a href="authentication.html#auth-guest">Guest access</a></li>
   <li><strong>Closed means closed.</strong> A closed ticket is read-only and stays closed by default. The way on is a linked follow-up ticket. An operator can allow admins, or staff and admins, to reopen a closed ticket. <a href="tickets.html#tickets-follow-up">Follow-up tickets</a></li>
@@ -280,9 +291,11 @@
   <li><strong>First-run setup creates a category.</strong> A new instance can file a ticket straight away. <a href="getting-started.html#first-run">First-run setup</a></li>
   <li><strong>A readable audit log.</strong> A per-ticket activity feed and an admin-wide searchable view. <a href="admin-guide.html#admin-audit">Audit log</a></li>
   <li><strong>Staff email and followers.</strong> Staff are emailed when a ticket is assigned to them or their group, when a requester replies, and when a ticket is reopened, and can follow any ticket to get the same mail. <a href="#staff-email">Staff email</a>, <a href="#followers">Followers</a></li>
+  <li><strong>Add followers.</strong> Staff and administrators can add another staff member or administrator to a ticket as a follower, and remove any follower. <a href="#followers">Details</a></li>
   <li><strong>Reopened tickets are flagged.</strong> A reopen raises the priority one level the first time, starts the SLA over and mails staff. <a href="#reopen">Details</a></li>
   <li><strong>More on the ticket page.</strong> Staff can change a ticket's priority, take an unassigned ticket with Assign to me, and resolve all open child tickets at once. <a href="#ticket-page">Details</a></li>
   <li><strong>Archive from the admin screen.</strong> Categories, types and items can be archived and unarchived in <strong>Admin → Tickets → Categories</strong>. <a href="#archived-nodes">Details</a></li>
+  <li><strong>Descriptions on categories, types and items.</strong> An optional line or two of guidance, shown beneath the chooser on New ticket, the guest form and the Classification card. Public text, up to 500 characters. <a href="#cti-descriptions">Details</a></li>
   <li><strong>OAuth clients can write.</strong> Each client acts as a service user that is listed in Admin → People → Users. <a href="#service-users">Details</a></li>
   <li><strong>API keys for staff.</strong> Staff can create their own API keys when an administrator allows it, every new key expires, and keys are limited in what they can do. Several scripts break; read <a href="#api-keys">the details</a>.</li>
   <li><strong>File for a requester.</strong> Staff can file a ticket for an existing user or a typed address. <a href="#on-behalf">Details</a></li>
@@ -299,6 +312,7 @@
   <li><strong>Search replies.</strong> A search can also match the conversation, with the matched words highlighted. Internal notes are never shown to requesters. After the upgrade, the server builds the reply index in the background. <a href="#reply-search">Details</a></li>
   <li><strong>One delivery per change.</strong> A webhook gets one delivery for one change, however many things it changed, and nothing is sent for a change that failed. <a href="#one-event">Details</a></li>
   <li><strong>Webhook retries, history and a ticket filter.</strong> <a href="#webhooks">Details</a></li>
+  <li><strong>Slack and Teams new-ticket messages name the classification and the holder.</strong> <a href="#webhooks-placement">Details</a></li>
   <li><strong>MCP over Streamable HTTP.</strong> The server answers MCP at <code>/mcp</code>, and the older SSE routes stay. <a href="mcp.html">MCP Server</a></li>
   <li><strong>Addresses must be ASCII.</strong> New addresses with a character outside plain ASCII are refused, and allowed email domains must be ASCII. Existing accounts keep signing in. <a href="#ascii-email">Details</a></li>
   <li><strong>Forgot password.</strong> The sign-in page can mail a one-time link to choose a new password, when email is set up. <a href="#forgot-password">Details</a></li>
@@ -307,6 +321,7 @@
   <li><strong>Webhooks with chat formats.</strong> An Admin → Integrations → Webhooks screen, with Slack, Teams, Discord and JIRA payload formats. <a href="admin-guide.html#admin-webhooks">Webhooks</a></li>
   <li><strong>Attachment security.</strong> Content detection, mismatch handling, quarantine, download-only files, and optional scanning and reputation lookups. <a href="attachment-security.html">Attachment Security</a></li>
   <li><strong>Published images.</strong> Multi-architecture images for amd64 and arm64, published to GHCR. Building from source is still supported. <a href="getting-started.html#quick-start">Quick start</a></li>
+  <li><strong>Compose fixes the attachments directory owner.</strong> A short <code>attachments-init</code> service runs before the app. <a href="#startup-checks">Details</a></li>
   <li><strong>Loud configuration warnings.</strong> Administrators see server problems in one slim bar, red for real failures and amber for configuration notices, that opens to the full text and lets them hide a notice for the session (<a href="admin-guide.html#admin-server-warnings">Server warnings</a>); below, "banner" means a notice in that bar. Example secrets are reported at startup and in a red banner for administrators. "Scanning is off" is reported at startup, by <code>GET /api/v1/admin/security-warnings</code> and, on an instance that holds attachments but never chose a scan policy, in an amber banner. An attachment directory that cannot be written is reported at startup and in a red banner. <em>Admin → System → File Attachments → Malware scanning</em> shows the scanner's status.</li>
 </ul>
 
@@ -529,6 +544,8 @@ CLAMAV_ADDR=tcp://clamav:3310</code></pre></li>
 
 <p>Before this, an unwritable directory showed up as a failed upload partway through, as a <code>500</code>.</p>
 
+<p><strong>Docker Compose installs fix the owner for you.</strong> The server runs as uid 100 and gid 101, and on a fresh Linux host Docker creates the mounted <code>docker/data/attachments</code> as <code>root:root</code>, which the server cannot write to. The Compose file now runs a short <code>attachments-init</code> container before the app starts. It creates the directory if it is missing and sets its owner to 100:101 when it is not already. It leaves a directory that is already right alone, so a restart does not touch every stored file. It then exits: <code>docker compose ps -a</code> shows it as <em>Exited (0)</em>, which is normal. There is nothing to do on an upgrade from 1.2, because the directory already has that owner. If you do not use the Compose file, make <code>ATTACHMENT_DIR</code> writable by uid 100 and gid 101 yourself, for example <code>chown -R 100:101 /path/to/attachments</code>.</p>
+
 <p><code>APP_ENV</code> does nothing. If it is set in your environment, whatever its value, the server logs one line saying it is set and ignored. Use <code>LOG_LEVEL</code> for verbose logs.</p>
 
 <h2 id="client-errors">Client mistakes answer 4xx, and DELETE of an unknown id answers 404</h2>
@@ -661,6 +678,21 @@ CLAMAV_ADDR=tcp://clamav:3310</code></pre></li>
 <img src="../screenshots/33-admin-categories-archive.png" width="2880" height="1800" alt="Admin, Tickets, Categories with the sidebar's Tickets section open and four categories listed (Hardware, Software, Network, Accounts and Access) and a fifth, Desk phones, greyed out with an Archived badge. Each row has an archive icon (a restore icon on the archived row) and a delete icon" loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
 <p style="margin:0.4rem 0 1.25rem;font-size:0.85rem;color:var(--muted);">Admin → Tickets → Categories: an archived category stays in the list, greyed out and marked Archived.</p>
 
+<h2 id="cti-descriptions">Categories, types and items can have a description</h2>
+
+<p><strong>Who notices:</strong> administrators, requesters and guests, and API clients of the catalogue routes. <strong>Nothing changes until an administrator writes a description.</strong> Every existing entry starts with none, and the forms look exactly as before.</p>
+
+<p>Each category, type and item can have an optional <strong>Description</strong>: a line or two of guidance that says what belongs under it. The most specific one of the choices made shows beneath the Category, Type and Item selectors on the <strong>New ticket</strong> page (also when staff file for someone else), on the public guest form (where only the category is chosen) and in the Classification card's Edit mode on a ticket. It updates as the person changes a selector: the item's text if the item has one, otherwise the type's, otherwise the category's, and nothing when none of them has one.</p>
+
+<ul>
+  <li><strong>Where to set it:</strong> <strong>Admin → Tickets → Categories</strong>. The create forms have a Description box, and an expanded category, type or item has one with its own Save. It is plain text, at most <strong>500 characters</strong>, with line breaks kept. It is never shown as HTML or Markdown. A longer text is refused with <code>400</code>, and saving an empty box clears it.</li>
+  <li><strong>Every active description is public.</strong> While guest submission is on, the catalogue routes (<code>GET /api/v1/categories</code>, <code>/categories/{id}/types</code> and <code>.../items</code>) answer without a sign-in and carry the description of every active category, type and item. Any signed-in person can read them whether or not guest submission is on. Do not put anything in a description that you would not put on a public web page.</li>
+  <li><strong>Archived parents now hide their children from requesters and guests.</strong> <code>GET /categories/{id}/types</code> and <code>.../items</code> used to return the still-active types of an archived category (and the items of an archived type) to anyone who knew the id, because archiving does not cascade. They now return an empty list. Staff and administrators still see everything. One visible effect: a requester's view of a ticket whose category or type was archived later no longer shows the type and item names.</li>
+  <li><strong>Migration 000069</strong> adds the <code>description</code> column. Its down migration drops it; see <a href="#rollback-lose">What you lose</a>.</li>
+  <li><strong>API (additive):</strong> a <code>description</code> string (empty when none) on every category, type and item the API returns, and in the MCP <code>list_categories</code> tree. <code>POST</code> and <code>PATCH</code> on the admin routes accept an optional <code>description</code>; on <code>PATCH</code> an absent key leaves it unchanged. Tickets and webhook payloads are unchanged. Creating or editing a description is not written to the audit log.</li>
+</ul>
+<p>See <a href="admin-guide.html#admin-cti">Admin Guide: Categories, Types &amp; Items</a>.</p>
+
 <h2 id="service-users">OAuth clients act through a service user</h2>
 
 <p><strong>Who notices:</strong> administrators who use OAuth clients, and the integrations behind them.</p>
@@ -702,6 +734,7 @@ CLAMAV_ADDR=tcp://clamav:3310</code></pre></li>
 
 <ul>
   <li><strong>People only.</strong> An API key, an OAuth client or a service user cannot follow or unfollow (<code>403 session_required</code>). Reading <code>GET /api/v1/tickets/{id}/followers</code> works for staff and administrators, and for a key with <code>tickets:read</code>. Staff always see who follows a ticket.</li>
+  <li><strong>Staff and administrators can add another staff member or administrator as a follower, and remove any follower.</strong> On the ticket page, use the <em>Person to add as follower</em> list and <em>Add</em>, and the remove button beside a name. Over the API, <code>PUT</code> and <code>DELETE /api/v1/tickets/{id}/followers/{userId}</code> answer <code>204</code> and are idempotent. Like following, they are session only: an API key or OAuth client gets <code>403 session_required</code>, and a requester gets <code>403</code>. The person added must be an active staff member or administrator (<code>422 follower_not_eligible</code> otherwise) who can see the ticket under ticket scope (<code>422 follower_cannot_view_ticket</code> otherwise). <strong>The person added is not emailed</strong>; they hear about later activity like any follower. The audit entry names who added or removed whom (<code>follower_user_id</code>). No migration, no setting.</li>
   <li><strong>Following is recorded</strong> in the audit log (<code>followed</code>, <code>unfollowed</code>). Administrators see these on a ticket's activity feed and in the admin-wide audit view. Staff do not see them on a ticket's activity feed (they have no admin-wide audit view), until an administrator turns on <strong>Staff can view follow history</strong> (<code>staff_can_view_follow_audit</code>, under <strong>Admin → System → Privacy → Audit log</strong>; off by default). Requesters never see them.</li>
   <li>A follower who can no longer see the ticket (ticket scope was turned on, or their groups changed) is skipped when the mail is sent, and keeps following.</li>
   <li><strong>Reassigning a ticket ends the old assignee's follow</strong> if they followed the ticket they held. It is recorded as <code>unfollowed</code> with whoever moved the ticket as the actor. Moving a ticket between groups does not touch anyone's follow.</li>
@@ -761,6 +794,10 @@ CLAMAV_ADDR=tcp://clamav:3310</code></pre></li>
 
 <h3 id="webhooks-filter">New: a ticket filter</h3>
 <p>A hook can be limited to tickets in chosen categories, priorities or assigned groups (<strong>Admin → Integrations → Webhooks → Ticket filter</strong>), or inverted to send for every ticket that does not match. A hook with no filter, which is every hook after the upgrade, behaves as before. An event the filter turns away is not a delivery for that hook: no delivery id, no retry, no History entry. The filter is read as it is now, when an event is sent, at every retry and at Redeliver, so tightening a filter drops waiting retries that it no longer admits. Redeliver is refused with <code>409 webhook_filter_excludes</code> when the filter does not admit the ticket, and with <code>409 webhook_filter_unverifiable</code> when the hook has a filter and the ticket is gone. A ticket that auto-assignment routes when it is created is announced with its group already set, so a group condition can match <code>ticket.created</code>.</p>
+
+<h3 id="webhooks-placement">New: Slack and Teams new-ticket messages name the classification and who holds it</h3>
+<p>A <code>ticket.created</code> message to a Slack or Teams hook now has up to two more lines under the subject: the classification as <code>Category &gt; Type &gt; Item</code> (only the levels the ticket has), and <code>Group: IT Support · Assignee: Jordan Blake</code> (only the parts it has), or <code>Unassigned</code> when it has neither. In Teams each is a subtle line of the same card, so a long name wraps. Discord, Jira and every other event are unchanged.</p>
+<p>Every Slack and Teams hook that gets the message gets both lines, whatever events it lists. Who holds a new ticket is a fact about the ticket as filed, including where routing placed it, and is not a separate <code>ticket.assigned</code> notice. A later reassignment is not in the created message and still reaches only hooks that list <code>ticket.assigned</code>. A Redeliver names the ticket's current holder. The names are read when the message is sent, so a category, group or person renamed in between is named as it is then. The raw JSON body and its fields are unchanged, there is no migration, and nothing new is stored. If the names cannot be read, the message goes without the lines.</p>
 
 <h2 id="one-event">One change, one event: webhooks and staff email</h2>
 
@@ -838,6 +875,9 @@ CLAMAV_ADDR=tcp://clamav:3310</code></pre></li>
 <ul>
   <li><code>GET /api/v1/auth/providers</code> is served as JSON. <code>oidc</code> and <code>saml</code> now mean loaded and working, not switched on. The new <code>local_admin_only</code> is true when SAML limits password sign-in to administrators.</li>
   <li><code>GET /api/v1/admin/oidc</code> and <code>/admin/saml</code> gain <code>live</code>: <code>configured: true, live: false</code> means saved, not working.</li>
+  <li><code>GET /api/v1/admin/saml</code> also gains <code>sp_acs_url</code>, <code>cert_not_after</code> and <code>cert_generated</code>. <code>PUT /api/v1/admin/saml</code> accepts <code>regenerate_cert: true</code>, and one PEM without the other is <code>400 invalid_cert_key</code>. <code>PATCH /api/v1/admin/settings</code> and <code>PUT /api/v1/admin/saml</code> can answer <code>200</code> with a <code>warning</code> when SAML is required but not loaded. <code>GET /api/v1/admin/security-warnings</code> gains <code>saml_required_not_loaded</code>. See <a href="#saml-settings">SAML settings</a>.</li>
+  <li><code>description</code> (a string, empty when none) on categories, types and items, in the admin and the catalogue routes and in MCP <code>list_categories</code>; <code>GET /categories/{id}/types</code> and <code>.../items</code> answer a requester or guest an empty list for an archived parent. See <a href="#cti-descriptions">Descriptions</a>.</li>
+  <li><code>PUT</code> and <code>DELETE /api/v1/tickets/{id}/followers/{userId}</code> are new; see <a href="#followers">Followers</a>.</li>
   <li><code>GET /api/v1/auth/signup/status</code>: <code>open_registration</code> is what is in force, so it is false when an allowed-domains list limits signup. The new <code>restricted_by_domain_list</code> says why.</li>
   <li><code>Retry-After</code> on a <code>429</code> from the sixty-second sign-in, signup and guest limits is now the seconds left (1 to 60). The 15-minute second-factor lock still says 900.</li>
   <li>A server crash inside a request answers a JSON <code>500 internal_error</code> instead of an empty body.</li>
@@ -866,6 +906,79 @@ CLAMAV_ADDR=tcp://clamav:3310</code></pre></li>
   <li><strong>Metadata as XML.</strong> Under <strong>Admin → System → Authentication → SAML</strong> you can now give the identity provider's metadata as a URL (as before) or as XML that you paste or upload (<strong>Upload .xml</strong> fills the same box). The two are alternatives: <code>PUT /api/v1/admin/saml</code> refuses a save that would leave both set with <code>400 saml_metadata_conflict</code>. The XML is checked before anything is saved, and refused with <code>invalid_saml_metadata</code> if it is not SAML metadata, has no identity provider section, or has no signing certificate, and with <code>saml_metadata_too_large</code> over 262144 bytes (256 KiB). It is shown again after saving, and it is never refreshed: paste the new metadata when your identity provider changes its signing certificate. <code>GET /api/v1/admin/saml</code> now returns <code>metadata_xml</code>.</li>
   <li><strong>More name claims.</strong> The display name is now also read from <code>firstName</code> and <code>lastName</code>, and from the claim names Microsoft Entra ID sends by default. A person's stored name is rewritten at each sign-in, so an identity provider that already sent these may change some display names at the next sign-in. <a href="authentication.html#auth-saml">Details</a></li>
 </ul>
+
+<h2 id="saml-signin">SAML accounts could sign in only once with Entra; fixed</h2>
+
+<p><strong>Who notices:</strong> administrators who use SAML (Microsoft Entra ID above all), the people who sign in through it, and anyone who relies on the address attribute at the identity provider.</p>
+
+<p><strong>What was wrong.</strong> The help desk asked the identity provider for a <em>transient</em> NameID, and Microsoft Entra ID answers that with a new random value at every sign-in. The NameID is the key of the account, so the first sign-in created the account and every later one looked like a new person whose address was already taken: <em>Another account here already uses the email address your identity provider sent.</em> In effect a SAML account worked for exactly one sign-in. Other identity providers that hand out a different NameID each time failed the same way.</p>
+
+<p><strong>What changed.</strong></p>
+<ul>
+  <li><strong>The sign-in request now asks for a persistent NameID</strong> (<code>urn:oasis:names:tc:SAML:2.0:nameid-format:persistent</code>), and the service-provider metadata says so. Entra then sends a stable identifier for each user and application. The format in the request overrides the setting in the Entra application, so there is nothing to change there. Download the SP metadata again only if your identity provider keeps a copy of it.</li>
+  <li><strong>Existing SAML accounts reconnect at their next sign-in, by email address.</strong> When the NameID is one no account knows but a live account that SAML created holds the address in the assertion, that account is linked to the new NameID and signed in. Its role, groups and tickets are untouched. This repairs every account created before 1.3.0 without any step from you. A disabled account is still refused (<code>account_disabled</code>) and is not relinked.</li>
+  <li><strong>A local account is never taken over.</strong> An address held by an account that SAML did not create (a local password account, an administrator above all, or a service account) still refuses the SAML sign-in with <code>email_taken</code>. The login page now says that an account with that address already exists and was not created by single sign-on (or is held by a removed account), and to ask an administrator.</li>
+  <li><strong>A deleted SAML account is gone.</strong> If someone whose SAML-created account was deleted signs in through SAML again, they get a new account with the role User. The old row stays, with its id, tickets and audit history; its address becomes <code>deleted-&lt;id&gt;@invalid</code> and its SAML subject is cleared, in the same step that creates the new account. A deleted <em>local</em> account still blocks its address.</li>
+  <li><strong>An administrator can create an account over a deleted one.</strong> <strong>Admin → People → Users → Add User</strong> (the <em>New user</em> form; <code>POST /api/v1/admin/users</code>) with an address that only deleted accounts hold releases the address the same way and creates the account in one step. Before, it answered <code>409 email_taken</code> with no way forward in the web interface. An address held by a live account still answers <code>409 email_taken</code>, now with the message "an account with that email address already exists". <strong>To bring a deleted SAML user back, have them sign in through SAML.</strong> The New user form makes a <em>local</em> account, and a SAML sign-in refuses to take over a local account.</li>
+  <li><strong>Two first sign-ins of one person at once</strong> (a double click, two tabs) now end with one account and no error.</li>
+  <li><strong>Addresses are matched ignoring case.</strong> Accounts written before 1.2.0 can have a mixed-case address; a SAML sign-in and the New user form find, relink or release them like any other and do not make a second account beside one. Other doors (signup, OIDC, editing an address) still compare exactly.</li>
+  <li><strong>After a retirement, search by the old address stops finding that row.</strong> The retired row shows <code>deleted-&lt;id&gt;@invalid</code>, so the audit log and the ticket search by the old address no longer reach it. Its history is reached by the row's id.</li>
+</ul>
+
+<p><strong>An identity provider that refuses persistent</strong> answers the request with a status error. The sign-in then lands on the login page (<code>/login?error=saml_nameid_format</code>) with <em>Your identity provider cannot issue the persistent identifier this help desk asks for. Ask an administrator to check the single sign-on setup.</em> Allow persistent identifiers for the application at the provider.</p>
+
+<p><strong>What your identity provider must send.</strong> A NameID (an opaque one is fine) <em>and</em> the person's address as an attribute: <code>email</code>, <code>mail</code>, the LDAP <code>mail</code> OID or Entra's <code>…/claims/emailaddress</code>. Without the address an opaque NameID cannot name a mailbox, and a first sign-in is refused with <code>invalid_email</code> (also when an allowed-domains list is set).</p>
+
+<div class="callout callout-warn">
+  <p><strong>Trust.</strong> Reconnecting by address makes the identity provider's address attribute the identity of every SAML-created account. Anyone who can make the provider assert an address can sign in as the SAML-created account that holds it, a promoted administrator and an account later given a password or a second factor included. Check which attribute is mapped to the address and that users cannot edit it at the provider. An account that SAML did not create is never taken over this way.</p>
+</div>
+
+<div class="callout callout-note">
+  <p><strong>Not verified:</strong> sign-in against a real Microsoft Entra ID tenant. The persistent request, the matching and the race are tested against Postgres and the SAML library, not against Entra.</p>
+</div>
+
+<p><strong>See which accounts this concerns</strong> (read only):</p>
+
+<pre><code>-- every SAML-created account; each one has a stored NameID that may be a dead transient value
+SELECT id, email, role, disabled, deleted_at, left(saml_subject, 12) AS subject_start, created_at
+FROM users WHERE saml_subject &lt;&gt; '' ORDER BY created_at;
+
+-- addresses stored with capitals (written before 1.2.0): matched ignoring case, listed so you know
+SELECT id, email, deleted_at FROM users WHERE email &lt;&gt; lower(email);
+
+-- one person, whatever state the row is in
+SELECT id, email, role, disabled, deleted_at, saml_subject &lt;&gt; '' AS saml_created, password_hash &lt;&gt; '' AS has_password
+FROM users WHERE lower(email) = lower('person@example.com');
+
+-- addresses already retired by the rule above (deleted accounts that gave their address up)
+SELECT id, email, deleted_at FROM users WHERE email LIKE 'deleted-%@invalid' ORDER BY deleted_at;</code></pre>
+
+<p>See <a href="authentication.html#auth-saml">Authentication: SAML</a>.</p>
+
+<h2 id="saml-settings">SAML settings: always shown, a generated certificate, and a server problem</h2>
+
+<p><strong>Who notices:</strong> administrators, and scripts that call <code>PUT /api/v1/admin/saml</code> or <code>PATCH /api/v1/admin/settings</code>. No new migration.</p>
+
+<img src="../screenshots/56-system-authentication-saml.png" width="1408" height="1882" alt="The SAML section of Admin, System, Authentication: Entity ID and ACS URL with copy buttons, the identity provider metadata as XML, the SP certificate marked Generated automatically with its expiry and Download certificate, Replace and Regenerate buttons, Save SAML config, and the Require SAML for staff and users switch The addresses shown use an example host." loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
+<p style="margin:0.4rem 0 1.25rem;font-size:0.85rem;color:var(--muted);">Paste or link the IdP metadata and save: the certificate and key are created for you.</p>
+
+<ul>
+  <li><strong>The form is always shown.</strong> It no longer waits for a switch: <em>Save SAML config</em> is what turns SAML on. The page shows the <strong>Entity ID</strong> and the <strong>ACS URL</strong> to give your identity provider, each with a copy button. <code>GET /api/v1/admin/saml</code> gains <code>sp_acs_url</code>, next to <code>sp_metadata_url</code>.</li>
+  <li><strong>The switch is now <em>Require SAML for staff and users</em></strong> (it was <em>Enable SAML login</em>). It only turns off password sign-in for staff and users; administrators keep it. It is saved by the page's own <em>Save changes</em>.</li>
+  <li><strong>A warning when SAML is required but not loaded.</strong> A <code>PATCH /api/v1/admin/settings</code> that leaves <code>saml_enabled</code> on while SAML is not loaded still succeeds, but answers <code>200</code> with a <code>warning</code>: staff and users cannot sign in until SAML is loaded or the switch is turned off. <code>PUT /api/v1/admin/saml</code> says the same when its save leaves SAML not loaded while the switch is on. <code>PATCH /api/v1/admin/settings</code> now also loads SAML and OIDC changes into the running server, as the <code>PUT</code> routes do; before, they took effect at the next restart. When the new configuration cannot be loaded, the answer is <code>200</code> with a <code>warning</code> and the running configuration is kept.</li>
+  <li><strong>That state is a red server problem.</strong> While <em>Require SAML for staff and users</em> is on and SAML is not loaded (the IdP metadata, certificate or key is missing, or the metadata could not be loaded), administrators see a red <em>Staff and users cannot sign in: SAML is required but is not working</em> notice in the server problems bar and on the dashboard's health card, linking to <strong>Admin → System → Authentication → SAML</strong>. It goes away by itself when SAML loads or the switch is turned off; there is nothing to restart. <code>GET /api/v1/admin/security-warnings</code> gains <code>saml_required_not_loaded: {reason}</code> (<code>incomplete</code> or <code>not_loaded</code>), present only in that state. Nothing is shown while the switch is off.</li>
+  <li><strong>You no longer create the service-provider certificate and key yourself.</strong> Save the identity provider's metadata and the server generates the pair: a self-signed RSA 2048 certificate, valid ten years, with the host of <code>BASE_URL</code> as its CN and "Go Help Desk" as organisation. The key is never shown or returned. The page shows <em>Generated automatically</em> with the expiry and a <strong>Download certificate</strong> button for an identity provider that wants it. <strong>Replace…</strong> uploads your own pair (certificate and key together), and <strong>Regenerate</strong> makes a new one; the identity provider must be given the new certificate if it pinned the old one. Authentication requests are still not signed.
+    <ul>
+      <li><strong>An upgraded installation that already has a certificate and key keeps them.</strong> The pair you uploaded is never replaced, and nothing runs at upgrade. Only a save that has IdP metadata and no stored pair generates one, and only <code>PUT /api/v1/admin/saml</code> does (<code>PATCH /api/v1/admin/settings</code> does not).</li>
+      <li><strong>API:</strong> <code>PUT /api/v1/admin/saml</code> accepts <code>cert_pem</code> and <code>key_pem</code> as before (both or neither; one alone is still <code>400 invalid_cert_key</code>) and a new <code>regenerate_cert: true</code>. <code>GET /api/v1/admin/saml</code> gains <code>cert_not_after</code> and <code>cert_generated</code>. A script that sent both fields keeps working. A script that sent metadata with no pair, which used to leave SAML unloaded, now gets SAML loaded with a generated pair.</li>
+      <li><strong>Audit:</strong> a generation or regeneration is an audit entry (entity <code>setting</code>, action <code>saml_cert_generated</code> or <code>saml_cert_regenerated</code>) with the certificate's expiry and SHA-256 fingerprint, never the key.</li>
+    </ul>
+  </li>
+  <li><strong>An unsaved edit survives a refetch.</strong> On any System page, an unsaved edit now survives the page re-reading its settings, which happens after <em>Save SAML config</em> and whenever the browser window regains focus (for example when the certificate file picker closes). Before, any refetch reset the edit. An edit made while the page's own save is still running is kept too.</li>
+  <li><strong>A SAML assertion can be used once.</strong> The library accepted the same signed response again for about 90 seconds; it is now refused (<code>403</code>) on its second use. An identity provider that reuses assertion IDs breaks the SAML specification and is refused from its second sign-in.</li>
+  <li><strong>The metadata URL is read every hour,</strong> not only at start and on save. A signing certificate your identity provider removes stops being trusted by itself; a <em>new</em> signing certificate is never applied by the refresh. The refresh is limited to <code>https</code> URLs and to the same entity ID. Administrators see a red notice with the new certificate's fingerprint and expiry, and saving the SAML settings again trusts it. A certificate rollover therefore needs one administrator re-save after your identity provider publishes the new certificate and before the old one expires. Pasted XML is never refreshed. <code>GET /api/v1/admin/security-warnings</code> gains <code>saml_idp_certificate</code> and <code>saml_metadata_refresh</code> for these cases.</li>
+</ul>
+<p>See <a href="authentication.html#auth-saml">Authentication: SAML</a> and <a href="admin-guide.html#admin-server-warnings">Admin Guide: Server warnings</a>.</p>
 
 <h2 id="staff-search">Ticket list: views in the sidebar, a Search view and who may open Available</h2>
 
@@ -1073,8 +1186,8 @@ SELECT pg_reload_conf();</code></pre>
 <h2 id="migration-log">The server log says which migrations ran</h2>
 
 <p><strong>Who notices:</strong> operators.</p>
-<p>At startup, before it opens the port, the server logs what it did to the database schema. <code>database migrated from 21 to 68</code> means an upgrade from 1.2.0: the first number is the version the database was at, the second the version it is at now (a new database says <code>from 0</code>). <code>database schema at 68, no migrations needed</code> is an ordinary restart. The line also carries <code>from</code> and <code>to</code> fields. Use it to check that an upgrade ran before you look anywhere else. A failed migration still stops the start with <code>running migrations: …</code>.</p>
-<p><strong>Migrations 000066 to 000068</strong> are the passkey policy (#616), the SLA alerts (#670) and the dashboard's resolved-date index (#675), in that order. They run in number order when the server starts; there is nothing to do.</p>
+<p>At startup, before it opens the port, the server logs what it did to the database schema. <code>database migrated from 21 to 69</code> means an upgrade from 1.2.0: the first number is the version the database was at, the second the version it is at now (a new database says <code>from 0</code>). <code>database schema at 69, no migrations needed</code> is an ordinary restart. The line also carries <code>from</code> and <code>to</code> fields. Use it to check that an upgrade ran before you look anywhere else. A failed migration still stops the start with <code>running migrations: …</code>.</p>
+<p><strong>Migrations 000066 to 000069</strong> are the passkey policy (#616), the SLA alerts (#670), the dashboard's resolved-date index (#675) and the category, type and item descriptions (#694), in that order. They run in number order when the server starts; there is nothing to do.</p>
 
 <h2 id="rollback">Rolling back to 1.2.0</h2>
 
@@ -1143,6 +1256,8 @@ Pending signups that 1.3.0 created without a name or password (000032, 000033).
 </li><li>
 <strong>Dashboard index</strong> (000068): <code>tickets_done_at_idx</code> is dropped. Nothing is lost, and 1.2.0 has no query that uses it; upgrading again recreates it.
 </li><li>
+<strong>CTI descriptions</strong> (000069): the <code>description</code> column on categories, types and items is dropped, so every description an administrator wrote is lost, and upgrading again starts from none. Nothing else changes; 1.2.0 never shows them.
+</li><li>
 <strong>Passkey policy and SLA alerts</strong> (000066, 000067): the <code>passkey_required_roles</code> setting is removed. The columns <code>sla_records.response_at_risk_at</code> and <code>resolution_at_risk_at</code>, which record which crossings were already announced, and <code>users.email_notify_sla</code>, each person's SLA alerts switch, are dropped; 1.2.0 reads none of them. The settings 000067 wrote stay (see below).
 </li></ul>
 <p><strong>Not undone</strong> (they repair or seed data and have no inverse; their <code>down</code> does nothing): <code>000028</code>, <code>000039</code>, <code>000052</code> and <code>000053</code>. The three staff-email overrides <code>000052</code> stored stay in the settings table, the settings <code>000067</code> wrote (<code>sla_alerts_enabled</code> and <code>staff_email_sla_override</code>) stay too, and the tickets <code>000053</code> returned to the queue stay unassigned. 1.2.0 never reads those settings. Settings rows 1.3.0 wrote stay in the table. Passwords hashed at the new cost still work on 1.2.0.</p>
@@ -1206,7 +1321,7 @@ echo "ok: Postgres is bound to 127.0.0.1 only"</code></pre>
 </li><li>
 <strong>Check it.</strong> Sign in as an administrator, open a few tickets, and download an attachment. <code>SELECT version, dirty FROM schema_migrations</code> should say <code>21 | f</code>. <code>docker compose port db 5432</code> should say <code>127.0.0.1:5432</code>.
 </li></ol>
-<p>To go forward again, run <code>git checkout -- docker-compose.yml</code> in <code>go-help-desk/docker</code> to drop the edit from step 3, then <code>git checkout v1.3.0</code> (it refuses while the file is changed) and start it: it runs every migration from 22, and says so in the log (<code>database migrated from 21 to 68</code>).</p>
+<p>To go forward again, run <code>git checkout -- docker-compose.yml</code> in <code>go-help-desk/docker</code> to drop the edit from step 3, then <code>git checkout v1.3.0</code> (it refuses while the file is changed) and start it: it runs every migration from 22, and says so in the log (<code>database migrated from 21 to 69</code>).</p>
 
 <h2 id="guest-attachments">Guests can no longer upload until you turn it on</h2>
 
@@ -1369,7 +1484,7 @@ echo "ok: Postgres is bound to 127.0.0.1 only"</code></pre>
   <li><strong>The 30-day trend</strong> (staff and administrators) is a chart of the tickets created and the tickets resolved each day for the last 30 days, today included, in your time zone, with each series' 30-day total. A ticket counts as resolved on the day it was resolved, or the day it was closed if it was never resolved; a ticket that was reopened no longer counts on its old day.</li>
   <li><strong>Every number and every row respects ticket scope.</strong> Each count is the length of the ticket list it links to, and each row is a ticket that list would show you. With <em>Limit staff to their group scope</em> on, a staff member's numbers, rows and trend include only what their scope admits.</li>
   <li><strong>Awaiting my reply</strong> is a new filter, <code>awaiting_reply</code>. It lists the tickets that are not Resolved or Closed and whose newest public message is from the requester's side (no reply yet, a guest's message, or a requester's or follower's), so they wait for the help desk. Internal notes do not count. It is <code>awaiting_reply=true</code> on <code>GET /api/v1/tickets</code> and <code>awaiting_reply</code> on MCP <code>list_tickets</code>, for staff and administrators only: a requester who sends it is refused, with <code>403</code> "awaiting_reply is not available to requesters". The ticket list offers it on Assigned to Me and My Group's Tickets.</li>
-  <li><strong>The health card</strong> (administrators only) sits at the top of the dashboard and lists up to four things that need attention, each with a link to where it is fixed: a newer release is available (release notes, in a new tab); SLA tracking is on but its alerts are off (Admin → System → Email → Notifications → SLA alerts); the passkey requirement is suspended because passkeys are unavailable (Admin → System → Authentication → Multi-factor authentication); and the attachment scanner is unreachable while scanning is on (Admin → System → File Attachments → Malware scanning). When there is nothing to report it is one line, "No problems to report."; if it cannot load, it says so, with <strong>Retry</strong>, and never says all is well. It has no Hide. It adds no endpoint and no setting, but an administrator's dashboard makes one extra <code>GET /admin/settings</code>.</li>
+  <li><strong>The health card</strong> (administrators only) sits at the top of the dashboard and lists up to five things that need attention, each with a link to where it is fixed: a newer release is available (release notes, in a new tab); SLA tracking is on but its alerts are off (Admin → System → Email → Notifications → SLA alerts); the passkey requirement is suspended because passkeys are unavailable (Admin → System → Authentication → Multi-factor authentication); SAML is required for staff and users but is not working, so they cannot sign in, while administrators can still sign in with a password (Admin → System → Authentication → SAML); and the attachment scanner is unreachable while scanning is on (Admin → System → File Attachments → Malware scanning). When there is nothing to report it is one line, "No problems to report."; if it cannot load, it says so, with <strong>Retry</strong>, and never says all is well. It has no Hide. It adds no endpoint and no setting, but an administrator's dashboard makes one extra <code>GET /admin/settings</code>.</li>
   <li><strong>API:</strong> <code>GET /api/v1/dashboard?tz=</code>. See <a href="api.html#api-dashboard-reports">REST API: Dashboard and reports</a>.</li>
   <li><strong>Migration 000068: one index.</strong> It builds one index on the tickets table (<code>tickets_done_at_idx</code>), for the trend. It changes no data and no setting. It is built inside the migration, not concurrently, so on a very large install it holds writes to the tickets table for the seconds it takes to build. Under <a href="#rollback">Rolling back to 1.2.0</a>: the down migration drops the index and loses nothing.</li>
 </ul>
@@ -1464,6 +1579,7 @@ docker compose up -d</code></pre>
   <li><strong>If you have webhook receivers,</strong> read <a href="#webhooks">the raw payload and note-event changes</a>, and make receivers cope with a repeated delivery.</li>
   <li><strong>If you have MCP agents,</strong> note that <a href="#mcp-reply">their public replies now email the requester</a>.</li>
   <li><strong>If you have scripts that use API keys,</strong> read <a href="#api-keys">API keys</a> first: keys can no longer create keys or OAuth clients, write users or group membership, or change three settings, and new keys need an expiry.</li>
+  <li><strong>If you use SAML,</strong> there is nothing to do: accounts reconnect at their next sign-in. Check which attribute your identity provider maps to the address (see <a href="#saml-signin">the trust note</a>). A certificate and key you uploaded are kept. If you had turned on <em>Enable SAML login</em>, it is now <em>Require SAML for staff and users</em>: check that SAML is loaded, because a red server problem says so if it is not (<a href="#saml-settings">SAML settings</a>).</li>
   <li><strong>Tell people who rarely sign in</strong> about <a href="#password-age">the 30-day password reset</a>.</li>
   <li><strong>If you have API clients that drive signup,</strong> update them for <a href="#signup">the new verification request</a>.</li>
   <li><strong>If you have scripts that call admin DELETE routes,</strong> or that drive sign-in in two requests, or that fetch OAuth tokens, see <a href="#client-errors">the 404 and 4xx changes</a>, <a href="#pending-session">the 5-minute session</a> and <a href="#jwt-secret">the JWT key</a>.</li>
