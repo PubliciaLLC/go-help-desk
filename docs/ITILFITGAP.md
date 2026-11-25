@@ -2,6 +2,7 @@
 
 **Date:** 2026-09-09
 **Baseline:** `docs/DESIGN.md` (v1–v4 roadmap) and the implementation on `main`
+at that date (see the note below for what 1.3.0-beta changed)
 **Yardstick:** ITIL 4 practices (ITIL v3 process names noted where they differ)
 
 > This is an assessment, not a scope proposal. Nothing here is committed work.
@@ -13,12 +14,19 @@
 > SLA breach evaluation (#126), SLA pauses during Pending (#127), the SLA
 > indicator is rendered (#128) and the audit log is readable (#129). So the SLA
 > findings marked non-functional below are fixed: breaches are detected and
-> stamped, though nothing yet acts on a breach (#408). Roadmap issues filed from
+> stamped, and a breach, or a target reaching 80% of its time, is announced by
+> email to staff and by webhook (#670; on by default for a fresh install, off
+> after an upgrade until an administrator turns it on). Nothing escalates yet:
+> there are no tiers and no group lead, and no ticket is re-assigned or raised
+> on a breach (#408, v1.4). Reporting has shipped as well: the Reports page
+> (#131) and the dashboard (#675), and each ticket records how it arrived
+> (`source_channel`). Roadmap issues filed from
 > this analysis: #403 (assets), #405 (continual improvement), #406 (suppliers),
 > #407 (relationships), #408 (incident management), #411 (monitoring events),
-> #415 (asset reference). Ticket types and reporting have since moved from
-> v4 and v3 to v1.4, alongside those issues; the Snipe-IT plugin (#403) is v2.
-> The scorecard below shows the current versions.
+> #415 (asset reference). Ticket types have since moved from v4 to v1.4,
+> alongside those issues; what is left of reporting (scheduled reports, cuts by
+> channel and agent, first-contact resolution) moved from v3 to v1.4 too; the
+> Snipe-IT plugin (#403) is v2. The scorecard below shows the current versions.
 
 ---
 
@@ -56,10 +64,11 @@ roadmap decisions, not oversights. The analysis is useful for three things:
 
 2. **Three findings that are not roadmap gaps and want attention regardless of
    ITIL.** SLA tracking is specified in `DESIGN.md` as a working v1 feature but
-   is materially non-functional: breach evaluation is never invoked, the
-   pause-on-Pending rule is unimplemented, and the queue indicator does not
+   was materially non-functional: breach evaluation was never invoked, the
+   pause-on-Pending rule was unimplemented, and the queue indicator did not
    exist in the frontend. Details in §3.6. These read as bugs against the
-   existing spec, not as new scope.
+   existing spec, not as new scope, and all three are fixed since (see the
+   note at the top).
 
 3. **One structural observation.** Every significant ITSM gap — Incident vs.
    Request separation, Problem records, Change records, derived priority —
@@ -68,7 +77,9 @@ roadmap decisions, not oversights. The analysis is useful for three things:
    an open-source data-model decision to a commercial packaging decision. Worth
    decoupling. **[roadmap decision]** — see §5.
 
-**Headline scorecard: 2 Fit, 3 Partial, 11 Gap, 2 out of tool scope.**
+**Headline scorecard: 2 Fit, 4 Partial, 10 Gap, 2 out of tool scope.** (At
+the 2026-09-09 snapshot it was 2, 3, 11, 2; Measurement & Reporting moved from
+Gap to Partial when the Reports page shipped in 1.3.)
 
 ---
 
@@ -91,9 +102,11 @@ email and webhook notification out.
 - **No inbound email channel.** `internal/server/notify/email.go` is send-only.
   For most ITIL service desks email is the *primary* intake channel. This is
   the single highest-value addition in the whole analysis.
-- **No channel attribution.** Tickets do not record how they arrived, so
-  channel mix — a standard service desk metric — cannot be reported. A
-  `source_channel` column is a one-migration change.
+- **No channel attribution** (at the time). Tickets did not record how they
+  arrived, so channel mix — a standard service desk metric — could not be
+  reported. Since 1.3 each ticket records `source_channel` (web, API, MCP,
+  guest form or phone) and staff see it; channel mix is still not reported
+  (§3.13).
 - No self-service portal distinct from the submission form (no catalogue
   browse, no knowledge search-before-submit deflection).
 
@@ -119,14 +132,16 @@ log behind every mutation.
 - **Priority is a manual free pick** (`domain/ticket/ticket.go:13`), not derived
   from Impact × Urgency. ITIL is explicit that priority is *derived*; a manual
   pick makes prioritization subjective and inconsistent across agents.
-  Deferred to v4.
+  Planned for v1.4 (#135).
 - **No major incident concept.** No major-incident flag, no stakeholder
   communication list, no bridge/war-room, no distinct major-incident workflow.
 - **No functional escalation tiers.** Reassign-to-group is the only mechanism.
   There is no L1/L2/L3 tier model and no escalation record, so "how often does
   L1 resolve without escalating" is unanswerable.
 - **No hierarchic escalation on SLA breach** — at the time, breaches were not
-  detected at all (§3.6). They are now (#126), but nothing acts on one (#408).
+  detected at all (§3.6). They are now (#126), and a breach or an at-risk
+  target is announced by email and webhook (#670), but nothing escalates on
+  one: no ticket is re-assigned or raised to a higher tier (#408).
 - No work log / time-spent capture, so effort per incident is not measurable.
 
 ---
@@ -168,13 +183,14 @@ designate as "the problem" — by convention only. `DESIGN.md` itself gives this
 example ("a Problem with multiple Incidents").
 
 **Gap.** No problem entity; no root-cause or workaround fields; no known error
-database; no proactive trend analysis (there is no reporting at all, §3.13); no
-mechanism to surface a known workaround on incidents that match an open
-problem — which is the practice's main day-to-day payoff.
+database; no proactive problem identification from trends (the Reports page and
+the dashboard show volume over time, but nothing links incidents to a problem,
+§3.13); no mechanism to surface a known workaround on incidents that match an
+open problem — which is the practice's main day-to-day payoff.
 
 **Note.** Problem Management is cheap once three other things exist: ticket
-type (v4), a knowledge base (v3), and reporting (v3). It needs little unique
-machinery beyond a workaround field and an article link.
+type (v4), a knowledge base (v3), and reporting (largely shipped in 1.3, §3.13).
+It needs little unique machinery beyond a workaround field and an article link.
 
 ---
 
@@ -199,7 +215,7 @@ real goal, v4's scope as written understates the work by a wide margin.
 
 ---
 
-### 3.6 Service Level Management — 🟡 Partial, and weaker than `DESIGN.md` implies
+### 3.6 Service Level Management — 🟡 Partial *(was weaker than `DESIGN.md` implied; fixed since)*
 
 *ITIL: targets agreed with the business, measured, reported and reviewed;
 SLAs, OLAs and underpinning contracts; defined service hours.*
@@ -209,8 +225,9 @@ resolution targets in minutes); specificity-ordered policy matching; per-ticket
 `sla_records`; first-response stamping on the first staff reply
 (`domain/ticket/service.go:312`); admin CRUD and a policy management UI.
 
-**Three divergences from `docs/DESIGN.md` — these are spec/code bugs, not
-roadmap gaps:**
+**Three divergences from `docs/DESIGN.md` at the time of the assessment — these
+were spec/code bugs, not roadmap gaps. All three are fixed since (#126, #127,
+#128, see the note at the top); the findings are kept as written:**
 
 1. **Breach evaluation never runs.** `sla.Service.EvaluateBreaches`
    (`domain/sla/service.go:50`) is documented as "called on a schedule" but has
@@ -238,8 +255,11 @@ caller.
   Monday. This is the largest correctness problem for real-world SLA use, and
   it is independent of the bugs above.
 - No OLAs (internal team-to-team targets) or underpinning supplier contracts.
-- No SLA attainment reporting and no breach notification or escalation — even
-  once breaches are detected, nothing happens as a result.
+- SLA attainment is reported (1.3 Reports page, §3.13), and breaches and at-risk
+  targets send email and webhook alerts (#670; the alerts are on for a fresh
+  install and off after an upgrade until an administrator turns them on).
+  There is still no escalation: an alert tells people, but nothing re-assigns
+  the ticket or raises it to a higher tier (#408).
 - Targets anchor to ticket creation only. No per-status targets and no
   update-cadence targets ("customer updated at least every 24h").
 
@@ -336,23 +356,31 @@ out of scope in `DESIGN.md`.
 
 ---
 
-### 3.13 Measurement & Reporting — ❌ Gap *(deliberate — v3)*
+### 3.13 Measurement & Reporting — 🟡 Partial *(shipped in 1.3; rest v1.4)*
 
 *ITIL: the practice that makes every other practice manageable.*
 
-**Have.** The raw material is genuinely good and already being captured:
-`audit_log` (before/after JSONB on every mutation), `ticket_status_history`
-(every transition with actor and timestamp), `sla_records`, and timestamps on
-every entity. **Nothing consumes any of it.** `DashboardPage.tsx` shows ticket
-counts by status and a user count.
+**Have (1.3).** The Reports page (#131) answers over a chosen period, from the
+tickets and SLA records already captured: median and 90th-percentile time to
+resolve, median time to first response, SLA attainment, reopen rate, backlog
+aging, and volume by category and priority, plus workload by assignee and
+group. Every number is computed on the server. The page can be saved as CSV,
+and each card and the whole board as PNG. The dashboard (#675) adds a queue strip, a
+needs-attention list and a 30-day created-and-resolved trend. Neither adds a
+table.
 
-**Gap.** No MTTR or MTTA; no SLA attainment; no first-contact resolution; no
-reopen rate; no backlog aging; no volume by category/agent/channel/time; no
-CSV export; no scheduled reports.
+**Gap (still open).** No first-contact resolution; no scheduled or emailed
+reports; no volume cut by channel or by agent. The Reports page breaks volume
+down by category and priority only. The channel is recorded on every ticket
+(`source_channel`, 1.3) but not reported. The workload cards count open
+tickets by assignee and group, which is not volume handled.
 
-**Assessment.** Highest return-on-effort item on the v3 list, because the data
-model already supports it — this is a read-side and UI problem, not a schema
-problem.
+**Assessment.** The read side is built. What remains is smaller. Scheduled
+reports are the one piece that needs new machinery (v1.4): a report job, a
+recipient list, and a rendering of the report that can be mailed. The two
+things such a job would run on already exist: the scheduler that runs the SLA
+and auto-close sweeps, and the notification outbox that carries email and
+webhooks (§5, finding B).
 
 ---
 
@@ -376,11 +404,12 @@ obfuscation and SVG sanitization; HMAC-signed webhook payloads.
 This is a stronger showing than most tools at comparable maturity.
 
 **Minor gaps.**
-- **The audit log is write-only from a user's perspective.** `audit_log` is
-  populated and `auditstore.ListByEntity` exists, but no HTTP route exposes it —
-  there is no admin audit view and no per-ticket activity feed. An audit trail
-  nobody can read does not satisfy an auditor.
-- No data retention or purge policy (relevant to GDPR/records management).
+- **The audit log was write-only from a user's perspective** (at the time).
+  `audit_log` was populated and `auditstore.ListByEntity` existed, but no HTTP
+  route exposed it — no admin audit view and no per-ticket activity feed. An
+  audit trail nobody can read does not satisfy an auditor. Fixed in 1.3
+  (#129): an admin audit view and a per-ticket Activity feed.
+- No retention or purge policy for ticket data (relevant to GDPR/records management); audit-log retention is opt-in since 1.3.
 - No field-level encryption for sensitive ticket content; internal notes are the
   only confidentiality control.
 
@@ -420,7 +449,7 @@ entities, for outage-driven major incidents and availability reporting.
 | 3.1 | Service Desk | ✅ Fit | v1 — shipped |
 | 3.15 | Information Security Management | ✅ Fit | v1 — shipped |
 | 3.2 | Incident Management | 🟡 Partial | core v1; typing/priority matrix (#135), major incidents, escalation, work log (#408) v1.4 |
-| 3.6 | Service Level Management | 🟡 Partial | v1 — breach detection, pause and indicator fixed since (#126-#128) |
+| 3.6 | Service Level Management | 🟡 Partial | v1 — breach detection, pause and indicator fixed since (#126-#128); breach and at-risk alerts (#670); escalation v1.4 (#408) |
 | 3.17 | Relationship Management | 🟡 Partial | v1.4 #407 (organization entity with v4 #35) |
 | 3.3 | Service Request Management | ❌ Gap | v1.4 (type only, #135) |
 | 3.4 | Problem Management | ❌ Gap | v1.4 (type only, #135) |
@@ -430,7 +459,7 @@ entities, for outage-driven major incidents and availability reporting.
 | 3.9 | Service Configuration Management | ❌ Gap | not on roadmap |
 | 3.10 | IT Asset Management | ❌ Gap | asset reference v1.4 (#415); Snipe-IT plugin v2 (#403) |
 | 3.11 | Monitoring & Event Management | ❌ Gap | v1.4 (#411) |
-| 3.13 | Measurement & Reporting | ❌ Gap | v1.4 (#131) |
+| 3.13 | Measurement & Reporting | 🟡 Partial | Reports and dashboard shipped in 1.3 (#131, #675); scheduled reports, channel and agent cuts, FCR v1.4 |
 | 3.14 | Continual Improvement | ❌ Gap | v1.4 #405 (CSAT #133 first) |
 | 3.16 | Supplier Management | ❌ Gap | v1.4 #406 |
 | 3.12 | Release & Deployment Management | ⚪ Out of scope | — |
@@ -448,11 +477,19 @@ four at once. It is currently gated behind **v4 / SaaS**, which ties an
 open-source data-model decision to a commercial packaging decision — the two do
 not obviously belong together. **[roadmap decision]**
 
-**B. There is no background job runner.** Auto-close, SLA breach evaluation,
+**B. There was no background job runner.** Auto-close, SLA breach evaluation,
 breach escalation, scheduled reports, inbound email polling and change-window
-reminders all require one. None work today, and two of them (auto-close, SLA
-breach) are already described in `DESIGN.md` as working. One small scheduler
-unblocks several practices at once and fixes two spec divergences.
+reminders all require one. At the time none worked, and two of them
+(auto-close, SLA breach) were already described in `DESIGN.md` as working. One
+small scheduler unblocks several practices at once and fixes two spec
+divergences.
+
+*Since then (1.3).* A scheduler runs: the SLA sweep every minute
+(`runSLASweepTick` in `cmd/server/main.go`, #126, #670) and auto-close every
+five. Notifications go through a database outbox with retries (migration
+000031), so email and webhooks are queued, not sent in the request. What is
+still unbuilt is what would run on them: breach escalation (#408), scheduled
+reports, inbound email polling and change-window reminders.
 
 **C. There is no approval primitive.** Service Requests and Change Enablement
 both need it and neither can start without it. One generic `approvals` table
@@ -466,7 +503,10 @@ is the most visible functional gap to an end user.
 **E. Operational data is captured but never surfaced.** Audit log, status
 history and SLA records are all written and none are readable. Three practices
 (Reporting, Continual Improvement, Information Security) are each partly
-blocked by what is essentially a missing read side.
+blocked by what is essentially a missing read side. *Largely fixed in 1.3:* the
+audit log is readable (#129), the SLA state is shown on the ticket and in the
+queue (#128), and the Reports page and dashboard read tickets and SLA records
+(#131, #675).
 
 ---
 
@@ -479,21 +519,24 @@ Arguably maintenance, not new scope.
 
 1. **Add a background scheduler** and wire auto-close and `EvaluateBreaches`
    into it. Fixes two behaviors `DESIGN.md` already promises. *(Cross-cutting
-   finding B.)*
+   finding B.)* **Done in 1.3** (#126).
 2. **Implement SLA pause during Pending** — specified in `DESIGN.md`,
-   unimplemented in `domain/sla/sla.go`.
+   unimplemented in `domain/sla/sla.go`. **Done in 1.3** (#127).
 3. **Render the green/amber/red SLA indicator** in the ticket queue — specified
-   in `DESIGN.md`, absent from the frontend.
+   in `DESIGN.md`, absent from the frontend. **Done in 1.3** (#128).
 4. **Expose the audit log** — an admin view plus a per-ticket activity feed. The
    data and the store method already exist; only a route and a page are missing.
+   **Done in 1.3** (#129).
 5. **Add `source_channel` to tickets.** One migration; enables channel-mix
-   reporting for free later.
+   reporting for free later. **Done in 1.3**; the recording is there, the
+   report is not (§3.13).
 
-### Tier 2 — aligned with the existing v3 scope, high return
+### Tier 2 — aligned with the v3 scope as it stood, high return (see §4 for where each is now)
 
-6. **Reporting** (MTTR, SLA attainment, first-contact resolution, reopen rate,
-   backlog aging, volume by CTI/agent/channel). Already-scoped for v3, and the
-   data is already being captured — this is read-side work.
+6. **Reporting.** Largely shipped in 1.3 (#131): SLA attainment, reopen rate,
+   backlog aging, and volume by category and priority. Still open:
+   first-contact resolution, scheduled reports, and volume by channel and
+   agent.
 7. **Knowledge base** with ticket↔article linkage and a known-error flag. A
    known-error flag on articles covers a meaningful share of Problem Management
    for very little extra.
