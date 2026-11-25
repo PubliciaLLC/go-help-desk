@@ -29,6 +29,18 @@ async function noHorizontalScroll(page: Page, width: number) {
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width)
 }
 
+
+// The shell is exactly one viewport tall (h-dvh) and scrolls inside <main>, so
+// the document itself must never scroll. A screen-reader-only chart table that
+// escaped <main>'s clipping made it scroll: a blank block under the footer.
+async function documentDoesNotScroll(page: Page) {
+  const { scrollHeight, innerHeight } = await page.evaluate(() => ({
+    scrollHeight: document.documentElement.scrollHeight,
+    innerHeight: window.innerHeight,
+  }))
+  expect(scrollHeight, 'the page scrolls as a whole: something escapes <main>').toBeLessThanOrEqual(innerHeight)
+}
+
 // The long category chosen, so the filter line holds its name too.
 const FILTERED = { ...KPI_RESPONSE, filters: { ...KPI_RESPONSE.filters, category_id: 'cat-long' } }
 
@@ -173,4 +185,16 @@ test.describe('Reports exports', () => {
     expect(text).toContain('\r\ncreated,,Created,84,72,0.1667,count\r\n')
     expect(text).toContain('\r\nworkload_person,u-long,' + LONG_CATEGORY + ',7,,,count\r\n')
   })
+})
+
+test.describe('the Reports page does not scroll as a whole', () => {
+  for (const [w, h] of [[1280, 900], [1920, 1000], [375, 800]] as const) {
+    test(`at ${w}x${h}`, async ({ page }) => {
+      await page.setViewportSize({ width: w, height: h })
+      await mockApi(page, { me: ME_ADMIN, kpi: KPI_RESPONSE, categories: CATEGORIES })
+      await page.goto('/reports?range=30')
+      await expect(page.getByRole('region', { name: 'Workload' })).toBeVisible()
+      await documentDoesNotScroll(page)
+    })
+  }
 })
