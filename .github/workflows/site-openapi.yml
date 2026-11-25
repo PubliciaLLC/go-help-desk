@@ -7,12 +7,26 @@ name: site-openapi
 #
 # Which site branch, fed from which code branch, is configuration, not code:
 #   vars.SITE_OPENAPI_SOURCE  code branch that feeds the site, e.g. v1.3.0-beta
-#   vars.SITE_OPENAPI_BRANCH  site branch to write,           e.g. docs/web-1-3-0
+#   vars.SITE_OPENAPI_BRANCH  site branch to write,           e.g. v1.3.0-beta-web
 # Unset either and nothing is written: the `gate` job says so in the run summary
 # and the rest is skipped. Pushes to any other branch are ignored, so the 1.2
-# line on main cannot overwrite the 1.3 site. A release tag (no '-') counts only
-# when its commit is on SITE_OPENAPI_SOURCE, so a v1.2.x hotfix tag cannot
-# re-pin the 1.3 site.
+# line on main cannot overwrite the 1.3 site.
+#
+# Release tags follow a rule, not ancestry. This repository merges main forward
+# into the release branch, so every older release tag is an ancestor of it and
+# "is the tag on the branch" cannot tell a v1.2.x hotfix from a 1.3 release. A tag
+# counts only when it is v<line>.<n> with no suffix, where <line> is the
+# major.minor of SITE_OPENAPI_SOURCE (v1.3.0-beta -> 1.3), and its commit is on
+# that branch. It then pins only if the commit is a fast-forward of the current
+# pin, so a late or re-run tag cannot move the site back.
+#
+#   event                                     gate     publish
+#   push to SITE_OPENAPI_SOURCE               run      pins the pushed commit (skipped if the pin is newer)
+#   push to any other branch                  skip     -
+#   tag v<line>.<n>, commit on the source     run      pins the tag's commit if it descends from the pin
+#   tag of another line (v1.2.1, v2.0.0)      skip     -
+#   pre-release tag (v1.3.0-rc.1)             skip     -
+#   either variable unset                     skip     -
 #
 # It commits straight to the site branch with GITHUB_TOKEN. That branch is a
 # staging branch (production is promoted by a human PR), and a commit made with
@@ -29,17 +43,19 @@ name: site-openapi
 on:
   push:
     branches: [main, 'v[0-9]*-beta']
-    tags: ['v[0-9]*']
+    # No pre-release tags: the gate would only skip them, and a skipped run
+    # still costs a runner.
+    tags: ['v[0-9]*', '!v*-*']
     paths:
       - docs/api/openapi.yaml
       - .github/workflows/site-openapi.yml
   workflow_dispatch:
 
-# One writer to the site branch at a time. A newer pending run replaces an older
-# pending one, which is what we want: the newest spec wins.
-concurrency:
-  group: site-openapi
-  cancel-in-progress: false
+# The concurrency group is on the publish job, not here. GitHub keeps one running
+# and one pending run per group and cancels an older pending one. A group on the
+# whole workflow would let a run the gate skips (a push to main, a tag of another
+# line) cancel a pending run that carries a real spec change, and that change
+# would never reach the site.
 
 permissions:
   contents: read
@@ -80,8 +96,23 @@ jobs:
               case "$GITHUB_REF_NAME" in
                 *-*) skip "$GITHUB_REF_NAME is a pre-release tag; only release tags re-pin the site." ;;
               esac
+              # The release line is the major.minor of the source branch:
+              # v1.3.0-beta -> 1.3. Only v1.3.<n> is this site's release.
+              line=$(printf '%s' "$SOURCE" | sed -n 's/^v\([0-9][0-9]*\.[0-9][0-9]*\)\..*/\1/p')
+              [ -n "$line" ] ||
+                skip "cannot read a release line (v<major>.<minor>.*) from SITE_OPENAPI_SOURCE=$SOURCE, so no tag can pin the site."
+              prefix="v$line."
+              case "$GITHUB_REF_NAME" in
+                "$prefix"*) ;;
+                *) skip "$GITHUB_REF_NAME is not a $prefix<n> release; the site follows the $line line." ;;
+              esac
+              printf '%s' "${GITHUB_REF_NAME#"$prefix"}" | grep -Eq '^[0-9]+$' ||
+                skip "$GITHUB_REF_NAME is not a $prefix<n> release tag."
+              # Ancestry alone cannot separate lines, because main is merged
+              # forward into the source branch, but it still keeps a tag that was
+              # cut somewhere else out.
               git merge-base --is-ancestor "$GITHUB_SHA" "origin/$SOURCE" 2>/dev/null ||
-                skip "$GITHUB_REF_NAME is not on $SOURCE, so it belongs to another release line."
+                skip "$GITHUB_REF_NAME is not on $SOURCE; cut release tags on the release branch."
               ;;
             *)
               skip "unsupported ref type $GITHUB_REF_TYPE."
@@ -110,11 +141,20 @@ jobs:
     needs: [gate, verify]
     if: needs.gate.outputs.publish == 'true'
     runs-on: ubuntu-latest
+    # One writer per site branch. A newer pending publish replaces an older
+    # pending one; both pull their own commit from the same branch, so the newer
+    # one carries the older one's change, and the skip-if-newer test below keeps a
+    # late run from going backwards.
+    concurrency:
+      group: site-openapi-${{ vars.SITE_OPENAPI_BRANCH }}
+      cancel-in-progress: false
     permissions:
       contents: write
     env:
       SITE_BRANCH: ${{ vars.SITE_OPENAPI_BRANCH }}
     steps:
+      # Credentials stay persisted: the push below needs them. What runs with
+      # them is this repository's own site-branch script, not the source commit.
       - uses: actions/checkout@v4
         with:
           ref: ${{ vars.SITE_OPENAPI_BRANCH }}
@@ -139,10 +179,26 @@ jobs:
               echo "::notice::$SITE_BRANCH is already pinned to $cur, which is newer than $GITHUB_SHA; nothing to do"
               exit 0
             fi
+            # A tag pins only a fast-forward of the current pin. Otherwise a tag
+            # cut on a commit that predates the pin, or a re-run of an old tag run,
+            # would move the site back to an older spec.
+            if [ "$GITHUB_REF_TYPE" = tag ] && git cat-file -e "$cur^{commit}" 2>/dev/null &&
+              ! git merge-base --is-ancestor "$cur" "$GITHUB_SHA"; then
+              echo "::notice::$GITHUB_REF_NAME ($GITHUB_SHA) does not descend from the current pin $cur; nothing to do"
+              exit 0
+            fi
             scripts/openapi-sync.sh pull "$GITHUB_SHA" "$GITHUB_REF_NAME"
             scripts/openapi-sync.sh check
             if git diff --quiet -- docs/openapi; then
               echo "::notice::$SITE_BRANCH already serves the spec at $GITHUB_SHA"
+              exit 0
+            fi
+            # A branch push that left the spec alone (the workflow file changed, or
+            # main was merged in) is not worth a commit that only moves the pin.
+            # A release tag is: it records that the site is pinned to the release.
+            if [ "$GITHUB_REF_TYPE" != tag ] && git diff --quiet -- docs/openapi/openapi.yaml; then
+              echo "::notice::the spec is unchanged since the pin at $cur; leaving $SITE_BRANCH as it is"
+              git checkout -q -- docs/openapi
               exit 0
             fi
             git add docs/openapi
@@ -156,7 +212,7 @@ jobs:
               } >> "$GITHUB_STEP_SUMMARY"
               exit 0
             fi
-            echo "push rejected (attempt $attempt); someone else pushed to $SITE_BRANCH, retrying"
+            echo "push to $SITE_BRANCH failed (attempt $attempt), retrying. A lost race is the usual cause; if it repeats, look at git's message above for a permission or branch-rule rejection."
             sleep $((attempt * 5))
           done
           echo "::error::could not push to $SITE_BRANCH after 3 attempts"
