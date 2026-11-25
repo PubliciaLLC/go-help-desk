@@ -141,6 +141,7 @@
 
 <ul>
   <li><strong>Save changes saves only that page.</strong> It sends the settings you changed there and nothing else. If you leave a page with unsaved edits, a <em>Leave without saving?</em> dialog asks first: <em>Stay</em> keeps editing, <em>Leave without saving</em> discards them.</li>
+  <li><strong>Unsaved edits survive a refresh of the page's settings.</strong> <span class="badge-new">New in 1.3.0</span> An unsaved edit on any System page is kept when the page reads its settings again, which happens after <em>Save SAML config</em> and whenever the browser window regains focus (for example when a file picker closes). An edit you make while that page's Save is running is kept too.</li>
   <li><strong>Old addresses redirect.</strong> <code>/admin/settings</code> opens General. <code>/admin/email-templates</code>, with or without <code>?t=</code>, opens the Templates tab with the same template, so bookmarks keep working.</li>
   <li><strong>Audit Log</strong> is still its own page, at <code>/admin/audit</code>. The settings that control the audit log are on Privacy.</li>
   <li>Only administrators can open these pages. No setting, default, stored value or API changed when they moved.</li>
@@ -164,6 +165,10 @@
     <li><a href="#admin-email-setup">Email setup rules</a>: SMTP must use TLS when a password is set, and a missing or failing mail setup shows as a banner instead of failing silently.</li>
     <li><a href="#admin-oauth-clients">OAuth clients</a> act as service users, so they can write tickets, and are managed from Users and OAuth Clients.</li>
     <li><a href="#admin-auto-assign">Routing</a> and a paged <a href="#admin-users-list">Users</a> list, <a href="#admin-cti-archive">archive and restore</a> for categories, types and items, and <a href="#admin-webhook-history">webhook History and Redeliver</a>, with <a href="#admin-webhook-filter">ticket filters</a> and retries.</li>
+    <li><a href="#admin-cti-description">Descriptions on categories, types and items</a>: an optional line of guidance shown beneath the chooser on the new-ticket form, the guest form and the reclassify card. The text is public.</li>
+    <li><a href="authentication.html#auth-saml">SAML</a>: the settings form is always shown, the certificate and key are generated for you, the switch is now <em>Require SAML for staff and users</em>, and a required-but-not-working SAML is a red <a href="#admin-server-warnings">server problem</a>. Creating a user <a href="#admin-users-create">over a deleted account's address</a> now works.</li>
+    <li><a href="#admin-webhook-chat">Slack and Teams new-ticket messages</a> name the category, type and item, and who holds the ticket.</li>
+    <li><a href="tickets.html#tickets-follow">Followers</a>: staff and administrators can add another staff member or administrator as a follower, and remove any follower. <a href="#admin-settings-audit">Follow history</a> records who did it.</li>
     <li><a href="#admin-unlock"><code>unlock</code></a> from the server, and a <a href="#admin-password-age">reset window for old passwords</a>.</li>
     <li>Administration is designed for a desk, but every admin page fits a phone: nothing scrolls sideways at 320 pixels. A wide table scrolls inside its own box with every column and button reachable, and long names, descriptions and URLs wrap. Staff triage and reporting work on a phone.</li>
   </ul>
@@ -227,9 +232,21 @@ Facilities
   <li><strong>Add Category</strong> — click <em>New Category</em>. Give it a name. It appears immediately in the ticket form.</li>
   <li><strong>Add Type</strong> — click <em>Add Type</em> next to a Category. Types cannot exist without a parent Category.</li>
   <li><strong>Add Item</strong> — click <em>Add Item</em> next to a Type.</li>
+  <li><strong>Description</strong> <span class="badge-new">New in 1.3.0</span>: every Category, Type and Item can have an optional description. The create forms have a <em>Description</em> box, and each expanded row has one with its own <em>Save description</em>. See <a href="#admin-cti-description">Descriptions</a> below.</li>
   <li><strong>Reorder</strong> — drag-and-drop entries to change the order they appear in the ticket form dropdowns.</li>
   <li><strong>Delete</strong>: Categories, Types and Items with existing tickets cannot be deleted; the API refuses with <code>409</code>, and the screen suggests archiving instead. A Category is also kept while an SLA record of one of its SLA policies still exists. Deleting a Category, Type or Item also deletes the custom-field assignments made to it (a Category's include those of its Types and Items).</li>
   <li><strong>Archive and restore</strong>: see below.</li>
+</ul>
+
+<h3 id="admin-cti-description">Descriptions <span class="badge-new">New in 1.3.0</span></h3>
+<p>A description is a line or two of guidance that says what belongs under a Category, Type or Item. It is optional, and nothing changes until you write one.</p>
+<img src="../screenshots/55-admin-category-description.png" alt="Admin, Categories with the Laptop type expanded: a Description box holding the laptop guidance, a hint that says the text is public, a counter reading 101 / 500 and a Save button" loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
+<p style="margin:0.4rem 0 1.25rem;font-size:0.85rem;color:var(--muted);">Descriptions are plain text, up to 500 characters, and public.</p>
+<ul>
+  <li><strong>Plain text, 500 characters.</strong> The limit counts characters, not bytes, and the box shows a counter such as <em>101 / 500</em>. Line breaks are kept. It is never shown as HTML or Markdown: <code>&lt;b&gt;x&lt;/b&gt;</code> appears as those characters. White space at the start and end is not stored. Saving an empty box clears the description. The API refuses a longer text with <code>400</code>.</li>
+  <li><strong>Where people see it.</strong> Beneath the Category / Type / Item chooser on the new-ticket form (including when staff file for someone else), on the public guest form (category only) and in the Classification card's edit mode on a ticket. It shows the most specific description of the choice made: the item's if it has one, otherwise the type's, otherwise the category's.</li>
+  <li><strong>The text is public.</strong> While guest submission is on, anyone can read the description of every active category, type and item without signing in, because the catalogue routes the forms use are open. Any signed-in user can read them at any time. Archived entries are served to staff and administrators only. Do not write anything you would not put on a public web page.</li>
+  <li><strong>Not audited.</strong> Creating or editing a category, type or item, and so a description edit, is not written to the audit log.</li>
 </ul>
 
 <h3 id="admin-cti-archive">Archiving a Category, Type or Item</h3>
@@ -243,6 +260,7 @@ Facilities
   <li><strong>Nobody files new tickets into an archived entry</strong>: not requesters, not guests, and not staff or administrators either. Creating a ticket, or moving one to a different classification, with an archived Category, Type or Item is refused with <code>400</code>. This applies to the web screens, API keys and the MCP server alike.</li>
   <li><strong>Tickets already in it keep it.</strong> Editing such a ticket in other ways, or saving it with the classification it already has, still works.</li>
   <li><strong>Archiving changes one row.</strong> A Type under an archived Category keeps its own setting; archive it too if you want it gone. There is no filter to hide archived rows: they stay in the tree, greyed out.</li>
+  <li><strong>An archived parent hides its children from requesters and guests.</strong> <span class="badge-new">New in 1.3.0</span> The lists of types under an archived Category, and of items under an archived Type, come back empty for them, even though the children are not archived themselves. Staff and administrators still see everything. One visible effect: a requester looking at a ticket whose Category or Type was archived after it was filed no longer sees the ticket's type and item names.</li>
   <li><strong>Staff and administrators still see archived entries</strong> in the new-ticket and reclassify pickers, greyed out and marked as archived, but they cannot select them. A ticket's own archived entry stays selected so it can keep it.</li>
 </ul>
 
@@ -266,7 +284,7 @@ Facilities
   <tbody>
     <tr>
       <td><strong>Admin</strong></td>
-      <td>Full access to all settings, all tickets, and all user accounts. Can manage categories, groups, statuses, tags, SLA policies and webhooks. Always retains local-auth access even when SAML is enabled. Always sees the Available view of tickets nobody holds. Opens Reports, and sees the health card on the dashboard. The only role that can open the System settings pages.</td>
+      <td>Full access to all settings, all tickets, and all user accounts. Can manage categories, groups, statuses, tags, SLA policies and webhooks. Always retains local-auth access even while SAML is required. Always sees the Available view of tickets nobody holds. Opens Reports, and sees the health card on the dashboard. The only role that can open the System settings pages.</td>
     </tr>
     <tr>
       <td><strong>Staff</strong></td>
@@ -288,12 +306,13 @@ Facilities
   <li><strong>Enable / Disable account</strong> — disabled accounts cannot log in. All tickets and history are preserved. Re-enable at any time.</li>
   <li><strong>Reset password</strong> — set a new password directly from the admin panel. Only shown for accounts that have a local password (not SSO-only accounts). The form has a checkbox, <em>Also revoke this person's API keys</em>, unticked by default; ticked, it deletes every key the account owns after the password is set and the sessions are ended, and the audit log records <code>api_keys_revoked</code> with the number of keys. It is a separate step from the reset: if the keys cannot be revoked after the password was reset, the page shows "The password was reset, but the API keys were NOT revoked" (<code>keys_not_revoked</code>), and if the sessions cannot be ended the answer is <code>sessions_not_ended</code>. A person changing or resetting their own password never touches their keys.</li>
   <li><strong>Manage group membership</strong> — add the user to or remove them from any group.</li>
-  <li><strong>Delete account</strong>, a soft delete. The account is kept but can no longer sign in, and its tickets and replies are preserved. The confirmation says they will show as a removed user. Requires a second confirmation click. Prefer disabling instead when there is any chance the account may need to be re-activated.</li>
+  <li><strong>Delete account</strong>, a soft delete. The account is kept but can no longer sign in, and its tickets and replies are preserved. The confirmation says they will show as a removed user. Requires a second confirmation click. Prefer disabling instead when there is any chance the account may need to be re-activated. A deleted account's address stays held until a new account takes it over (see <a href="#admin-users-create">Creating a user</a>). If the owner of a deleted SAML-created account signs in through SAML again, they get a new User account; the old row keeps its tickets and history.</li>
   <li>The last active administrator cannot be disabled, demoted or deleted. The request is refused with <code>400 bad_request</code>.</li>
 </ul>
 
-<h3>Creating a user</h3>
+<h3 id="admin-users-create">Creating a user</h3>
 <p>Click <em>Add User</em> from the Users list. Enter email, display name, role, and an initial password. The email address must be ASCII (a new address with any other character is refused with <code>400</code>). The account is created immediately and appears in the list.</p>
+<p><span class="badge-new">New in 1.3.0</span> If the address belongs only to <strong>deleted</strong> accounts, creating the user works. The old row gives up its address (it is renamed to <code>deleted-&lt;id&gt;@invalid</code> and its SAML and OIDC identities are cleared) and the new account is created in one step. The old row keeps its tickets and history. If a live account holds the address, you still get <code>409 email_taken</code>. The form cannot restore a deleted account, and it makes a <em>local</em> account, which SAML then refuses to sign in (<code>email_taken</code>) because it was not created by SAML. To bring back a deleted SAML user, have them sign in through SAML.</p>
 
 <h3>Login type column</h3>
 <p>The <em>Login</em> column in the users list shows how the account authenticates:</p>
@@ -339,6 +358,7 @@ Facilities
 
 <h3>SAML metadata as a URL or pasted XML</h3>
 <p>Under <em>Admin → System → Authentication → SAML</em> the identity provider's metadata can be given as a URL the server fetches, or as XML you paste or upload. The two are alternatives, and a pasted copy is never refreshed. The steps and the refusals are in <a href="authentication.html#auth-saml">SAML 2.0 SSO</a>.</p>
+<p><span class="badge-new">New in 1.3.0</span> The SAML form is always shown, with the <strong>Entity ID</strong> and <strong>ACS URL</strong> to give your identity provider, each with a copy button. <em>Save SAML config</em> turns SAML on, and on the first save with metadata the server generates the service-provider certificate and key for you, so you do not create one. The switch <em>Require SAML for staff and users</em> only turns off password sign-in for staff and users; administrators keep it. All of this is described in <a href="authentication.html#auth-saml">SAML 2.0 SSO</a>.</p>
 
 <h3>Identity-provider lockout guard</h3>
 <p>Saving SAML or OIDC settings is refused with <code>400 bad_request</code> when the change would leave no active administrator able to sign in, for example by turning off the only identity provider that an administrator without a password uses. Local password sign-in is not affected by these settings. A change that leaves only some administrators unable to sign in is saved, and the response carries a warning.</p>
@@ -893,13 +913,22 @@ Read it here:
   <li><strong>A change to the status the ticket already has announces nothing about status.</strong> 1.2.x sent <code>ticket.status_changed</code> here. A save that repeats the current status and also assigns someone sends <code>ticket.assigned</code> only.</li>
   <li><strong>The raw body is unchanged:</strong> ids only, with no tracking number and no list of kinds. Deliveries queued before the upgrade are sent as they were.</li>
 </ul>
-<h4>Chat and Jira messages</h4>
+<h4 id="admin-webhook-chat">Chat and Jira messages</h4>
 <ul>
   <li>Under the headline, a Slack, Teams, Discord or Jira message can add one line such as <em>Also: assigned, priority changed</em>. It names only the other kinds that this hook subscribes to, so a hook never learns of something it did not ask for. A hook subscribed to a single name gets no such line. A Jira message gains an optional <code>also</code> key under the same rule.</li>
   <li>The text of a reply is included only for a hook subscribed to <code>ticket.replied</code> (or <em>All events</em>). A hook subscribed to <code>ticket.reopened</code> alone still gets its Reopened message, without the reply that caused it. Internal notes are never included.</li>
   <li>For <code>ticket.priority_changed</code> and <code>ticket.classified</code> the headline reads "Priority changed" and "Reclassified", with no priority, category or type name. A Jira message keeps the event name in its <code>event</code> key.</li>
   <li>A Jira message includes the status name only for a hook subscribed to a status event (<code>ticket.status_changed</code>, <code>ticket.resolved</code>, <code>ticket.closed</code> or <code>ticket.reopened</code>).</li>
+  <li><strong>New-ticket messages say where the ticket landed.</strong> <span class="badge-new">New in 1.3.0</span> A <code>ticket.created</code> message to a Slack or Teams hook has up to two more lines under the subject: the classification as <code>Category &gt; Type &gt; Item</code> (only the levels the ticket has), and who holds it as <code>Group: IT Support · Assignee: Jordan Blake</code> (only the parts it has), or <code>Unassigned</code> when it has neither. In Teams each line is a subtle line of the same card, so a long name wraps. Every Slack and Teams hook that gets the created message gets both lines, whatever else it subscribes to. Who holds a new ticket is a fact about the ticket as filed, including where routing placed it, and it is not a separate <code>ticket.assigned</code> notice. Names are read when the message is sent, so a renamed category, group or person is named as it is then, and a <em>Redeliver</em> names the ticket's current holder. Discord, Jira, the raw JSON body and every other event are unchanged, and nothing new is stored. If the names cannot be read, the message goes without the lines.</li>
 </ul>
+<p>As plain text, a Slack or Teams new-ticket message reads:</p>
+<pre><code>[GHD-2026-000042] New ticket
+Laptop screen is cracked
+Hardware &gt; Laptop &gt; Screen
+Group: IT Support · Assignee: Jordan Blake
+[Open ticket]</code></pre>
+<p>The Slack body behind it is below. Slack escapes <code>&gt;</code> as <code>&amp;gt;</code> in the body, which Slack shows as <code>&gt;</code>. A name is cut at 100 characters and ends in an ellipsis.</p>
+<pre><code>{"text":"*[GHD-2026-000042]* New ticket — Laptop screen is cracked\nHardware &amp;gt; Laptop &amp;gt; Screen\nGroup: IT Support · Assignee: Jordan Blake\n&lt;https://help.example.com/tickets/…|Open ticket&gt;","unfurl_links":false,"unfurl_media":false}</code></pre>
 
 <h3 id="admin-webhook-filter">Limiting a hook to some tickets</h3>
 <p>In the webhook form, the <em>Tickets</em> group has tick boxes for <em>Category</em>, <em>Priority</em> and <em>Group</em> (the group the ticket is assigned to), and a <em>Send for</em> drop-down with <em>Tickets that match</em> and <em>All other tickets</em>. Leave everything unticked to send for every ticket. In the list of hooks, the <em>Tickets</em> column shows the result, for example <em>All tickets</em>, or <em>Category: Hardware or Software</em>, or <em>All except</em> followed by the conditions.</p>
@@ -1069,13 +1098,15 @@ function verifySignature(secret, body, header) {
 <p style="margin:0.4rem 0 1.25rem;font-size:0.85rem;color:var(--muted);">The server-notice bar, collapsed to one line.</p>
 <img src="../screenshots/39-server-notice-expanded.png" width="2880" height="384" alt="The same bar opened with Details: the notice title with a Hide link at its right, and the text Ticket scope is on, and Reporting export acts as a service user in no group, with an Open OAuth clients link" loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
 <p style="margin:0.4rem 0 1.25rem;font-size:0.85rem;color:var(--muted);">The bar opened: the notice, what to do about it, and Hide.</p>
+<img src="../screenshots/57-server-notice-saml.png" alt="The server-notice bar opened with Details: the red notice Staff and users cannot sign in: SAML is required but is not working, its explanation, and a link, Open System, Authentication, SAML" loading="lazy" style="width:100%;height:auto;border:1px solid var(--border);border-radius:8px;" />
+<p style="margin:0.4rem 0 1.25rem;font-size:0.85rem;color:var(--muted);">A required SAML that is not working is a red notice. Administrators can still sign in with a password.</p>
 <ul>
-  <li><strong>Red</strong> marks something broken now: exposed secrets, attachment storage that cannot be written, a virus scanner that cannot be reached (under either scan policy), email that is not being delivered, and an <a href="#admin-email-tpl">edited email template</a> that no longer works (one notice per template, with <em>Revert to default</em> and <em>Edit</em>). <strong>Amber</strong> marks a configuration notice, such as email not set up, passkeys unavailable, or attachments not being scanned. <strong>Blue</strong> is information only: a newer release is available (see <a href="#admin-updates">Updates</a>). It never counts as a problem.</li>
+  <li><strong>Red</strong> marks something broken now: exposed secrets, attachment storage that cannot be written, a virus scanner that cannot be reached (under either scan policy), <a href="authentication.html#auth-saml">SAML</a> that is required but not working (<em>Staff and users cannot sign in: SAML is required but is not working</em>, shown while <em>Require SAML for staff and users</em> is on and SAML is not loaded, and gone by itself once SAML loads or the switch is turned off), email that is not being delivered, and an <a href="#admin-email-tpl">edited email template</a> that no longer works (one notice per template, with <em>Revert to default</em> and <em>Edit</em>). <strong>Amber</strong> marks a configuration notice, such as email not set up, passkeys unavailable, or attachments not being scanned. <strong>Blue</strong> is information only: a newer release is available (see <a href="#admin-updates">Updates</a>). It never counts as a problem.</li>
   <li><strong>Hide</strong> removes one notice for your current session. It returns at your next sign-in, after your session expires, or when the problem gets worse (for example a changed scanner policy, more failed email, another exposed secret). When every notice is hidden the bar goes away. Nothing about hiding is sent to the server. The one exception to "returns at your next sign-in" is the blue new-release notice: its <em>Hide</em> is remembered in your browser until a newer release appears.</li>
   <li>The bar checks again when the window regains focus and when you open Details, so a fixed problem stops showing within seconds. Long commands in a notice wrap, so the bar fits a phone. Only administrators see it. The same information is available from <code>GET /api/v1/admin/security-warnings</code>.</li>
 </ul>
 
-<p>The administrator's dashboard also has a <strong>health card</strong> at the top. It lists up to four things that need attention, each with a link to where it is fixed: a newer release is available; SLA tracking is on but its alerts are off (<em>Admin → System → Email → Notifications → SLA alerts</em>); the passkey requirement is suspended because passkeys are unavailable (<em>Admin → System → Authentication → Multi-factor authentication</em>); and the attachment scanner is unreachable while scanning is on (<em>Admin → System → File Attachments → Malware scanning</em>). With nothing to report it is one line, <em>No problems to report.</em> If it cannot load, it says so, with a <em>Retry</em> button, and does not say all is well. It has no Hide.</p>
+<p>The administrator's dashboard also has a <strong>health card</strong> at the top. It lists up to five things that need attention, each with a link to where it is fixed: a newer release is available; SLA tracking is on but its alerts are off (<em>Admin → System → Email → Notifications → SLA alerts</em>); the passkey requirement is suspended because passkeys are unavailable (<em>Admin → System → Authentication → Multi-factor authentication</em>); SAML is required for staff and users but is not working (<em>Admin → System → Authentication → SAML</em>); and the attachment scanner is unreachable while scanning is on (<em>Admin → System → File Attachments → Malware scanning</em>). With nothing to report it is one line, <em>No problems to report.</em> If it cannot load, it says so, with a <em>Retry</em> button, and does not say all is well. It has no Hide.</p>
 
 <h2 id="admin-audit">Audit log</h2>
 
@@ -1096,7 +1127,7 @@ function verifySignature(secret, body, header) {
 <p style="margin:0.4rem 0 1.25rem;font-size:0.85rem;color:var(--muted);">The admin-wide Audit Log: filters, the option to hide replies and notes, and one row per recorded change.</p>
 
 <h3 id="admin-settings-audit">Follow history</h3>
-<p>When a staff member follows or stops following a ticket, the Activity feed and the Audit Log record it (<em>Started following</em> and <em>Stopped following</em>). Administrators always see these entries. Staff see them, in a ticket's Activity feed only (they do not have the Audit Log), only when <em>Staff can view follow history</em> is on, under <em>Admin → System → Privacy → Audit log</em> (<code>staff_can_view_follow_audit</code>, off by default). It is session-only: an API key or OAuth client cannot change it. Reporters never see these entries, and staff always see the current list of followers on a ticket whatever the setting says.</p>
+<p>When a staff member follows or stops following a ticket, the Activity feed and the Audit Log record it (<em>Started following</em> and <em>Stopped following</em>). When someone else adds or removes a follower, the entry names both people, as in <em>Added Bob as a follower by Jane</em> and <em>Removed Bob as a follower by Jane</em>, and carries the person's id as <code>follower_user_id</code>. Administrators always see these entries. Staff see them, in a ticket's Activity feed only (they do not have the Audit Log), only when <em>Staff can view follow history</em> is on, under <em>Admin → System → Privacy → Audit log</em> (<code>staff_can_view_follow_audit</code>, off by default). It is session-only: an API key or OAuth client cannot change it. Reporters never see these entries, and staff always see the current list of followers on a ticket whatever the setting says.</p>
 
 <h3>Requester names</h3>
 <p>By default, a requester is shown as <em>Requester (name hidden)</em> rather than by name in every audit view. Change this under <em>Admin → System → Privacy → Privacy</em>, in <em>Mask requester names in Audit Trail</em>:</p>
