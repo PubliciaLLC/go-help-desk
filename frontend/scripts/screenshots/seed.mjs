@@ -605,12 +605,21 @@ async function history(admin, seed, U) {
     await call(holder, 'POST', `/api/v1/tickets/${t.id}/resolve`, { notes: 'Fixed and confirmed.' }, 200)
     await reply(await who(p.req), t.id, 'It has come back: the same thing happens again this morning.')
     await call(holder, 'POST', `/api/v1/tickets/${t.id}/resolve`, { notes: 'Found the cause this time and fixed it for good.' }, 200)
+    // The ticket was reopened after it was filed and before the resolution that stands.
+    if (!(p.ro <= p.c && p.ro > p.c - p.res)) throw new Error(`history: the reopen of "${p.subject}" is not between filing and resolution: ${JSON.stringify(p)}`)
     hist.push({ id: t.id, c: p.c, fr: p.fr, res: p.res, ro: p.ro })
   }
 
   // ── SLA phase.
   await call(admin, 'PATCH', '/api/v1/admin/settings', {
     sla_enabled: true,
+    // The auto-close sweep (every five minutes in the server) closes a Resolved
+    // ticket whose resolved_at is older than this many days (default 7).
+    // backdate.sql moves resolved tickets back up to 41 days, so with the default
+    // each of them would flip to Closed whenever a sweep tick landed between the
+    // backdate and the capture, and the status cards and columns would differ from
+    // run to run. 90 days is longer than any history filed here.
+    reopen_window_days: 90,
     // Off: the dashboard's health card then has its one amber item (tracking on, alerts off).
     sla_alerts_enabled: false,
     // Staff see Available too, so Jordan's sidebar lists it.
@@ -652,6 +661,8 @@ async function history(admin, seed, U) {
       throw new Error(`history: impossible times for ${h.id}: ${JSON.stringify(h)}`)
     }
     // Where upd is left out: the last thing that happened to the ticket.
+    // A reopen cannot be older than the ticket.
+    if (h.ro != null && h.ro > h.c) throw new Error(`history: reopened before it was filed: ${JSON.stringify(h)}`)
     h.upd ??= h.clo != null ? h.c - h.res - h.clo : h.res != null ? h.c - h.res : h.fr != null ? h.c - h.fr : h.c
   }
   return hist
