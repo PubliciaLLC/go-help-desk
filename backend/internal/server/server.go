@@ -1032,8 +1032,8 @@ func (s *Server) InitSAML(ctx context.Context) {
 //
 // Deliberately takes no enabled flag. #304's first draft gave SAML one,
 // reusing the existing saml_enabled setting — which turned out to already
-// have a real, unrelated meaning (user.IsLocalAuthAllowed reads it to decide
-// whether non-admins may still use a password once SAML is configured), so
+// have a real, unrelated meaning (user.MaySignInWithoutSAML reads it to decide
+// whether non-admins may still use a password, or OIDC, once SAML is configured), so
 // wiring it into whether the middleware loads at all would have made
 // flipping that switch — which many operators use purely to require SSO for
 // staff while keeping SAML itself already running — also silently take SAML

@@ -99,8 +99,9 @@ func (s *Service) SAMLEnabled(ctx context.Context) bool {
 }
 
 // SetSAMLEnabled persists whether SAML authentication is enabled — read by
-// user.IsLocalAuthAllowed to decide whether non-admins keep password login
-// once SAML is configured (a stricter posture an operator opts into
+// user.MaySignInWithoutSAML (through IsLocalAuthAllowed for passwords, and
+// directly on the OIDC callback) to decide whether non-admins keep password
+// and OIDC sign-in once SAML is configured (a stricter posture an operator opts into
 // separately from whether SAML itself is configured at all). #304 first
 // treated this as also gating whether the SAML middleware loads, the way
 // oidc_enabled gates OIDC — that conflated two different questions under

@@ -810,7 +810,7 @@ export interface SecurityWarnings {
 
   /**
    * "Require SAML for staff and users" is on while SAML is not loaded, so they
-   * cannot sign in (administrators keep password sign-in). Present only while
+   * cannot sign in (administrators keep password and OIDC sign-in). Present only while
    * that is true, so it clears with no restart. `incomplete`: the IdP metadata,
    * the certificate or the private key is not saved. `not_loaded`: all are
    * saved and SAML is still not running (the metadata could not be loaded).
