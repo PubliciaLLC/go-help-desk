@@ -13,12 +13,19 @@
 > SLA breach evaluation (#126), SLA pauses during Pending (#127), the SLA
 > indicator is rendered (#128) and the audit log is readable (#129). So the SLA
 > findings marked non-functional below are fixed: breaches are detected and
-> stamped, though nothing yet acts on a breach (#408). Roadmap issues filed from
+> stamped, and a breach, or a target reaching 80% of its time, is announced by
+> email to staff and by webhook (#670; on by default for a fresh install, off
+> after an upgrade until an administrator turns it on). Nothing escalates yet:
+> there are no tiers and no group lead, and no ticket is re-assigned or raised
+> on a breach (#408, v1.4). Reporting has shipped as well: the Reports page
+> (#131) and the dashboard (#675), and each ticket records how it arrived
+> (`source_channel`). Roadmap issues filed from
 > this analysis: #403 (assets), #405 (continual improvement), #406 (suppliers),
 > #407 (relationships), #408 (incident management), #411 (monitoring events),
-> #415 (asset reference). Ticket types and reporting have since moved from
-> v4 and v3 to v1.4, alongside those issues; the Snipe-IT plugin (#403) is v2.
-> The scorecard below shows the current versions.
+> #415 (asset reference). Ticket types have since moved from v4 to v1.4,
+> alongside those issues; what is left of reporting (scheduled reports, cuts by
+> channel and agent, first-contact resolution) moved from v3 to v1.4 too; the
+> Snipe-IT plugin (#403) is v2. The scorecard below shows the current versions.
 
 ---
 
@@ -56,10 +63,11 @@ roadmap decisions, not oversights. The analysis is useful for three things:
 
 2. **Three findings that are not roadmap gaps and want attention regardless of
    ITIL.** SLA tracking is specified in `DESIGN.md` as a working v1 feature but
-   is materially non-functional: breach evaluation is never invoked, the
-   pause-on-Pending rule is unimplemented, and the queue indicator does not
+   was materially non-functional: breach evaluation was never invoked, the
+   pause-on-Pending rule was unimplemented, and the queue indicator did not
    exist in the frontend. Details in §3.6. These read as bugs against the
-   existing spec, not as new scope.
+   existing spec, not as new scope, and all three are fixed since (see the
+   note at the top).
 
 3. **One structural observation.** Every significant ITSM gap — Incident vs.
    Request separation, Problem records, Change records, derived priority —
@@ -126,7 +134,9 @@ log behind every mutation.
   There is no L1/L2/L3 tier model and no escalation record, so "how often does
   L1 resolve without escalating" is unanswerable.
 - **No hierarchic escalation on SLA breach** — at the time, breaches were not
-  detected at all (§3.6). They are now (#126), but nothing acts on one (#408).
+  detected at all (§3.6). They are now (#126), and a breach or an at-risk
+  target is announced by email and webhook (#670), but nothing escalates on
+  one: no ticket is re-assigned or raised to a higher tier (#408).
 - No work log / time-spent capture, so effort per incident is not measurable.
 
 ---
@@ -200,7 +210,7 @@ real goal, v4's scope as written understates the work by a wide margin.
 
 ---
 
-### 3.6 Service Level Management — 🟡 Partial, and weaker than `DESIGN.md` implies
+### 3.6 Service Level Management — 🟡 Partial *(was weaker than `DESIGN.md` implied; fixed since)*
 
 *ITIL: targets agreed with the business, measured, reported and reviewed;
 SLAs, OLAs and underpinning contracts; defined service hours.*
@@ -210,8 +220,9 @@ resolution targets in minutes); specificity-ordered policy matching; per-ticket
 `sla_records`; first-response stamping on the first staff reply
 (`domain/ticket/service.go:312`); admin CRUD and a policy management UI.
 
-**Three divergences from `docs/DESIGN.md` — these are spec/code bugs, not
-roadmap gaps:**
+**Three divergences from `docs/DESIGN.md` at the time of the assessment — these
+were spec/code bugs, not roadmap gaps. All three are fixed since (#126, #127,
+#128, see the note at the top); the findings are kept as written:**
 
 1. **Breach evaluation never runs.** `sla.Service.EvaluateBreaches`
    (`domain/sla/service.go:50`) is documented as "called on a schedule" but has
@@ -240,9 +251,10 @@ caller.
   it is independent of the bugs above.
 - No OLAs (internal team-to-team targets) or underpinning supplier contracts.
 - SLA attainment is reported (1.3 Reports page, §3.13), and breaches and at-risk
-  targets send email and webhook alerts (#670). There is still no escalation:
-  an alert tells people, but nothing re-assigns the ticket or raises it to a
-  higher tier.
+  targets send email and webhook alerts (#670; the alerts are on for a fresh
+  install and off after an upgrade until an administrator turns them on).
+  There is still no escalation: an alert tells people, but nothing re-assigns
+  the ticket or raises it to a higher tier (#408).
 - Targets anchor to ticket creation only. No per-status targets and no
   update-cadence targets ("customer updated at least every 24h").
 
@@ -431,7 +443,7 @@ entities, for outage-driven major incidents and availability reporting.
 | 3.1 | Service Desk | ✅ Fit | v1 — shipped |
 | 3.15 | Information Security Management | ✅ Fit | v1 — shipped |
 | 3.2 | Incident Management | 🟡 Partial | core v1; typing/priority matrix (#135), major incidents, escalation, work log (#408) v1.4 |
-| 3.6 | Service Level Management | 🟡 Partial | v1 — breach detection, pause and indicator fixed since (#126-#128) |
+| 3.6 | Service Level Management | 🟡 Partial | v1 — breach detection, pause and indicator fixed since (#126-#128); breach and at-risk alerts (#670); escalation v1.4 (#408) |
 | 3.17 | Relationship Management | 🟡 Partial | v1.4 #407 (organization entity with v4 #35) |
 | 3.3 | Service Request Management | ❌ Gap | v1.4 (type only, #135) |
 | 3.4 | Problem Management | ❌ Gap | v1.4 (type only, #135) |
