@@ -51,11 +51,15 @@ on:
       - .github/workflows/site-openapi.yml
   workflow_dispatch:
 
-# The concurrency group is on the publish job, not here. GitHub keeps one running
-# and one pending run per group and cancels an older pending one. A group on the
-# whole workflow would let a run the gate skips (a push to main, a tag of another
-# line) cancel a pending run that carries a real spec change, and that change
-# would never reach the site.
+# There is deliberately NO concurrency group, here or on the publish job. GitHub
+# keeps one running and one pending run per group and cancels an older pending
+# one, and runs queue in the order their verify jobs finish, not in commit order:
+# a newer pending run, or a tag run on an older commit, could cancel the run that
+# carries a spec change, and that change would not reach the site until the next
+# spec push. Racing publishes are safe without a group: each resets to the site
+# branch, retries a rejected push from a fresh reset, skips when the site is
+# already pinned to a newer commit, and a tag only fast-forwards the pin, so
+# overlapping runs converge on the newest commit and nothing is cancelled.
 
 permissions:
   contents: read
@@ -141,13 +145,6 @@ jobs:
     needs: [gate, verify]
     if: needs.gate.outputs.publish == 'true'
     runs-on: ubuntu-latest
-    # One writer per site branch. A newer pending publish replaces an older
-    # pending one; both pull their own commit from the same branch, so the newer
-    # one carries the older one's change, and the skip-if-newer test below keeps a
-    # late run from going backwards.
-    concurrency:
-      group: site-openapi-${{ vars.SITE_OPENAPI_BRANCH }}
-      cancel-in-progress: false
     permissions:
       contents: write
     env:
