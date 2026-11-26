@@ -2425,8 +2425,9 @@ paths:
       description: |
         The custom fields an administrator has chosen to offer visitors under a category: the category's own
         attachments with Offer to guests (visible_to_guests) switched on that are also shown on the new-ticket
-        form, and whose field is active. Nothing attached to a type or an item is ever offered, because a guest
-        picks a category and nothing below it. The answer is exactly the set POST /guest/tickets accepts in
+        form, and whose field is active. Nothing attached to a type or an item is ever offered: the fields a
+        guest is offered are the category's own, even when the instance shows guests a Type and Item
+        (guests_show_types, guests_show_items, #711). The answer is exactly the set POST /guest/tickets accepts in
         custom_fields, in the order the form shows them (field number, then name).
 
         Answers 404 not_found while guest submission is switched off, 400 bad_request when category_id is
@@ -3698,13 +3699,18 @@ paths:
         - name: type_id
           in: query
           required: false
-          description: Only tickets of this type.
+          description: >-
+            Only tickets of this type. 403 forbidden (`type_id is not available to this account`) for a caller
+            who is not shown types (#711).
           schema:
             $ref: '#/components/schemas/Uuid'
         - name: item_id
           in: query
           required: false
-          description: Only tickets of this item.
+          description: >-
+            Only tickets of this item. 403 forbidden (`item_id is not available to this account`) for a
+            reporting user while users_show_items is off (the default, #711), which is also when their tickets
+            carry no item_id. Staff and administrators always may.
           schema:
             $ref: '#/components/schemas/Uuid'
         - name: assignee_user_id
@@ -3864,7 +3870,9 @@ paths:
             Refused by the middleware (text/plain): the role or MFA or scope check
             failed. Or refused by the handler (application/json, `forbidden`):
             users cannot list group tickets; `<param> is not available to requesters`
-            for a staff-only filter; `sort by <column> is not available to requesters`;
+            for a staff-only filter; `item_id is not available to this account` (or `type_id ...`)
+            for a level of the classification the caller is not shown (#711);
+            `sort by <column> is not available to requesters`;
             you are not a member of that group (staff, scope enforcement on);
             only admins can use this scope (scope=unassigned or scope=all). Or
             `insufficient_scope` (application/json): `requester` from an API key or OAuth
@@ -12080,7 +12088,10 @@ components:
         A reporting user (any role other than staff or administrator) receives
         only these keys: id, tracking_number, subject, description, description_format, status_id,
         priority, category_id, type_id, item_id, created_at, resolved_at,
-        assignee_user_id and resolution_notes. Everything else here
+        assignee_user_id and resolution_notes, except that item_id is sent only
+        while users_show_items is on (#711; off by default, so by default a
+        reporting user receives no item_id, in a ticket, a list, the dashboard,
+        the answer to creating or following up, or over MCP). Everything else here
         (assignee_group_id, reporter_user_id, guest_email, guest_name,
         guest_phone, closed_at, updated_at, pending_since, sla_paused_seconds,
         reopen_count, source_channel, has_quarantined_attachment) is for staff and administrators only. The same list applies to every
