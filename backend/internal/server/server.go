@@ -845,12 +845,14 @@ func (s *Server) levelsFor(r *http.Request) catalogue.Levels {
 	return s.levelsOf(r.Context(), catalogue.Requester)
 }
 
-// levelsOfActor is the same for a caller that is already an actor (a nil actor
-// is a guest): an API key or OAuth client carries its owner's role, so it sees
-// what that person's session sees.
+// levelsOfActor is the same for a caller that is already an actor: an API key
+// or OAuth client carries its owner's role, so it sees what that person's
+// session sees. A nil actor is nobody (Unknown, which sees nothing below the
+// category), not a guest: the one place that means a guest is levelsFor, on the
+// public catalogue. Everything else, viewerJSON and MCP included, agrees.
 func (s *Server) levelsOfActor(ctx context.Context, a *authmw.Actor) catalogue.Levels {
 	if a == nil {
-		return s.levelsOf(ctx, catalogue.Guest)
+		return s.levelsOf(ctx, catalogue.Unknown)
 	}
 	return s.levelsOf(ctx, catalogue.WhoOfRole(a.Role))
 }

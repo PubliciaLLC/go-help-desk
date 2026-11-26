@@ -77,7 +77,7 @@ type meUser struct {
 	AttachmentMaxBytes int64 `json:"attachment_max_bytes"`
 	// CanChooseItem is whether the new-ticket page offers this person an Item
 	// selector (#711): always for staff and administrators, and for a requester
-	// whatever users_can_choose_item says. Always present, so a client can tell
+	// whether Items is visible to them (users_show_items). Always present, so a client can tell
 	// false from an old server. Not on the public /site, which anyone can read.
 	CanChooseItem bool `json:"can_choose_item"`
 }

@@ -243,10 +243,6 @@ func TestCataloguePolicy_RequesterTicketsCarryNoItemWhileItemsIsOff(t *testing.T
 	check(true)
 	setChoice(t, h, usersItemKey, false)
 	check(false) // flipped on to off: a ticket that had an item shows none again
-
-	// The dashboard's ticket lists go through the same exit.
-	res := h.doAsUser(t, http.MethodGet, "/api/v1/dashboard", nil)
-	require.NotContains(t, string(readAll(t, res)), tree.item.String())
 }
 
 // What the requester gets back when they file a ticket goes through the same

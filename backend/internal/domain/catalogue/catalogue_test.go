@@ -49,14 +49,26 @@ func TestVisibleLevels(t *testing.T) {
 	}
 }
 
-// Anything that is not one of the three is a requester at best, and the zero
-// value of Who is not staff: a caller that forgets to say who is asking sees
-// the least.
+// A caller that forgets to say who is asking sees nothing at all: the zero value
+// of Who is Unknown, which sees no more than any real kind could (in every
+// combination of the settings), and so does a value that is not a kind.
 func TestVisibleLevels_FailsClosed(t *testing.T) {
-	s := settings{true, true, true, true}
-	require.Equal(t, catalogue.Levels{}, catalogue.VisibleLevels(context.Background(), s, catalogue.Who(99)))
 	var zero catalogue.Who
-	require.NotEqual(t, catalogue.Staff, zero)
+	require.Equal(t, catalogue.Unknown, zero)
+	for _, sub := range []bool{false, true} {
+		for _, flags := range []bool{false, true} {
+			s := settings{sub, flags, flags, flags}
+			ctx := context.Background()
+			require.Equal(t, catalogue.Levels{}, catalogue.VisibleLevels(ctx, s, zero))
+			require.Equal(t, catalogue.Levels{}, catalogue.VisibleLevels(ctx, s, catalogue.Who(99)))
+			unknown := catalogue.VisibleLevels(ctx, s, zero)
+			for _, who := range []catalogue.Who{catalogue.Guest, catalogue.Requester, catalogue.Staff} {
+				got := catalogue.VisibleLevels(ctx, s, who)
+				require.False(t, unknown.Types && !got.Types, "Unknown must not see a level a real kind does not")
+				require.False(t, unknown.Items && !got.Items, "Unknown must not see a level a real kind does not")
+			}
+		}
+	}
 }
 
 func TestWhoOfRole(t *testing.T) {

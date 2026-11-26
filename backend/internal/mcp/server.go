@@ -1502,7 +1502,8 @@ func (s *Server) handleListTickets(ctx context.Context, req mcpgo.CallToolReques
 	}
 	// A filter on a level of the classification the caller may not see is
 	// refused as REST refuses it (#711).
-	if err := f.AllowedForLevels(caller.Role, s.authz.VisibleLevels(ctx, caller), canSearchRequesters(caller)); err != nil {
+	lv := s.authz.VisibleLevels(ctx, caller) // once for this call
+	if err := f.AllowedForLevels(caller.Role, lv, canSearchRequesters(caller)); err != nil {
 		return storeErr(ctx, "list tickets", err)
 	}
 
@@ -1527,7 +1528,7 @@ func (s *Server) handleListTickets(ctx context.Context, req mcpgo.CallToolReques
 	}
 	tickets := res.Tickets
 	if !f.SearchReplies {
-		return s.ticketResult(ctx, caller, tickets)
+		return ticketResultWith(caller, lv, tickets)
 	}
 
 	// Excerpts only when the replies were searched: a page chosen without them
@@ -1553,7 +1554,7 @@ func (s *Server) handleListTickets(ctx context.Context, req mcpgo.CallToolReques
 			out[i].ReplyMatch = &m
 		}
 	}
-	result, err := s.ticketResult(ctx, caller, out)
+	result, err := ticketResultWith(caller, lv, out)
 	if err != nil || result.IsError {
 		return result, err
 	}
@@ -1811,7 +1812,13 @@ func str(args map[string]any, key string) string {
 // allowed list as the HTTP views (ticket.FilterForViewer), so a requester over
 // MCP is shown what a requester over HTTP is shown.
 func (s *Server) ticketResult(ctx context.Context, a *authmw.Actor, v any) (*mcpgo.CallToolResult, error) {
-	filtered, err := ticket.FilterForViewer(a.Role, s.authz.VisibleLevels(ctx, a), v)
+	return ticketResultWith(a, s.authz.VisibleLevels(ctx, a), v)
+}
+
+// ticketResultWith is ticketResult for a tool that has already worked out the
+// caller's levels, so a request asks the policy once.
+func ticketResultWith(a *authmw.Actor, lv catalogue.Levels, v any) (*mcpgo.CallToolResult, error) {
+	filtered, err := ticket.FilterForViewer(a.Role, lv, v)
 	if err != nil {
 		return errResult("could not encode the ticket")
 	}

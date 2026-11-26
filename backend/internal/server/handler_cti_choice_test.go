@@ -17,9 +17,9 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 )
 
-// #711: two independent switches, both off by default, that let a requester
-// see the Item (users_show_items), and a guest the Type (guests_show_types) and
-// the Item (guests_show_items). The wire names are spelled out here on purpose:
+// #711: three independent switches, all off by default, that let a registered
+// requester see the Item (users_show_items), and a guest the Type
+// (guests_show_types) and the Item under it (guests_show_items). The wire names are spelled out here on purpose:
 // a renamed constant must not silently rename what administrators and the
 // OpenAPI spec see.
 const (

@@ -546,10 +546,10 @@ func (f Filter) AllowedForLevels(role user.Role, lv catalogue.Levels, requesterS
 		return nil
 	}
 	if f.TypeID != nil && !lv.Types {
-		return &FilterError{Kind: FilterForbidden, Msg: "type_id is not available to requesters"}
+		return &FilterError{Kind: FilterForbidden, Msg: "type_id is not available to this account"}
 	}
 	if f.ItemID != nil && !(lv.Types && lv.Items) {
-		return &FilterError{Kind: FilterForbidden, Msg: "item_id is not available to requesters"}
+		return &FilterError{Kind: FilterForbidden, Msg: "item_id is not available to this account"}
 	}
 	return nil
 }

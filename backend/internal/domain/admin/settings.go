@@ -589,10 +589,10 @@ func AuthCriticalKeys() []string {
 		// leaked API key must not be able to do it and then use it.
 		KeyGuestAttachmentsEnabled, KeyGuestAttachmentMaxMB,
 		KeyGuestAttachmentMaxPerTicket, KeyGuestAttachmentUploadsPerHour,
-		// Who may choose the Type and the Item (#711). The guest switch
-		// publishes every active type and item name to anonymous visitors, and
-		// the user one widens what a requester may file under; a leaked API key
-		// must not be able to open either.
+		// Which levels of the tree guests and registered users are shown
+		// (#711). The guest switches publish every active type and item name to
+		// anonymous visitors, and the user one widens what a requester may read
+		// and file under; a leaked API key must not be able to open any.
 		KeyUsersShowItems, KeyGuestsShowTypes, KeyGuestsShowItems,
 		// Where the virus scanner lives is a route to disabling scanning
 		// entirely: point it at a daemon that answers OK to everything and

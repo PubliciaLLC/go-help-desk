@@ -489,7 +489,7 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	// or an object would be stored and read back as off, so the operator would
 	// believe they had chosen.
 	//
-	// The two #711 switches are the same: a string "true" would read back as
+	// The three #711 switches are the same: a string "true" would read back as
 	// off, and the administrator would believe they had opened the form.
 	for _, key := range []string{
 		admin.KeyUpdateCheckEnabled, admin.KeyPostUpgrade130Seen, admin.KeySLAAlertsEnabled,

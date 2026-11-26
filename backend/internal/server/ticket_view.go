@@ -105,20 +105,28 @@ func (s *Server) requesterOf(ctx context.Context, t ticket.Ticket) *ticketReques
 // viewerJSON is the exit point for any response that carries tickets: staff and
 // administrators get it as built, everyone else gets only what the requester
 // allowed list permits (ticket.FilterForViewer), less the levels of the
-// classification the one policy does not let them see (#711). A nil actor is
-// treated as a requester, so a missed check fails closed.
-func (s *Server) viewerJSON(ctx context.Context, actor *authmw.Actor, v any) any {
+// classification the one policy does not let them see (#711). lv is that
+// caller's levels, worked out once per request by the handler. A nil actor is
+// treated as a requester with no levels, so a missed check fails closed.
+func viewerJSON(actor *authmw.Actor, lv catalogue.Levels, v any) any {
 	role := user.Role("")
 	if actor != nil {
 		role = actor.Role
 	}
-	out, err := ticket.FilterForViewer(role, s.levelsOf(ctx, catalogue.WhoOfRole(role)), v)
+	out, err := ticket.FilterForViewer(role, lv, v)
 	if err != nil {
 		// Encoding a value this package just built does not fail; if it ever does,
 		// send nothing rather than the unfiltered ticket.
 		return map[string]string{}
 	}
 	return out
+}
+
+// viewerJSONFor is viewerJSON for a handler that has not needed the levels
+// before: it works them out, once.
+func (s *Server) viewerJSONFor(r *http.Request, v any) any {
+	a := authmw.GetActor(r)
+	return viewerJSON(a, s.levelsOfActor(r.Context(), a), v)
 }
 
 // ticketViews attaches each ticket's live SLA status via one batch call
@@ -202,7 +210,7 @@ func (s *Server) ticketViews(ctx context.Context, ts []ticket.Ticket, actor *aut
 // writeTickets is handleListTickets' common exit: attach SLA status to the
 // page it was given and write the result as JSON. The wrapper runs exactly once
 // per request.
-func (s *Server) writeTickets(w http.ResponseWriter, r *http.Request, tickets []ticket.Ticket, matches map[uuid.UUID]ticket.ReplyMatch) {
+func (s *Server) writeTickets(w http.ResponseWriter, r *http.Request, lv catalogue.Levels, tickets []ticket.Ticket, matches map[uuid.UUID]ticket.ReplyMatch) {
 	views, err := s.ticketViews(r.Context(), tickets, authmw.GetActor(r))
 	if err != nil {
 		handleError(w, err)
@@ -213,5 +221,5 @@ func (s *Server) writeTickets(w http.ResponseWriter, r *http.Request, tickets []
 			views[i].ReplyMatch = &m
 		}
 	}
-	JSON(w, http.StatusOK, s.viewerJSON(r.Context(), authmw.GetActor(r), views))
+	JSON(w, http.StatusOK, viewerJSON(authmw.GetActor(r), lv, views))
 }

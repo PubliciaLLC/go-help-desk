@@ -12,12 +12,14 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 )
 
-// Who is the kind of caller asking. The zero value is a Guest, the one who sees
-// least, so a caller that forgets to say gets the least.
+// Who is the kind of caller asking. The zero value is Unknown, which sees
+// nothing below the category, so a caller that forgets to say who is asking (a
+// nil actor, a value nobody set) gets the least and not a guest's levels.
 type Who int
 
 const (
-	Guest     Who = iota // no account: the public guest form
+	Unknown   Who = iota // not said: sees nothing below the category
+	Guest                // no account: the public guest form
 	Requester            // a registered user with the user role
 	Staff                // staff and administrators
 )
@@ -56,7 +58,7 @@ type Settings interface {
 //	          Items as well while guests_show_items is (an item hangs under a
 //	          type, so Items on with Types off is Items off).
 //
-// Any other value of who sees nothing below the category.
+// Unknown, and any other value of who, sees nothing below the category.
 func VisibleLevels(ctx context.Context, s Settings, who Who) Levels {
 	switch who {
 	case Staff:

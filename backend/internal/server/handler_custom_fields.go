@@ -10,6 +10,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/catalogue"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/customfield"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 	authmw "github.com/publiciallc/go-help-desk/backend/internal/middleware"
@@ -333,10 +334,20 @@ func (s *Server) handleListTicketCustomFields(w http.ResponseWriter, r *http.Req
 		handleError(w, err)
 		return
 	}
-	if values == nil {
-		values = []customfield.TicketFieldValue{}
+	// A value on a field only a level the caller may not see supplies is not
+	// theirs to read (#711): the field's name and its value say what the item is.
+	hidden, err := s.fieldsHiddenFrom(r.Context(), ticketID, s.levelsOfActor(r.Context(), authmw.GetActor(r)))
+	if err != nil {
+		handleError(w, err)
+		return
 	}
-	JSON(w, http.StatusOK, values)
+	shown := make([]customfield.TicketFieldValue, 0, len(values))
+	for _, v := range values {
+		if !hidden[v.FieldDefID] {
+			shown = append(shown, v)
+		}
+	}
+	JSON(w, http.StatusOK, shown)
 }
 
 func (s *Server) handlePutTicketCustomFields(w http.ResponseWriter, r *http.Request) {
@@ -368,7 +379,12 @@ func (s *Server) handlePutTicketCustomFields(w http.ResponseWriter, r *http.Requ
 	// only. Everyone is held to it, not just reporters: a value on a field
 	// the ticket does not have is a row nothing will ever display, which is
 	// not a thing worth writing for any role.
-	allowed, err := s.fieldsForTicket(r.Context(), ticketID)
+	//
+	// Resolved with the levels the caller may see (#711), so a field only the
+	// item supplies is, to a caller who cannot see items, a field the ticket
+	// does not have: the same refusal as an unknown id, which also keeps the
+	// answer from saying which item the ticket carries.
+	allowed, err := s.fieldsForTicket(r.Context(), ticketID, s.levelsOfActor(r.Context(), authmw.GetActor(r)))
 	if err != nil {
 		handleError(w, err)
 		return
@@ -450,12 +466,21 @@ func handleFieldDefNotFound(w http.ResponseWriter, err error) {
 // what can be seen. Anything else is a value stored against a field the
 // ticket does not have — invisible, unreportable, and on a field an
 // administrator may have scoped deliberately narrowly.
-func (s *Server) fieldsForTicket(ctx context.Context, ticketID uuid.UUID) (map[uuid.UUID]bool, error) {
+//
+// lv is what the caller may see of the classification (#711): a level they may
+// not see does not contribute fields, as in GET /tickets/fields.
+func (s *Server) fieldsForTicket(ctx context.Context, ticketID uuid.UUID, lv catalogue.Levels) (map[uuid.UUID]bool, error) {
 	t, err := s.tickets.GetByID(ctx, ticketID)
 	if err != nil {
 		return nil, err
 	}
-	assignments, err := s.customFields.ResolveFieldsForCTI(ctx, t.CategoryID, t.TypeID, t.ItemID)
+	typeID, itemID := t.TypeID, t.ItemID
+	if !lv.Types {
+		typeID, itemID = nil, nil
+	} else if !lv.Items {
+		itemID = nil
+	}
+	assignments, err := s.customFields.ResolveFieldsForCTI(ctx, t.CategoryID, typeID, itemID)
 	if err != nil {
 		return nil, err
 	}
@@ -464,4 +489,27 @@ func (s *Server) fieldsForTicket(ctx context.Context, ticketID uuid.UUID) (map[u
 		out[a.FieldDefID] = true
 	}
 	return out, nil
+}
+
+// fieldsHiddenFrom is the fields the ticket has that only a level the caller may
+// not see supplies. Empty, and no lookup, for a caller who sees every level.
+func (s *Server) fieldsHiddenFrom(ctx context.Context, ticketID uuid.UUID, lv catalogue.Levels) (map[uuid.UUID]bool, error) {
+	if lv.Types && lv.Items {
+		return nil, nil
+	}
+	all, err := s.fieldsForTicket(ctx, ticketID, catalogue.Levels{Types: true, Items: true})
+	if err != nil {
+		return nil, err
+	}
+	seen, err := s.fieldsForTicket(ctx, ticketID, lv)
+	if err != nil {
+		return nil, err
+	}
+	hidden := map[uuid.UUID]bool{}
+	for id := range all {
+		if !seen[id] {
+			hidden[id] = true
+		}
+	}
+	return hidden, nil
 }

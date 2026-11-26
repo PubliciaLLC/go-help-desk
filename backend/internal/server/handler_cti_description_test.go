@@ -153,7 +153,7 @@ func TestAdminCTI_DescriptionRoundTrip(t *testing.T) {
 // The lists the ticket forms read carry `description`: for staff, for a
 // reporting user, and for a guest with no session at all (while guest
 // submission is on, the public catalogue is public, and so is the text). A
-// guest reads the type and item levels only while guests may choose them
+// guest reads the type and item levels only while guests are shown them
 // (#711); with that off they read the category's text and nothing below it.
 func TestCatalogue_ListsCarryDescription(t *testing.T) {
 	h, cleanup := newHarness(t)
@@ -197,7 +197,7 @@ func TestCatalogue_ListsCarryDescription(t *testing.T) {
 		setChoice(t, h, usersItemKey, true)
 		read(t, func(p string) *http.Response { return h.doAsUser(t, http.MethodGet, p, nil) })
 	})
-	t.Run("a guest with no session, while guests may choose the Type and Item", func(t *testing.T) {
+	t.Run("a guest with no session, while guests are shown the Type and Item", func(t *testing.T) {
 		setChoice(t, h, guestsTypeItemKey, true)
 		setChoice(t, h, usersItemKey, true)
 		read(t, func(p string) *http.Response { return h.doUnauth(t, http.MethodGet, p, nil) })

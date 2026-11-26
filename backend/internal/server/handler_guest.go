@@ -70,14 +70,15 @@ func (s *Server) handleGuestCreateTicket(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// No type_id or item_id unless guests_can_choose_type_item is on (#711).
+	// No type_id unless guests_show_types is on, and no item_id unless
+	// guests_show_items is too (#711: the levels guests are shown).
 	// DESIGN.md gives a guest the category only by default, and accepting them
 	// unchecked cost more than a mismatched form: they went to the database
 	// unvalidated, so a random uuid hit a foreign key AFTER NextSeq had
 	// consumed a tracking number — an unauthenticated 500 that burns a number
 	// from the sequence on every call. They are raw here so that, while the
-	// setting is off, whatever a client sends under those names is ignored as
-	// it always was, a malformed value included; once it is on they are
+	// level is not shown, whatever a client sends under its name is ignored as
+	// it always was, a malformed value included; once it is shown it is
 	// parsed and checked before anything is written (see guestPick).
 	//
 	// custom_fields takes only the fields an administrator offered to guests on
@@ -689,12 +690,12 @@ func (s *Server) handleGuestFollowUp(w http.ResponseWriter, r *http.Request) {
 	if !allowOrRefuse(ctx, w, s.loginLimiter, "guest-submit:"+authmw.ClientAddr(r)) {
 		return
 	}
-	// The type the guest chose is kept while guests are shown types (#711), and
-	// routes the follow-up to the queue the original went to; otherwise it
-	// carries none, as before.
-	keep := s.followUpKeep(ctx, true)
+	// What the guest chose is kept while guests are shown it (#711), and the
+	// type routes the follow-up to the queue the original went to; a level
+	// archived since falls back, silently. Otherwise it carries none, as before.
+	keep := s.followUpKeep(ctx, t, s.levelsOf(ctx, catalogue.Guest))
 	var routedType *uuid.UUID
-	if keep.Type {
+	if keep.Types {
 		routedType = t.TypeID
 	}
 	created, err := s.tickets.CreateRequesterFollowUpKeeping(ctx, t.ID, s.adminSvc.TicketPrefix(ctx), ticket.ChannelGuest,
