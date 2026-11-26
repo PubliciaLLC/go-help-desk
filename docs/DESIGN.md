@@ -156,7 +156,7 @@ changes for an instance until an administrator writes one.
   **Fields**) and under the name in the Add category / type / item forms
   (create). The same hint is under the field at all three levels: "Shown beneath
   the Category / Type / Item chooser on the new-ticket form, the guest form
-  (the category only, unless an administrator lets guests choose the Type and
+  (the category only, unless an administrator shows guests the Type and
   Item) and the reclassify card on a ticket. Plain text, no
   formatting; line breaks are kept. This text is public: while guest submission
   is on, anyone can read the description of every active category (and of every
