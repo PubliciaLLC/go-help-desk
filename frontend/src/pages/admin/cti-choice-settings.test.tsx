@@ -95,7 +95,8 @@ describe('Show Types to guests and Show Items to guests', () => {
     expect(types().disabled).toBe(false)
     expect(screen.getByText(/Type selector under Category on the guest form/i)).toBeTruthy()
     expect(screen.getByText(/names and descriptions of every active type public/i)).toBeTruthy()
-    expect(screen.getByText(/Needs Show Types to guests/i)).toBeTruthy()
+    expect(screen.getByText(/Needs guest submission on and Show Types to guests/i)).toBeTruthy()
+    expect(screen.getByText(/a registered user can sign out and read the item list/i)).toBeTruthy()
   })
 
   it('Items is unavailable while Types is off, and Types while guest submission is off', async () => {
@@ -103,6 +104,23 @@ describe('Show Types to guests and Show Items to guests', () => {
     expect(items().disabled).toBe(true)
     await userEvent.click(types())
     expect(items().disabled).toBe(false)
+  })
+
+  it('say why a toggle is unavailable, and tie the reason to it', async () => {
+    await render({ guest_submission_enabled: false })
+    for (const toggle of [types(), items()]) {
+      const id = toggle.getAttribute('aria-describedby')
+      expect(id).toBeTruthy()
+      expect(document.getElementById(id!)?.textContent).toMatch(/unavailable while guest submission is off/i)
+    }
+  })
+
+  it('Items says Show Types to guests when that is what it waits for', async () => {
+    await render({ guest_submission_enabled: true })
+    const id = items().getAttribute('aria-describedby')
+    expect(document.getElementById(id!)?.textContent).toMatch(/unavailable while Show Types to guests is off/i)
+    await userEvent.click(types())
+    expect(items().getAttribute('aria-describedby')).toBeNull()
   })
 
   it('both are unavailable while guest submission is off, whatever is stored', async () => {

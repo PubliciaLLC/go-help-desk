@@ -52,18 +52,37 @@ function GuestFieldInput({
   }
 }
 
-// A line under a selector while its list is loading, or when it could not be
-// loaded (which would otherwise look like a category with nothing in it).
-function ListHint({ query, name }: { query: { isLoading: boolean; isError: boolean }; name: string }) {
+// A line under a selector while its list is loading, when it could not be
+// loaded (which would otherwise look like a category with nothing in it), and
+// when it loaded and is empty, with a real button to ask again. `asked` is
+// whether there is anything to ask for yet.
+function ListHint({
+  query,
+  name,
+  asked,
+  none,
+}: {
+  query: { isLoading: boolean; isError: boolean; isSuccess: boolean; data?: unknown[]; refetch: () => unknown }
+  name: string
+  asked: boolean
+  none: string
+}) {
+  if (!asked) return null
   if (query.isLoading) {
-    return <p role="status" aria-label={name} className="text-xs text-gray-500">Loading {name.toLowerCase()}…</p>
+    return <p role="status" className="text-xs text-gray-500">Loading {name}…</p>
   }
   if (query.isError) {
     return (
-      <p role="alert" aria-label={name} className="text-xs text-red-600">
-        The {name.toLowerCase()} could not be loaded. Choose again to retry; you can still send the request without.
-      </p>
+      <div role="alert" className="flex flex-wrap items-center gap-2 text-xs text-red-600">
+        <span>The {name} could not be loaded; you can still send the request without.</span>
+        <Button type="button" variant="outline" size="sm" onClick={() => query.refetch()}>
+          Retry
+        </Button>
+      </div>
     )
+  }
+  if (query.isSuccess && (query.data ?? []).length === 0) {
+    return <p className="text-xs text-gray-500">{none}</p>
   }
   return null
 }
@@ -98,14 +117,17 @@ export function GuestTicketPage() {
 
   // The lists say when they are loading or could not be, so a failure does not
   // look like a category with no types. The form still files under what is chosen.
+  // The key says whose list this is: a signed-in staff member on /submit would
+  // otherwise be served the archived rows the staff form cached under the same
+  // key.
   const typesQuery = useQuery({
-    queryKey: ['public-types', categoryId],
+    queryKey: ['public-types', 'guest', categoryId],
     queryFn: () => listPublicTypes(categoryId),
     enabled: showTypes && !!categoryId,
   })
   const types = typesQuery.data ?? []
   const itemsQuery = useQuery({
-    queryKey: ['public-items', categoryId, typeId],
+    queryKey: ['public-items', 'guest', categoryId, typeId],
     queryFn: () => listPublicItems(categoryId, typeId),
     enabled: showItems && !!categoryId && !!typeId,
   })
@@ -343,7 +365,7 @@ export function GuestTicketPage() {
                           <option key={t.id} value={t.id}>{t.name}</option>
                         ))}
                       </Select>
-                      <ListHint query={typesQuery} name="Types" />
+                      <ListHint query={typesQuery} name="types" asked={!!categoryId} none="No types for this category." />
                     </div>
                   )}
                   {showItems && (
@@ -361,7 +383,7 @@ export function GuestTicketPage() {
                           <option key={i.id} value={i.id}>{i.name}</option>
                         ))}
                       </Select>
-                      <ListHint query={itemsQuery} name="Items" />
+                      <ListHint query={itemsQuery} name="items" asked={!!typeId} none="No items for this type." />
                     </div>
                   )}
                 </div>

@@ -605,7 +605,7 @@ function PlacesSection({ def, autoFocusAdd }: { def: FieldDef; autoFocusAdd: boo
                       />
                       Required
                     </label>
-                    {/* Only a category's own place: a guest picks a category and nothing below it. */}
+                    {/* Only a category's own place: the fields a guest is offered are the category's, even when guests are shown a Type and Item (#711). */}
                     {p.scope_type === 'category' && (
                       <label className={`${CHECK_LABEL} max-sm:order-4 max-sm:basis-full pointer-coarse:justify-start`}>
                         <input

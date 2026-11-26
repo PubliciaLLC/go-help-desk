@@ -281,11 +281,18 @@ describe('the Filters panel', () => {
     expect(screen.queryByRole('button', { name: /^SLA/ })).toBeNull()
   })
 
-  it('a requester does not ask /me for it', async () => {
+  // A requester asks /me for one thing, whether Items is shown to them (#711);
+  // /me carries no SLA state for them, so the SLA filter and sort stay unsent.
+  it('a requester asks /me for whether items are shown, and still sends no SLA', async () => {
     setRole('user')
+    go({ sla: 'breached', sort: 'sla' })
     renderWithQuery(<TicketListPage />)
     await screen.findAllByText('Printer jam')
-    expect(get.mock.calls.some((c: unknown[]) => c[0] === '/me')).toBe(false)
+    await waitFor(() => expect(get.mock.calls.some((c: unknown[]) => c[0] === '/me')).toBe(true))
+    for (const p of ticketCalls()) {
+      expect(p.sla).toBeUndefined()
+      expect(p.sort).toBeUndefined()
+    }
   })
 
   // A ticket with a live SLA is not evidence either way: only /me is asked.
@@ -765,5 +772,43 @@ describe('on a phone', () => {
     fireEvent.change(await within(dialog).findByLabelText('Assignee'), { target: { value: '00000000-0000-4000-8000-0000000000b2' } })
     fireEvent.click(within(dialog).getByRole('button', { name: 'Show results' }))
     expect(router.search).toEqual({ view: 'groups', assignee: '00000000-0000-4000-8000-0000000000b2' })
+  })
+})
+
+// #711: a requester who is not shown Items must not send item_id (the server
+// answers 403 to the whole list) nor show it in a chip, whether the address came
+// from a bookmark made before, or the switch was turned off while the page was
+// open.
+describe('a stale item in the address (#711)', () => {
+  const C1 = '00000000-0000-4000-8000-0000000000c1'
+  const D1 = '00000000-0000-4000-8000-0000000000d1'
+  const I1 = '00000000-0000-4000-8000-0000000000f1'
+
+  it('a requester who cannot see Items sends no item_id and shows no item in the chip', async () => {
+    setRole('user')
+    meAnswer = { can_choose_item: false }
+    go({ category: C1, type: D1, item: I1 })
+    renderWithQuery(<TicketListPage />)
+    await screen.findAllByText('Printer jam')
+    await waitFor(() => expect(get.mock.calls.some((c: unknown[]) => c[0] === '/me')).toBe(true))
+    await screen.findByText('Hardware › Printers')
+    for (const p of ticketCalls()) expect(p.item_id, 'every request, before and after /me answers').toBeUndefined()
+    expect(screen.queryByText(/›.*›/)).toBeNull()
+  })
+
+  it('a requester who is shown Items sends it once /me has said so', async () => {
+    setRole('user')
+    meAnswer = { can_choose_item: true }
+    go({ category: C1, type: D1, item: I1 })
+    renderWithQuery(<TicketListPage />)
+    await waitFor(() => expect(lastCall().item_id).toBe(I1))
+  })
+
+  it('staff always send it', async () => {
+    setRole('staff')
+    meAnswer = { can_use_available_queue: false }
+    go({ category: C1, type: D1, item: I1 })
+    renderWithQuery(<TicketListPage />)
+    await waitFor(() => expect(lastCall().item_id).toBe(I1))
   })
 })

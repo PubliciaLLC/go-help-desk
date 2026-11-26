@@ -14,6 +14,7 @@ import { GuestTicketPage } from './GuestTicketPage'
 const CATEGORIES = [
   { id: 'cat-hw', name: 'Hardware', description: 'Hardware text', active: true, sort_order: 1 },
   { id: 'cat-sw', name: 'Software', description: '', active: true, sort_order: 2 },
+  { id: 'cat-none', name: 'Facilities', description: '', active: true, sort_order: 3 },
 ]
 const TYPES: Record<string, object[]> = {
   'cat-hw': [
@@ -64,7 +65,7 @@ async function fillAndSubmit(user: ReturnType<typeof userEvent.setup>) {
   await user.click(screen.getByRole('button', { name: /submit request/i }))
 }
 
-describe('the guest form while guests may not choose the Type and Item', () => {
+describe('the guest form while guests are not shown the Type and Item', () => {
   for (const [name, flag] of [['false', false], ['absent (an older server)', undefined]] as const) {
     it(`is category only and asks for no types: guests_show_types ${name}`, async () => {
       site(flag)
@@ -200,24 +201,63 @@ describe('the guest form while Types and Items are shown', () => {
     expect(sent.item_id).toBeUndefined()
   })
 
-  it('says so while the types load, and when they cannot be loaded, instead of looking empty', async () => {
+  it('says so while the types load, and when they cannot be loaded, with a Retry button that works', async () => {
     const user = userEvent.setup()
     let release: (v: object[]) => void = () => {}
     listTypes.mockImplementation(() => new Promise((resolve) => { release = resolve as typeof release }))
     renderWithQuery(<GuestTicketPage />)
     await screen.findByRole('option', { name: 'Hardware' })
     await user.selectOptions(screen.getByLabelText(/category/i), 'cat-hw')
-    expect((await screen.findByRole('status', { name: /types/i })).textContent).toMatch(/loading/i)
+    expect((await screen.findByRole('status')).textContent).toMatch(/loading types/i)
     release(TYPES['cat-hw'])
     await screen.findByRole('option', { name: 'Laptop' })
-    expect(screen.queryByRole('status', { name: /types/i })).toBeNull()
+    expect(screen.queryByRole('status')).toBeNull()
 
     listTypes.mockRejectedValue(new Error('boom'))
     await user.selectOptions(screen.getByLabelText(/category/i), 'cat-sw')
-    const alert = await screen.findByRole('alert', { name: /types/i })
+    const alert = await screen.findByRole('alert')
     expect(alert.textContent).toMatch(/could not be loaded/i)
-    // The form still files under the category alone.
+    // The form still files under the category alone, and the list can be asked for again.
     expect(screen.getByRole('button', { name: /submit request/i })).toBeTruthy()
+    listTypes.mockResolvedValue(TYPES['cat-sw'])
+    await user.click(screen.getByRole('button', { name: /retry/i }))
+    expect(await screen.findByRole('option', { name: 'OS' })).toBeTruthy()
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
+
+  it('says why the Type selector is empty for a category that has no types', async () => {
+    const user = userEvent.setup()
+    renderWithQuery(<GuestTicketPage />)
+    await screen.findByRole('option', { name: 'Facilities' })
+    await user.selectOptions(screen.getByLabelText(/category/i), 'cat-none')
+    expect(await screen.findByText(/no types for this category/i)).toBeTruthy()
+    expect((screen.getByLabelText(/^type/i) as HTMLSelectElement).disabled).toBe(true)
+  })
+
+  it('says why the Item selector is empty for a type that has no items', async () => {
+    const user = userEvent.setup()
+    renderWithQuery(<GuestTicketPage />)
+    await screen.findByRole('option', { name: 'Hardware' })
+    await user.selectOptions(screen.getByLabelText(/category/i), 'cat-hw')
+    await screen.findByRole('option', { name: 'Laptop' })
+    await user.selectOptions(screen.getByLabelText(/^type/i), 'ty-mon')
+    expect(await screen.findByText(/no items for this type/i)).toBeTruthy()
+  })
+
+  it('keeps its lists apart from the signed-in forms in the query cache', async () => {
+    const user = userEvent.setup()
+    const { queryClient } = renderWithQuery(<GuestTicketPage />)
+    await screen.findByRole('option', { name: 'Hardware' })
+    await user.selectOptions(screen.getByLabelText(/category/i), 'cat-hw')
+    await screen.findByRole('option', { name: 'Laptop' })
+    await user.selectOptions(screen.getByLabelText(/^type/i), 'ty-lap')
+    await screen.findByRole('option', { name: 'Dock' })
+    const keys = queryClient.getQueryCache().getAll().map((q) => JSON.stringify(q.queryKey))
+    // A staff member signed in on /submit would otherwise be served the archived
+    // rows the staff form cached under the same key.
+    expect(keys).toContain('["public-types","guest","cat-hw"]')
+    expect(keys).toContain('["public-items","guest","cat-hw","ty-lap"]')
+    expect(keys).not.toContain('["public-items","cat-hw","ty-lap"]')
   })
 
   it('does the same for the items of a type', async () => {
@@ -228,8 +268,8 @@ describe('the guest form while Types and Items are shown', () => {
     await user.selectOptions(screen.getByLabelText(/category/i), 'cat-hw')
     await screen.findByRole('option', { name: 'Laptop' })
     await user.selectOptions(screen.getByLabelText(/^type/i), 'ty-lap')
-    const alert = await screen.findByRole('alert', { name: /items/i })
-    expect(alert.textContent).toMatch(/could not be loaded/i)
+    const alert = await screen.findByRole('alert')
+    expect(alert.textContent).toMatch(/items could not be loaded/i)
   })
 
   it('every selector points at the description region', async () => {
