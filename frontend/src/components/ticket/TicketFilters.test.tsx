@@ -56,3 +56,15 @@ describe('TicketFilters: awaiting my reply checkbox', () => {
     expect(screen.queryByRole('checkbox', { name: 'Awaiting my reply' })).toBeNull()
   })
 })
+
+describe('TicketFilters: the Item filter (#711)', () => {
+  it('is not offered to a requester when there are no items to choose from', () => {
+    setup({ category: 'c', type: 't' }, { staff: false })
+    expect(screen.queryByLabelText('Item')).toBeNull()
+  })
+
+  it('staff keep it', () => {
+    setup({ category: 'c', type: 't' }, { staff: true })
+    expect(screen.getByLabelText('Item')).toBeTruthy()
+  })
+})

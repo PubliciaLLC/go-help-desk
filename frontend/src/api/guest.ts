@@ -84,7 +84,7 @@ export interface GuestTicketInput {
   subject: string
   description: string
   // A guest picks a category, and a type and an item only while the instance
-  // lets guests (#711, site.guests_can_choose_type_item). Otherwise the server
+  // shows guests them (#711, site.guests_show_types and guests_show_items). Otherwise the server
   // ignores both, so the form does not send them.
   category_id: string
   type_id?: string

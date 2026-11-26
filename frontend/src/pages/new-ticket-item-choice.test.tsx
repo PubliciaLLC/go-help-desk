@@ -81,7 +81,7 @@ async function fillAndSubmit(user: ReturnType<typeof userEvent.setup>) {
   await user.click(screen.getByRole('button', { name: /submit|create/i }))
 }
 
-describe('a requester while Users may choose the Item is off', () => {
+describe('a requester while Items is not shown to registered users', () => {
   beforeEach(() => signIn('user'))
 
   for (const [name, flag] of [['false', false], ['absent (an older server)', undefined]] as const) {
@@ -106,7 +106,7 @@ describe('a requester while Users may choose the Item is off', () => {
   }
 })
 
-describe('a requester while Users may choose the Item is on', () => {
+describe('a requester while Items is shown to registered users', () => {
   beforeEach(() => {
     signIn('user')
     me(true)

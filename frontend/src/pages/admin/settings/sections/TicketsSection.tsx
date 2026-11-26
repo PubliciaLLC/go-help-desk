@@ -21,13 +21,13 @@ export function TicketsSection({ draft }: { draft: SettingsDraft }) {
       </SettingRow>
       {/* Off unless saved (#711): an absent row reads off, here and on the server. */}
       <SettingRow
-        label="Users may choose the Item"
-        description="Show signed-in requesters an Item selector under Type on the new-ticket page, with the same description and custom fields staff get. Off by default: requesters choose a Category and a Type, and staff assign the Item afterwards."
+        label="Show Items to registered users"
+        description="Show signed-in requesters the Item under each Type: an Item selector on the new-ticket page and the Item on their tickets, with the same description and custom fields staff get. Off by default: requesters see Category and Type only, the Item is not sent to them anywhere (not on their tickets, not in lists or filters, not over MCP), and staff assign it afterwards."
       >
         <Toggle
-          label="Users may choose the Item"
-          checked={bool('users_can_choose_item')}
-          onChange={(v) => setBool('users_can_choose_item', v)}
+          label="Show Items to registered users"
+          checked={bool('users_show_items')}
+          onChange={(v) => setBool('users_show_items', v)}
         />
       </SettingRow>
     </Section>

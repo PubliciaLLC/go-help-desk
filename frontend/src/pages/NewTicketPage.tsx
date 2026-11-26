@@ -107,7 +107,7 @@ export function NewTicketPage() {
   const { data: me } = useQuery({ queryKey: ['me'], queryFn: getMe, retry: false })
   // Whether there is an Item selector (#711): always for staff and
   // administrators, and for a requester while an administrator has turned on
-  // Users may choose the Item, which /me reports. Absent (an older server, or
+  // Show Items to registered users, which /me reports. Absent (an older server, or
   // /me not yet answered) is off, the form a requester has always had.
   const canChooseItem = isStaffOrAdmin || (me?.can_choose_item ?? user?.can_choose_item ?? false)
 

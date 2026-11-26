@@ -1,8 +1,8 @@
 import { test, expect, type Page } from '@playwright/test'
 import { mockApi, mockCti, ME_ADMIN, ME_REPORTER, CTI_DESCRIPTIONS } from './mock'
 
-// #711: a requester's Item selector (Users may choose the Item) and the guest
-// form's Type and Item selectors (Guests may choose the Type and Item), at 320
+// #711: a requester's Item selector (Show Items to registered users) and the guest
+// form's Type and Item selectors (Show Types to guests and Show Items to guests), at 320
 // CSS pixels, plus the two switches on their settings pages. Every call is
 // mocked; nothing here needs the Go server.
 test.use({ viewport: { width: 320, height: 640 } })
@@ -76,7 +76,7 @@ test.describe('guest form (/submit)', () => {
       if (path === '/api/v1/site') {
         return route.fulfill({ json: {
           name: 'Go Help Desk', logo_url: '', version: '1.3.0', guest_submission_enabled: true,
-          guests_can_choose_type_item: chooseTypeItem,
+          guests_show_types: chooseTypeItem, guests_show_items: chooseTypeItem,
         } })
       }
       return route.fulfill({ json: [] })
@@ -129,21 +129,23 @@ test.describe('admin settings', () => {
       route.request().method() === 'GET' ? route.fulfill({ json: settings }) : route.fallback())
   }
 
-  test('Users may choose the Item sits under General -> Tickets, off by default', async ({ page }) => {
+  test('Show Items to registered users sits under General -> Tickets, off by default', async ({ page }) => {
     await adminPage(page, { post_upgrade_130_seen: true })
     await page.goto('/admin/settings/general')
-    const toggle = page.getByRole('switch', { name: 'Users may choose the Item' })
+    const toggle = page.getByRole('switch', { name: 'Show Items to registered users' })
     await expect(toggle).toBeVisible()
     await expect(toggle).toHaveAttribute('aria-checked', 'false')
     await fitsTheViewport(page)
   })
 
-  test('Guests may choose the Type and Item is under Guest Access and waits for guest submission', async ({ page }) => {
+  test('Show Types to guests and Show Items to guests are under Guest Access and wait for guest submission', async ({ page }) => {
     await adminPage(page, { post_upgrade_130_seen: true, guest_submission_enabled: false })
     await page.goto('/admin/settings/guest-access')
-    const toggle = page.getByRole('switch', { name: 'Guests may choose the Type and Item' })
-    await expect(toggle).toBeVisible()
-    await expect(toggle).toBeDisabled()
+    for (const name of ['Show Types to guests', 'Show Items to guests']) {
+      const toggle = page.getByRole('switch', { name })
+      await expect(toggle).toBeVisible()
+      await expect(toggle).toBeDisabled()
+    }
     await fitsTheViewport(page)
   })
 })

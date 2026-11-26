@@ -7,10 +7,9 @@ import * as guestApi from '@/api/guest'
 import * as adminApi from '@/api/admin'
 import { GuestTicketPage } from './GuestTicketPage'
 
-// #711: the guest form shows Category > Type > Item only while the instance
-// lets guests choose them, which GET /site reports as
-// guests_can_choose_type_item. Off, it is the category-only form it always was
-// and asks for no types.
+// #711: the guest form shows Category, then Type while GET /site says
+// guests_show_types, then Item while it says guests_show_items as well. Off, it
+// is the category-only form it always was and asks for no types.
 
 const CATEGORIES = [
   { id: 'cat-hw', name: 'Hardware', description: 'Hardware text', active: true, sort_order: 1 },
@@ -34,9 +33,10 @@ let listTypes: ReturnType<typeof vi.spyOn>
 let listItems: ReturnType<typeof vi.spyOn>
 let createGuest: ReturnType<typeof vi.spyOn>
 
-function site(on: boolean | undefined) {
+function site(types: boolean | undefined, items: boolean | undefined = types) {
   vi.spyOn(adminApi, 'getSiteConfig').mockResolvedValue({
-    name: 'Help', logo_url: '', version: '1', guest_submission_enabled: true, guests_can_choose_type_item: on,
+    name: 'Help', logo_url: '', version: '1', guest_submission_enabled: true,
+    guests_show_types: types, guests_show_items: items,
   })
 }
 
@@ -66,7 +66,7 @@ async function fillAndSubmit(user: ReturnType<typeof userEvent.setup>) {
 
 describe('the guest form while guests may not choose the Type and Item', () => {
   for (const [name, flag] of [['false', false], ['absent (an older server)', undefined]] as const) {
-    it(`is category only and asks for no types: guests_can_choose_type_item ${name}`, async () => {
+    it(`is category only and asks for no types: guests_show_types ${name}`, async () => {
       site(flag)
       const user = userEvent.setup()
       renderWithQuery(<GuestTicketPage />)
@@ -95,8 +95,35 @@ describe('the guest form while guests may not choose the Type and Item', () => {
   })
 })
 
-describe('the guest form while guests may choose the Type and Item', () => {
-  beforeEach(() => site(true))
+describe('the guest form while only Types is shown', () => {
+  it('has a Type selector and no Item selector, and asks for no items', async () => {
+    site(true, false)
+    const user = userEvent.setup()
+    renderWithQuery(<GuestTicketPage />)
+    await screen.findByRole('option', { name: 'Hardware' })
+    await user.selectOptions(screen.getByLabelText(/category/i), 'cat-hw')
+    await screen.findByRole('option', { name: 'Laptop' })
+    await user.selectOptions(screen.getByLabelText(/^type/i), 'ty-lap')
+    expect(screen.queryByLabelText(/^item/i)).toBeNull()
+    expect(listItems).not.toHaveBeenCalled()
+    await fillAndSubmit(user)
+    await waitFor(() => expect(createGuest).toHaveBeenCalled())
+    const sent = createGuest.mock.calls[0][0] as Record<string, unknown>
+    expect(sent.type_id).toBe('ty-lap')
+    expect(sent.item_id).toBeUndefined()
+  })
+
+  it('an Item level without a Type level shows neither: an item hangs under a type', async () => {
+    site(false, true)
+    renderWithQuery(<GuestTicketPage />)
+    await screen.findByRole('option', { name: 'Hardware' })
+    expect(screen.queryByLabelText(/^type/i)).toBeNull()
+    expect(screen.queryByLabelText(/^item/i)).toBeNull()
+  })
+})
+
+describe('the guest form while Types and Items are shown', () => {
+  beforeEach(() => site(true, true))
 
   it('shows Category, Type and Item in that order, each disabled until its parent is chosen', async () => {
     const user = userEvent.setup()

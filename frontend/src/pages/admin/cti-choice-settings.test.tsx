@@ -5,9 +5,9 @@ import { renderWithQuery } from '@/test/render'
 import { api } from '@/api/client'
 import { useAuthStore } from '@/store/auth'
 
-// #711: Users may choose the Item (General -> Tickets) and Guests may choose the
-// Type and Item (Guest Access -> Submissions). Both off by default; the guest
-// one depends on guest submission, as Guests may attach files does.
+// #711: Show Items to registered users (General -> Tickets), and Show Types to
+// guests and Show Items to guests (Guest Access -> Submissions). All off by
+// default. The guest ones depend on guest submission, and Items on Types.
 
 vi.mock('@tanstack/react-router', () => ({
   useRouterState: () => ({ location: { pathname: '/admin/settings' } }),
@@ -47,7 +47,7 @@ async function waitLoaded() {
 
 const save = () => screen.getAllByRole('button', { name: /save changes/i }).at(-1)!
 
-describe('Users may choose the Item', () => {
+describe('Show Items to registered users', () => {
   async function render(settings: Record<string, unknown>) {
     const patch = stubSettings(settings)
     renderWithQuery(<GeneralSettingsPage />)
@@ -55,16 +55,16 @@ describe('Users may choose the Item', () => {
     await waitLoaded()
     return patch
   }
-  const toggle = () => screen.getByRole('switch', { name: 'Users may choose the Item' }) as HTMLButtonElement
+  const toggle = () => screen.getByRole('switch', { name: 'Show Items to registered users' }) as HTMLButtonElement
 
   it('is off when the setting has never been saved, with its help text', async () => {
     await render({})
     expect(toggle().getAttribute('aria-checked')).toBe('false')
-    expect(screen.getByText(/Item selector under Type on the new-ticket page/i)).toBeTruthy()
+    expect(screen.getByText(/Item selector on the new-ticket page and the Item on their tickets/i)).toBeTruthy()
   })
 
   it('reads on when stored on', async () => {
-    await render({ users_can_choose_item: true })
+    await render({ users_show_items: true })
     expect(toggle().getAttribute('aria-checked')).toBe('true')
   })
 
@@ -73,11 +73,11 @@ describe('Users may choose the Item', () => {
     await userEvent.click(toggle())
     await userEvent.click(save())
     await waitFor(() => expect(patch).toHaveBeenCalled())
-    expect(patch.mock.calls[0][1]).toEqual({ users_can_choose_item: true })
+    expect(patch.mock.calls[0][1]).toEqual({ users_show_items: true })
   })
 })
 
-describe('Guests may choose the Type and Item', () => {
+describe('Show Types to guests and Show Items to guests', () => {
   async function render(settings: Record<string, unknown>) {
     const patch = stubSettings(settings)
     renderWithQuery(<GuestAccessSettingsPage />)
@@ -85,27 +85,45 @@ describe('Guests may choose the Type and Item', () => {
     await waitLoaded()
     return patch
   }
-  const toggle = () => screen.getByRole('switch', { name: 'Guests may choose the Type and Item' }) as HTMLButtonElement
+  const types = () => screen.getByRole('switch', { name: 'Show Types to guests' }) as HTMLButtonElement
+  const items = () => screen.getByRole('switch', { name: 'Show Items to guests' }) as HTMLButtonElement
 
-  it('is off when the setting has never been saved, with its help text', async () => {
+  it('are off when never saved, with their help text', async () => {
     await render({ guest_submission_enabled: true })
-    expect(toggle().getAttribute('aria-checked')).toBe('false')
-    expect(toggle().disabled).toBe(false)
-    expect(screen.getByText(/Type and an Item selector under Category on the guest form/i)).toBeTruthy()
-    expect(screen.getByText(/public to anyone who can open the form/i)).toBeTruthy()
+    expect(types().getAttribute('aria-checked')).toBe('false')
+    expect(items().getAttribute('aria-checked')).toBe('false')
+    expect(types().disabled).toBe(false)
+    expect(screen.getByText(/Type selector under Category on the guest form/i)).toBeTruthy()
+    expect(screen.getByText(/names and descriptions of every active type public/i)).toBeTruthy()
+    expect(screen.getByText(/Needs Show Types to guests/i)).toBeTruthy()
   })
 
-  it('is unavailable while guest submission is off, and says why', async () => {
-    await render({ guest_submission_enabled: false, guests_can_choose_type_item: true })
-    expect(toggle().disabled).toBe(true)
-    expect(screen.getAllByText(/only takes effect while guest submission is on/i).length).toBeGreaterThan(0)
+  it('Items is unavailable while Types is off, and Types while guest submission is off', async () => {
+    await render({ guest_submission_enabled: true })
+    expect(items().disabled).toBe(true)
+    await userEvent.click(types())
+    expect(items().disabled).toBe(false)
   })
 
-  it('saves only that key, as a boolean, and does not touch the user switch', async () => {
+  it('both are unavailable while guest submission is off, whatever is stored', async () => {
+    await render({ guest_submission_enabled: false, guests_show_types: true, guests_show_items: true })
+    expect(types().disabled).toBe(true)
+    expect(items().disabled).toBe(true)
+  })
+
+  it('saves only the keys changed, as booleans', async () => {
     const patch = await render({ guest_submission_enabled: true })
-    await userEvent.click(toggle())
+    await userEvent.click(types())
+    await userEvent.click(items())
     await userEvent.click(save())
     await waitFor(() => expect(patch).toHaveBeenCalled())
-    expect(patch.mock.calls[0][1]).toEqual({ guests_can_choose_type_item: true })
+    expect(patch.mock.calls[0][1]).toEqual({ guests_show_types: true, guests_show_items: true })
+  })
+
+  it('turning Types off while Items is on keeps the stored Items value, shown unavailable', async () => {
+    await render({ guest_submission_enabled: true, guests_show_types: true, guests_show_items: true })
+    await userEvent.click(types())
+    expect(types().getAttribute('aria-checked')).toBe('false')
+    expect(items().disabled).toBe(true)
   })
 })

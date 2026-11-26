@@ -5,14 +5,16 @@ import { charCount } from '@/lib/fieldLimits'
 
 // Quoted verbatim in docs/DESIGN.md (Descriptions -> Admin). Public means public:
 // the catalogue routes serve every ACTIVE category to anyone while guest submission
-// is on (its types and items only while guests may choose them, #711), and every
-// active level to any signed-in user always.
+// is on (its types and items only while guests are shown them, #711), and the
+// categories and types to any signed-in user always (items while registered users
+// are shown them).
 const DESCRIPTION_HINT =
   'Shown beneath the Category / Type / Item chooser on the new-ticket form, the guest form (the category only, unless ' +
-  'an administrator lets guests choose the Type and Item) and the reclassify card on a ticket. Plain text, no ' +
+  'an administrator shows guests the Type and Item) and the reclassify card on a ticket. Plain text, no ' +
   'formatting; line breaks are kept. This text is public: while guest submission is on, anyone can read the ' +
-  'description of every active category (and of every active type and item too, if guests may choose them), and ' +
-  'any signed-in user can read them at any time. Do not put anything here you would not put on a public web page.'
+  'description of every active category (and of every active type and item too, if guests are shown them), and ' +
+  'any signed-in user can read the categories and types at any time (the items only if registered users are shown ' +
+  'them). Do not put anything here you would not put on a public web page.'
 
 /**
  * The optional Description of a category, type or item (create and edit).

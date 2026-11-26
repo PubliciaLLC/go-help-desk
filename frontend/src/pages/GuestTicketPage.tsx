@@ -87,24 +87,27 @@ export function GuestTicketPage() {
     queryFn: listPublicCategories,
   })
 
-  // Whether this instance lets a guest choose the Type and the Item (#711).
-  // Off, absent or not yet answered is the category-only form, and no list below
-  // the category is asked for: the server answers those with nothing anyway.
+  // Which levels below the category this instance shows a guest (#711): the
+  // Type while guests_show_types, the Item under it while guests_show_items. Off,
+  // absent or not yet answered is the category-only form, and no list below the
+  // category is asked for: the server answers those with nothing anyway. An Item
+  // without a Type is not shown: an item hangs under a type.
   const { data: site } = useQuery({ queryKey: ['site-config'], queryFn: getSiteConfig, retry: false })
-  const canChooseTypeItem = site?.guests_can_choose_type_item === true
+  const showTypes = site?.guests_show_types === true
+  const showItems = showTypes && site?.guests_show_items === true
 
   // The lists say when they are loading or could not be, so a failure does not
   // look like a category with no types. The form still files under what is chosen.
   const typesQuery = useQuery({
     queryKey: ['public-types', categoryId],
     queryFn: () => listPublicTypes(categoryId),
-    enabled: canChooseTypeItem && !!categoryId,
+    enabled: showTypes && !!categoryId,
   })
   const types = typesQuery.data ?? []
   const itemsQuery = useQuery({
     queryKey: ['public-items', categoryId, typeId],
     queryFn: () => listPublicItems(categoryId, typeId),
-    enabled: canChooseTypeItem && !!categoryId && !!typeId,
+    enabled: showItems && !!categoryId && !!typeId,
   })
   const items = itemsQuery.data ?? []
 
@@ -169,8 +172,8 @@ export function GuestTicketPage() {
         subject,
         description,
         category_id: categoryId,
-        type_id: canChooseTypeItem ? (typeId || undefined) : undefined,
-        item_id: canChooseTypeItem ? (itemId || undefined) : undefined,
+        type_id: showTypes ? (typeId || undefined) : undefined,
+        item_id: showItems ? (itemId || undefined) : undefined,
         guest_name: name.trim(),
         guest_email: email.trim(),
         guest_phone: phone.trim() || undefined,
@@ -325,41 +328,41 @@ export function GuestTicketPage() {
                     </Select>
                   </div>
 
-                  {canChooseTypeItem && (
-                    <>
-                      <div className="space-y-1">
-                        <Label htmlFor="type">Type</Label>
-                        <Select
-                          id="type"
-                          aria-describedby="cti-description"
-                          value={typeId}
-                          onChange={(e) => { setTypeId(e.target.value); setItemId('') }}
-                          disabled={!categoryId || types.length === 0}
-                        >
-                          <option value="">Select…</option>
-                          {types.map((t) => (
-                            <option key={t.id} value={t.id}>{t.name}</option>
-                          ))}
-                        </Select>
-                        <ListHint query={typesQuery} name="Types" />
-                      </div>
-                      <div className="space-y-1">
-                        <Label htmlFor="item">Item</Label>
-                        <Select
-                          id="item"
-                          aria-describedby="cti-description"
-                          value={itemId}
-                          onChange={(e) => setItemId(e.target.value)}
-                          disabled={!typeId || items.length === 0}
-                        >
-                          <option value="">Select…</option>
-                          {items.map((i) => (
-                            <option key={i.id} value={i.id}>{i.name}</option>
-                          ))}
-                        </Select>
-                        <ListHint query={itemsQuery} name="Items" />
-                      </div>
-                    </>
+                  {showTypes && (
+                    <div className="space-y-1">
+                      <Label htmlFor="type">Type</Label>
+                      <Select
+                        id="type"
+                        aria-describedby="cti-description"
+                        value={typeId}
+                        onChange={(e) => { setTypeId(e.target.value); setItemId('') }}
+                        disabled={!categoryId || types.length === 0}
+                      >
+                        <option value="">Select…</option>
+                        {types.map((t) => (
+                          <option key={t.id} value={t.id}>{t.name}</option>
+                        ))}
+                      </Select>
+                      <ListHint query={typesQuery} name="Types" />
+                    </div>
+                  )}
+                  {showItems && (
+                    <div className="space-y-1">
+                      <Label htmlFor="item">Item</Label>
+                      <Select
+                        id="item"
+                        aria-describedby="cti-description"
+                        value={itemId}
+                        onChange={(e) => setItemId(e.target.value)}
+                        disabled={!typeId || items.length === 0}
+                      >
+                        <option value="">Select…</option>
+                        {items.map((i) => (
+                          <option key={i.id} value={i.id}>{i.name}</option>
+                        ))}
+                      </Select>
+                      <ListHint query={itemsQuery} name="Items" />
+                    </div>
                   )}
                 </div>
                 {/* Public: this is the text of a row any visitor can open. */}
