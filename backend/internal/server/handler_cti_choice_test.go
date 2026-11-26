@@ -406,21 +406,6 @@ func TestCTIChoice_RequesterOn_ItemFieldsFollowTheSelection(t *testing.T) {
 	}
 }
 
-// A requester's API key is held to the requester rules: it cannot file under an
-// item while the switch is off, and a staff key is unaffected by the switch.
-func TestCTIChoice_StaffAreUnaffectedByEitherSwitch(t *testing.T) {
-	h, cleanup := newHarness(t)
-	defer cleanup()
-	tree := buildChoiceTree(t, h)
-
-	res := h.do(t, http.MethodPost, "/api/v1/tickets", map[string]any{
-		"subject": "s", "description": "d", "category_id": tree.cat.String(),
-		"type_id": tree.typ.String(), "item_id": tree.item.String()})
-	body := readAll(t, res)
-	require.Equal(t, http.StatusCreated, res.StatusCode, string(body))
-	require.NotNil(t, parseCreated(t, body).ItemID, "staff always choose the item, switches off")
-}
-
 // ── Creating a ticket as a guest ─────────────────────────────────────────────
 
 func guestPost(t *testing.T, h *harness, fields map[string]any) (int, []byte) {

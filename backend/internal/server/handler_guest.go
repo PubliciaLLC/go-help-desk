@@ -146,11 +146,11 @@ func (s *Server) handleGuestCreateTicket(w http.ResponseWriter, r *http.Request)
 	}
 	// The Type and Item, only while an administrator lets guests choose them
 	// (#711). Refused before anything is written, like every other check here.
-	// The rest of the chain (the item belongs to the type, nothing archived) is
-	// the ticket service's, the same code staff go through.
+	// The chain (the type belongs to the category, the item to the type, nothing
+	// archived) is the ticket service's, the same code staff go through.
 	var typeID, itemID *uuid.UUID
 	if s.adminSvc.GuestsCanChooseTypeItem(ctx) {
-		if typeID, itemID, err = s.guestPick(ctx, body.CategoryID, body.TypeID, body.ItemID); err != nil {
+		if typeID, itemID, err = guestPick(body.TypeID, body.ItemID); err != nil {
 			Error(w, http.StatusBadRequest, "bad_request", err.Error())
 			return
 		}
@@ -221,27 +221,18 @@ func (s *Server) handleGuestCreateTicket(w http.ResponseWriter, r *http.Request)
 }
 
 // guestPick reads the Type and Item a guest chose, for a form whose setting
-// allows it (#711). Both are optional. A malformed id, a type that is not one of
-// this category or is archived is an error the guest is told; an item is checked
-// against its type, and for being archived, by ticket.Service.Create, which
-// every ticket goes through. Not called while the setting is off, so that an id
-// sent then is ignored as it always was.
-func (s *Server) guestPick(ctx context.Context, categoryID uuid.UUID, rawType, rawItem json.RawMessage) (typeID, itemID *uuid.UUID, err error) {
+// allows it (#711). Both are optional. A malformed id is an error the guest is
+// told. Everything else is ticket.Service.Create's, which every ticket goes
+// through and which answers a 400 before a tracking number is taken: the type
+// must be one of the category and the item one of the type (an item needs its
+// type), and nothing archived is accepted. Not called while the setting is off,
+// so that an id sent then is ignored as it always was.
+func guestPick(rawType, rawItem json.RawMessage) (typeID, itemID *uuid.UUID, err error) {
 	if typeID, err = optionalID("type_id", rawType); err != nil {
 		return nil, nil, err
 	}
 	if itemID, err = optionalID("item_id", rawItem); err != nil {
 		return nil, nil, err
-	}
-	if typeID == nil {
-		return nil, itemID, nil // an item with no type is the service's refusal
-	}
-	ty, err := s.categories.GetType(ctx, *typeID)
-	if err != nil || ty.CategoryID != categoryID {
-		return nil, nil, errors.New("type_id does not belong to category_id")
-	}
-	if !ty.Active {
-		return nil, nil, errors.New("type_id is not an active type")
 	}
 	return typeID, itemID, nil
 }
@@ -674,7 +665,8 @@ func retryAfterSeconds(d time.Duration) string {
 //
 // It is a guest ticket creation, so it is held to what POST /guest/tickets is:
 // the same switch, the same per-address budget (shared, not a second one), and
-// category only; the body is ignored, so there is no field to set. The new
+// the category (plus the original's type while guests may choose one, #711); the
+// body is ignored, so there is no field to set. The new
 // ticket is for the same guest (address, name, phone from the original). Its
 // link goes by the ordinary guest-ticket-created mail, as a normal guest
 // ticket's does, and is NOT in the response: the answer is the new tracking
@@ -693,9 +685,17 @@ func (s *Server) handleGuestFollowUp(w http.ResponseWriter, r *http.Request) {
 	if !allowOrRefuse(ctx, w, s.loginLimiter, "guest-submit:"+authmw.ClientAddr(r)) {
 		return
 	}
-	created, err := s.tickets.CreateRequesterFollowUp(ctx, t.ID, s.adminSvc.TicketPrefix(ctx), ticket.ChannelGuest,
-		ticket.Actor{Role: user.RoleUser}, s.requesterClassificationOpen,
-		s.Routing(ctx, t.CategoryID, nil)...) // a guest's follow-up carries no type
+	// The type the guest chose is kept while guests may choose it (#711), and
+	// routes the follow-up to the queue the original went to; otherwise it
+	// carries none, as before.
+	keep := s.followUpKeep(ctx, true)
+	var routedType *uuid.UUID
+	if keep.Type {
+		routedType = t.TypeID
+	}
+	created, err := s.tickets.CreateRequesterFollowUpKeeping(ctx, t.ID, s.adminSvc.TicketPrefix(ctx), ticket.ChannelGuest,
+		ticket.Actor{Role: user.RoleUser}, keep, s.requesterClassificationOpen,
+		s.Routing(ctx, t.CategoryID, routedType)...)
 	if err != nil {
 		switch {
 		case errors.Is(err, ticket.ErrNotClosed), errors.Is(err, ticket.ErrFollowUpExists),

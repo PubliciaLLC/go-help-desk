@@ -249,10 +249,14 @@ administrator turns one on.
   `refuseArchivedPick`: an archived category, type or item is refused). Those
   answer `400 bad_request` ("type_id and item_id must belong to the category and
   to each other", "item_id is not an active item"), for every caller. On top of
-  that a requester and a guest are held to *active* at the Type level with the
-  wording they have always had (`400`, "type_id is not an active type"; and the
-  category must still be active), so nobody can name a type or an item only staff
-  can see. Type and Item stay **optional** (a category alone still files). An
+  that a requester is held to *active* at the Type level with the wording they
+  have always had (`400`, "type_id is not an active type"; and the category must
+  still be active), so nobody can name a type or an item only staff can see. A
+  guest has no check of their own on top: the service's refusals are the whole
+  of it, and say the same ("type_id is not an active type", "item_id is not an
+  active item", "type_id and item_id must belong to the category and to each
+  other"), with a test that pins the words. A malformed id is the guest form's
+  own `400`. Type and Item stay **optional** (a category alone still files). An
   `item_id` without its `type_id` is the `400` above. Routing is by category and
   type (items do not factor into scope), so a chosen type routes a guest ticket
   exactly as it routes a requester's. **Hostile or stale ids**: a type of another
@@ -277,6 +281,21 @@ administrator turns one on.
   change does not relax it, so choosing a type or an item changes a guest's
   descriptions and routing and not their fields. (Opening type- and item-level
   fields to guests would be its own decision, with its own admin control.)
+- **Follow-ups keep what was chosen.** A follow-up of a closed ticket (#349) is
+  filed under what its requester could choose, so it lands in the queue the
+  original did. While **Users may choose the Item** is on, an account holder's
+  follow-up keeps the original's Type and Item (the Type is kept always, as
+  before). While **Guests may choose the Type and Item** is on, a guest's
+  follow-up keeps the original's Type, and is routed on it (the Item is not
+  carried for a guest). With a switch off the follow-up is exactly as it was:
+  an account holder's has the type and no item, a guest's has neither and is
+  routed on the category. What is kept is held to the creation rule a requester
+  has (`requesterClassificationOpen`): the category, the type and the item must
+  each still be active and belong together, or the follow-up is a `400` and
+  nothing is created, so an item archived since the original was filed stops a
+  follow-up only while the switch that would carry it is on. Staff follow-ups
+  are unchanged. The mechanism is `ticket.Service.CreateRequesterFollowUpKeeping`
+  (the old `CreateRequesterFollowUp` is the same with the pre-#711 choice).
 - **The catalogue routes** (`GET /categories`, `/categories/{id}/types`,
   `.../items`) answer by who is asking, `200 []` for "nothing here" in every case
   (the spelling already used under an archived parent):
@@ -596,8 +615,9 @@ Three doors, one creation path:
 - **Copied for a requester — only what a requester may set on a normal create.**
   The principle: a requester's follow-up must not be a ticket they could not have
   created directly. So: subject, description, category, the type for an account
-  holder (never for a guest), and who they are. **Not** the item (requesters
-  cannot pick one), and **not the priority** — it is medium, as for any requester's
+  holder (for a guest only while guests may choose the Type and Item, #711), the
+  item for an account holder only while users may choose the Item (#711), and who
+  they are. **Not** the item otherwise (requesters cannot pick one then), and **not the priority** — it is medium, as for any requester's
   new ticket; a priority staff raised stays with the closed ticket. No assignee,
   tags or SLA state either. The category (and the type) must still be active, as
   for a normal create (`400` if an administrator has since archived it). The
@@ -710,7 +730,8 @@ expired rows (a closed ticket collects one per mail sent on it).
   fields the new-ticket form shows (`visible_on_new`), so what the form keeps
   from a requester is not handed to their new ticket. A field the new
   classification does not have is left behind (a guest's follow-up is filed
-  under the category alone). Each value is written through the creation write
+  under the category alone, or the category and type while guests may choose
+  them, #711). Each value is written through the creation write
   (`SetCreationValues`), so it is held to the field as it is now: a value the
   field no longer accepts (a retired option, a limit lowered since, a
   deactivated field) is left out, logged, and the rest are copied. **It is not
@@ -1754,7 +1775,7 @@ Scope does two separate jobs: it can restrict what staff see, and it routes new 
 3. `auto_assign_user_ids`: a list of staff the tickets are dealt out to round-robin. The rotation is in memory, per server process. A listed user the assignment refuses (deleted, disabled or no longer staff) is skipped and the next one tried, so a departed colleague does not silently take every Nth ticket out of the queue.
 4. Otherwise the ticket stays unassigned.
 
-Routing is best-effort in one respect: a candidate that cannot be given a ticket (a departed colleague still on the round-robin list, a group that no longer exists) is skipped for the next, and if none is acceptable the ticket is left unassigned and the creation succeeds. A database error while checking a candidate is not skipped: it aborts the create. It runs for every door that creates a ticket: `POST /tickets`, a guest submission (`POST /guest/tickets`), MCP `create_ticket`, and the three follow-ups (`POST /tickets/{id}/follow-up`, `POST /guest/follow-up`, MCP `create_follow_up`). They all call the one routing rule (`Server.Routing`; MCP reaches it through `mcp.Router`), so a rule cannot apply to one door and not another. Until 1.3.0 the guest form and the two MCP tools skipped it, so a ticket filed through them was never given to anyone; a follow-up is routed on its original's category and type, the guest form and a guest's follow-up on the category alone. `auto_assign_group_id` (a UUID string) and `auto_assign_user_ids` (an array of UUID strings) are set on **Admin → Routing** (a group picker and a staff checklist, with the rules above listed in order) or through `PATCH /admin/settings`. Saving is checked: a group id that names no group, or a user id that names no one or someone who is neither staff nor an administrator, is refused with 400 `invalid_auto_assign` and nothing in the request is written (before #447 such an id was saved and then skipped at routing time). An empty value clears the setting.
+Routing is best-effort in one respect: a candidate that cannot be given a ticket (a departed colleague still on the round-robin list, a group that no longer exists) is skipped for the next, and if none is acceptable the ticket is left unassigned and the creation succeeds. A database error while checking a candidate is not skipped: it aborts the create. It runs for every door that creates a ticket: `POST /tickets`, a guest submission (`POST /guest/tickets`), MCP `create_ticket`, and the three follow-ups (`POST /tickets/{id}/follow-up`, `POST /guest/follow-up`, MCP `create_follow_up`). They all call the one routing rule (`Server.Routing`; MCP reaches it through `mcp.Router`), so a rule cannot apply to one door and not another. Until 1.3.0 the guest form and the two MCP tools skipped it, so a ticket filed through them was never given to anyone; a follow-up is routed on its original's category and type (a guest's, while guests may choose the Type and Item, #711; otherwise on the category alone), and the guest form on the category and the type the guest chose (the category alone while that setting is off). `auto_assign_group_id` (a UUID string) and `auto_assign_user_ids` (an array of UUID strings) are set on **Admin → Routing** (a group picker and a staff checklist, with the rules above listed in order) or through `PATCH /admin/settings`. Saving is checked: a group id that names no group, or a user id that names no one or someone who is neither staff nor an administrator, is refused with 400 `invalid_auto_assign` and nothing in the request is written (before #447 such an id was saved and then skipped at routing time). An empty value clears the setting.
 
 ### Branding
 
@@ -3880,8 +3901,8 @@ email carries no ticket text.
 |-------|-------|-----------------|---------------|
 | Name, email, phone | Required / optional | — (uses account) | — |
 | Category | Active only | Active only | Active selectable; archived shown greyed |
-| Type | — (not shown) | Active only | Active selectable; archived shown greyed |
-| Item | — | — (not shown) | Active selectable; archived shown greyed |
+| Type | — (not shown), unless **Guests may choose the Type and Item** is on: active only | Active only | Active selectable; archived shown greyed |
+| Item | — (not shown), unless **Guests may choose the Type and Item** is on: active only | — (not shown), unless **Users may choose the Item** is on: active only | Active selectable; archived shown greyed |
 | Priority | — (defaults to Medium) | — (defaults to Medium) | Selectable |
 | Requester | Their own name and email (above) | Always themselves | Me (default), an existing user, or a typed email address (below) |
 | Attachments | — | Yes | Yes |

@@ -173,6 +173,38 @@ describe('the guest form while guests may choose the Type and Item', () => {
     expect(sent.item_id).toBeUndefined()
   })
 
+  it('says so while the types load, and when they cannot be loaded, instead of looking empty', async () => {
+    const user = userEvent.setup()
+    let release: (v: object[]) => void = () => {}
+    listTypes.mockImplementation(() => new Promise((resolve) => { release = resolve as typeof release }))
+    renderWithQuery(<GuestTicketPage />)
+    await screen.findByRole('option', { name: 'Hardware' })
+    await user.selectOptions(screen.getByLabelText(/category/i), 'cat-hw')
+    expect((await screen.findByRole('status', { name: /types/i })).textContent).toMatch(/loading/i)
+    release(TYPES['cat-hw'])
+    await screen.findByRole('option', { name: 'Laptop' })
+    expect(screen.queryByRole('status', { name: /types/i })).toBeNull()
+
+    listTypes.mockRejectedValue(new Error('boom'))
+    await user.selectOptions(screen.getByLabelText(/category/i), 'cat-sw')
+    const alert = await screen.findByRole('alert', { name: /types/i })
+    expect(alert.textContent).toMatch(/could not be loaded/i)
+    // The form still files under the category alone.
+    expect(screen.getByRole('button', { name: /submit request/i })).toBeTruthy()
+  })
+
+  it('does the same for the items of a type', async () => {
+    const user = userEvent.setup()
+    listItems.mockRejectedValue(new Error('boom'))
+    renderWithQuery(<GuestTicketPage />)
+    await screen.findByRole('option', { name: 'Hardware' })
+    await user.selectOptions(screen.getByLabelText(/category/i), 'cat-hw')
+    await screen.findByRole('option', { name: 'Laptop' })
+    await user.selectOptions(screen.getByLabelText(/^type/i), 'ty-lap')
+    const alert = await screen.findByRole('alert', { name: /items/i })
+    expect(alert.textContent).toMatch(/could not be loaded/i)
+  })
+
   it('every selector points at the description region', async () => {
     renderWithQuery(<GuestTicketPage />)
     await screen.findByRole('option', { name: 'Hardware' })

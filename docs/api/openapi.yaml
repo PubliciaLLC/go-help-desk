@@ -13027,6 +13027,19 @@ components:
             Whether a guest may attach files from the web page (#445). Off by
             default. Only takes effect while guest_submission_enabled is on.
             Session only.
+        users_can_choose_item:
+          type: boolean
+          description: |
+            Whether a signed-in requester may choose the Item on the new-ticket
+            page (#711). Off by default and after an upgrade (an absent row reads
+            off). Staff and administrators always may. Session only.
+        guests_can_choose_type_item:
+          type: boolean
+          description: |
+            Whether a guest may choose the Type and Item on the guest form (#711).
+            Off by default and after an upgrade (an absent row reads off). Only
+            takes effect while guest_submission_enabled is on. Turning it on makes
+            every active type and item name public. Session only.
         guest_attachment_max_per_ticket:
           type: integer
           minimum: 1

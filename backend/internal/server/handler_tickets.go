@@ -302,7 +302,9 @@ func (s *Server) handleCreateTicket(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Role-based field restrictions:
-	//   - Guest: category only, no type or item; name + email required
+	//   - Guest: not reachable on this route (it sits behind RequireRole); the
+	//     guest form is POST /guest/tickets. Kept as a belt: category only, no
+	//     type or item, name + email required
 	//   - User (authenticated non-staff): category + type, and the item only
 	//     while users_can_choose_item is on (#711)
 	//   - Staff/Admin: full CTI, no restrictions
@@ -1004,16 +1006,17 @@ func (s *Server) handleCreateFollowUp(w http.ResponseWriter, r *http.Request) {
 		t   ticket.Ticket
 		err error
 	)
-	// The follow-up copies the closed ticket's classification (a requester's
-	// without the item, a guest's without the type), and is routed on that.
+	// The follow-up copies what the requester was allowed to choose of the
+	// closed ticket's classification (see followUpKeep), and is routed on that.
 	orig, err := s.tickets.GetByID(r.Context(), id)
 	if err != nil {
 		handleError(w, err)
 		return
 	}
 	if a.Role == user.RoleUser {
-		t, err = s.tickets.CreateRequesterFollowUp(r.Context(), id, s.adminSvc.TicketPrefix(r.Context()), followUpChannel(a), actor,
-			s.requesterClassificationOpen, s.Routing(r.Context(), orig.CategoryID, orig.TypeID)...)
+		keep := s.followUpKeep(r.Context(), false)
+		t, err = s.tickets.CreateRequesterFollowUpKeeping(r.Context(), id, s.adminSvc.TicketPrefix(r.Context()), followUpChannel(a), actor,
+			keep, s.requesterClassificationOpen, s.Routing(r.Context(), orig.CategoryID, orig.TypeID)...)
 	} else {
 		t, err = s.tickets.CreateFollowUp(r.Context(), id, s.adminSvc.TicketPrefix(r.Context()), followUpChannel(a), actor,
 			s.Routing(r.Context(), orig.CategoryID, orig.TypeID)...)
@@ -1516,12 +1519,25 @@ func (s *Server) categoryIsOpen(ctx context.Context, id uuid.UUID) error {
 	return errors.New("category_id is not an active category")
 }
 
+// followUpKeep is which levels of a closed ticket's classification a
+// requester's follow-up carries (#711): the type always for an account holder
+// and for a guest only while guests may choose it, and the item for an account
+// holder while users may choose it. With the settings off that is what it
+// always was: an account holder's type, nothing else. A guest's follow-up
+// carries the type and not the item, which a guest could not pick before.
+func (s *Server) followUpKeep(ctx context.Context, guest bool) ticket.FollowUpKeep {
+	if guest {
+		return ticket.FollowUpKeep{Type: s.adminSvc.GuestsCanChooseTypeItem(ctx)}
+	}
+	return ticket.FollowUpKeep{Type: true, Item: s.adminSvc.UsersCanChooseItem(ctx)}
+}
+
 // requesterClassificationOpen is the creation rule a requester is held to for a
 // ticket's classification, as handleCreateTicket applies it: the category must
-// be active, and the type, when there is one, active too. A requester's
-// follow-up is a new ticket and is held to it (#349); a staff follow-up copies
-// the closed ticket's classification and is not.
-func (s *Server) requesterClassificationOpen(ctx context.Context, categoryID uuid.UUID, typeID *uuid.UUID) error {
+// be active, and the type and item, when there are any, active too. A
+// requester's follow-up is a new ticket and is held to it (#349); a staff
+// follow-up copies the closed ticket's classification and is not.
+func (s *Server) requesterClassificationOpen(ctx context.Context, categoryID uuid.UUID, typeID, itemID *uuid.UUID) error {
 	if err := s.categoryIsOpen(ctx, categoryID); err != nil {
 		return err
 	}
@@ -1532,6 +1548,18 @@ func (s *Server) requesterClassificationOpen(ctx context.Context, categoryID uui
 		}
 		if !ty.Active {
 			return errors.New("type_id is not an active type")
+		}
+	}
+	if itemID != nil {
+		if typeID == nil {
+			return errors.New("item_id needs a type_id")
+		}
+		it, err := s.categories.GetItem(ctx, *itemID)
+		if err != nil || it.TypeID != *typeID {
+			return errors.New("item_id does not belong to type_id")
+		}
+		if !it.Active {
+			return errors.New("item_id is not an active item")
 		}
 	}
 	return nil

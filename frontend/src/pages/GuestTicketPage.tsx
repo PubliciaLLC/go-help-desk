@@ -52,6 +52,22 @@ function GuestFieldInput({
   }
 }
 
+// A line under a selector while its list is loading, or when it could not be
+// loaded (which would otherwise look like a category with nothing in it).
+function ListHint({ query, name }: { query: { isLoading: boolean; isError: boolean }; name: string }) {
+  if (query.isLoading) {
+    return <p role="status" aria-label={name} className="text-xs text-gray-500">Loading {name.toLowerCase()}…</p>
+  }
+  if (query.isError) {
+    return (
+      <p role="alert" aria-label={name} className="text-xs text-red-600">
+        The {name.toLowerCase()} could not be loaded. Choose again to retry; you can still send the request without.
+      </p>
+    )
+  }
+  return null
+}
+
 export function GuestTicketPage() {
   const [subject, setSubject] = useState('')
   const [description, setDescription] = useState('')
@@ -77,16 +93,20 @@ export function GuestTicketPage() {
   const { data: site } = useQuery({ queryKey: ['site-config'], queryFn: getSiteConfig, retry: false })
   const canChooseTypeItem = site?.guests_can_choose_type_item === true
 
-  const { data: types = [] } = useQuery({
+  // The lists say when they are loading or could not be, so a failure does not
+  // look like a category with no types. The form still files under what is chosen.
+  const typesQuery = useQuery({
     queryKey: ['public-types', categoryId],
     queryFn: () => listPublicTypes(categoryId),
     enabled: canChooseTypeItem && !!categoryId,
   })
-  const { data: items = [] } = useQuery({
+  const types = typesQuery.data ?? []
+  const itemsQuery = useQuery({
     queryKey: ['public-items', categoryId, typeId],
     queryFn: () => listPublicItems(categoryId, typeId),
     enabled: canChooseTypeItem && !!categoryId && !!typeId,
   })
+  const items = itemsQuery.data ?? []
 
   // The custom fields an administrator chose to offer visitors under this
   // category (#627), and only those: the server tells this form which they are
@@ -321,6 +341,7 @@ export function GuestTicketPage() {
                             <option key={t.id} value={t.id}>{t.name}</option>
                           ))}
                         </Select>
+                        <ListHint query={typesQuery} name="Types" />
                       </div>
                       <div className="space-y-1">
                         <Label htmlFor="item">Item</Label>
@@ -336,6 +357,7 @@ export function GuestTicketPage() {
                             <option key={i.id} value={i.id}>{i.name}</option>
                           ))}
                         </Select>
+                        <ListHint query={itemsQuery} name="Items" />
                       </div>
                     </>
                   )}

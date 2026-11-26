@@ -77,7 +77,9 @@ describe('the guest attachments settings', () => {
     await renderSettings({ guest_submission_enabled: false, guest_attachments_enabled: true })
     expect(toggle().disabled).toBe(true)
     expect(slider().disabled).toBe(true)
-    expect(screen.getAllByText(/only takes effect while guest submission is on/i).length).toBeGreaterThan(0)
+    // Scoped to the attachments row: the choice row beside it says the same.
+    const row = screen.getByText(/Let a guest add files to their ticket/i).closest('div.min-w-0') as HTMLElement
+    expect(within(row).getByText(/only takes effect while guest submission is on/i)).toBeTruthy()
   })
 
   it('is enabled once guest submission is on, and the slider follows the switch', async () => {
