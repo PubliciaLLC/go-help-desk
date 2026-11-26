@@ -18,6 +18,7 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/admin"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/audit"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/catalogue"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/customfield"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
@@ -103,7 +104,7 @@ func (s *Server) handleListTickets(w http.ResponseWriter, r *http.Request) {
 		Error(w, http.StatusForbidden, "forbidden", "users cannot list group tickets")
 		return
 	}
-	if err := f.AllowedFor(a.Role, canSearchRequesters(a)); err != nil {
+	if err := f.AllowedForLevels(a.Role, s.levelsOfActor(r.Context(), a), canSearchRequesters(a)); err != nil {
 		writeFilterError(w, err)
 		return
 	}
@@ -336,12 +337,14 @@ func (s *Server) handleCreateTicket(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else if !isStaffOrAdmin {
-		// Regular authenticated user: no item unless an administrator has
-		// said so (#711). Dropped, not refused, while it is off: a ticket
-		// filed under the category and type is what they have always got. When
-		// it is on the item is validated below with everything else, by the
-		// ticket service, the same code staff go through.
-		if !s.adminSvc.UsersCanChooseItem(r.Context()) {
+		// Regular authenticated user: a level they may not see (#711) is
+		// dropped, not refused: a ticket filed under the category and type is
+		// what they have always got. A level they may see is validated below
+		// with everything else, by the ticket service, the same code staff go
+		// through.
+		if lv := s.levelsOfActor(r.Context(), a); !lv.Types {
+			body.TypeID, body.ItemID = nil, nil
+		} else if !lv.Items {
 			body.ItemID = nil
 		}
 
@@ -478,7 +481,7 @@ func (s *Server) handleCreateTicket(w http.ResponseWriter, r *http.Request) {
 	if fresh, err := s.tickets.GetByID(r.Context(), t.ID); err == nil {
 		t = fresh
 	}
-	JSON(w, http.StatusCreated, viewerJSON(authmw.GetActor(r), createdTicket{Ticket: t, Warnings: warnings}))
+	JSON(w, http.StatusCreated, s.viewerJSON(r.Context(), authmw.GetActor(r), createdTicket{Ticket: t, Warnings: warnings}))
 }
 
 // createdTicket is POST /tickets' 201 body: the ticket, plus the custom field
@@ -677,7 +680,7 @@ func (s *Server) handleGetTicket(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	JSON(w, http.StatusOK, viewerJSON(authmw.GetActor(r), views[0]))
+	JSON(w, http.StatusOK, s.viewerJSON(r.Context(), authmw.GetActor(r), views[0]))
 }
 
 // PATCH /api/v1/tickets/{id}
@@ -830,7 +833,7 @@ func (s *Server) handleUpdateTicket(w http.ResponseWriter, r *http.Request) {
 		handleError(w, err)
 		return
 	}
-	JSON(w, http.StatusOK, viewerJSON(authmw.GetActor(r), t))
+	JSON(w, http.StatusOK, s.viewerJSON(r.Context(), authmw.GetActor(r), t))
 }
 
 // POST /api/v1/tickets/{id}/replies
@@ -947,7 +950,7 @@ func (s *Server) handleResolveTicket(w http.ResponseWriter, r *http.Request) {
 		handleError(w, err)
 		return
 	}
-	JSON(w, http.StatusOK, viewerJSON(authmw.GetActor(r), t))
+	JSON(w, http.StatusOK, s.viewerJSON(r.Context(), authmw.GetActor(r), t))
 }
 
 // POST /api/v1/tickets/{id}/reopen
@@ -978,7 +981,7 @@ func (s *Server) handleReopenTicket(w http.ResponseWriter, r *http.Request) {
 		handleError(w, err)
 		return
 	}
-	JSON(w, http.StatusOK, viewerJSON(authmw.GetActor(r), t))
+	JSON(w, http.StatusOK, s.viewerJSON(r.Context(), authmw.GetActor(r), t))
 }
 
 // POST /api/v1/tickets/{id}/follow-up
@@ -1033,7 +1036,7 @@ func (s *Server) handleCreateFollowUp(w http.ResponseWriter, r *http.Request) {
 	if fresh, err := s.tickets.GetByID(r.Context(), t.ID); err == nil {
 		t = fresh
 	}
-	JSON(w, http.StatusCreated, viewerJSON(authmw.GetActor(r), t))
+	JSON(w, http.StatusCreated, s.viewerJSON(r.Context(), authmw.GetActor(r), t))
 }
 
 // POST /api/v1/tickets/{id}/close
@@ -1058,7 +1061,7 @@ func (s *Server) handleCloseTicket(w http.ResponseWriter, r *http.Request) {
 		handleError(w, err)
 		return
 	}
-	JSON(w, http.StatusOK, viewerJSON(authmw.GetActor(r), t))
+	JSON(w, http.StatusOK, s.viewerJSON(r.Context(), authmw.GetActor(r), t))
 }
 
 // POST /api/v1/tickets/{id}/links
@@ -1108,7 +1111,7 @@ func (s *Server) handleAddLink(w http.ResponseWriter, r *http.Request) {
 			handleError(w, err)
 			return
 		}
-		JSON(w, http.StatusOK, viewerJSON(authmw.GetActor(r), t))
+		JSON(w, http.StatusOK, s.viewerJSON(r.Context(), authmw.GetActor(r), t))
 		return
 	}
 
@@ -1520,16 +1523,16 @@ func (s *Server) categoryIsOpen(ctx context.Context, id uuid.UUID) error {
 }
 
 // followUpKeep is which levels of a closed ticket's classification a
-// requester's follow-up carries (#711): the type always for an account holder
-// and for a guest only while guests may choose it, and the item for an account
-// holder while users may choose it. With the settings off that is what it
-// always was: an account holder's type, nothing else. A guest's follow-up
-// carries the type and not the item, which a guest could not pick before.
+// requester's follow-up carries (#711): the levels the one policy lets that
+// requester see. With the settings off that is what it always was: an account
+// holder's type, nothing else, and nothing below the category for a guest.
 func (s *Server) followUpKeep(ctx context.Context, guest bool) ticket.FollowUpKeep {
+	who := catalogue.Requester
 	if guest {
-		return ticket.FollowUpKeep{Type: s.adminSvc.GuestsCanChooseTypeItem(ctx)}
+		who = catalogue.Guest
 	}
-	return ticket.FollowUpKeep{Type: true, Item: s.adminSvc.UsersCanChooseItem(ctx)}
+	lv := s.levelsOf(ctx, who)
+	return ticket.FollowUpKeep{Type: lv.Types, Item: lv.Items}
 }
 
 // requesterClassificationOpen is the creation rule a requester is held to for a

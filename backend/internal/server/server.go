@@ -25,6 +25,7 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/audit"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/cannedresponse"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/catalogue"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/category"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/customfield"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/emailtemplate"
@@ -827,12 +828,42 @@ func (s *Server) categoryIsActive(ctx context.Context, id uuid.UUID) (bool, erro
 	return c.Active, nil
 }
 
-// guestClosedOut is true for an anonymous caller while guests may not choose
-// the Type and Item (#711), which is what the Type and Item lists answer with
-// nothing for. A signed-in requester is not: their lists are unchanged, because
-// the names are how their own ticket shows the classification staff gave it.
-func (s *Server) guestClosedOut(r *http.Request) bool {
-	return authmw.GetActor(r) == nil && !s.adminSvc.GuestsCanChooseTypeItem(r.Context())
+// levelsFor is what the caller of this request sees of the tree below the
+// category (#711): the one policy, catalogue.VisibleLevels, applied to who is
+// asking. A request with no actor is a guest. A session that has not finished
+// MFA or owes a password change is not staff here, as for the archived rows
+// (catalogueIsFullyVisible), and is a requester. Every surface that serves a
+// type or an item asks this or levelsOfActor and restates nothing.
+func (s *Server) levelsFor(r *http.Request) catalogue.Levels {
+	a := authmw.GetActor(r)
+	switch {
+	case a == nil:
+		return s.levelsOf(r.Context(), catalogue.Guest)
+	case catalogueIsFullyVisible(r):
+		return s.levelsOf(r.Context(), catalogue.Staff)
+	}
+	return s.levelsOf(r.Context(), catalogue.Requester)
+}
+
+// levelsOfActor is the same for a caller that is already an actor (a nil actor
+// is a guest): an API key or OAuth client carries its owner's role, so it sees
+// what that person's session sees.
+func (s *Server) levelsOfActor(ctx context.Context, a *authmw.Actor) catalogue.Levels {
+	if a == nil {
+		return s.levelsOf(ctx, catalogue.Guest)
+	}
+	return s.levelsOf(ctx, catalogue.WhoOfRole(a.Role))
+}
+
+func (s *Server) levelsOf(ctx context.Context, who catalogue.Who) catalogue.Levels {
+	return catalogue.VisibleLevels(ctx, s.adminSvc, who)
+}
+
+// VisibleLevels is which levels of the classification the actor may see: the one
+// policy, for the actor's role (mcp.Authorizer). A machine credential's role is
+// its owner's.
+func (s *Server) VisibleLevels(ctx context.Context, a *authmw.Actor) catalogue.Levels {
+	return s.levelsOfActor(ctx, a)
 }
 
 // handleListPublicTypes returns only active types for a category.
@@ -843,10 +874,9 @@ func (s *Server) handleListPublicTypes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	staff := catalogueIsFullyVisible(r)
-	// A guest is offered no types unless an administrator lets guests choose
-	// them (#711): the same empty answer as under an archived parent, so a
-	// refusal is not a different answer to learn from.
-	if s.guestClosedOut(r) {
+	// A level the caller may not see is the empty answer of a category with no
+	// children (#711), so a refusal is not a different answer to learn from.
+	if !s.levelsFor(r).Types {
 		JSON(w, http.StatusOK, []category.Type{})
 		return
 	}
@@ -879,7 +909,7 @@ func (s *Server) handleListPublicItems(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	staff := catalogueIsFullyVisible(r)
-	if s.guestClosedOut(r) { // see handleListPublicTypes
+	if lv := s.levelsFor(r); !lv.Types || !lv.Items { // see handleListPublicTypes
 		JSON(w, http.StatusOK, []category.Item{})
 		return
 	}
@@ -933,6 +963,7 @@ func (s *Server) handleGetSiteConfig(w http.ResponseWriter, r *http.Request) {
 	// anyone can read it, with the effective limit. Accepted (low sensitivity,
 	// and the guest ticket's allow-list stays untouched). The size is the EFFECTIVE limit (the lower of the setting and the
 	// instance-wide maximum), omitted while uploads are off.
+	guestLevels := s.levelsOf(r.Context(), catalogue.Guest)
 	cfg := map[string]any{
 		"name":                      s.adminSvc.SiteName(r.Context()),
 		"logo_url":                  s.adminSvc.SiteLogoURL(r.Context()),
@@ -941,7 +972,8 @@ func (s *Server) handleGetSiteConfig(w http.ResponseWriter, r *http.Request) {
 		"guest_attachments_enabled": s.adminSvc.GuestAttachmentsEnabled(r.Context()),
 		// The effective value (#711), so the guest form knows whether to offer
 		// a Type and an Item. What opening /submit shows anyone anyway.
-		"guests_can_choose_type_item": s.adminSvc.GuestsCanChooseTypeItem(r.Context()),
+		"guests_show_types": guestLevels.Types,
+		"guests_show_items": guestLevels.Items,
 	}
 	if cfg["guest_attachments_enabled"] == true {
 		cfg["guest_attachment_max_bytes"] = s.guestAttachmentMaxBytes(r.Context())

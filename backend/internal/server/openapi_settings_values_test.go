@@ -24,7 +24,7 @@ func TestOpenAPISpec_SettingsValuesDeclareTheChoiceSettings(t *testing.T) {
 	props, _ := values["properties"].(map[string]any)
 	require.NotEmpty(t, props)
 
-	for _, k := range []string{admin.KeyUsersCanChooseItem, admin.KeyGuestsCanChooseTypeItem} {
+	for _, k := range []string{admin.KeyUsersShowItems, admin.KeyGuestsShowTypes, admin.KeyGuestsShowItems} {
 		require.Contains(t, admin.AuthCriticalKeys(), k)
 		p, ok := props[k].(map[string]any)
 		require.True(t, ok, "SettingsValues does not declare %q", k)

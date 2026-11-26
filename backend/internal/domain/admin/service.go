@@ -271,27 +271,22 @@ func (s *Service) GuestAttachmentsEnabled(ctx context.Context) bool {
 	return v
 }
 
-// UsersCanChooseItem reports whether a signed-in requester may choose the Item
-// when filing a ticket (#711). Off by default, upgrades included: the row is
-// absent until an administrator saves it, and absent reads false. Staff and
-// administrators always may and do not consult it.
-func (s *Service) UsersCanChooseItem(ctx context.Context) bool {
-	v, _ := s.GetBool(ctx, KeyUsersCanChooseItem)
+// UsersShowItems, GuestsShowTypes and GuestsShowItems are the stored values of
+// the three #711 switches: off unless saved, upgrades included. They are not
+// what a caller sees; that is catalogue.VisibleLevels, which combines them with
+// guest submission and with each other. Nothing else should read them.
+func (s *Service) UsersShowItems(ctx context.Context) bool {
+	v, _ := s.GetBool(ctx, KeyUsersShowItems)
 	return v
 }
 
-// GuestsCanChooseTypeItem reports whether a guest may choose the Type and the
-// Item on the guest form (#711). Off by default, upgrades included.
-//
-// Like GuestAttachmentsEnabled it is only ever true while guest submission is
-// on, read here rather than in each caller so that "dependent on guest
-// submission" is a property of the setting and not something a handler has to
-// remember. The stored value is kept while submission is off.
-func (s *Service) GuestsCanChooseTypeItem(ctx context.Context) bool {
-	if !s.GuestSubmissionEnabled(ctx) {
-		return false
-	}
-	v, _ := s.GetBool(ctx, KeyGuestsCanChooseTypeItem)
+func (s *Service) GuestsShowTypes(ctx context.Context) bool {
+	v, _ := s.GetBool(ctx, KeyGuestsShowTypes)
+	return v
+}
+
+func (s *Service) GuestsShowItems(ctx context.Context) bool {
+	v, _ := s.GetBool(ctx, KeyGuestsShowItems)
 	return v
 }
 

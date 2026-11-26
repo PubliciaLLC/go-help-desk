@@ -173,11 +173,14 @@ func TestRequesterResponses_NoRouteLeaksAFieldOutsideTheAllowedList(t *testing.T
 				keys = append(keys, k)
 			}
 			// Spelled out, not read from the list under test.
+			// item_id is the conditional key (#711): with Items not visible to
+			// the requester, which is the default, it is not sent.
 			require.ElementsMatch(t, []string{
-				"assignee_user_id", "category_id", "created_at", "description", "description_format", "id", "item_id", "priority",
+				"assignee_user_id", "category_id", "created_at", "description", "description_format", "id", "priority",
 				"resolution_notes", "resolved_at", "status_id", "subject", "tracking_number", "type_id",
 				"sla", "can_reopen",
 			}, keys)
+			require.NotContains(t, got, "item_id")
 		}
 		called++
 		if rules.scanBody(t, rt.Method+" "+rt.Pattern, b) {

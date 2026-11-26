@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/catalogue"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/sla"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
@@ -103,14 +104,15 @@ func (s *Server) requesterOf(ctx context.Context, t ticket.Ticket) *ticketReques
 
 // viewerJSON is the exit point for any response that carries tickets: staff and
 // administrators get it as built, everyone else gets only what the requester
-// allowed list permits (ticket.FilterForViewer). A nil actor is treated as a
-// requester, so a missed check fails closed.
-func viewerJSON(actor *authmw.Actor, v any) any {
+// allowed list permits (ticket.FilterForViewer), less the levels of the
+// classification the one policy does not let them see (#711). A nil actor is
+// treated as a requester, so a missed check fails closed.
+func (s *Server) viewerJSON(ctx context.Context, actor *authmw.Actor, v any) any {
 	role := user.Role("")
 	if actor != nil {
 		role = actor.Role
 	}
-	out, err := ticket.FilterForViewer(role, v)
+	out, err := ticket.FilterForViewer(role, s.levelsOf(ctx, catalogue.WhoOfRole(role)), v)
 	if err != nil {
 		// Encoding a value this package just built does not fail; if it ever does,
 		// send nothing rather than the unfiltered ticket.
@@ -211,5 +213,5 @@ func (s *Server) writeTickets(w http.ResponseWriter, r *http.Request, tickets []
 			views[i].ReplyMatch = &m
 		}
 	}
-	JSON(w, http.StatusOK, viewerJSON(authmw.GetActor(r), views))
+	JSON(w, http.StatusOK, s.viewerJSON(r.Context(), authmw.GetActor(r), views))
 }

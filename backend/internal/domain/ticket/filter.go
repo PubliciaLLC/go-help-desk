@@ -10,6 +10,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/catalogue"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 )
 
@@ -530,6 +531,27 @@ var requesterRules = []struct {
 	// fact a requester is never sent. reply_author_role is not a key of the
 	// ticket object, so no requester allowed list can hold it.
 	{"AwaitingReply", "awaiting_reply", "reply_author_role", false, func(f Filter) bool { return f.AwaitingReply }},
+}
+
+// AllowedForLevels is AllowedFor with the levels of the classification the
+// caller may see (catalogue.VisibleLevels, #711): a requester who cannot see
+// Items may not filter on an item, nor on a type where Types is not visible,
+// with the 403 every other unavailable filter gets. Staff are never narrowed.
+// Every caller that has levels uses this one.
+func (f Filter) AllowedForLevels(role user.Role, lv catalogue.Levels, requesterSearch bool) error {
+	if err := f.AllowedFor(role, requesterSearch); err != nil {
+		return err
+	}
+	if role == user.RoleStaff || role == user.RoleAdmin {
+		return nil
+	}
+	if f.TypeID != nil && !lv.Types {
+		return &FilterError{Kind: FilterForbidden, Msg: "type_id is not available to requesters"}
+	}
+	if f.ItemID != nil && !(lv.Types && lv.Items) {
+		return &FilterError{Kind: FilterForbidden, Msg: "item_id is not available to requesters"}
+	}
+	return nil
 }
 
 // AllowedFor checks the filter against who is asking. role is the caller's role

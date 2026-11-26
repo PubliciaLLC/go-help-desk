@@ -39,6 +39,7 @@ import (
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/catalogue"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/category"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/customfield"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
@@ -328,6 +329,11 @@ type Authorizer interface {
 	// AvailableQueueAllowed is whether the actor may open the Available queue
 	// (scope=unassigned): the one answer REST and /me give (#676).
 	AvailableQueueAllowed(ctx context.Context, a *authmw.Actor) bool
+	// VisibleLevels is which levels of the Category > Type > Item tree the actor
+	// may see (#711): catalogue.VisibleLevels for the actor's role, the same
+	// answer REST gives the same person. Every tool that returns or accepts a
+	// type or an item asks it and decides nothing itself.
+	VisibleLevels(ctx context.Context, a *authmw.Actor) catalogue.Levels
 }
 
 // deniedAuthorizer is the fallback when no Authorizer is supplied. Closed, not
@@ -345,6 +351,11 @@ func (deniedAuthorizer) TicketVisibility(context.Context, *authmw.Actor) (ticket
 
 func (deniedAuthorizer) AvailableQueueAllowed(context.Context, *authmw.Actor) bool {
 	return false
+}
+
+// Closed, like the rest: nothing below the category.
+func (deniedAuthorizer) VisibleLevels(context.Context, *authmw.Actor) catalogue.Levels {
+	return catalogue.Levels{}
 }
 
 func New(
@@ -801,7 +812,7 @@ func (s *Server) handleGetTicket(ctx context.Context, req mcpgo.CallToolRequest)
 		}
 		out.CustomFields = values
 	}
-	return ticketResult(caller.Role, out)
+	return s.ticketResult(ctx, caller, out)
 }
 
 // attachmentView is list_attachments' row. An explicit struct rather than
@@ -1021,7 +1032,7 @@ func (s *Server) handleCreateTicket(ctx context.Context, req mcpgo.CallToolReque
 			}
 		}
 	}
-	return ticketResult(actor.Role, createdTicket{Ticket: t, Warnings: warnings})
+	return s.ticketResult(ctx, actor, createdTicket{Ticket: t, Warnings: warnings})
 }
 
 // createdTicket is create_ticket's answer: the ticket, plus the custom field
@@ -1103,6 +1114,12 @@ func (s *Server) handleListTicketFields(ctx context.Context, req mcpgo.CallToolR
 	itemID, err := optionalID("item_id")
 	if err != nil {
 		return errResult(err.Error())
+	}
+	// A level the caller may not see is not resolved (#711).
+	if lv := s.authz.VisibleLevels(ctx, actorFrom(ctx)); !lv.Types {
+		typeID, itemID = nil, nil
+	} else if !lv.Items {
+		itemID = nil
 	}
 	fields, err := s.customFields.ResolveFieldsForCTI(ctx, catID, typeID, itemID)
 	if err != nil {
@@ -1483,6 +1500,11 @@ func (s *Server) handleListTickets(ctx context.Context, req mcpgo.CallToolReques
 	if err != nil {
 		return storeErr(ctx, "list tickets", err)
 	}
+	// A filter on a level of the classification the caller may not see is
+	// refused as REST refuses it (#711).
+	if err := f.AllowedForLevels(caller.Role, s.authz.VisibleLevels(ctx, caller), canSearchRequesters(caller)); err != nil {
+		return storeErr(ctx, "list tickets", err)
+	}
 
 	// After the role check, so a requester asking for sla is told it is not
 	// theirs to use, and not that the feature is off. An empty list would read as
@@ -1505,7 +1527,7 @@ func (s *Server) handleListTickets(ctx context.Context, req mcpgo.CallToolReques
 	}
 	tickets := res.Tickets
 	if !f.SearchReplies {
-		return ticketResult(caller.Role, tickets)
+		return s.ticketResult(ctx, caller, tickets)
 	}
 
 	// Excerpts only when the replies were searched: a page chosen without them
@@ -1531,7 +1553,7 @@ func (s *Server) handleListTickets(ctx context.Context, req mcpgo.CallToolReques
 			out[i].ReplyMatch = &m
 		}
 	}
-	result, err := ticketResult(caller.Role, out)
+	result, err := s.ticketResult(ctx, caller, out)
 	if err != nil || result.IsError {
 		return result, err
 	}
@@ -1627,7 +1649,7 @@ func (s *Server) handleAssignTicket(ctx context.Context, req mcpgo.CallToolReque
 	if err != nil {
 		return storeErr(ctx, "assign ticket", err)
 	}
-	return ticketResult(caller.Role, t)
+	return s.ticketResult(ctx, caller, t)
 }
 
 func (s *Server) handleUpdateTicketStatus(ctx context.Context, req mcpgo.CallToolRequest) (*mcpgo.CallToolResult, error) {
@@ -1666,7 +1688,7 @@ func (s *Server) handleUpdateTicketStatus(ctx context.Context, req mcpgo.CallToo
 	if err != nil {
 		return storeErr(ctx, "update ticket status", err)
 	}
-	return ticketResult(caller.Role, t)
+	return s.ticketResult(ctx, caller, t)
 }
 
 // routing is the candidates for a new ticket, or none when no Router was given.
@@ -1709,7 +1731,7 @@ func (s *Server) handleCreateFollowUp(ctx context.Context, req mcpgo.CallToolReq
 	if err != nil {
 		return storeErr(ctx, "create follow-up", err)
 	}
-	return ticketResult(caller.Role, t)
+	return s.ticketResult(ctx, caller, t)
 }
 
 // catalogCategory is the Category/Type/Item tree as list_categories returns it.
@@ -1737,6 +1759,9 @@ func (s *Server) handleListCategories(ctx context.Context, req mcpgo.CallToolReq
 	// ask for, rather than an error that would say there is something to see.
 	includeInactive, _ := req.GetArguments()["include_inactive"].(bool)
 	activeOnly := !(includeInactive && requireStaff(actorFrom(ctx)))
+	// Only the levels this caller may see (#711): a requester gets categories
+	// and types, and items only while registered users are shown them.
+	lv := s.authz.VisibleLevels(ctx, actorFrom(ctx))
 
 	cats, err := s.categories.ListCategories(ctx, activeOnly)
 	if err != nil {
@@ -1744,15 +1769,19 @@ func (s *Server) handleListCategories(ctx context.Context, req mcpgo.CallToolReq
 	}
 	out := make([]catalogCategory, 0, len(cats))
 	for _, c := range cats {
-		types, err := s.categories.ListTypes(ctx, c.ID, activeOnly)
-		if err != nil {
-			return storeErr(ctx, "list categories", err)
+		var types []category.Type
+		if lv.Types {
+			if types, err = s.categories.ListTypes(ctx, c.ID, activeOnly); err != nil {
+				return storeErr(ctx, "list categories", err)
+			}
 		}
 		node := catalogCategory{Category: c, Types: make([]catalogType, 0, len(types))}
 		for _, ty := range types {
-			items, err := s.categories.ListItems(ctx, ty.ID, activeOnly)
-			if err != nil {
-				return storeErr(ctx, "list categories", err)
+			items := []category.Item{}
+			if lv.Items {
+				if items, err = s.categories.ListItems(ctx, ty.ID, activeOnly); err != nil {
+					return storeErr(ctx, "list categories", err)
+				}
 			}
 			node.Types = append(node.Types, catalogType{Type: ty, Items: items})
 		}
@@ -1781,8 +1810,8 @@ func str(args map[string]any, key string) string {
 // ticketResult is the exit point for every tool that returns tickets: the same
 // allowed list as the HTTP views (ticket.FilterForViewer), so a requester over
 // MCP is shown what a requester over HTTP is shown.
-func ticketResult(role user.Role, v any) (*mcpgo.CallToolResult, error) {
-	filtered, err := ticket.FilterForViewer(role, v)
+func (s *Server) ticketResult(ctx context.Context, a *authmw.Actor, v any) (*mcpgo.CallToolResult, error) {
+	filtered, err := ticket.FilterForViewer(a.Role, s.authz.VisibleLevels(ctx, a), v)
 	if err != nil {
 		return errResult("could not encode the ticket")
 	}

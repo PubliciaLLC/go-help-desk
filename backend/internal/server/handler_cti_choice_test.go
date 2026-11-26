@@ -12,18 +12,23 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/admin"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/catalogue"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/customfield"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 )
 
 // #711: two independent switches, both off by default, that let a requester
-// choose the Item (users_can_choose_item) and a guest choose the Type and Item
-// (guests_can_choose_type_item). The wire names are spelled out here on
-// purpose: a renamed constant must not silently rename what administrators and
-// the OpenAPI spec see.
+// see the Item (users_show_items), and a guest the Type (guests_show_types) and
+// the Item (guests_show_items). The wire names are spelled out here on purpose:
+// a renamed constant must not silently rename what administrators and the
+// OpenAPI spec see.
 const (
-	usersItemKey      = "users_can_choose_item"
-	guestsTypeItemKey = "guests_can_choose_type_item"
+	usersItemKey   = "users_show_items"
+	guestsTypesKey = "guests_show_types"
+	guestsItemsKey = "guests_show_items"
+	// guestsTypeItemKey is not a setting: it stands for both guest levels, so a
+	// test that wants guests to see the whole tree says so once.
+	guestsTypeItemKey = "both guest levels"
 )
 
 // choiceTree is a catalogue with one of everything a hostile or stale id can
@@ -88,16 +93,32 @@ func buildChoiceTree(t *testing.T, h *harness) choiceTree {
 
 func setChoice(t *testing.T, h *harness, key string, on bool) {
 	t.Helper()
-	require.NoError(t, h.adminSvc.SetBool(context.Background(), key, on))
+	ctx := context.Background()
+	if key == guestsTypeItemKey {
+		require.NoError(t, h.adminSvc.SetBool(ctx, guestsTypesKey, on))
+		require.NoError(t, h.adminSvc.SetBool(ctx, guestsItemsKey, on))
+		return
+	}
+	require.NoError(t, h.adminSvc.SetBool(ctx, key, on))
+}
+
+// levels is what the one policy says a caller sees, read the way every surface
+// reads it.
+func levels(t *testing.T, h *harness, who catalogue.Who) catalogue.Levels {
+	t.Helper()
+	return catalogue.VisibleLevels(context.Background(), h.adminSvc, who)
 }
 
 func idp(id uuid.UUID) *uuid.UUID { return &id }
 
 // ── The settings ─────────────────────────────────────────────────────────────
 
-// Off by default, on an upgraded install as on a fresh one: neither row exists
-// after the migrations have run, and an absent row reads false. There is no
-// migration to renumber and nothing for an upgrade to get wrong.
+var showKeys = []string{usersItemKey, guestsTypesKey, guestsItemsKey}
+
+// Off by default, on an upgraded install as on a fresh one: none of the rows
+// exists after the migrations have run, an absent row reads false, and nobody
+// but staff sees anything below the category. There is no migration to
+// renumber and nothing for an upgrade to get wrong.
 func TestCTIChoice_AbsentMeansOff(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
@@ -106,67 +127,86 @@ func TestCTIChoice_AbsentMeansOff(t *testing.T) {
 
 	all, err := h.adminSvc.ListAll(ctx)
 	require.NoError(t, err)
-	require.NotContains(t, all, usersItemKey, "no migration seeds it: absent is the default")
-	require.NotContains(t, all, guestsTypeItemKey)
+	for _, k := range showKeys {
+		require.NotContains(t, all, k, "no migration seeds it: absent is the default")
+	}
 
-	require.False(t, h.adminSvc.UsersCanChooseItem(ctx))
-	require.False(t, h.adminSvc.GuestsCanChooseTypeItem(ctx))
+	require.Equal(t, catalogue.Levels{Types: true}, levels(t, h, catalogue.Requester), "types always, items off")
+	require.Equal(t, catalogue.Levels{}, levels(t, h, catalogue.Guest))
+	require.Equal(t, catalogue.Levels{Types: true, Items: true}, levels(t, h, catalogue.Staff))
 
 	sess := signInAsAdmin(t, h)
 	res, body := sess.send(t, http.MethodGet, "/api/v1/admin/settings", nil)
 	require.Equal(t, http.StatusOK, res.StatusCode, body)
-	require.NotContains(t, string(body), usersItemKey)
-	require.NotContains(t, string(body), guestsTypeItemKey)
+	for _, k := range showKeys {
+		require.NotContains(t, string(body), k)
+	}
 }
 
 func TestCTIChoice_NamesAreKnownKeys(t *testing.T) {
-	require.Equal(t, usersItemKey, admin.KeyUsersCanChooseItem)
-	require.Equal(t, guestsTypeItemKey, admin.KeyGuestsCanChooseTypeItem)
-	require.True(t, admin.IsKnownKey(usersItemKey))
-	require.True(t, admin.IsKnownKey(guestsTypeItemKey))
+	require.Equal(t, usersItemKey, admin.KeyUsersShowItems)
+	require.Equal(t, guestsTypesKey, admin.KeyGuestsShowTypes)
+	require.Equal(t, guestsItemsKey, admin.KeyGuestsShowItems)
+	for _, k := range showKeys {
+		require.True(t, admin.IsKnownKey(k), k)
+	}
 }
 
 // An administrator session saves and reads back each switch; they do not read
-// one another.
+// one another, except that the guest Item level hangs under the guest Type level.
 func TestCTIChoice_AdminSessionSetsEachSwitchIndependently(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
-	ctx := context.Background()
 	setChoice(t, h, admin.KeyGuestSubmissionEnabled, true)
 	sess := signInAsAdmin(t, h)
+	patch := func(m map[string]any) {
+		res, body := sess.send(t, http.MethodPatch, "/api/v1/admin/settings", m)
+		require.Equal(t, http.StatusNoContent, res.StatusCode, body)
+	}
 
-	res, body := sess.send(t, http.MethodPatch, "/api/v1/admin/settings", map[string]any{usersItemKey: true})
-	require.Equal(t, http.StatusNoContent, res.StatusCode, body)
-	require.True(t, h.adminSvc.UsersCanChooseItem(ctx))
-	require.False(t, h.adminSvc.GuestsCanChooseTypeItem(ctx), "the user switch does not open the guest one")
+	patch(map[string]any{usersItemKey: true})
+	require.Equal(t, catalogue.Levels{Types: true, Items: true}, levels(t, h, catalogue.Requester))
+	require.Equal(t, catalogue.Levels{}, levels(t, h, catalogue.Guest), "the user switch does not open the guest levels")
 
-	res, body = sess.send(t, http.MethodPatch, "/api/v1/admin/settings", map[string]any{guestsTypeItemKey: true, usersItemKey: false})
-	require.Equal(t, http.StatusNoContent, res.StatusCode, body)
-	require.False(t, h.adminSvc.UsersCanChooseItem(ctx))
-	require.True(t, h.adminSvc.GuestsCanChooseTypeItem(ctx))
+	patch(map[string]any{guestsTypesKey: true, usersItemKey: false})
+	require.Equal(t, catalogue.Levels{Types: true}, levels(t, h, catalogue.Requester))
+	require.Equal(t, catalogue.Levels{Types: true}, levels(t, h, catalogue.Guest))
 
-	res, body = sess.send(t, http.MethodGet, "/api/v1/admin/settings", nil)
+	patch(map[string]any{guestsItemsKey: true})
+	require.Equal(t, catalogue.Levels{Types: true, Items: true}, levels(t, h, catalogue.Guest))
+
+	res, body := sess.send(t, http.MethodGet, "/api/v1/admin/settings", nil)
 	require.Equal(t, http.StatusOK, res.StatusCode, body)
 	var dump map[string]json.RawMessage
 	require.NoError(t, json.Unmarshal(body, &dump))
-	require.JSONEq(t, "true", string(dump[guestsTypeItemKey]))
+	require.JSONEq(t, "true", string(dump[guestsTypesKey]))
+	require.JSONEq(t, "true", string(dump[guestsItemsKey]))
 	require.JSONEq(t, "false", string(dump[usersItemKey]))
 }
 
-// The guest switch only takes effect while guest submission is on; its stored
-// value is kept.
-func TestCTIChoice_GuestSwitchIsDependentOnGuestSubmission(t *testing.T) {
+// The guest levels are effective only while guest submission is on, and the
+// Item level only under a Type level; the stored values are kept and an
+// inconsistent stored combination reads as the consistent one.
+func TestCTIChoice_GuestLevelsAreDependent(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
 	ctx := context.Background()
 	setChoice(t, h, guestsTypeItemKey, true)
 
-	require.False(t, h.adminSvc.GuestsCanChooseTypeItem(ctx), "submission is off")
+	require.Equal(t, catalogue.Levels{}, levels(t, h, catalogue.Guest), "submission is off")
 	setChoice(t, h, admin.KeyGuestSubmissionEnabled, true)
-	require.True(t, h.adminSvc.GuestsCanChooseTypeItem(ctx))
+	require.Equal(t, catalogue.Levels{Types: true, Items: true}, levels(t, h, catalogue.Guest))
+
+	setChoice(t, h, guestsTypesKey, false)
+	require.Equal(t, catalogue.Levels{}, levels(t, h, catalogue.Guest), "items on, types off is items off")
+	raw, err := h.adminSvc.GetRaw(ctx, guestsItemsKey)
+	require.NoError(t, err)
+	require.JSONEq(t, "true", string(raw), "and the stored value is kept")
+
+	setChoice(t, h, guestsTypesKey, true)
 	setChoice(t, h, admin.KeyGuestSubmissionEnabled, false)
-	require.False(t, h.adminSvc.GuestsCanChooseTypeItem(ctx))
-	raw, err := h.adminSvc.GetRaw(ctx, guestsTypeItemKey)
+	require.Equal(t, catalogue.Levels{}, levels(t, h, catalogue.Guest))
+	raw, err = h.adminSvc.GetRaw(ctx, guestsTypesKey)
 	require.NoError(t, err)
 	require.JSONEq(t, "true", string(raw), "turning submission off does not lose the choice")
 }
@@ -180,7 +220,7 @@ func TestCTIChoice_SettingsRefuseNonBooleans(t *testing.T) {
 	ctx := context.Background()
 	sess := signInAsAdmin(t, h)
 
-	for _, key := range []string{usersItemKey, guestsTypeItemKey} {
+	for _, key := range showKeys {
 		for name, v := range map[string]any{"a string": "true", "null": nil, "a number": 1, "an object": map[string]any{}} {
 			res, body := sess.send(t, http.MethodPatch, "/api/v1/admin/settings", map[string]any{key: v})
 			require.Equal(t, http.StatusBadRequest, res.StatusCode, "%s %s: %s", key, name, body)
@@ -190,13 +230,13 @@ func TestCTIChoice_SettingsRefuseNonBooleans(t *testing.T) {
 	}
 }
 
-// Session only: a leaked API key must not open either switch.
+// Session only: a leaked API key must not open any of them.
 func TestCTIChoice_SettingsAreSessionOnly(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
 	ctx := context.Background()
 
-	for _, key := range []string{usersItemKey, guestsTypeItemKey} {
+	for _, key := range showKeys {
 		require.Contains(t, admin.AuthCriticalKeys(), key)
 		res := h.doAsAdmin(t, http.MethodPatch, "/api/v1/admin/settings", map[string]any{key: true})
 		body := string(readAll(t, res))
@@ -590,36 +630,47 @@ func (c choiceTree) itemsPath() string {
 	return "/api/v1/categories/" + c.cat.String() + "/types/" + c.typ.String() + "/items"
 }
 
-// A guest reads nothing below the category while the setting is off, and no
-// item name is in the answer.
+// A guest reads nothing below the category while the guest levels are off, only
+// the types while just Types is on, and no item name is in either answer.
 func TestCTIChoice_CatalogueForGuests(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
 	tree := buildChoiceTree(t, h)
 	setChoice(t, h, admin.KeyGuestSubmissionEnabled, true)
 
+	empty := func(path string) {
+		t.Helper()
+		res := h.doUnauth(t, http.MethodGet, path, nil)
+		body := string(readAll(t, res))
+		require.Equal(t, http.StatusOK, res.StatusCode, body)
+		require.JSONEq(t, "[]", body, path)
+		require.NotContains(t, body, tree.itemName)
+	}
+
 	// Off: categories as ever, then nothing, in the spelling an archived parent
 	// already uses.
 	require.Contains(t, listNames(t, h.doUnauth(t, http.MethodGet, "/api/v1/categories", nil)), "Hardware")
-	res := h.doUnauth(t, http.MethodGet, tree.typesPath(), nil)
-	body := string(readAll(t, res))
-	require.Equal(t, http.StatusOK, res.StatusCode, body)
-	require.JSONEq(t, "[]", body)
-	res = h.doUnauth(t, http.MethodGet, tree.itemsPath(), nil)
-	body = string(readAll(t, res))
-	require.Equal(t, http.StatusOK, res.StatusCode, body)
-	require.JSONEq(t, "[]", body)
-	require.NotContains(t, body, tree.itemName)
+	empty(tree.typesPath())
+	empty(tree.itemsPath())
 
-	// On: the active rows, and only those.
-	setChoice(t, h, guestsTypeItemKey, true)
-	types := listNames(t, h.doUnauth(t, http.MethodGet, tree.typesPath(), nil))
-	require.ElementsMatch(t, []string{"Laptop", "Monitor"}, types, "the archived type is not listed")
+	// Types only: the types, still no items.
+	setChoice(t, h, guestsTypesKey, true)
+	require.ElementsMatch(t, []string{"Laptop", "Monitor"}, listNames(t, h.doUnauth(t, http.MethodGet, tree.typesPath(), nil)), "the archived type is not listed")
+	empty(tree.itemsPath())
+
+	// Items on with Types off is Items off.
+	setChoice(t, h, guestsTypesKey, false)
+	setChoice(t, h, guestsItemsKey, true)
+	empty(tree.typesPath())
+	empty(tree.itemsPath())
+
+	// Both: the active rows, and only those.
+	setChoice(t, h, guestsTypesKey, true)
 	items := listNames(t, h.doUnauth(t, http.MethodGet, tree.itemsPath(), nil))
 	require.Equal(t, []string{"Docking station"}, items, "the archived item is not listed")
 
 	// Under an archived type a guest reads nothing, as before.
-	res = h.doUnauth(t, http.MethodGet, "/api/v1/categories/"+tree.cat.String()+"/types/"+tree.archTyp.String()+"/items", nil)
+	res := h.doUnauth(t, http.MethodGet, "/api/v1/categories/"+tree.cat.String()+"/types/"+tree.archTyp.String()+"/items", nil)
 	require.Empty(t, listNames(t, res))
 }
 
@@ -637,9 +688,9 @@ func TestCTIChoice_CatalogueGuestSwitchDoesNotOpenAClosedInstance(t *testing.T) 
 	}
 }
 
-// A signed-in requester reads the same lists whatever the user switch says: the
-// names are how their own ticket's Classification card shows what staff chose.
-func TestCTIChoice_CatalogueForRequestersIsUnchanged(t *testing.T) {
+// A signed-in requester reads the categories and types always, and the items
+// only while Items is shown to registered users: `[]` otherwise, never a refusal.
+func TestCTIChoice_CatalogueForRequesters(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
 	tree := buildChoiceTree(t, h)
@@ -647,7 +698,12 @@ func TestCTIChoice_CatalogueForRequestersIsUnchanged(t *testing.T) {
 	for _, on := range []bool{false, true} {
 		setChoice(t, h, usersItemKey, on)
 		require.ElementsMatch(t, []string{"Laptop", "Monitor"}, listNames(t, h.doAsUser(t, http.MethodGet, tree.typesPath(), nil)), "switch %v", on)
-		require.Equal(t, []string{"Docking station"}, listNames(t, h.doAsUser(t, http.MethodGet, tree.itemsPath(), nil)), "switch %v", on)
+		res := h.doAsUser(t, http.MethodGet, tree.itemsPath(), nil)
+		if on {
+			require.Equal(t, []string{"Docking station"}, listNames(t, res))
+		} else {
+			require.Empty(t, listNames(t, res))
+		}
 	}
 }
 
@@ -666,19 +722,23 @@ func TestCTIChoice_CatalogueForStaffIsUnchanged(t *testing.T) {
 
 // ── What the forms are told ──────────────────────────────────────────────────
 
-// GET /site tells the guest form the effective value: always present, false by
-// default, and false while guest submission is off whatever the stored value.
-func TestCTIChoice_SiteReportsTheEffectiveGuestSwitch(t *testing.T) {
+// GET /site tells the guest form the effective levels: always present, false by
+// default, false while guest submission is off whatever the stored value, and
+// Items false while Types is.
+func TestCTIChoice_SiteReportsTheEffectiveGuestLevels(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
 
-	require.Equal(t, false, siteConfig(t, h)[guestsTypeItemKey], "present and false by default")
+	require.Equal(t, false, siteConfig(t, h)[guestsTypesKey], "present and false by default")
+	require.Equal(t, false, siteConfig(t, h)[guestsItemsKey])
 	setChoice(t, h, guestsTypeItemKey, true)
-	require.Equal(t, false, siteConfig(t, h)[guestsTypeItemKey], "submission is off")
+	require.Equal(t, false, siteConfig(t, h)[guestsTypesKey], "submission is off")
+	require.Equal(t, false, siteConfig(t, h)[guestsItemsKey])
 	setChoice(t, h, admin.KeyGuestSubmissionEnabled, true)
-	require.Equal(t, true, siteConfig(t, h)[guestsTypeItemKey])
-	setChoice(t, h, guestsTypeItemKey, false)
-	require.Equal(t, false, siteConfig(t, h)[guestsTypeItemKey])
+	require.Equal(t, true, siteConfig(t, h)[guestsTypesKey])
+	require.Equal(t, true, siteConfig(t, h)[guestsItemsKey])
+	setChoice(t, h, guestsTypesKey, false)
+	require.Equal(t, false, siteConfig(t, h)[guestsItemsKey], "items hang under types")
 
 	// The user switch is for signed-in people: the public document does not carry it.
 	setChoice(t, h, usersItemKey, true)

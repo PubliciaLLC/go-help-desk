@@ -10,6 +10,7 @@ import (
 	qrcode "github.com/skip2/go-qrcode"
 
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/catalogue"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 	authmw "github.com/publiciallc/go-help-desk/backend/internal/middleware"
@@ -104,7 +105,7 @@ func (s *Server) meView(ctx context.Context, u user.User) meUser {
 		APIKeyMaxLifetimeYears: s.adminSvc.APIKeyMaxLifetimeYears(ctx),
 		AttachmentMaxBytes:     s.attachmentMaxBytes(ctx),
 	}
-	v.CanChooseItem = u.Role != user.RoleUser || s.adminSvc.UsersCanChooseItem(ctx)
+	v.CanChooseItem = s.levelsOf(ctx, catalogue.WhoOfRole(u.Role)).Items
 	v.CanCreateAPIKeys = u.Role == user.RoleAdmin || (u.Role == user.RoleStaff && s.adminSvc.StaffCanCreateAPIKeys(ctx))
 	v.CanUseAvailableQueue = s.adminSvc.AvailableQueueAllowed(ctx, string(u.Role))
 	if u.Role == user.RoleUser {

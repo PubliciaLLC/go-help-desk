@@ -194,14 +194,16 @@ func TestCatalogue_ListsCarryDescription(t *testing.T) {
 		read(t, func(p string) *http.Response { return h.do(t, http.MethodGet, p, nil) })
 	})
 	t.Run("a reporting user", func(t *testing.T) {
+		setChoice(t, h, usersItemKey, true)
 		read(t, func(p string) *http.Response { return h.doAsUser(t, http.MethodGet, p, nil) })
 	})
 	t.Run("a guest with no session, while guests may choose the Type and Item", func(t *testing.T) {
-		require.NoError(t, h.adminSvc.SetBool(ctx, admin.KeyGuestsCanChooseTypeItem, true))
+		setChoice(t, h, guestsTypeItemKey, true)
+		setChoice(t, h, usersItemKey, true)
 		read(t, func(p string) *http.Response { return h.doUnauth(t, http.MethodGet, p, nil) })
 	})
 	t.Run("a guest with no session, while they may not: the category's text only", func(t *testing.T) {
-		require.NoError(t, h.adminSvc.SetBool(ctx, admin.KeyGuestsCanChooseTypeItem, false))
+		setChoice(t, h, guestsTypeItemKey, false)
 		var cats, types, items []described
 		decode(t, h.doUnauth(t, http.MethodGet, "/api/v1/categories", nil), &cats)
 		var got string
@@ -230,6 +232,7 @@ func TestMCP_ListCategoriesCarriesDescription(t *testing.T) {
 	_, err = h.categorySvc.CreateItemWithDescription(ctx, tp.ID, "Dock", "Item text", 1)
 	require.NoError(t, err)
 
+	setChoice(t, h, usersItemKey, true) // a requester's tree carries items only while registered users are shown them (#711)
 	c := openMCP(t, h, h.userKey)
 	defer c.closeBody()
 	got := c.call(t, "list_categories", map[string]any{})

@@ -493,7 +493,7 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	// off, and the administrator would believe they had opened the form.
 	for _, key := range []string{
 		admin.KeyUpdateCheckEnabled, admin.KeyPostUpgrade130Seen, admin.KeySLAAlertsEnabled,
-		admin.KeyUsersCanChooseItem, admin.KeyGuestsCanChooseTypeItem,
+		admin.KeyUsersShowItems, admin.KeyGuestsShowTypes, admin.KeyGuestsShowItems,
 	} {
 		if raw, ok := body[key]; ok {
 			var on bool

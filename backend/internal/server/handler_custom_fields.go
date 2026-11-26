@@ -306,6 +306,13 @@ func (s *Server) handleResolveFieldsForCTI(w http.ResponseWriter, r *http.Reques
 		}
 		itemID = &parsed
 	}
+	// A level the caller may not see is not resolved (#711): an item-level
+	// assignment carries the item's id.
+	if lv := s.levelsOfActor(r.Context(), authmw.GetActor(r)); !lv.Types {
+		typeID, itemID = nil, nil
+	} else if !lv.Items {
+		itemID = nil
+	}
 	fields, err := s.customFields.ResolveFieldsForCTI(r.Context(), categoryID, typeID, itemID)
 	if err != nil {
 		handleError(w, err)

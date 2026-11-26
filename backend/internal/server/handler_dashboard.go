@@ -197,7 +197,7 @@ func (s *Server) dashboardAttention(r *http.Request, a *authmw.Actor, vis ticket
 	}
 	out := make([]dashboardAttention, len(items))
 	for i, it := range items {
-		out[i] = dashboardAttention{Reason: it.Reason, Since: it.Since.UTC(), Ticket: viewerJSON(a, views[i])}
+		out[i] = dashboardAttention{Reason: it.Reason, Since: it.Since.UTC(), Ticket: s.viewerJSON(ctx, a, views[i])}
 	}
 	return out, nil
 }

@@ -15,6 +15,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/catalogue"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/customfield"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
@@ -144,16 +145,14 @@ func (s *Server) handleGuestCreateTicket(w http.ResponseWriter, r *http.Request)
 		Error(w, http.StatusBadRequest, "bad_request", "category_id is not a category open to guests")
 		return
 	}
-	// The Type and Item, only while an administrator lets guests choose them
-	// (#711). Refused before anything is written, like every other check here.
+	// The Type and Item, only for a level guests are shown (#711: the one
+	// policy). Refused before anything is written, like every other check here.
 	// The chain (the type belongs to the category, the item to the type, nothing
 	// archived) is the ticket service's, the same code staff go through.
-	var typeID, itemID *uuid.UUID
-	if s.adminSvc.GuestsCanChooseTypeItem(ctx) {
-		if typeID, itemID, err = guestPick(body.TypeID, body.ItemID); err != nil {
-			Error(w, http.StatusBadRequest, "bad_request", err.Error())
-			return
-		}
+	typeID, itemID, err := guestPick(s.levelsOf(ctx, catalogue.Guest), body.TypeID, body.ItemID)
+	if err != nil {
+		Error(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
 	}
 	// Refused before anything is written, so a bad value spends no tracking
 	// number (#627).
@@ -220,19 +219,24 @@ func (s *Server) handleGuestCreateTicket(w http.ResponseWriter, r *http.Request)
 	}))
 }
 
-// guestPick reads the Type and Item a guest chose, for a form whose setting
-// allows it (#711). Both are optional. A malformed id is an error the guest is
-// told. Everything else is ticket.Service.Create's, which every ticket goes
-// through and which answers a 400 before a tracking number is taken: the type
-// must be one of the category and the item one of the type (an item needs its
-// type), and nothing archived is accepted. Not called while the setting is off,
-// so that an id sent then is ignored as it always was.
-func guestPick(rawType, rawItem json.RawMessage) (typeID, itemID *uuid.UUID, err error) {
-	if typeID, err = optionalID("type_id", rawType); err != nil {
-		return nil, nil, err
+// guestPick reads the Type and Item a guest chose, for the levels guests are
+// shown (#711). Both are optional. A level that is not shown is not read at all,
+// so an id sent for it, a malformed one included, is ignored as it always was.
+// A malformed id for a shown level is an error the guest is told. Everything
+// else is ticket.Service.Create's, which every ticket goes through and which
+// answers a 400 before a tracking number is taken: the type must be one of the
+// category and the item one of the type (an item needs its type), and nothing
+// archived is accepted.
+func guestPick(lv catalogue.Levels, rawType, rawItem json.RawMessage) (typeID, itemID *uuid.UUID, err error) {
+	if lv.Types {
+		if typeID, err = optionalID("type_id", rawType); err != nil {
+			return nil, nil, err
+		}
 	}
-	if itemID, err = optionalID("item_id", rawItem); err != nil {
-		return nil, nil, err
+	if lv.Types && lv.Items {
+		if itemID, err = optionalID("item_id", rawItem); err != nil {
+			return nil, nil, err
+		}
 	}
 	return typeID, itemID, nil
 }
@@ -685,7 +689,7 @@ func (s *Server) handleGuestFollowUp(w http.ResponseWriter, r *http.Request) {
 	if !allowOrRefuse(ctx, w, s.loginLimiter, "guest-submit:"+authmw.ClientAddr(r)) {
 		return
 	}
-	// The type the guest chose is kept while guests may choose it (#711), and
+	// The type the guest chose is kept while guests are shown types (#711), and
 	// routes the follow-up to the queue the original went to; otherwise it
 	// carries none, as before.
 	keep := s.followUpKeep(ctx, true)

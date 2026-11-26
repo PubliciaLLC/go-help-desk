@@ -185,7 +185,7 @@ func TestCTIChoice_RequesterFollowUpKeepsTheChoice(t *testing.T) {
 	})
 }
 
-func TestCTIChoice_GuestFollowUpKeepsTheTypeAndRoutesOnIt(t *testing.T) {
+func TestCTIChoice_GuestFollowUpKeepsWhatIsShownAndRoutesOnTheType(t *testing.T) {
 	t.Run("switch off: no type and the category's group, as before", func(t *testing.T) {
 		h, cleanup := newHarness(t)
 		defer cleanup()
@@ -209,7 +209,19 @@ func TestCTIChoice_GuestFollowUpKeepsTheTypeAndRoutesOnIt(t *testing.T) {
 		require.Equal(t, http.StatusCreated, code)
 		require.Equal(t, orig.TypeID, got.TypeID)
 		require.Equal(t, idp(tree.typeGroup), got.AssigneeGroupID)
-		require.Nil(t, got.ItemID, "a guest's follow-up carries the type, not the item")
+		require.Equal(t, orig.ItemID, got.ItemID, "and the item, while guests are shown items")
+	})
+	t.Run("types shown but not items: the type is kept and the item is not", func(t *testing.T) {
+		h, cleanup := newHarness(t)
+		defer cleanup()
+		tree := buildRoutedTree(t, h)
+		setChoice(t, h, admin.KeyGuestSubmissionEnabled, true)
+		setChoice(t, h, guestsTypesKey, true)
+		orig, token := closedFor(t, h, tree.choiceTree, true)
+		code, got := guestFollowUp(t, h, token)
+		require.Equal(t, http.StatusCreated, code)
+		require.Equal(t, orig.TypeID, got.TypeID)
+		require.Nil(t, got.ItemID)
 	})
 	t.Run("switch on, a guest ticket with no type: still none", func(t *testing.T) {
 		h, cleanup := newHarness(t)

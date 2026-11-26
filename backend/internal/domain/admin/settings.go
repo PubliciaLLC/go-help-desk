@@ -242,19 +242,18 @@ const (
 	// upgrade would hide tickets people are working on.
 	KeyTicketScopeEnforced = "ticket_scope_enforced" // bool
 
-	// Whether a signed-in requester may choose the Item on the new-ticket page
-	// (#711). Off by default, upgraded installs included: until it existed the
-	// Item was staff-only, and widening what requesters pick is not an
-	// upgrade's call. An absent row reads false, so no migration seeds it.
-	// Session-only (AuthCriticalKeys), as its guest sibling below is.
-	KeyUsersCanChooseItem = "users_can_choose_item" // bool, default off
-
-	// Whether a guest may choose the Type and the Item on the guest form
-	// (#711), where until it existed they chose the Category only. Off by
-	// default, upgraded installs included, and only ever effective while guest
-	// submission is on; see Service.GuestsCanChooseTypeItem. Turning it on
-	// makes every active type and item name public, so it is session-only.
-	KeyGuestsCanChooseTypeItem = "guests_can_choose_type_item" // bool, default off
+	// Which levels of the Category > Type > Item tree a caller who is not staff
+	// may see (#711). All three are off by default, upgraded installs included,
+	// and an absent row reads false, so no migration seeds them. Session-only
+	// (AuthCriticalKeys): turning one on publishes names to every registered
+	// user or to the anonymous internet.
+	//
+	// The three are stored as written; what a caller actually sees is decided
+	// in one place, catalogue.VisibleLevels (the guest levels need guest
+	// submission, and Items needs Types).
+	KeyUsersShowItems  = "users_show_items"  // bool: registered requesters see the Item
+	KeyGuestsShowTypes = "guests_show_types" // bool: guests see the Type
+	KeyGuestsShowItems = "guests_show_items" // bool: guests see the Item (needs Types)
 
 	// JSON array of role names that may open the Available view (tickets with
 	// no assignee group and no assignee user), beside administrators, who
@@ -542,7 +541,7 @@ func KnownKeys() []string {
 		KeyAttachmentReputationCIRCLEnabled, KeyAttachmentReputationRefresh,
 		KeyAllowedEmailDomains, KeySelfSignupEnabled, KeyOpenRegistrationEnabled,
 		KeyTicketPrefix, KeyTicketScopeEnforced, KeyAvailableQueueRoles,
-		KeyUsersCanChooseItem, KeyGuestsCanChooseTypeItem,
+		KeyUsersShowItems, KeyGuestsShowTypes, KeyGuestsShowItems,
 		KeyAutoAssignGroupID, KeyAutoAssignUserIDs,
 		KeyStaffCanViewTicketChangeHistory, KeyAuditRetentionDays, KeyStaffCanViewFollowAudit,
 		KeyStaffCanCreateAPIKeys, KeyAPIKeyMaxLifetimeYears,
@@ -594,7 +593,7 @@ func AuthCriticalKeys() []string {
 		// publishes every active type and item name to anonymous visitors, and
 		// the user one widens what a requester may file under; a leaked API key
 		// must not be able to open either.
-		KeyUsersCanChooseItem, KeyGuestsCanChooseTypeItem,
+		KeyUsersShowItems, KeyGuestsShowTypes, KeyGuestsShowItems,
 		// Where the virus scanner lives is a route to disabling scanning
 		// entirely: point it at a daemon that answers OK to everything and
 		// every upload passes. A leaked API key should not be able to do that,

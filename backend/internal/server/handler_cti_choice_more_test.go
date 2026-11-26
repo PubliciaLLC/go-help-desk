@@ -154,3 +154,33 @@ func TestCTIChoice_GuestOn_RefusalWording(t *testing.T) {
 		require.Contains(t, string(body), tc.want, name)
 	}
 }
+
+// A guest's ids are honoured level by level: with only Types shown the type is
+// kept and an item sent is ignored; with Items on and Types off both are ignored
+// (an item hangs under a type, so the server reads that combination as off).
+func TestCTIChoice_GuestLevelsAreHonouredOneByOne(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	tree := buildChoiceTree(t, h)
+	setChoice(t, h, admin.KeyGuestSubmissionEnabled, true)
+	both := map[string]any{"category_id": tree.cat.String(), "type_id": tree.typ.String(), "item_id": tree.item.String()}
+
+	setChoice(t, h, guestsTypesKey, true)
+	code, body := guestPost(t, h, both)
+	require.Equal(t, http.StatusCreated, code, string(body))
+	typ, item := guestTicketByTracking(t, h, body)
+	require.Equal(t, idp(tree.typ), typ)
+	require.Nil(t, item, "Items is not shown to guests: the item is ignored, not refused")
+
+	setChoice(t, h, guestsTypesKey, false)
+	setChoice(t, h, guestsItemsKey, true)
+	code, body = guestPost(t, h, both)
+	require.Equal(t, http.StatusCreated, code, string(body))
+	typ, item = guestTicketByTracking(t, h, body)
+	require.Nil(t, typ)
+	require.Nil(t, item)
+
+	// And a malformed id for a level that is not shown is ignored, as it always was.
+	code, body = guestPost(t, h, map[string]any{"category_id": tree.cat.String(), "type_id": 42, "item_id": "nope"})
+	require.Equal(t, http.StatusCreated, code, string(body))
+}
