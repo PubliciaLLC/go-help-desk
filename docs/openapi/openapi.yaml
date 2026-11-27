@@ -1637,6 +1637,119 @@ paths:
             text/plain:
               schema:
                 type: string
+  /api/v1/branding/icons/{file}:
+    get:
+      operationId: serveSiteIcon
+      summary: Fetch one file of the site icon.
+      description: >-
+        One of the seven files the server generated from the uploaded icon: a
+        favicon.ico holding 16, 32 and 48 pixel images, two PNG favicons that keep
+        their transparency, and four PNGs filled with the home screen background
+        (an iPhone icon, two Android and desktop sizes and a maskable one). Public,
+        so a browser can fetch them before anyone signs in. The master the files
+        are made from is never served; any other name, and every name while no icon
+        is stored, is a plain-text 404. The ETag is the icon's version, and a
+        request whose v query parameter equals that version gets a one-year
+        immutable cache; any other gets no-cache and the current file. A matching
+        If-None-Match is a 304. Served with the same sandboxing
+        Content-Security-Policy as the logo.
+      tags: ['Site']
+      x-ghd-handler: handleServeSiteIcon
+      security: []
+      parameters:
+        - name: file
+          in: path
+          required: true
+          schema:
+            type: string
+            enum:
+              - favicon.ico
+              - favicon-16.png
+              - favicon-32.png
+              - apple-touch-icon.png
+              - icon-192.png
+              - icon-512.png
+              - icon-maskable-512.png
+        - name: v
+          in: query
+          required: false
+          description: The icon's version, as the status and the manifest give it.
+          schema:
+            type: string
+            pattern: '^[0-9a-f]{16}$'
+      responses:
+        '200':
+          description: The file.
+          headers:
+            Cache-Control:
+              description: public, max-age=31536000, immutable when v is the current version; otherwise no-cache.
+              schema:
+                type: string
+            ETag:
+              description: The icon's version in double quotes.
+              schema:
+                type: string
+            Content-Security-Policy:
+              description: The logo policy, stricter than the site-wide one.
+              schema:
+                type: string
+          content:
+            image/png:
+              schema:
+                type: string
+                format: binary
+            image/x-icon:
+              schema:
+                type: string
+                format: binary
+        '304':
+          description: If-None-Match named the current version. No body.
+        '404':
+          description: No such file, or no icon is stored. Plain text body 404 page not found.
+          content:
+            text/plain:
+              schema:
+                type: string
+        '500':
+          description: >-
+            The file could not be read from storage (storage_error). A browser
+            that gets this keeps the icon it has, or shows none, until the next
+            request; the page and the manifest do not fail for it.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/v1/branding/manifest.webmanifest:
+    get:
+      operationId: getWebManifest
+      summary: Fetch the web app manifest.
+      description: >-
+        The document a browser reads to offer to install the site and to name it on
+        a home screen: the site name, the home screen name and, when an icon is
+        uploaded, its colours and files. Always answers; with no icon stored (or
+        one that cannot be read) it names the built-in icon. Public. Served with
+        no-cache and an ETag of its content, so a matching If-None-Match is a 304.
+      tags: ['Site']
+      x-ghd-handler: handleServeManifest
+      security: []
+      responses:
+        '200':
+          description: The manifest.
+          headers:
+            Cache-Control:
+              description: no-cache.
+              schema:
+                type: string
+            ETag:
+              description: A digest of the body in double quotes.
+              schema:
+                type: string
+          content:
+            application/manifest+json:
+              schema:
+                $ref: '#/components/schemas/WebManifest'
+        '304':
+          description: If-None-Match named the current content. No body.
   /api/v1/setup:
     post:
       operationId: setup
@@ -6242,6 +6355,12 @@ paths:
           reopen_target_status_name a string; site_logo_url a string that is
           empty, an http(s) URL, or a path on this site (starting with a single "/").
           null or any other type is refused (bad_request) and nothing is written.
+        - site_short_name, the name a phone prints under the icon on its home
+          screen, must be a string of at most 30 characters once trimmed, with no
+          control or invisible characters (a right-to-left override, a zero-width
+          space, U+2028). Empty means the site name is used. A number, a
+          boolean, null, a longer string or such a character is refused with 400
+          invalid_site_short_name and nothing is written. It is not session only.
         - saml_metadata_url and saml_metadata_xml cannot both be non-empty after
           the write, and saml_metadata_xml must be SAML IdP metadata of at most
           262144 bytes; either refusal is 400 bad_request. Declared encodings
@@ -6336,7 +6455,8 @@ paths:
             invalid_scan_policy, invalid_infected_handling,
             invalid_mismatch_handling, invalid_reputation_refresh,
             invalid_ticket_prefix, invalid_scanner_address, invalid_allowed_types,
-            invalid_reputation_config, invalid_staff_email_override.
+            invalid_reputation_config, invalid_staff_email_override,
+            invalid_site_short_name.
           content:
             application/json:
               schema:
@@ -6353,6 +6473,202 @@ paths:
             text/plain:
               schema:
                 $ref: '#/components/schemas/Error'
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/v1/admin/settings/icon:
+    get:
+      operationId: getSiteIcon
+      summary: Read the site icon status.
+      description: |
+        Administrators only (second factor required).
+        Whether an icon is uploaded, the home screen background colour, the
+        version that names the generated files, the side of the uploaded square
+        and the seven files with their URLs, pixel sizes and byte lengths. With no
+        icon stored, set is false, the background is the default #ffffff and files
+        is empty.
+      tags: ['Admin: Settings']
+      x-ghd-handler: handleGetSiteIcon
+      security:
+        - sessionCookie: []
+        - apiKey: ['settings:read']
+      x-ghd-roles: [admin]
+      x-ghd-mfa: true
+      responses:
+        '200':
+          description: The icon status.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SiteIconStatus'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          description: The icon could not be read (storage_error).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    post:
+      operationId: uploadSiteIcon
+      summary: Upload the site icon.
+      description: |
+        Administrators only (second factor required).
+        Accepts one PNG, JPEG or GIF of at most 5 MB in the multipart field icon,
+        which must be square, at least 512 and at most 4096 pixels on a side. The
+        format is judged by the file's first bytes, whatever its name or declared
+        type; SVG is refused. An animated GIF contributes its first frame. The
+        server scales the image into the seven served files and a stored 512 pixel
+        master, strips all metadata, and replaces any icon already stored, in one
+        transaction with its audit entry (site_icon_uploaded). The optional
+        multipart field background is a #rrggbb colour that fills the transparent
+        parts of the home screen icons; absent or empty, the stored icon's colour
+        is kept, else #ffffff. Nothing is written on any refusal, and the checks
+        run in the order the codes are listed.
+      tags: ['Admin: Settings']
+      x-ghd-handler: handleUploadSiteIcon
+      security:
+        - sessionCookie: []
+        - apiKey: ['settings:write']
+      x-ghd-roles: [admin]
+      x-ghd-mfa: true
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [icon]
+              properties:
+                icon:
+                  type: string
+                  format: binary
+                  description: The image file. Exactly one.
+                background:
+                  type: string
+                  pattern: '^#[0-9a-fA-F]{6}$'
+                  description: The home screen background colour. Stored in lower case.
+      responses:
+        '200':
+          description: The icon is stored. The new status.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SiteIconStatus'
+        '400':
+          description: |
+            Refused before anything is stored. The checks run in this order and the
+            first to fail answers, so an upload that breaks two rules gets the
+            earlier code: invalid_form (not multipart) or file_too_large (a body
+            over the cap), missing_field (no icon field), invalid_background (not
+            #rrggbb), file_too_large (the file is over 5 MB), invalid_type (not
+            PNG, JPEG or GIF), invalid_image (the header cannot be read),
+            icon_not_square, icon_too_small (under 512) or icon_too_large (over
+            4096), in that order of precedence, then invalid_image again (the
+            decoded size is over the limit, or the image cannot be decoded). The
+            message of the three icon_ codes names the image's size.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          description: The file could not be read, or the icon could not be saved (read_error, storage_error).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    patch:
+      operationId: updateSiteIcon
+      summary: Change the home screen background colour.
+      description: |
+        Administrators only (second factor required).
+        Sets the colour that fills the transparent parts of the four home screen
+        icons. They are made again from the stored files and the version changes;
+        the master and the transparent files are kept byte for byte. The change and
+        its audit entry (site_icon_background_changed) are one transaction. The
+        colour the icon already has is answered with the status, and nothing is
+        written or recorded.
+      tags: ['Admin: Settings']
+      x-ghd-handler: handleUpdateSiteIcon
+      security:
+        - sessionCookie: []
+        - apiKey: ['settings:write']
+      x-ghd-roles: [admin]
+      x-ghd-mfa: true
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [background]
+              properties:
+                background:
+                  type: string
+                  pattern: '^#[0-9a-fA-F]{6}$'
+      responses:
+        '200':
+          description: The new status.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SiteIconStatus'
+        '400':
+          description: |
+            Codes: bad_request (the body is not JSON), invalid_background (missing,
+            not a string, or not #rrggbb).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: No icon is uploaded (no_icon).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: The icon could not be saved (storage_error).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    delete:
+      operationId: deleteSiteIcon
+      summary: Remove the site icon.
+      description: |
+        Administrators only (second factor required).
+        Deletes the stored icon and every file made from it, with its audit entry
+        (site_icon_removed), and the built-in icon is used again. With no icon
+        stored it still answers 204 and records nothing. Icons already on someone's
+        home screen may keep the old picture.
+      tags: ['Admin: Settings']
+      x-ghd-handler: handleDeleteSiteIcon
+      security:
+        - sessionCookie: []
+        - apiKey: ['settings:write']
+      x-ghd-roles: [admin]
+      x-ghd-mfa: true
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          description: The icon could not be removed (storage_error).
+          content:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
@@ -13000,6 +13316,91 @@ components:
         inline:
           type: boolean
           description: True on the one entry that the summary repeats. False on every entry when nothing answered.
+    SiteIconFile:
+      type: object
+      description: One generated file of the site icon.
+      required: [name, url, sizes, bytes]
+      properties:
+        name:
+          type: string
+          enum: [favicon.ico, favicon-16.png, favicon-32.png, apple-touch-icon.png, icon-192.png, icon-512.png, icon-maskable-512.png]
+        url:
+          type: string
+          description: The public URL with the version, for example /api/v1/branding/icons/favicon.ico?v=9f1c2a7b3d4e5f60.
+        sizes:
+          type: array
+          items:
+            type: integer
+          description: The pixel sides inside the file, one for a PNG and 16, 32 and 48 for the .ico.
+        bytes:
+          type: integer
+          description: The length of the file.
+    SiteIconStatus:
+      type: object
+      description: The state of the site icon.
+      required: [set, background, version, source_size, updated_at, files]
+      properties:
+        set:
+          type: boolean
+          description: Whether an icon is uploaded. False means the built-in icon is used.
+        background:
+          type: string
+          pattern: '^#[0-9a-f]{6}$'
+          description: The colour behind the home screen icons. #ffffff when none is stored.
+        version:
+          type: string
+          description: A 16 character digest of the served files, empty when no icon is stored. It changes when a file does.
+        source_size:
+          type: integer
+          description: The side, in pixels, of the square that was uploaded. 0 when none is stored.
+        updated_at:
+          type: [string, 'null']
+          format: date-time
+          description: When the icon was last uploaded or recoloured. Null when none is stored.
+        files:
+          type: array
+          description: The seven served files in a fixed order. Empty when no icon is stored.
+          items:
+            $ref: '#/components/schemas/SiteIconFile'
+    WebManifest:
+      type: object
+      description: The web app manifest. theme_color is absent while no icon is stored.
+      required: [id, name, short_name, start_url, scope, display, background_color, icons]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+          description: The site name.
+        short_name:
+          type: string
+          description: The home screen name, which is the site name unless site_short_name is set.
+        start_url:
+          type: string
+        scope:
+          type: string
+        display:
+          type: string
+          enum: [standalone]
+        background_color:
+          type: string
+        theme_color:
+          type: string
+        icons:
+          type: array
+          items:
+            type: object
+            required: [src, sizes, type, purpose]
+            properties:
+              src:
+                type: string
+              sizes:
+                type: string
+              type:
+                type: string
+              purpose:
+                type: string
+                enum: [any, maskable]
     SettingsValues:
       description: |
         The setting names this instance reads, with the type each reader expects.
@@ -13248,6 +13649,12 @@ components:
         site_logo_url:
           type: string
           description: The logo URL, set by the logo upload and cleared by its delete.
+        site_short_name:
+          type: string
+          maxLength: 30
+          description: >-
+            What a phone prints under the icon on its home screen. At most 30
+            characters, no control or invisible characters. Empty or unset means the site name.
         ticket_prefix:
           type: string
           pattern: '^[A-Z0-9]{1,8}$'
