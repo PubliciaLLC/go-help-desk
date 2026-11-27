@@ -1,6 +1,8 @@
 package server
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -200,6 +202,35 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 		email,
 	)
 
+	// A blank subject binds to nothing. It is reported as the malformed token
+	// it is, before the Require SAML check below can mislabel it.
+	if strings.TrimSpace(claims.Subject) == "" {
+		fail("invalid_id_token")
+		return
+	}
+
+	// "Require SAML for staff and users" covers OIDC as it covers passwords.
+	// Decided before UpsertOIDCUser, which would provision a new account or
+	// bind this subject to an existing local one, for a sign-in that is then
+	// refused. Only a subject already bound to an administrator passes: a new
+	// account is a plain user, and an unknown subject is never adopted onto an
+	// administrator (canAdoptByEmail), so anything else could not get through.
+	// A disabled administrator passes this and is refused by the upsert.
+	samlOn := s.adminSvc.SAMLEnabled(r.Context())
+	if samlOn {
+		role := user.RoleUser
+		if known, err := s.users.GetByOIDCSubject(r.Context(), claims.Subject); err == nil {
+			role = known.Role
+		} else if !errors.Is(err, user.ErrNotFound) {
+			failInternal(err)
+			return
+		}
+		if !user.MaySignInWithoutSAML(role, samlOn) {
+			samlRequiredRefused(fail, claims.Subject, role)
+			return
+		}
+	}
+
 	u, err := s.users.UpsertOIDCUser(
 		r.Context(),
 		claims.Subject,
@@ -233,6 +264,17 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The row that is about to be signed in, asked again. The check above read
+	// the role some statements ago; an administrator demoted in between would
+	// otherwise sign in once more as the staff account they now are. Cheap, and
+	// it makes the decision about the account that actually gets the session.
+	// (Not reachable by a test without a hook between the two statements; the
+	// demotion test covers the pre-check on the next sign-in.)
+	if !user.MaySignInWithoutSAML(u.Role, samlOn) {
+		samlRequiredRefused(fail, claims.Subject, u.Role)
+		return
+	}
+
 	// Built fresh, as the SAML handler does. The session loaded above belongs
 	// to whatever this browser did before the redirect, and the login start
 	// keeps it on purpose; copying it forward would carry that sign-in's
@@ -247,4 +289,16 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 	}
 
 	http.Redirect(w, r, to, http.StatusSeeOther)
+}
+
+// samlRequiredRefused turns away an OIDC sign-in that Require SAML does not
+// allow. It logs why, so an operator asked "why was I bounced?" can find the
+// line: the role and a short hash of the subject, never the email address. The
+// hash is enough to match against the identity provider's own sign-in log.
+func samlRequiredRefused(fail func(string), subject string, role user.Role) {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(subject)))
+	slog.Info("OIDC sign-in refused: SAML is required for this role",
+		"role", string(role),
+		"subject_sha256", hex.EncodeToString(sum[:6]))
+	fail("saml_required")
 }

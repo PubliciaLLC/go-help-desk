@@ -1022,9 +1022,9 @@ func isJSONNull(raw json.RawMessage) bool {
 //
 // saml_enabled is deliberately NOT one of the keys this watches. #304's
 // first draft treated it as SAML's counterpart to oidc_enabled; it turned
-// out to already be a real, unrelated setting (user.IsLocalAuthAllowed
-// reads it to decide whether non-admins keep password login once SAML is
-// configured), and reverting that draft took SAML reachability back to
+// out to already be a real, unrelated setting (user.MaySignInWithoutSAML
+// reads it to decide whether non-admins keep password and OIDC sign-in once
+// SAML is configured), and reverting that draft took SAML reachability back to
 // depending on the three config fields alone — see samlFieldsLookConfigured
 // and buildSAMLMiddleware's own comments.
 //

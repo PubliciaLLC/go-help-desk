@@ -592,8 +592,8 @@ paths:
         5 minutes when a code or passkey is owed, after 15 minutes when the
         person must enrol. After that, every route answers 401 as if there were
         no session (the session is deleted), and the person signs in again with
-        their password. When SAML is enabled, only administrators may use this
-        operation.
+        their password. When saml_enabled is on, only administrators may use this
+        operation (OIDC sign-in is limited the same way).
       tags: ['Authentication']
       x-ghd-handler: handleLocalLogin
       security: []
@@ -928,9 +928,16 @@ paths:
         JSON body, so the login page can show a fixed message. The codes are:
         invalid_session, invalid_state, idp_error, missing_code, internal_error,
         missing_id_token, invalid_id_token, domain_not_allowed, account_disabled,
-        account_link_refused, email_not_verified, invalid_email and email_taken.
+        account_link_refused, email_not_verified, invalid_email, email_taken and
+        saml_required (saml_enabled is on and the account is not an administrator:
+        see below).
         The only JSON answer, apart from a rare internal error when the session
         cannot be read or saved, is 503 when OIDC is not configured.
+        When saml_enabled ("Require SAML for staff and users") is on, only an
+        administrator may sign in here; anyone else is refused with saml_required,
+        before any account is created or linked, and no session is set. The check
+        is made at sign-in, so a session already issued is not ended when the
+        setting is turned on.
       tags: ['Single sign-on']
       x-ghd-handler: handleOIDCCallback
       security: []
@@ -1007,7 +1014,7 @@ paths:
       description: >-
         Lists the sign-in methods and whether each can be used right now. local
         is always true, even when the saml_enabled setting limits password
-        sign-in to administrators; local_admin_only says so (true exactly when
+        sign-in (and OIDC sign-in) to administrators; local_admin_only says so (true exactly when
         saml_enabled is on, which is the test local login applies). saml is true
         when the SAML middleware is loaded, whatever saml_enabled says, because
         GET /auth/saml/login works whenever it loaded. oidc is true when the OIDC
@@ -1061,6 +1068,9 @@ paths:
                     description: >-
                       True when password sign-in is limited to administrators
                       (saml_enabled is on). Non-administrators then get 403 saml_required.
+                      OIDC sign-in is limited the same way (the callback redirects to
+                      /login?error=saml_required), though oidc stays true here: this
+                      field is about the password form.
   /api/v1/auth/saml/acs:
     post:
       operationId: samlAcs
@@ -1337,7 +1347,7 @@ paths:
                   saml_enabled:
                     type: boolean
                     description: >-
-                      The saml_enabled setting, which limits password sign-in to administrators.
+                      The saml_enabled setting, which limits password and OIDC sign-in to administrators.
                       It does not say whether SAML sign-in is available.
   /api/v1/auth/verify-email:
     get:
@@ -5798,9 +5808,10 @@ paths:
                     description: |
                       Present only while saml_enabled ("Require SAML for staff and
                       users") is on and SAML is not loaded: every staff and user
-                      password sign-in is refused (403 saml_required) and the login
-                      page has no SAML button, so they cannot sign in.
-                      Administrators keep password sign-in. Read from live state on
+                      password sign-in is refused (403 saml_required), as is every
+                      OIDC sign-in (saml_required), and the login page has no SAML
+                      button, so they cannot sign in.
+                      Administrators keep password and OIDC sign-in. Read from live state on
                       each request, so it is gone as soon as SAML loads or
                       saml_enabled is turned off, with no restart. Absent while
                       saml_enabled is off, whatever the SAML settings hold. The
@@ -6193,7 +6204,7 @@ paths:
           it is applied and the answer is 200 with a warning that names them. If it
           would leave no administrator able to sign in, it is refused with 400.
         - saml_enabled means "staff and users must use SAML" (administrators keep
-          password sign-in). When, after the write and the reload above,
+          password and OIDC sign-in). When, after the write and the reload above,
           saml_enabled is true and SAML is not loaded, staff and users cannot sign in
           at all. The write is still applied, and the answer is 200 with a warning
           to that effect. This is checked only when the body sets saml_enabled or

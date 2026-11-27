@@ -379,7 +379,7 @@ export function SAMLSettingsSection({ draft }: { draft: SettingsDraft }) {
         <div className="border-t">
           <SettingRow
             label="Require SAML for staff and users"
-            description='SAML is switched on by "Save SAML config" above, not by this switch. This switch only turns off password sign-in for staff and users (administrators keep password sign-in). Saved by Save changes, not by Save SAML config.'
+            description='SAML is switched on by "Save SAML config" above, not by this switch. This switch only turns off password and OIDC sign-in for staff and users (administrators keep both). Saved by Save changes, not by Save SAML config.'
           >
             <Toggle
               label="Require SAML for staff and users"
