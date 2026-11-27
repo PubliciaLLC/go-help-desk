@@ -1467,7 +1467,8 @@ paths:
         has passed MFA, an API key owned by staff or an administrator, and any OAuth
         client. Open to a signed-in caller of any role, to a key or OAuth client with no
         scopes, and to anyone when guest submission is enabled. Otherwise answers
-        401. Returns an empty array, never null.
+        401. Returns an empty array, never null. Unlike the type and item lists,
+        this one is the same for a guest whatever guests_show_types says.
       tags: ['Catalogue']
       x-ghd-handler: handleListPublicCategories
       security:
@@ -1512,7 +1513,9 @@ paths:
         OAuth client); everyone else gets active ones only, and none at all while the category is archived (so a
         requester's page can no longer resolve the type name of a ticket in an archived category). An
         unknown category gives an empty array; a failed lookup of the category is a 500. Same callers as the
-        category list.
+        category list. The levels a caller sees are one policy (#711): an answer for a level the caller may not
+        see is an empty array, never a refusal. A guest gets types only while guests_show_types is on (and
+        guest submission is); a signed-in requester always gets them; staff always.
       tags: ['Catalogue']
       x-ghd-handler: handleListPublicTypes
       security:
@@ -1565,7 +1568,11 @@ paths:
         client); everyone else gets active ones only, and none at all while the type or its category is archived.
         The category in the path is not looked up, so an item list is returned for any category id that is sent. An
         unknown type gives an empty array; a failed lookup of the type or its category is a 500. Same callers as the
-        category list.
+        category list. The levels a caller sees are one policy (#711): a guest gets items only while
+        guests_show_types and guests_show_items are on (and guest submission is), a signed-in requester only
+        while users_show_items is on, staff always; otherwise an empty array, never a refusal, so no item name
+        reaches a caller who may not see items. With users_show_items off a requester's ticket carries no
+        item_id either.
       tags: ['Catalogue']
       x-ghd-handler: handleListPublicItems
       security:
@@ -1720,7 +1727,7 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [name, logo_url, version, guest_submission_enabled, guest_attachments_enabled]
+                required: [name, logo_url, version, guest_submission_enabled, guest_attachments_enabled, guests_show_types, guests_show_items]
                 properties:
                   name:
                     type: string
@@ -1741,6 +1748,20 @@ paths:
                       public: unlike the upload route, which answers the same
                       404 whether the setting or the token failed, this tells
                       anyone whether uploads are on. Accepted as low sensitivity.
+                  guests_show_types:
+                    type: boolean
+                    description: |
+                      Whether the guest form shows a Type under Category (#711). The
+                      effective value: true only while guest submission is also on,
+                      false by default and after an upgrade. Public, and it reveals only
+                      what opening /submit shows anyone; the type list it unlocks is
+                      public in that state.
+                  guests_show_items:
+                    type: boolean
+                    description: |
+                      Whether the guest form shows an Item under Type (#711). The
+                      effective value: true only while guests_show_types is too (an
+                      item hangs under a type), false by default and after an upgrade.
                   guest_attachment_max_bytes:
                     type: integer
                     format: int64
@@ -2414,8 +2435,9 @@ paths:
       description: |
         The custom fields an administrator has chosen to offer visitors under a category: the category's own
         attachments with Offer to guests (visible_to_guests) switched on that are also shown on the new-ticket
-        form, and whose field is active. Nothing attached to a type or an item is ever offered, because a guest
-        picks a category and nothing below it. The answer is exactly the set POST /guest/tickets accepts in
+        form, and whose field is active. Nothing attached to a type or an item is ever offered: the fields a
+        guest is offered are the category's own, even when the instance shows guests a Type and Item
+        (guests_show_types, guests_show_items, #711). The answer is exactly the set POST /guest/tickets accepts in
         custom_fields, in the order the form shows them (field number, then name).
 
         Answers 404 not_found while guest submission is switched off, 400 bad_request when category_id is
@@ -2478,7 +2500,9 @@ paths:
         subject is required and is limited to 500 bytes. description is limited to 50,000 bytes. category_id
         must name an active category that is open to guests. guest_email is required and must be a plain
         ASCII address without a display name (400 otherwise). guest_name is required. guest_phone is optional. Priority is always
-        medium and cannot be set by a guest.
+        medium and cannot be set by a guest. type_id is read only while guests are shown types, and item_id only
+        while they are shown items as well (guests_show_types and guests_show_items, #711); a level that is not
+        shown is ignored, as it always was. The fields a guest is offered stay the category's own.
         custom_fields takes only the fields GET /guest/fields lists for the category. Anything else (a field
         offered only to staff, one on a type, a deactivated one, an id that names nothing, a key that is not an
         id, an empty value for one of those) is 400 bad_request, as is a value the field does not accept and a
@@ -2515,6 +2539,18 @@ paths:
                   description: How description is shown. See TextFormatRequest.
                   $ref: '#/components/schemas/TextFormatRequest'
                 category_id: {$ref: '#/components/schemas/Uuid'}
+                type_id:
+                  description: |
+                    Optional, and only read while guests_show_types is on (#711): otherwise
+                    ignored, a malformed value included, as it always was. When read it must be a type
+                    of category_id that is active (400 bad_request otherwise).
+                  $ref: '#/components/schemas/Uuid'
+                item_id:
+                  description: |
+                    Optional, and only read while guests_show_types and guests_show_items are on (#711). It must
+                    belong to type_id, which must be sent with it, and be active (400 bad_request
+                    otherwise). Nothing is created and no tracking number is used on a refusal.
+                  $ref: '#/components/schemas/Uuid'
                 guest_email:
                   type: string
                   description: Address to send the link to. Must be a valid address and is stored lowercased.
@@ -3673,13 +3709,18 @@ paths:
         - name: type_id
           in: query
           required: false
-          description: Only tickets of this type.
+          description: >-
+            Only tickets of this type. 403 forbidden (`type_id is not available to this account`) for a caller
+            who is not shown types (#711).
           schema:
             $ref: '#/components/schemas/Uuid'
         - name: item_id
           in: query
           required: false
-          description: Only tickets of this item.
+          description: >-
+            Only tickets of this item. 403 forbidden (`item_id is not available to this account`) for a
+            reporting user while users_show_items is off (the default, #711), which is also when their tickets
+            carry no item_id. Staff and administrators always may.
           schema:
             $ref: '#/components/schemas/Uuid'
         - name: assignee_user_id
@@ -3839,7 +3880,9 @@ paths:
             Refused by the middleware (text/plain): the role or MFA or scope check
             failed. Or refused by the handler (application/json, `forbidden`):
             users cannot list group tickets; `<param> is not available to requesters`
-            for a staff-only filter; `sort by <column> is not available to requesters`;
+            for a staff-only filter; `item_id is not available to this account` (or `type_id ...`)
+            for a level of the classification the caller is not shown (#711);
+            `sort by <column> is not available to requesters`;
             you are not a member of that group (staff, scope enforcement on);
             only admins can use this scope (scope=unassigned or scope=all). Or
             `insufficient_scope` (application/json): `requester` from an API key or OAuth
@@ -3868,17 +3911,23 @@ paths:
         What the caller may set depends on the role.
         - Staff and administrators may set every field, including item_id and
           priority.
-        - A reporting user has item_id and priority ignored (priority becomes
-          medium), must file into an active category, and must use an active
-          type when type_id is sent.
+        - A reporting user has priority ignored (priority becomes medium), must
+          file into an active category, and must use an active type when type_id
+          is sent. Their item_id is ignored too, unless an administrator has
+          turned on users_show_items (#711, off by default, upgrades
+          included): then it is validated like staff's (400 bad_request unless
+          it belongs to type_id, which must be sent, and is active). The answer
+          carries item_id for a requester only in that state.
         - Nobody, staff and administrators included, may file into an archived
           category, type or item (400 bad_request, for example "item_id is not
           an active item"). Staff could before; that exception is gone. A
-          reporting user's item_id is dropped before this check, so the item
-          refusal is only ever seen by staff and administrators.
+          reporting user's item_id is dropped before this check while
+          users_show_items is off, so the item refusal is then only ever seen
+          by staff and administrators.
         subject is required after trimming. description is optional. subject is
         limited to 500 bytes and description to 50,000 bytes. type_id must belong
-        to category_id, and for staff an item_id must belong to type_id.
+        to category_id, and an item_id (staff, administrators, and a reporting user
+        while users_show_items is on) must belong to type_id.
         custom_fields maps custom field ids to values. They are written after the
         ticket exists, in one transaction, and never fail the request. An empty
         value means "no value" and is skipped without a word. Any other entry that
@@ -6121,6 +6170,11 @@ paths:
         - guest_attachments_enabled must be a JSON boolean (null is refused). It
           is off unless set, upgrades included, and only takes effect while
           guest_submission_enabled is on.
+        - users_show_items, guests_show_types and guests_show_items (#711) must be
+          JSON booleans (null is refused). All are off unless set, upgrades included
+          (no migration: an absent row reads off), all are session only. The guest
+          ones only take effect while guest_submission_enabled is on, and
+          guests_show_items only while guests_show_types is too.
         - guest_attachment_max_per_ticket must be an integer from 1 to 50 (default
           5) and guest_attachment_uploads_per_hour an integer from 1 to 30 (default
           3). Anything else, including null, a string and a fraction, is refused
@@ -6219,7 +6273,8 @@ paths:
         oidc_redirect_url, mfa_enabled, mfa_enforced_roles, passkey_required_roles, allowed_email_domains,
         self_signup_enabled, open_registration_enabled, closed_reopen_policy,
         audit_mask_requester_names, guest_submission_enabled,
-        guest_attachments_enabled, attachment_max_mb, guest_attachment_max_mb,
+        guest_attachments_enabled, users_show_items, guests_show_types, guests_show_items,
+        attachment_max_mb, guest_attachment_max_mb,
         guest_attachment_max_per_ticket, guest_attachment_uploads_per_hour,
         attachment_scan_address, attachment_scan_policy, attachment_allowed_types,
         attachment_infected_handling, attachment_mismatch_handling,
@@ -11839,7 +11894,7 @@ components:
       allOf:
         - {$ref: '#/components/schemas/User'}
         - type: object
-          required: [can_use_available_queue]
+          required: [can_use_available_queue, can_choose_item]
           properties:
             api_key_max_lifetime_years:
               type: integer
@@ -11883,6 +11938,12 @@ components:
                 The largest file any upload may be, in bytes (attachment_max_mb, #673), so
                 the browser can refuse one before sending it. Always present on GET /me. The login
                 response's user does not carry it; read it from GET /me.
+            can_choose_item:
+              type: boolean
+              description: >-
+                Whether the new-ticket page offers this account an Item selector (#711): always true for staff
+                and administrators, and for a requester whether Items is visible to them (the users_show_items
+                setting, off by default). Always present on GET /me. Not on the public GET /site.
             can_use_available_queue:
               type: boolean
               description: >-
@@ -12038,7 +12099,10 @@ components:
         A reporting user (any role other than staff or administrator) receives
         only these keys: id, tracking_number, subject, description, description_format, status_id,
         priority, category_id, type_id, item_id, created_at, resolved_at,
-        assignee_user_id and resolution_notes. Everything else here
+        assignee_user_id and resolution_notes, except that item_id is sent only
+        while users_show_items is on (#711; off by default, so by default a
+        reporting user receives no item_id, in a ticket, a list, the dashboard,
+        the answer to creating or following up, or over MCP). Everything else here
         (assignee_group_id, reporter_user_id, guest_email, guest_name,
         guest_phone, closed_at, updated_at, pending_since, sla_paused_seconds,
         reopen_count, source_channel, has_quarantined_attachment) is for staff and administrators only. The same list applies to every
@@ -12997,6 +13061,28 @@ components:
             Whether a guest may attach files from the web page (#445). Off by
             default. Only takes effect while guest_submission_enabled is on.
             Session only.
+        users_show_items:
+          type: boolean
+          description: |
+            Whether registered requesters are shown the Item (#711): the Item
+            selector on the new-ticket page, and item_id on their tickets, in
+            lists, in filters and over MCP. Off by default and after an upgrade
+            (an absent row reads off). Staff and administrators always see items.
+            Session only.
+        guests_show_types:
+          type: boolean
+          description: |
+            Whether guests are shown the Type on the guest form (#711). Off by
+            default and after an upgrade (an absent row reads off). Only takes
+            effect while guest_submission_enabled is on. Turning it on makes every
+            active type name and description public. Session only.
+        guests_show_items:
+          type: boolean
+          description: |
+            Whether guests are shown the Item under the Type (#711). Off by default
+            and after an upgrade (an absent row reads off). Only takes effect while
+            guest_submission_enabled and guests_show_types are on. Turning it on
+            makes every active item name and description public. Session only.
         guest_attachment_max_per_ticket:
           type: integer
           minimum: 1
