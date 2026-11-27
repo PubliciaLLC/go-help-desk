@@ -92,18 +92,27 @@ changes for an instance until an administrator writes one.
 - **Where it shows: every place a person *chooses* a classification.**
   1. **New ticket** (`/tickets/new`), for staff and administrators (including
      when filing for another person) and for requesters. Requesters have a
-     category and a type selector, staff and administrators add an item, so a
-     requester sees at most the type's text (an item is never chosen there).
-  2. **Guest form** (`/submit`): the category selector only (a guest is given no
-     type or item, see Guest submission).
+     category and a type selector, and an item selector only while **Show Items
+     to registered users** is on (see Which levels of the tree a caller sees);
+     staff and administrators always have all three. With the setting off a
+     requester sees at most the type's text.
+  2. **Guest form** (`/submit`): the category selector, then a type selector
+     only while **Show Types to guests** is on, then an item selector only while
+     **Show Items to guests** is on as well (see Which levels of the tree a
+     caller sees and Guest submission). With both off a guest sees the
+     category's text only.
 
-  **Who can read a description: every active one, at every level.** The
+  **Who can read a description: every active one a caller may list.** The
   catalogue routes (`GET /categories`, `/categories/{id}/types`, `.../items`)
   are open to anyone while guest submission is on, and to any signed-in user
   always, and they serve the description of **every active category, type and
-  item**, not only the category the guest form shows: a guest or a requester
-  never *chooses* a type or an item there, but can still read the text by
-  calling the route. An **archived** entry is not served to anyone but staff and
+  item the caller may list**: the levels a caller sees are one policy, set out
+  under Which levels of the tree a caller sees (#711). A registered requester
+  lists categories and types always and items only while **Show Items to
+  registered users** is on; a guest lists categories always, types only while
+  **Show Types to guests** is on and items only while **Show Items to guests**
+  is on too (before #711 a guest or a requester could list every active type
+  and item by calling the routes). An **archived** entry is not served to anyone but staff and
   administrators, and neither are the children of an archived parent (archiving
   does not cascade, so the lists check the parent: a guest or requester gets an
   empty list under an archived category or type; a failed lookup of the parent
@@ -113,11 +122,12 @@ changes for an instance until an administrator writes one.
   requester filtering by an archived category lose their type and item names the
   same way (`useFilterLookups`); staff, administrators and the reclassify card
   are unchanged. The admin form says all of
-  this. **Decision (kept, not filtered):** type and item descriptions are not
-  withheld from the anonymous routes. The rule is one sentence and the same as
-  for names (a guest can already read every active type and item *name*); a
-  second, per-caller shape of the same list would be a special case in every
-  handler that serves it, for text that is public by design.
+  this. **Decision (kept, not filtered):** a description is served with the row
+  it belongs to, never held back from a list that serves the row: a type's or an
+  item's text is public exactly when its name is. The rule is one sentence, and
+  a second, per-caller shape of the same list would be a special case in every
+  handler that serves it, for text that is public by design. What is public is
+  decided by who may list the level (#711), not by the text.
   3. **Reclassify** on the ticket page (the **Classification** card's Edit mode,
      staff and administrators): the same three selectors, so the same text
      beneath them. It is shown only while editing, not in the read-only display
@@ -146,11 +156,14 @@ changes for an instance until an administrator writes one.
   **Fields**) and under the name in the Add category / type / item forms
   (create). The same hint is under the field at all three levels: "Shown beneath
   the Category / Type / Item chooser on the new-ticket form, the guest form
-  (categories only) and the reclassify card on a ticket. Plain text, no
+  (the category only, unless an administrator shows guests the Type and
+  Item) and the reclassify card on a ticket. Plain text, no
   formatting; line breaks are kept. This text is public: while guest submission
-  is on, anyone can read the description of every active category, type and
-  item, and any signed-in user can read them at any time. Do not put anything
-  here you would not put on a public web page." (`DESCRIPTION_HINT`,
+  is on, anyone can read the description of every active category (and of every
+  active type and item too, if guests are shown them), and any signed-in user
+  can read the categories and types at any time (the items only if registered
+  users are shown them). Do not put anything here you would not put on a
+  public web page." (`DESCRIPTION_HINT`,
   `DescriptionField.tsx`.) The box follows the row when another administrator
   changes it, unless something has been typed in it. What counts as padding:
   Go's white space plus U+FEFF, on the server; the form strips the same set
@@ -175,6 +188,214 @@ changes for an instance until an administrator writes one.
   audit CTI edits is a separate decision, not part of this change.
 - **No import, export or copy.** There is no CTI import, export or clone
   feature, so there is nothing to carry the field through.
+
+**Which levels of the tree a caller sees (1.3.0, #711).** Until now the picker
+was shaped by role: staff and administrators saw Category, Type and Item; a
+signed-in requester saw Category and Type on the form but could read every
+active item through the API; a guest saw the Category on the form but could read
+every active type and item through the API. Three independent switches decide
+what a caller who is not staff may see of the tree, **everywhere**: the forms,
+the API, MCP and the tickets a requester reads back. All three are **off by
+default, an upgraded install included**, so on an upgrade the Item disappears
+from what a requester reads and the guest lists close until an administrator
+turns them on. (The Type is not a switch for registered users: they always see
+it.)
+
+- **The three settings** (rows of the `settings` table, booleans, read with
+  `admin.Service.GetBool`, so an absent row reads `false`):
+
+  | Key | Label | Where |
+  |---|---|---|
+  | `users_show_items` | **Show Items to registered users** | Admin → System → General → Tickets, under the tracking number prefix |
+  | `guests_show_types` | **Show Types to guests** | Admin → System → Guest Access → Submissions, under **Guests may attach files** |
+  | `guests_show_items` | **Show Items to guests** | the same page, under **Show Types to guests** |
+
+  The labels are the toggles' labels and accessible names. Help text, verbatim.
+  Users: "Show signed-in requesters the Item under each Type: an Item selector on the new-ticket page and the Item on their tickets, with the same description and custom fields staff get. Off by default: requesters see Category and Type only, and neither the Item nor the values of fields only an Item supplies are sent to them (not on their tickets, not in lists or filters, not over MCP), and staff assign it afterwards." Guest Types: "Show guests a Type selector under Category on the
+  guest form, with the same descriptions. Off by default: guests choose a
+  Category only. It only takes effect while guest submission is on, and it makes
+  the names and descriptions of every active type public to anyone who can open
+  the form." Guest Items: "Show guests an Item selector under Type on the guest form. Needs guest submission on and Show Types to guests, and makes the names and descriptions of every active item public too. This is separate from Show Items to registered users: with this on and that off, a registered user can sign out and read the item list." The two guest switches are **dependent**, like
+  **Guests may attach files** is on guest submission: the toggle for Types is
+  unavailable while guest submission is off and the one for Items while Types is
+  off (the stored values are kept), and the **server computes the effective
+  values** and ignores an inconsistent stored combination (Items on, Types off
+  is Items off). They are independent of the registered-user switch.
+- **No migration.** An absent row reads `false`, which is the default wanted on
+  a fresh install and an upgraded one alike; no seed row is written, so there is
+  nothing to renumber and nothing for the upgrade to get wrong. A test pins that
+  a database migrated to head has none of the rows and that all three read
+  `false` there. All three are in `KnownKeys`.
+- **Settings API.** The keys are accepted by `PATCH /admin/settings` and
+  returned by `GET /admin/settings` once saved (absent before; the page reads
+  absent as `false`). A value that is not a JSON boolean is a `400`, null
+  included, and nothing is stored. All three are in `AuthCriticalKeys`:
+  **session only**, an API key or OAuth client sending one gets `403
+  session_required`, because turning one on publishes names to the anonymous
+  internet or to every registered user, and a leaked key must not be able to.
+  Changes are **not audited**, like the plain settings beside them (settings
+  writes go straight to the `settings` table).
+- **One policy, enforced from one place.** `catalogue.VisibleLevels(ctx,
+  settings, who)` (package `internal/domain/catalogue`) answers
+  `Levels{Types, Items}` for one of three callers and is the only place the
+  rule is written:
+
+  | Caller (`who`) | Types | Items |
+  |---|---|---|
+  | Staff and administrators | yes | yes |
+  | Registered requester | yes, always | `users_show_items` |
+  | Guest (no account) | guest submission on **and** `guests_show_types` | the Types condition **and** `guests_show_items` |
+
+  A role nobody recognises is a requester, and a caller that is not said at all
+  (a nil actor, the zero value `catalogue.Unknown`) sees nothing below the
+  category, in the REST handlers, `viewerJSON` and MCP alike. Levels are worked
+  out once per request and passed down. **A machine credential acts with its
+  owner's role**: an API key, an OAuth client (through its service account) and
+  a session get the levels of the person they stand for, and nothing else is
+  consulted. A session that has not finished MFA or owes a password change is
+  not staff here (as for the catalogue's archived rows) and is a requester.
+  Every surface calls the function and none restates the rule:
+  - **REST catalogue** (`GET /categories`, `/categories/{id}/types`,
+    `.../items`): a level the caller may not see answers `200 []`, exactly as a
+    category with no children does, so there is no refusal to learn from. The
+    category list is always served (to guests, while guest submission is on).
+  - **Tickets a requester reads** (every response that goes through
+    `ticket.FilterForViewer`: `GET /tickets`, `GET /tickets/{id}`, the dashboard
+    lists, the answers to create, follow-up, reply and the rest, and MCP
+    `get_ticket`, `list_tickets`, `create_follow_up` and the other tools that
+    return a ticket): when Items is not visible to the caller, **`item_id` is
+    removed** from the ticket object, so the Classification card and the filter
+    chips show Category and Type only. This is the strictest reading of "do not
+    let a registered user query down to the Item" and is a **decision that is
+    easy to relax**: it is one condition in `FilterForViewer`, and the requester's
+    allowed-key list (`requesterTicketKeys`) keeps `item_id` as a *conditional*
+    key (`requesterItemKeys`) which the classification test covers. A ticket that
+    has an Item (staff set it, or the requester chose it while the switch was on)
+    shows none to the requester once the switch is off, and shows it again when
+    the switch is turned back on. A requester's history and audit feed are
+    staff-only routes and carry nothing. The ticket's custom field *values* are
+    leveled too: a value on a field only the Item supplies is not read
+    (`GET /tickets/{id}/custom-fields` leaves it out) and not written
+    (`PUT` answers the `400` an unknown field gets, "is not a field on this
+    ticket", which also does not say which item the ticket carries), for a
+    caller who cannot see Items. The guest view of a ticket carries no
+    classification.
+  - **Filters**: `item_id` (and `type_id` where Types is not visible) is refused
+    to a caller who cannot see that level, with the refusal every other
+    unavailable filter has: `403 forbidden` ("item_id is not available to
+    this account"), the same over MCP. `Filter.AllowedForLevels` adds the check to
+    `AllowedFor`. No other search path reads an Item (free text does not match
+    item names), and there is no suggestion path by item.
+  - **Custom-field resolution** (`GET /tickets/fields`, MCP
+    `list_ticket_fields`): a level the caller may not see is not resolved, so an
+    `item_id` from a requester who cannot see Items is left out and the
+    answer is the category's and type's fields, with no item-level assignment
+    (an assignment carries the item's id).
+  - **MCP** `list_categories` returns only the levels the caller sees: a
+    requester gets Categories and Types and no `items` key content (empty)
+    unless Items is visible; staff get all. `get_ticket`, `list_tickets` and the
+    other ticket tools follow the REST ticket rule and the filter rule above.
+    `create_ticket` is staff only and takes any level. Every other tool was
+    checked: none returns or accepts a type or item name or id except the ones
+    named here.
+  - **Creating a ticket** (REST, guest form): a requester's or guest's `type_id`
+    and `item_id` are honoured only for a level they may see and are otherwise
+    dropped without a word, exactly as an item always was for a requester. What
+    is honoured is validated by the code staff go through
+    (`ticket.Service.Create`, below).
+  - **`GET /site`** (public) gains `guests_show_types` and `guests_show_items`,
+    the effective values (false while guest submission is off, items false while
+    types is). **`GET /me`** gains `can_choose_item`, always present: `true` for
+    staff and administrators, and for a requester `Levels.Items`. A client reads
+    these to decide what to draw; the server decides what is served.
+  - **Webhooks, Slack/Teams messages and email.** A webhook is an outbound
+    channel an administrator configures, and its payload (the `type_id` and
+    `item_id` on a ticket event, the names in a Slack or Teams new-ticket
+    message) is staff-facing and unchanged. No email template the system sends to
+    a requester or guest carries a type or item (nor a category): nothing
+    reaches them there. The reports and the admin audit are staff-only.
+  - **Descriptions** follow the level: a level a caller does not see is not
+    listed, so its description is not served; the chooser shows the most
+    specific description among the levels the form offers.
+- **Guests and registered users are separate settings, on purpose (owner
+  decision).** The consequence, stated plainly: with **Show Items to guests**
+  on and **Show Items to registered users** off, a registered user can sign out
+  and read the item list as a guest. The three switches are independent; only the
+  guest Items one depends on the guest Types one and on guest submission.
+- **No post-upgrade wizard step.** Rejected: a step offering the three switches
+  to an administrator of an upgraded install. The safe default is off and there is
+  nothing to choose until a deployment wants the levels shown; the upgrade notes
+  and the settings pages say where they are, as #676 decided for its setting.
+- **Creating a ticket, level not visible: exactly today.** `POST /tickets` from a
+  requester drops `item_id` with Items not visible (and checks `type_id` as it
+  always did); `POST /guest/tickets` ignores `type_id` and `item_id` as unknown
+  keys, a malformed value included.
+- **Creating a ticket, level visible.** The chain is validated **before** a
+  tracking number is spent, by `ticket.Service.Create` (`CTIIsCoherent`: the
+  type belongs to the category and the item to the type, an **item with no type
+  is refused**; `refuseArchivedPick`: an archived category, type or item is
+  refused), `400 bad_request`, for every caller ("type_id and item_id must belong
+  to the category and to each other", "type_id is not an active type",
+  "item_id is not an active item"; a test pins the words). A requester is also
+  held to an active category and type with the wording they always had. Type and
+  Item stay **optional**. An `item_id` without its `type_id` is the `400` above.
+  A guest's malformed id is the form's own `400`. Routing is by category and type
+  (items do not factor into scope), so a type a guest chooses routes the ticket
+  as it routes a requester's. An API key is its owner's role.
+- **Custom fields follow the selection.** For **requesters** the form's fields
+  are `GET /tickets/fields` resolved for the category, type **and item** they
+  can see, and `CheckCreation`/`SetCreationValues` resolve the same way, so a
+  field attached to the chosen item is offered, required where it says so, and
+  saved, as for staff. The values already on a ticket follow the same levels (see
+  Tickets a requester reads). A requester will not be allowed to edit values at
+  all once the viewer-layer hardening that builds on this lands; until then the
+  level rule above is what is enforced. For **guests** the fields offered stay **the category's
+  own, offered to guests** (`GuestFields`): a guest-visible attachment on a type
+  or an item is not possible (#627) and this change does not relax it.
+- **Follow-ups keep what was chosen.** A follow-up of a closed ticket (#349) is
+  filed under what its requester could choose, so it lands in the queue the
+  original did: an account holder's keeps the Type and, while Items is visible to
+  them, the Item; a guest's keeps the Type while Types is visible to guests and
+  the Item while Items is, and is routed on the kept type. With a level not
+  visible it is exactly as it was: an account holder's has the type and no item,
+  a guest's has neither and is routed on the category. **A level archived since
+  the original was filed is not refused: the follow-up keeps the deepest level
+  that is still active, silently** (item archived: the type is kept; type
+  archived: the category alone, and it is routed on the category), for requester
+  and guest alike. This changes the one refusal an account holder got before
+  (an archived type was a `400`). An archived *category* is still refused
+  (`400`, as for a direct submission). What is kept still passes the creation
+  rule a requester has (`requesterClassificationOpen`). Staff follow-ups are
+  unchanged (`ticket.Service.CreateRequesterFollowUpKeeping`, with the levels as
+  its `catalogue.Levels` argument; the older `CreateRequesterFollowUp` is
+  deprecated and kept for one release).
+- **Catalogue answers, in one table** (`200 []` is "nothing here" everywhere):
+
+  | Caller | Categories | Types | Items |
+  |---|---|---|---|
+  | Staff, administrators | all (archived too) | all | all |
+  | Registered requester | active | active | active only with `users_show_items`, else `[]` |
+  | Guest | active | active only with `guests_show_types`, else `[]` | active only with Types and `guests_show_items`, else `[]` |
+
+  The requester's own ticket page names the Type from this list, and no longer
+  the Item unless Items is visible to them: with it off the ticket carries no
+  `item_id` and shows none.
+- **The forms.** `/tickets/new`: Category, Type and, iff `can_choose_item`,
+  **Item**, with the cascade (a new category clears Type, Item and the custom
+  field values typed so far; a new Type clears Item and the values; the Item
+  select is disabled until a Type with items is chosen); `item_id` is sent only
+  when chosen and visible. `/submit`: Category, then, iff `guests_show_types`,
+  **Type**, then, iff `guests_show_items`, **Item**, with the same cascade; the
+  lists are fetched only once there is something to ask for; `type_id` and
+  `item_id` are sent only when chosen. While a list loads, or when it cannot be
+  loaded, the form says so under its selector instead of looking empty. A form
+  open while a setting is switched off still works: the server ignores what it
+  may not take.
+- **Screenshots and docs.** The new-ticket and guest-form screenshots show the
+  default and stay true; the General and Guest Access settings screenshots each
+  gain rows and are retaken at release. The upgrade notes (1.3.0) say that on an
+  upgrade requesters stop receiving `item_id` and guests stop reading the type
+  and item lists until the switches are turned on. The README line stays true.
 
 ### Tickets (v1)
 
@@ -434,11 +655,14 @@ Three doors, one creation path:
 - **Copied for a requester — only what a requester may set on a normal create.**
   The principle: a requester's follow-up must not be a ticket they could not have
   created directly. So: subject, description, category, the type for an account
-  holder (never for a guest), and who they are. **Not** the item (requesters
-  cannot pick one), and **not the priority** — it is medium, as for any requester's
+  holder (for a guest only while Types is shown to guests, #711), the item
+  only while Items is visible to the requester (#711), and who they are.
+  **Not** the item otherwise (requesters cannot pick one then), and **not the priority** — it is medium, as for any requester's
   new ticket; a priority staff raised stays with the closed ticket. No assignee,
   tags or SLA state either. The category (and the type) must still be active, as
-  for a normal create (`400` if an administrator has since archived it). The
+  for a normal create (`400` if an administrator has since archived it); an
+  archived type or item the original holds is not a refusal, the follow-up keeps
+  the deepest level still active (#711). The
   request body is ignored: there is no field to set.
 - **Not copied, for anyone:** replies and internal notes, attachments, status
   history, tags, the assignee, any SLA state. The new ticket
@@ -548,7 +772,8 @@ expired rows (a closed ticket collects one per mail sent on it).
   fields the new-ticket form shows (`visible_on_new`), so what the form keeps
   from a requester is not handed to their new ticket. A field the new
   classification does not have is left behind (a guest's follow-up is filed
-  under the category alone). Each value is written through the creation write
+  under the category alone, or the category and type while guests are shown
+  them, #711). Each value is written through the creation write
   (`SetCreationValues`), so it is held to the field as it is now: a value the
   field no longer accepts (a retired option, a limit lowered since, a
   deactivated field) is left out, logged, and the rest are copied. **It is not
@@ -1592,14 +1817,14 @@ Scope does two separate jobs: it can restrict what staff see, and it routes new 
 3. `auto_assign_user_ids`: a list of staff the tickets are dealt out to round-robin. The rotation is in memory, per server process. A listed user the assignment refuses (deleted, disabled or no longer staff) is skipped and the next one tried, so a departed colleague does not silently take every Nth ticket out of the queue.
 4. Otherwise the ticket stays unassigned.
 
-Routing is best-effort in one respect: a candidate that cannot be given a ticket (a departed colleague still on the round-robin list, a group that no longer exists) is skipped for the next, and if none is acceptable the ticket is left unassigned and the creation succeeds. A database error while checking a candidate is not skipped: it aborts the create. It runs for every door that creates a ticket: `POST /tickets`, a guest submission (`POST /guest/tickets`), MCP `create_ticket`, and the three follow-ups (`POST /tickets/{id}/follow-up`, `POST /guest/follow-up`, MCP `create_follow_up`). They all call the one routing rule (`Server.Routing`; MCP reaches it through `mcp.Router`), so a rule cannot apply to one door and not another. Until 1.3.0 the guest form and the two MCP tools skipped it, so a ticket filed through them was never given to anyone; a follow-up is routed on its original's category and type, the guest form and a guest's follow-up on the category alone. `auto_assign_group_id` (a UUID string) and `auto_assign_user_ids` (an array of UUID strings) are set on **Admin → Routing** (a group picker and a staff checklist, with the rules above listed in order) or through `PATCH /admin/settings`. Saving is checked: a group id that names no group, or a user id that names no one or someone who is neither staff nor an administrator, is refused with 400 `invalid_auto_assign` and nothing in the request is written (before #447 such an id was saved and then skipped at routing time). An empty value clears the setting.
+Routing is best-effort in one respect: a candidate that cannot be given a ticket (a departed colleague still on the round-robin list, a group that no longer exists) is skipped for the next, and if none is acceptable the ticket is left unassigned and the creation succeeds. A database error while checking a candidate is not skipped: it aborts the create. It runs for every door that creates a ticket: `POST /tickets`, a guest submission (`POST /guest/tickets`), MCP `create_ticket`, and the three follow-ups (`POST /tickets/{id}/follow-up`, `POST /guest/follow-up`, MCP `create_follow_up`). They all call the one routing rule (`Server.Routing`; MCP reaches it through `mcp.Router`), so a rule cannot apply to one door and not another. Until 1.3.0 the guest form and the two MCP tools skipped it, so a ticket filed through them was never given to anyone; a follow-up is routed on its original's category and type (a guest's, while Types is shown to guests, #711; otherwise on the category alone), and the guest form on the category and the type the guest chose (the category alone while Types is not shown to guests). `auto_assign_group_id` (a UUID string) and `auto_assign_user_ids` (an array of UUID strings) are set on **Admin → Routing** (a group picker and a staff checklist, with the rules above listed in order) or through `PATCH /admin/settings`. Saving is checked: a group id that names no group, or a user id that names no one or someone who is neither staff nor an administrator, is refused with 400 `invalid_auto_assign` and nothing in the request is written (before #447 such an id was saved and then skipped at routing time). An empty value clears the setting.
 
 ### Branding
 
 - **Site name** — the product name shown in the sidebar header and browser title. Defaults to "Go Help Desk".
 - **Logo** — uploaded via **Admin → System → Branding**. Accepted formats: PNG, JPEG, GIF. Max 2 MB. Images are proportionally scaled to fit within **320 × 64 px** and re-encoded as PNG. When set, the logo replaces the site name text in the sidebar. **SVG is not accepted** (#165): the logo is the only upload rendered inline in this origin, and pattern-matching SVG for scripts is a game you have to keep winning. An SVG logo uploaded by an earlier release stops being served after the upgrade — the route serves PNG and nothing else, so the sidebar falls back to the site name. The settings page says so where the logo would be: the file picker no longer offers SVG, a sentence explains why it went, and an instance whose stored logo can no longer be loaded is told that rather than shown an empty space.
 - Both settings are stored in the database and managed via **Admin → System → Branding**.
-- A public `GET /api/v1/site` endpoint returns `{name, logo_url, version, guest_submission_enabled, guest_attachments_enabled}`, plus `guest_attachment_max_bytes`, `guest_attachment_max_per_ticket` and `guest_attachment_uploads_per_hour` while guests may attach (#445) — no authentication required, so the shell and the login page render correctly before login (`guest_submission_enabled` is what decides whether the login page links to `/submit`; it reveals only what an unauthenticated `POST /guest/tickets` would reveal by answering 404). `guest_attachments_enabled` and the three figures are different: `POST /guest/attachments` answers the same `404` whether the setting or the token failed, so it never says whether uploads are on, but `/site` does, together with the effective per-file limit, to anyone. That disclosure was accepted (#445): it is low sensitivity, and it keeps the guest ticket response's allow-list unchanged.
+- A public `GET /api/v1/site` endpoint returns `{name, logo_url, version, guest_submission_enabled, guest_attachments_enabled, guests_show_types, guests_show_items}` (the last two, #711, are the effective values: `false` while guest submission is off, items also while types is, and they reveal only what opening `/submit` shows anyone), plus `guest_attachment_max_bytes`, `guest_attachment_max_per_ticket` and `guest_attachment_uploads_per_hour` while guests may attach (#445) — no authentication required, so the shell and the login page render correctly before login (`guest_submission_enabled` is what decides whether the login page links to `/submit`; it reveals only what an unauthenticated `POST /guest/tickets` would reveal by answering 404). `guest_attachments_enabled` and the three figures are different: `POST /guest/attachments` answers the same `404` whether the setting or the token failed, so it never says whether uploads are on, but `/site` does, together with the effective per-file limit, to anyone. That disclosure was accepted (#445): it is low sensitivity, and it keeps the guest ticket response's allow-list unchanged.
 - A public `GET /api/v1/logo` endpoint serves the stored logo file with a 5-minute cache header. `logo_url` in the site response points here when a logo is uploaded.
 
 ### Update check (opt-in, #170)
@@ -1677,13 +1902,13 @@ of `Section`) and keep their current order on the page.
 
 | Sidebar item | Address | Sections, in order | Comes from |
 | --- | --- | --- | --- |
-| **General** | `/admin/settings/general` | Tickets · Ticket lifecycle · Updates | General tab |
+| **General** | `/admin/settings/general` | Tickets (tracking number prefix, **Show Items to registered users**, #711) · Ticket lifecycle · Updates | General tab |
 | **Features** | `/admin/settings/features` | tab **SLA**: SLA (the `sla_enabled` switch and, while it is on, the SLA Policies editor from #672) | Features tab |
 | **Branding** | `/admin/settings/branding` | Identity (site name, logo) | Branding tab |
 | **Email** | `/admin/settings/email` | tab **Notifications**: Staff email about tickets (the four overrides, #670's included) · SLA alerts (`sla_alerts_enabled`) | Email tab; SLA alerts from the Features tab (#670) |
 | | `/admin/settings/email/templates` | tab **Templates**: the email template list and editor | the `/admin/email-templates` page |
 | **File Attachments** | `/admin/settings/attachments` | Uploads (allowed types, mismatch handling) · File size (#673) · Malware scanning (with the scanner status block) · Reputation lookup | Attachments tab |
-| **Guest Access** | `/admin/settings/guest-access` | Submissions (guest submission and its email note, guests may attach files, the guest size slider, files per ticket, uploads per hour) | General tab |
+| **Guest Access** | `/admin/settings/guest-access` | Submissions (guest submission and its email note, guests may attach files, **Show Types to guests** and **Show Items to guests** (#711), the guest size slider, files per ticket, uploads per hour) | General tab |
 | **Authentication** | `/admin/settings/authentication` | SAML · OIDC / OpenID Connect · Multi-factor authentication (with #616's passkey roles) · Passwords · API keys · Registration | Authentication tab |
 | **Privacy** | `/admin/settings/privacy` | Ticket visibility · Available queue (#676) · Audit log · Privacy | General tab |
 | **Audit Log** | `/admin/audit` (unchanged) | the audit viewer | unchanged |
@@ -3414,7 +3639,7 @@ in 1.2.0.
   - **One migration.** 000054 adds `attachments.uploaded_by_guest BOOLEAN NOT NULL DEFAULT false`, so the cap can count only guest uploads (nothing recorded who uploaded a file). The settings themselves are rows read with defaults and need none; files guests attached before the upgrade are not counted.
   - **Where the control is.** The guest ticket page (`/g`) shows **Add files** on an open ticket when `GET /site` says `guest_attachments_enabled`, with the effective per-file limit in `guest_attachment_max_bytes` (the lower of the two figures, so the page never promises more than the server takes). Files go up one after another as they are chosen, to `POST /guest/attachments` with the `Authorization: Guest` header; there is no draft, because a guest's attachment belongs to the ticket and not to a reply. The server's own reason is shown for a refusal. There is no control on the submission page (`/submit`): the link that identifies the ticket is emailed after the ticket exists, so a guest attaches from that link. The page does not list the guest's uploads (the guest read has no attachment list) and renders none of their content; attachments stay download-only.
 - Unauthenticated users submit a ticket at `/submit` and receive a **tracking number**
-- Guest ticket form collects: **name** (required), **email** (required), **phone** (optional), subject, description, and category (active only — no type or item). The chosen category's description, when it has one, is shown beneath the selector (see Ticket Classification → Descriptions); it is public to anyone who can open the form, and so is the description of every active type and item (the catalogue routes serve them to anyone while guest submission is on)
+- Guest ticket form collects: **name** (required), **email** (required), **phone** (optional), subject, description, and category (active only). **No type or item, unless an administrator turns on Show Types to guests and Show Items to guests** (`guests_show_types`, `guests_show_items`, off by default, upgrades included; see Ticket Classification → Which levels of the tree a caller sees), in which case the form shows Category, then Type, then Item (an Item only with Types) with the cascade the new-ticket page has. The chosen row's description (the item's, else the type's, else the category's) is shown beneath the selectors (see Ticket Classification → Descriptions); it is public to anyone who can open the form, and the description of every active type is public only while Show Types to guests is on, and of every active item only while Show Items to guests is on too
 - The tracking number can be referenced when following up with the help desk by phone or email
 - No account creation required
 
@@ -3719,8 +3944,8 @@ email carries no ticket text.
 |-------|-------|-----------------|---------------|
 | Name, email, phone | Required / optional | — (uses account) | — |
 | Category | Active only | Active only | Active selectable; archived shown greyed |
-| Type | — (not shown) | Active only | Active selectable; archived shown greyed |
-| Item | — | — (not shown) | Active selectable; archived shown greyed |
+| Type | — (not shown), unless **Show Types to guests** is on: active only | Active only | Active selectable; archived shown greyed |
+| Item | — (not shown), unless **Show Types to guests** and **Show Items to guests** are on: active only | — (not shown), unless **Show Items to registered users** is on: active only | Active selectable; archived shown greyed |
 | Priority | — (defaults to Medium) | — (defaults to Medium) | Selectable |
 | Requester | Their own name and email (above) | Always themselves | Me (default), an existing user, or a typed email address (below) |
 | Attachments | — | Yes | Yes |
@@ -5134,7 +5359,7 @@ Serves both the frontend SPA and external integrations.
 
 **Public endpoints (no session or credential):**
 - `GET /health` — liveness, `{"status":"ok"}`. Outside `/api/v1`.
-- `GET /api/v1/site` — branding info, app version, `guest_submission_enabled` and the guest attachment setting (`guest_attachments_enabled`, `guest_attachment_max_bytes`, `guest_attachment_max_per_ticket`, `guest_attachment_uploads_per_hour`); used by the SPA shell and login page before authentication
+- `GET /api/v1/site` — branding info, app version, `guest_submission_enabled`, `guests_show_types` and `guests_show_items` (#711) and the guest attachment setting (`guest_attachments_enabled`, `guest_attachment_max_bytes`, `guest_attachment_max_per_ticket`, `guest_attachment_uploads_per_hour`); used by the SPA shell and login page before authentication
 - `GET /api/v1/logo` — the stored logo (PNG), with a 5-minute cache header
 - `GET /api/v1/setup/status` — whether first-run setup is needed; `POST /api/v1/setup` creates the first administrator (and the first category, see Ticket Classification). It answers `409 already_configured` once **any** user row exists, disabled and deleted accounts included, so setup never reopens.
 - `/api/v1/auth/*` — `POST /local/login`, `POST /local/logout`, `GET /providers`, `POST /oauth/token` (OAuth client credentials), the SAML and OIDC sign-in routes, and `GET /signup/status`, `POST /signup`, `GET` and `POST /verify-email` (see Authentication). `POST /local/mfa/verify` and `POST /local/passkey/*` need the session the password step produced and are refused to machine credentials.
@@ -5161,11 +5386,11 @@ Exposes help desk operations as an MCP server for AI tool integration, over two 
 | Tool | Who may call it | Notes |
 |------|-----------------|-------|
 | `get_ticket` | any signed-in user | By UUID or tracking number. Returns the reply thread and linked tickets; internal notes are omitted for reporting users. `include_replies` (default `true`): `false` returns the ticket alone, without replies or links. Staff and administrators also get the ticket's `custom_fields` (field id, name, type, options, retired options, value), left out when it has none (#627); a reporting user is never given them here. |
-| `list_tickets` | any signed-in user | The filters of `GET /api/v1/tickets` (see **List filters**), through the same parser and the same check, so the same values are accepted and the same callers are refused, in the same words (one exception: a requester who sends `assignee_group_id` is told "assignee_group_id is not available to requesters" here, where REST says "users cannot list group tickets"): `q`, `search_replies`, `reporter_id`, `requester`, `created_after`, `created_before`, `updated_after`, `updated_before`, `priority`, `category_id`, `type_id`, `item_id`, `assignee_user_id`, `assignee_group_id`, `status_id`, `status_ids`, `include_closed`, `awaiting_reply`, `source_channel`, `sla`, `held_by`, `sort` and `order`, plus `scope` (#676: absent means `visible`, what this tool has always listed; the other values and their refusals are REST's, through the same `ticket.ResolveQueue`, and an unknown value is refused; see **Ticket list views**). Lists are JSON arrays (`status_ids`, `source_channel`, and `priority`, which is still accepted as a single string), at most 20 values each (a longer list is refused before any work is done on it), ORed. `status_id` (one) is kept for existing callers and may be combined with `status_ids`. `awaiting_reply` is a JSON boolean (`true` or `false`; absent is `false`; a string, number or object is refused with "invalid awaiting_reply"), staff and administrators only: a requester sending `true` is refused "awaiting_reply is not available to requesters". A requester is refused the filters and sorts outside their allowed list ("<param> is not available to requesters"), and `requester` free text from an API key or OAuth client needs `requester_search:read` ("this credential does not carry the requester_search:read scope"); a session needs no scope. `sla`, and `sort` by `sla`, are refused while SLA tracking is off. An argument of the wrong JSON type (`limit` and `offset` included), an unknown value, or an unknown `sort` or `order` is refused with a message, never skipped (owner decision, 2026-11-12), and is not logged as a server error. Whether a reply search may match internal notes comes from the caller's role; there is no argument for it. With no `scope` the listing is every ticket the caller may see, as it has always been here (REST's `scope=visible`), not REST's default queue of tickets assigned to the caller, and `assignee_group_id` is not refused to a staff member who is outside the group, because it can only narrow what their scope already admits. `limit` defaults to 20 and is clamped to 100; `offset` pages the full result set. |
+| `list_tickets` | any signed-in user | The filters of `GET /api/v1/tickets` (see **List filters**), through the same parser and the same check, so the same values are accepted and the same callers are refused, in the same words (one exception: a requester who sends `assignee_group_id` is told "assignee_group_id is not available to requesters" here, where REST says "users cannot list group tickets"): `q`, `search_replies`, `reporter_id`, `requester`, `created_after`, `created_before`, `updated_after`, `updated_before`, `priority`, `category_id`, `type_id`, `item_id`, `assignee_user_id`, `assignee_group_id`, `status_id`, `status_ids`, `include_closed`, `awaiting_reply`, `source_channel`, `sla`, `held_by`, `sort` and `order`, plus `scope` (#676: absent means `visible`, what this tool has always listed; the other values and their refusals are REST's, through the same `ticket.ResolveQueue`, and an unknown value is refused; see **Ticket list views**). Lists are JSON arrays (`status_ids`, `source_channel`, and `priority`, which is still accepted as a single string), at most 20 values each (a longer list is refused before any work is done on it), ORed. `status_id` (one) is kept for existing callers and may be combined with `status_ids`. `awaiting_reply` is a JSON boolean (`true` or `false`; absent is `false`; a string, number or object is refused with "invalid awaiting_reply"), staff and administrators only: a requester sending `true` is refused "awaiting_reply is not available to requesters". A requester is refused the filters and sorts outside their allowed list ("<param> is not available to requesters"), and `requester` free text from an API key or OAuth client needs `requester_search:read` ("this credential does not carry the requester_search:read scope"); a session needs no scope. `sla`, and `sort` by `sla`, are refused while SLA tracking is off. An argument of the wrong JSON type (`limit` and `offset` included), an unknown value, or an unknown `sort` or `order` is refused with a message, never skipped (owner decision, 2026-11-12), and is not logged as a server error. Whether a reply search may match internal notes comes from the caller's role; there is no argument for it. With no `scope` the listing is every ticket the caller may see, as it has always been here (REST's `scope=visible`), not REST's default queue of tickets assigned to the caller, and `assignee_group_id` is not refused to a staff member who is outside the group, because it can only narrow what their scope already admits. `limit` defaults to 20 and is clamped to 100; `offset` pages the full result set. A filter on `item_id` (or `type_id`) is refused to a caller who is not shown that level, `item_id is not available to this account`, and `item_id` is left out of the tickets a requester gets unless Items is visible to them: the one policy, `catalogue.VisibleLevels` (#711, see Which levels of the tree a caller sees). |
 | `list_attachments` | any signed-in user | `ticket_id` is a UUID or tracking number; a ticket the caller may not see answers the same "not found" as one that does not exist. Metadata for each file: `id`, `filename`, `mime_type`, `size_bytes`, `created_at`, `detected_mime`, `sha256`, `virus_name`, `mismatch` and `quarantined` (`virus_name` is set). `mismatch` is `null` for a file that predates the inspection, which is not the same as `false`. **No file content** (attachments are download-only) and **no reputation lookup**: that spends the operator's provider allowance, so it stays in the web interface. |
-| `list_categories` | any signed-in user | The Category/Type/Item tree, nested, for filling in CTI. Every entry carries its `description` (plain text, `""` when none; 1.3.0). Active entries only; `include_inactive: true` adds retired ones, for staff and administrators only, as on the REST catalogue; for anyone else the flag is ignored and they get active entries (no error). |
+| `list_categories` | any signed-in user | The Category/Type/Item tree, nested, for filling in CTI. Every entry carries its `description` (plain text, `""` when none; 1.3.0). Active entries only; `include_inactive: true` adds retired ones, for staff and administrators only, as on the REST catalogue; for anyone else the flag is ignored and they get active entries (no error). Only the levels the caller may see (#711): a requester gets categories and types, and items only while registered users are shown them (`users_show_items`); staff get all. |
 | `list_statuses` | any signed-in user | The statuses this instance defines. |
-| `list_ticket_fields` | any signed-in user | `category_id` required; `type_id` and `item_id` optional. The custom fields the new-ticket form would show there (#627): shown on the form and active, at their most specific attachment, in the form's order. Each is `id`, `name`, `field_type`, `options` (select, in use only), `required`, `max_length` (the longest value, in characters) and `level`. These are the ids and options `create_ticket`'s `custom_fields` takes. A field hidden from the form, deactivated, or attached at a level not asked for is not listed. |
+| `list_ticket_fields` | any signed-in user | `category_id` required; `type_id` and `item_id` optional. The custom fields the new-ticket form would show there (#627): shown on the form and active, at their most specific attachment, in the form's order. Each is `id`, `name`, `field_type`, `options` (select, in use only), `required`, `max_length` (the longest value, in characters) and `level`. These are the ids and options `create_ticket`'s `custom_fields` takes. A field hidden from the form, deactivated, or attached at a level not asked for is not listed. A level the caller may not see is not resolved, so a requester who is not shown items gets no item-level fields whatever `item_id` they send (#711). |
 | `create_ticket` | staff, admin | Category required; Type and Item optional. `reporter_user_id` or `reporter_email` (with `guest_name`, always required with the address) names the subject of the ticket; both are absent by default and the caller is the subject. `description` is Markdown unless `format: "plain"` is passed (#443); an invalid `format` is a tool error. The ticket is recorded as `mcp` (#130), including one filed for someone else; a `source_channel` argument is a tool error and nothing is written. `custom_fields` (an object of field id to string, #627) is held to the REST rules from the same code: a field the classification requires must have a usable value or the call is a tool error and nothing is created (#626); any other value that cannot be written is dropped and returned under `warnings`, as on REST. A value that is not a string, or a `custom_fields` that is not an object, is a tool error. |
 | `add_reply` | staff, admin | A public reply emails the requester exactly as the REST reply does (#442): the guest's address (with a guest link) or the reporting account's, through one shared rule, `ticket.Service.ReplyRecipient`. No mail is sent when the requester has no address on record or the account is gone, or when the requester is a staff member or administrator writing the reply on a ticket they filed (they are not mailed a copy of their own reply, over REST or MCP; an ordinary requester replying on their own ticket still is); the reply is still saved. `internal: true` posts a staff-only note and never notifies the requester. There is no `notify_customer` option over MCP: a public reply always notifies. `body` is Markdown unless `format: "plain"` is passed (#443). |
 | `assign_ticket` | staff, admin | To a user (`assignee_user_id`) or a group (`assignee_group_id`). To take the ticket off whoever has it, pass `clear_assignee: true` (the audit entry is `unassigned`); it cannot be combined with an assignee id, and omitting everything is refused rather than read as unassigning, because that silently took tickets off the people working them. |
@@ -7440,9 +7665,10 @@ form, some of them internal, to anyone on the internet.
 
 - **What is offered** (`customfield.Service.GuestFields`): the category's own
   attachments with `visible_to_guests` on that are also shown on the new-ticket
-  form, whose field is active. A guest picks a category and nothing below it, so
-  nothing attached to a type or an item is ever offered, and the service refuses
-  the switch on one (`400`). A field added later is not offered until someone
+  form, whose field is active. A guest's offered fields are the category's own
+  whatever they pick below it (they may pick a Type and Item while
+  `guests_show_types` and `guests_show_items` are on, #711), so nothing attached to a type or an
+  item is ever offered, and the service refuses the switch on one (`400`). A field added later is not offered until someone
   says so. Everything a guest asks about is judged against this one list.
 - **`GET /guest/fields?category_id=`** answers with `id`, `name`, `field_type`,
   `options` (in use) and `required` for each, and nothing else: it is a struct of

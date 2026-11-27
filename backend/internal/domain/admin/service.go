@@ -272,6 +272,25 @@ func (s *Service) GuestAttachmentsEnabled(ctx context.Context) bool {
 	return v
 }
 
+// UsersShowItems, GuestsShowTypes and GuestsShowItems are the stored values of
+// the three #711 switches: off unless saved, upgrades included. They are not
+// what a caller sees; that is catalogue.VisibleLevels, which combines them with
+// guest submission and with each other. Nothing else should read them.
+func (s *Service) UsersShowItems(ctx context.Context) bool {
+	v, _ := s.GetBool(ctx, KeyUsersShowItems)
+	return v
+}
+
+func (s *Service) GuestsShowTypes(ctx context.Context) bool {
+	v, _ := s.GetBool(ctx, KeyGuestsShowTypes)
+	return v
+}
+
+func (s *Service) GuestsShowItems(ctx context.Context) bool {
+	v, _ := s.GetBool(ctx, KeyGuestsShowItems)
+	return v
+}
+
 // GuestAttachmentMaxMB is a guest's per-file maximum in megabytes (#445), 1 to
 // 100, 5 until an administrator says otherwise. Unset, unreadable or out of
 // range reads as the default: a damaged row must not quietly lift the cap.

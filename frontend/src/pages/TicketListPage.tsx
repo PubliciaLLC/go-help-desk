@@ -204,12 +204,17 @@ export function TicketListPage() {
   // filter and sort are refused with 400 while tracking is off. Until /me has
   // answered the store's copy stands in, and the list waits for the answer so
   // its first request is right.
+  //
+  // A requester asks it too, for one thing: whether Items is shown to them
+  // (#711). Until it says so, or when it says no, the address's `item` is not
+  // sent and not shown, so a bookmark from before, or a switch turned off while
+  // the page is open, does not meet a 403.
   const { data: me, isFetched: meSettled } = useQuery({
     queryKey: ['me'],
     queryFn: getMe,
-    enabled: isStaffOrAdmin,
     retry: false,
   })
+  const hideItem = !isStaffOrAdmin && me?.can_choose_item !== true
   const slaOn = (me?.sla_enabled ?? user?.sla_enabled) === true
 
   // The view this address means (DESIGN.md, Ticket list views). Until /me has
@@ -241,6 +246,7 @@ export function TicketListPage() {
   const typed = debouncedQuery.trim()
   const effective: TicketSearch = {
     ...search,
+    item: hideItem ? undefined : search.item,
     q: typed || undefined,
     view,
     held_by: heldBy,
@@ -564,7 +570,7 @@ export function TicketListPage() {
         {/* Active filters, each with its own ×. They replace the separate
             "Filtering by status" and "Filtering by client" rows. */}
         <FilterChips
-          search={search}
+          search={hideItem ? { ...search, item: undefined } : search}
           names={chipNames}
           staff={isStaffOrAdmin}
           offered={offered}

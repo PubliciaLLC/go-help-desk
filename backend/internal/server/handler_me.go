@@ -10,6 +10,7 @@ import (
 	qrcode "github.com/skip2/go-qrcode"
 
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/catalogue"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 	authmw "github.com/publiciallc/go-help-desk/backend/internal/middleware"
@@ -74,6 +75,11 @@ type meUser struct {
 	// every role, so the client can refuse an oversize file before sending it
 	// (#673). Not a guest's limit, which is lower and is on /site.
 	AttachmentMaxBytes int64 `json:"attachment_max_bytes"`
+	// CanChooseItem is whether the new-ticket page offers this person an Item
+	// selector (#711): always for staff and administrators, and for a requester
+	// whether Items is visible to them (users_show_items). Always present, so a client can tell
+	// false from an old server. Not on the public /site, which anyone can read.
+	CanChooseItem bool `json:"can_choose_item"`
 }
 
 // switchState is one email switch as it applies to this person: whether they
@@ -99,6 +105,7 @@ func (s *Server) meView(ctx context.Context, u user.User) meUser {
 		APIKeyMaxLifetimeYears: s.adminSvc.APIKeyMaxLifetimeYears(ctx),
 		AttachmentMaxBytes:     s.attachmentMaxBytes(ctx),
 	}
+	v.CanChooseItem = s.levelsOf(ctx, catalogue.WhoOfRole(u.Role)).Items
 	v.CanCreateAPIKeys = u.Role == user.RoleAdmin || (u.Role == user.RoleStaff && s.adminSvc.StaffCanCreateAPIKeys(ctx))
 	v.CanUseAvailableQueue = s.adminSvc.AvailableQueueAllowed(ctx, string(u.Role))
 	if u.Role == user.RoleUser {

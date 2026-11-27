@@ -9,12 +9,14 @@ import { cn } from '@/lib/utils'
 // from one place.
 export { Section } from '@/components/admin/Section'
 
-export function Toggle({ checked, onChange, label, disabled }: {
+export function Toggle({ checked, onChange, label, disabled, describedBy }: {
   checked: boolean
   onChange: (v: boolean) => void
   disabled?: boolean
   /** The switch's own name, where the surrounding row does not supply one. */
   label?: string
+  /** The id of the text that says why the switch is unavailable, when it is. */
+  describedBy?: string
 }) {
   return (
     <button
@@ -22,6 +24,7 @@ export function Toggle({ checked, onChange, label, disabled }: {
       role="switch"
       aria-checked={checked}
       aria-label={label}
+      aria-describedby={describedBy}
       disabled={disabled}
       onClick={() => onChange(!checked)}
       className={cn(

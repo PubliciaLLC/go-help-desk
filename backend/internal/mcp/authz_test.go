@@ -10,6 +10,7 @@ import (
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 	"github.com/stretchr/testify/require"
 
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/catalogue"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 	authmw "github.com/publiciallc/go-help-desk/backend/internal/middleware"
@@ -92,6 +93,11 @@ func (r *recordingAuthorizer) CanViewTicket(context.Context, *authmw.Actor, tick
 
 func (r *recordingAuthorizer) AvailableQueueAllowed(context.Context, *authmw.Actor) bool {
 	return r.available
+}
+
+// A requester's levels, the policy's answer with every setting off.
+func (r *recordingAuthorizer) VisibleLevels(context.Context, *authmw.Actor) catalogue.Levels {
+	return catalogue.Levels{Types: true}
 }
 
 func (r *recordingAuthorizer) TicketVisibility(context.Context, *authmw.Actor) (ticket.Visibility, error) {

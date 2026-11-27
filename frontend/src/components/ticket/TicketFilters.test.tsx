@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, screen } from '@testing-library/react'
+import { fireEvent, screen, waitFor } from '@testing-library/react'
 import { renderWithQuery } from '@/test/render'
 import * as ticketsApi from '@/api/tickets'
 import * as adminApi from '@/api/admin'
@@ -54,5 +54,39 @@ describe('TicketFilters: awaiting my reply checkbox', () => {
   it('is not shown to a requester', () => {
     setup({}, { staff: false })
     expect(screen.queryByRole('checkbox', { name: 'Awaiting my reply' })).toBeNull()
+  })
+})
+
+describe('TicketFilters: the Item filter (#711)', () => {
+  const picked = { category: 'c', type: 't' }
+  let listItems: ReturnType<typeof vi.spyOn>
+
+  function items(rows: { id: string; name: string }[]) {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    vi.spyOn(ticketsApi, 'listPublicTypes').mockResolvedValue([{ id: 't', category_id: 'c', name: 'Laptop', description: '', active: true, sort_order: 1 }] as any)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    listItems = vi.spyOn(ticketsApi, 'listPublicItems').mockResolvedValue(rows as any)
+  }
+
+  it('is offered to a requester who is shown items', async () => {
+    items([{ id: 'i1', name: 'Dock' }])
+    setup(picked, { staff: false })
+    expect(await screen.findByLabelText('Item')).toBeTruthy()
+    expect(await screen.findByRole('option', { name: 'Dock' })).toBeTruthy()
+  })
+
+  it('is not offered to a requester when the list of items comes back empty', async () => {
+    items([])
+    setup(picked, { staff: false })
+    await waitFor(() => expect(listItems).toHaveBeenCalled())
+    await screen.findByLabelText('Type')
+    expect(screen.queryByLabelText('Item')).toBeNull()
+  })
+
+  it('staff keep it whatever the list holds', async () => {
+    items([])
+    setup(picked, { staff: true })
+    await waitFor(() => expect(listItems).toHaveBeenCalled())
+    expect(await screen.findByLabelText('Item')).toBeTruthy()
   })
 })

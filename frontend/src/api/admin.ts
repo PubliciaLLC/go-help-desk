@@ -31,6 +31,11 @@ export interface SiteConfig {
   // applies per file in bytes: the lower of the guest setting and the
   // instance-wide maximum. The size is absent while attaching is off.
   guest_attachments_enabled?: boolean
+  // Whether the guest form shows a Type, and an Item under it (#711). The
+  // effective values: false while guest submission is off, Items false while
+  // Types is. Absent reads as no.
+  guests_show_types?: boolean
+  guests_show_items?: boolean
   guest_attachment_max_bytes?: number
   // The most files guests may attach to one ticket (#445), present with the size.
   guest_attachment_max_per_ticket?: number

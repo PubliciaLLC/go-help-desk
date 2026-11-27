@@ -488,7 +488,13 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	// alerts switch (#670): booleans and nothing else. A string "true", a number
 	// or an object would be stored and read back as off, so the operator would
 	// believe they had chosen.
-	for _, key := range []string{admin.KeyUpdateCheckEnabled, admin.KeyPostUpgrade130Seen, admin.KeySLAAlertsEnabled} {
+	//
+	// The three #711 switches are the same: a string "true" would read back as
+	// off, and the administrator would believe they had opened the form.
+	for _, key := range []string{
+		admin.KeyUpdateCheckEnabled, admin.KeyPostUpgrade130Seen, admin.KeySLAAlertsEnabled,
+		admin.KeyUsersShowItems, admin.KeyGuestsShowTypes, admin.KeyGuestsShowItems,
+	} {
 		if raw, ok := body[key]; ok {
 			var on bool
 			if err := unmarshalSetting(raw, key, &on); err != nil {

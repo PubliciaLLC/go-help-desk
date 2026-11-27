@@ -11,6 +11,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/audit"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/catalogue"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 )
@@ -395,6 +396,12 @@ func (s *Service) carryValues(ctx context.Context, from, to Ticket, requester bo
 // a follow-up staff opened counts), re-checked on the locked row in the
 // transaction that creates the ticket and its link. Per-address rate limits are
 // the caller's, as for a normal guest ticket.
+//
+// Deprecated: since #711 the levels a requester's follow-up carries are the
+// caller's choice, made from the levels that requester sees. This keeps the
+// shape before it (the type for an account holder, never the item) for callers
+// that have not moved; use CreateRequesterFollowUpKeeping. Removed in a later
+// release, in a commit of its own.
 func (s *Service) CreateRequesterFollowUp(
 	ctx context.Context,
 	originalID uuid.UUID,
@@ -402,6 +409,30 @@ func (s *Service) CreateRequesterFollowUp(
 	channel SourceChannel,
 	actor Actor,
 	open func(ctx context.Context, categoryID uuid.UUID, typeID *uuid.UUID) error,
+	route ...Assignment,
+) (Ticket, error) {
+	var open3 func(context.Context, uuid.UUID, *uuid.UUID, *uuid.UUID) error
+	if open != nil {
+		open3 = func(ctx context.Context, c uuid.UUID, ty, _ *uuid.UUID) error { return open(ctx, c, ty) }
+	}
+	return s.CreateRequesterFollowUpKeeping(ctx, originalID, trackingPrefix, channel, actor,
+		catalogue.Levels{Types: actor.UserID != nil}, open3, route...)
+}
+
+// CreateRequesterFollowUpKeeping is CreateRequesterFollowUp where keep says
+// whether the original's type and item are carried (#711: a requester's or a
+// guest's follow-up keeps what they were allowed to see, so it lands where the
+// original did; an item needs its type). The caller has already dropped a level
+// the original holds that is archived now, and routes on what is kept. open
+// then judges the classification as it will be filed, the item included.
+func (s *Service) CreateRequesterFollowUpKeeping(
+	ctx context.Context,
+	originalID uuid.UUID,
+	trackingPrefix string,
+	channel SourceChannel,
+	actor Actor,
+	keep catalogue.Levels,
+	open func(ctx context.Context, categoryID uuid.UUID, typeID, itemID *uuid.UUID) error,
 	route ...Assignment,
 ) (Ticket, error) {
 	if actor.Role != user.RoleUser {
@@ -448,11 +479,14 @@ func (s *Service) CreateRequesterFollowUp(
 		TrackingPrefix: trackingPrefix,
 		AutoAssign:     route,
 	}
-	if actor.UserID != nil {
-		in.TypeID = orig.TypeID // an account holder picks category and type
+	if keep.Types {
+		in.TypeID = orig.TypeID
+		if keep.Items {
+			in.ItemID = orig.ItemID
+		}
 	}
 	if open != nil {
-		if err := open(ctx, in.CategoryID, in.TypeID); err != nil {
+		if err := open(ctx, in.CategoryID, in.TypeID, in.ItemID); err != nil {
 			return Ticket{}, fmt.Errorf("%s: %w", err.Error(), ErrValidation)
 		}
 	}

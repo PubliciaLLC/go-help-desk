@@ -105,6 +105,11 @@ export function NewTicketPage() {
   const isStaffOrAdmin = user?.role === 'staff' || user?.role === 'admin'
   // The per-file limit is the instance's, which only /me carries (#673).
   const { data: me } = useQuery({ queryKey: ['me'], queryFn: getMe, retry: false })
+  // Whether there is an Item selector (#711): always for staff and
+  // administrators, and for a requester while an administrator has turned on
+  // Show Items to registered users, which /me reports. Absent (an older server, or
+  // /me not yet answered) is off, the form a requester has always had.
+  const canChooseItem = isStaffOrAdmin || (me?.can_choose_item ?? user?.can_choose_item ?? false)
 
   const [subject, setSubject] = useState('')
   const [description, setDescription] = useState('')
@@ -144,13 +149,13 @@ export function NewTicketPage() {
     enabled: !!categoryId,
   })
 
-  // Items are staff-only on the form itself — the role table gives a
-  // reporting user no item picker at all — so this stays gated on the role
-  // even though the endpoint would answer either way.
+  // Items are asked for only where the form has an Item selector: staff and
+  // administrators, and requesters while the setting is on (#711). The endpoint
+  // would answer either way; there is just nothing to show it in.
   const { data: items = [] } = useQuery({
     queryKey: ['public-items', categoryId, typeId],
     queryFn: () => listPublicItems(categoryId, typeId),
-    enabled: isStaffOrAdmin && !!categoryId && !!typeId,
+    enabled: canChooseItem && !!categoryId && !!typeId,
   })
 
   const { data: ctiFields = [] } = useQuery({
@@ -158,7 +163,7 @@ export function NewTicketPage() {
     queryFn: () => resolveFieldsForCTI({
       category_id: categoryId,
       type_id: typeId || undefined,
-      item_id: (isStaffOrAdmin && itemId) ? itemId : undefined,
+      item_id: (canChooseItem && itemId) ? itemId : undefined,
     }),
     enabled: !!categoryId,
   })
@@ -167,8 +172,8 @@ export function NewTicketPage() {
   // keeps a required inactive field from blocking submit.
   const visibleFields = ctiFields.filter((f) => f.visible_on_new && f.field_def?.active)
 
-  // The chosen rows, for the description beneath the chooser. Only staff and
-  // administrators choose an item, so a requester's itemId is always ''.
+  // The chosen rows, for the description beneath the chooser. Without an Item
+  // selector the itemId is always ''.
   const chosenCategory = categories.find((c) => c.id === categoryId)
   const chosenType = types.find((t) => t.id === typeId)
   const chosenItem = items.find((i) => i.id === itemId)
@@ -211,7 +216,7 @@ export function NewTicketPage() {
         description,
         category_id: categoryId,
         type_id: typeId || undefined,
-        item_id: isStaffOrAdmin ? (itemId || undefined) : undefined,
+        item_id: canChooseItem ? (itemId || undefined) : undefined,
         priority: isStaffOrAdmin ? priority : undefined,
         custom_fields: Object.keys(customFieldValues).length > 0 ? customFieldValues : undefined,
       })
@@ -326,7 +331,7 @@ export function NewTicketPage() {
               {/* The chooser and the text beneath it are one child of the form, so an
                   empty description leaves no gap. */}
               <div>
-                <div className={`grid grid-cols-1 gap-4 ${isStaffOrAdmin ? 'md:grid-cols-3' : 'md:grid-cols-2'}`}>
+                <div className={`grid grid-cols-1 gap-4 ${canChooseItem ? 'md:grid-cols-3' : 'md:grid-cols-2'}`}>
                   <div className="space-y-1">
                     <Label htmlFor="category">Category *</Label>
                     <Select
@@ -368,7 +373,7 @@ export function NewTicketPage() {
                     </Select>
                   </div>
 
-                  {isStaffOrAdmin && (
+                  {canChooseItem && (
                     <div className="space-y-1">
                       <Label htmlFor="item">Item</Label>
                       <Select
