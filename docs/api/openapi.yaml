@@ -592,8 +592,8 @@ paths:
         5 minutes when a code or passkey is owed, after 15 minutes when the
         person must enrol. After that, every route answers 401 as if there were
         no session (the session is deleted), and the person signs in again with
-        their password. When SAML is enabled, only administrators may use this
-        operation.
+        their password. When saml_enabled is on, only administrators may use this
+        operation (OIDC sign-in is limited the same way).
       tags: ['Authentication']
       x-ghd-handler: handleLocalLogin
       security: []
@@ -928,9 +928,16 @@ paths:
         JSON body, so the login page can show a fixed message. The codes are:
         invalid_session, invalid_state, idp_error, missing_code, internal_error,
         missing_id_token, invalid_id_token, domain_not_allowed, account_disabled,
-        account_link_refused, email_not_verified, invalid_email and email_taken.
+        account_link_refused, email_not_verified, invalid_email, email_taken and
+        saml_required (saml_enabled is on and the account is not an administrator:
+        see below).
         The only JSON answer, apart from a rare internal error when the session
         cannot be read or saved, is 503 when OIDC is not configured.
+        When saml_enabled ("Require SAML for staff and users") is on, only an
+        administrator may sign in here; anyone else is refused with saml_required,
+        before any account is created or linked, and no session is set. The check
+        is made at sign-in, so a session already issued is not ended when the
+        setting is turned on.
       tags: ['Single sign-on']
       x-ghd-handler: handleOIDCCallback
       security: []
@@ -1007,7 +1014,7 @@ paths:
       description: >-
         Lists the sign-in methods and whether each can be used right now. local
         is always true, even when the saml_enabled setting limits password
-        sign-in to administrators; local_admin_only says so (true exactly when
+        sign-in (and OIDC sign-in) to administrators; local_admin_only says so (true exactly when
         saml_enabled is on, which is the test local login applies). saml is true
         when the SAML middleware is loaded, whatever saml_enabled says, because
         GET /auth/saml/login works whenever it loaded. oidc is true when the OIDC
@@ -1061,6 +1068,9 @@ paths:
                     description: >-
                       True when password sign-in is limited to administrators
                       (saml_enabled is on). Non-administrators then get 403 saml_required.
+                      OIDC sign-in is limited the same way (the callback redirects to
+                      /login?error=saml_required), though oidc stays true here: this
+                      field is about the password form.
   /api/v1/auth/saml/acs:
     post:
       operationId: samlAcs
@@ -1337,7 +1347,7 @@ paths:
                   saml_enabled:
                     type: boolean
                     description: >-
-                      The saml_enabled setting, which limits password sign-in to administrators.
+                      The saml_enabled setting, which limits password and OIDC sign-in to administrators.
                       It does not say whether SAML sign-in is available.
   /api/v1/auth/verify-email:
     get:
@@ -1457,7 +1467,8 @@ paths:
         has passed MFA, an API key owned by staff or an administrator, and any OAuth
         client. Open to a signed-in caller of any role, to a key or OAuth client with no
         scopes, and to anyone when guest submission is enabled. Otherwise answers
-        401. Returns an empty array, never null.
+        401. Returns an empty array, never null. Unlike the type and item lists,
+        this one is the same for a guest whatever guests_show_types says.
       tags: ['Catalogue']
       x-ghd-handler: handleListPublicCategories
       security:
@@ -1502,7 +1513,9 @@ paths:
         OAuth client); everyone else gets active ones only, and none at all while the category is archived (so a
         requester's page can no longer resolve the type name of a ticket in an archived category). An
         unknown category gives an empty array; a failed lookup of the category is a 500. Same callers as the
-        category list.
+        category list. The levels a caller sees are one policy (#711): an answer for a level the caller may not
+        see is an empty array, never a refusal. A guest gets types only while guests_show_types is on (and
+        guest submission is); a signed-in requester always gets them; staff always.
       tags: ['Catalogue']
       x-ghd-handler: handleListPublicTypes
       security:
@@ -1555,7 +1568,11 @@ paths:
         client); everyone else gets active ones only, and none at all while the type or its category is archived.
         The category in the path is not looked up, so an item list is returned for any category id that is sent. An
         unknown type gives an empty array; a failed lookup of the type or its category is a 500. Same callers as the
-        category list.
+        category list. The levels a caller sees are one policy (#711): a guest gets items only while
+        guests_show_types and guests_show_items are on (and guest submission is), a signed-in requester only
+        while users_show_items is on, staff always; otherwise an empty array, never a refusal, so no item name
+        reaches a caller who may not see items. With users_show_items off a requester's ticket carries no
+        item_id either.
       tags: ['Catalogue']
       x-ghd-handler: handleListPublicItems
       security:
@@ -1620,6 +1637,119 @@ paths:
             text/plain:
               schema:
                 type: string
+  /api/v1/branding/icons/{file}:
+    get:
+      operationId: serveSiteIcon
+      summary: Fetch one file of the site icon.
+      description: >-
+        One of the seven files the server generated from the uploaded icon: a
+        favicon.ico holding 16, 32 and 48 pixel images, two PNG favicons that keep
+        their transparency, and four PNGs filled with the home screen background
+        (an iPhone icon, two Android and desktop sizes and a maskable one). Public,
+        so a browser can fetch them before anyone signs in. The master the files
+        are made from is never served; any other name, and every name while no icon
+        is stored, is a plain-text 404. The ETag is the icon's version, and a
+        request whose v query parameter equals that version gets a one-year
+        immutable cache; any other gets no-cache and the current file. A matching
+        If-None-Match is a 304. Served with the same sandboxing
+        Content-Security-Policy as the logo.
+      tags: ['Site']
+      x-ghd-handler: handleServeSiteIcon
+      security: []
+      parameters:
+        - name: file
+          in: path
+          required: true
+          schema:
+            type: string
+            enum:
+              - favicon.ico
+              - favicon-16.png
+              - favicon-32.png
+              - apple-touch-icon.png
+              - icon-192.png
+              - icon-512.png
+              - icon-maskable-512.png
+        - name: v
+          in: query
+          required: false
+          description: The icon's version, as the status and the manifest give it.
+          schema:
+            type: string
+            pattern: '^[0-9a-f]{16}$'
+      responses:
+        '200':
+          description: The file.
+          headers:
+            Cache-Control:
+              description: public, max-age=31536000, immutable when v is the current version; otherwise no-cache.
+              schema:
+                type: string
+            ETag:
+              description: The icon's version in double quotes.
+              schema:
+                type: string
+            Content-Security-Policy:
+              description: The logo policy, stricter than the site-wide one.
+              schema:
+                type: string
+          content:
+            image/png:
+              schema:
+                type: string
+                format: binary
+            image/x-icon:
+              schema:
+                type: string
+                format: binary
+        '304':
+          description: If-None-Match named the current version. No body.
+        '404':
+          description: No such file, or no icon is stored. Plain text body 404 page not found.
+          content:
+            text/plain:
+              schema:
+                type: string
+        '500':
+          description: >-
+            The file could not be read from storage (storage_error). A browser
+            that gets this keeps the icon it has, or shows none, until the next
+            request; the page and the manifest do not fail for it.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/v1/branding/manifest.webmanifest:
+    get:
+      operationId: getWebManifest
+      summary: Fetch the web app manifest.
+      description: >-
+        The document a browser reads to offer to install the site and to name it on
+        a home screen: the site name, the home screen name and, when an icon is
+        uploaded, its colours and files. Always answers; with no icon stored (or
+        one that cannot be read) it names the built-in icon. Public. Served with
+        no-cache and an ETag of its content, so a matching If-None-Match is a 304.
+      tags: ['Site']
+      x-ghd-handler: handleServeManifest
+      security: []
+      responses:
+        '200':
+          description: The manifest.
+          headers:
+            Cache-Control:
+              description: no-cache.
+              schema:
+                type: string
+            ETag:
+              description: A digest of the body in double quotes.
+              schema:
+                type: string
+          content:
+            application/manifest+json:
+              schema:
+                $ref: '#/components/schemas/WebManifest'
+        '304':
+          description: If-None-Match named the current content. No body.
   /api/v1/setup:
     post:
       operationId: setup
@@ -1710,7 +1840,7 @@ paths:
             application/json:
               schema:
                 type: object
-                required: [name, logo_url, version, guest_submission_enabled, guest_attachments_enabled]
+                required: [name, logo_url, version, guest_submission_enabled, guest_attachments_enabled, guests_show_types, guests_show_items]
                 properties:
                   name:
                     type: string
@@ -1731,6 +1861,20 @@ paths:
                       public: unlike the upload route, which answers the same
                       404 whether the setting or the token failed, this tells
                       anyone whether uploads are on. Accepted as low sensitivity.
+                  guests_show_types:
+                    type: boolean
+                    description: |
+                      Whether the guest form shows a Type under Category (#711). The
+                      effective value: true only while guest submission is also on,
+                      false by default and after an upgrade. Public, and it reveals only
+                      what opening /submit shows anyone; the type list it unlocks is
+                      public in that state.
+                  guests_show_items:
+                    type: boolean
+                    description: |
+                      Whether the guest form shows an Item under Type (#711). The
+                      effective value: true only while guests_show_types is too (an
+                      item hangs under a type), false by default and after an upgrade.
                   guest_attachment_max_bytes:
                     type: integer
                     format: int64
@@ -2404,8 +2548,9 @@ paths:
       description: |
         The custom fields an administrator has chosen to offer visitors under a category: the category's own
         attachments with Offer to guests (visible_to_guests) switched on that are also shown on the new-ticket
-        form, and whose field is active. Nothing attached to a type or an item is ever offered, because a guest
-        picks a category and nothing below it. The answer is exactly the set POST /guest/tickets accepts in
+        form, and whose field is active. Nothing attached to a type or an item is ever offered: the fields a
+        guest is offered are the category's own, even when the instance shows guests a Type and Item
+        (guests_show_types, guests_show_items, #711). The answer is exactly the set POST /guest/tickets accepts in
         custom_fields, in the order the form shows them (field number, then name).
 
         Answers 404 not_found while guest submission is switched off, 400 bad_request when category_id is
@@ -2468,7 +2613,9 @@ paths:
         subject is required and is limited to 500 bytes. description is limited to 50,000 bytes. category_id
         must name an active category that is open to guests. guest_email is required and must be a plain
         ASCII address without a display name (400 otherwise). guest_name is required. guest_phone is optional. Priority is always
-        medium and cannot be set by a guest.
+        medium and cannot be set by a guest. type_id is read only while guests are shown types, and item_id only
+        while they are shown items as well (guests_show_types and guests_show_items, #711); a level that is not
+        shown is ignored, as it always was. The fields a guest is offered stay the category's own.
         custom_fields takes only the fields GET /guest/fields lists for the category. Anything else (a field
         offered only to staff, one on a type, a deactivated one, an id that names nothing, a key that is not an
         id, an empty value for one of those) is 400 bad_request, as is a value the field does not accept and a
@@ -2505,6 +2652,18 @@ paths:
                   description: How description is shown. See TextFormatRequest.
                   $ref: '#/components/schemas/TextFormatRequest'
                 category_id: {$ref: '#/components/schemas/Uuid'}
+                type_id:
+                  description: |
+                    Optional, and only read while guests_show_types is on (#711): otherwise
+                    ignored, a malformed value included, as it always was. When read it must be a type
+                    of category_id that is active (400 bad_request otherwise).
+                  $ref: '#/components/schemas/Uuid'
+                item_id:
+                  description: |
+                    Optional, and only read while guests_show_types and guests_show_items are on (#711). It must
+                    belong to type_id, which must be sent with it, and be active (400 bad_request
+                    otherwise). Nothing is created and no tracking number is used on a refusal.
+                  $ref: '#/components/schemas/Uuid'
                 guest_email:
                   type: string
                   description: Address to send the link to. Must be a valid address and is stored lowercased.
@@ -3705,13 +3864,18 @@ paths:
         - name: type_id
           in: query
           required: false
-          description: Only tickets of this type.
+          description: >-
+            Only tickets of this type. 403 forbidden (`type_id is not available to this account`) for a caller
+            who is not shown types (#711).
           schema:
             $ref: '#/components/schemas/Uuid'
         - name: item_id
           in: query
           required: false
-          description: Only tickets of this item.
+          description: >-
+            Only tickets of this item. 403 forbidden (`item_id is not available to this account`) for a
+            reporting user while users_show_items is off (the default, #711), which is also when their tickets
+            carry no item_id. Staff and administrators always may.
           schema:
             $ref: '#/components/schemas/Uuid'
         - name: assignee_user_id
@@ -3871,7 +4035,9 @@ paths:
             Refused by the middleware (text/plain): the role or MFA or scope check
             failed. Or refused by the handler (application/json, `forbidden`):
             users cannot list group tickets; `<param> is not available to requesters`
-            for a staff-only filter; `sort by <column> is not available to requesters`;
+            for a staff-only filter; `item_id is not available to this account` (or `type_id ...`)
+            for a level of the classification the caller is not shown (#711);
+            `sort by <column> is not available to requesters`;
             you are not a member of that group (staff, scope enforcement on);
             only admins can use this scope (scope=unassigned or scope=all). Or
             `insufficient_scope` (application/json): `requester` from an API key or OAuth
@@ -3900,17 +4066,23 @@ paths:
         What the caller may set depends on the role.
         - Staff and administrators may set every field, including item_id and
           priority.
-        - A reporting user has item_id and priority ignored (priority becomes
-          medium), must file into an active category, and must use an active
-          type when type_id is sent.
+        - A reporting user has priority ignored (priority becomes medium), must
+          file into an active category, and must use an active type when type_id
+          is sent. Their item_id is ignored too, unless an administrator has
+          turned on users_show_items (#711, off by default, upgrades
+          included): then it is validated like staff's (400 bad_request unless
+          it belongs to type_id, which must be sent, and is active). The answer
+          carries item_id for a requester only in that state.
         - Nobody, staff and administrators included, may file into an archived
           category, type or item (400 bad_request, for example "item_id is not
           an active item"). Staff could before; that exception is gone. A
-          reporting user's item_id is dropped before this check, so the item
-          refusal is only ever seen by staff and administrators.
+          reporting user's item_id is dropped before this check while
+          users_show_items is off, so the item refusal is then only ever seen
+          by staff and administrators.
         subject is required after trimming. description is optional. subject is
         limited to 500 bytes and description to 50,000 bytes. type_id must belong
-        to category_id, and for staff an item_id must belong to type_id.
+        to category_id, and an item_id (staff, administrators, and a reporting user
+        while users_show_items is on) must belong to type_id.
         custom_fields maps custom field ids to values. They are written after the
         ticket exists, in one transaction, and never fail the request. An empty
         value means "no value" and is skipped without a word. Any other entry that
@@ -5840,9 +6012,10 @@ paths:
                     description: |
                       Present only while saml_enabled ("Require SAML for staff and
                       users") is on and SAML is not loaded: every staff and user
-                      password sign-in is refused (403 saml_required) and the login
-                      page has no SAML button, so they cannot sign in.
-                      Administrators keep password sign-in. Read from live state on
+                      password sign-in is refused (403 saml_required), as is every
+                      OIDC sign-in (saml_required), and the login page has no SAML
+                      button, so they cannot sign in.
+                      Administrators keep password and OIDC sign-in. Read from live state on
                       each request, so it is gone as soon as SAML loads or
                       saml_enabled is turned off, with no restart. Absent while
                       saml_enabled is off, whatever the SAML settings hold. The
@@ -6152,6 +6325,11 @@ paths:
         - guest_attachments_enabled must be a JSON boolean (null is refused). It
           is off unless set, upgrades included, and only takes effect while
           guest_submission_enabled is on.
+        - users_show_items, guests_show_types and guests_show_items (#711) must be
+          JSON booleans (null is refused). All are off unless set, upgrades included
+          (no migration: an absent row reads off), all are session only. The guest
+          ones only take effect while guest_submission_enabled is on, and
+          guests_show_items only while guests_show_types is too.
         - guest_attachment_max_per_ticket must be an integer from 1 to 50 (default
           5) and guest_attachment_uploads_per_hour an integer from 1 to 30 (default
           3). Anything else, including null, a string and a fraction, is refused
@@ -6219,6 +6397,12 @@ paths:
           reopen_target_status_name a string; site_logo_url a string that is
           empty, an http(s) URL, or a path on this site (starting with a single "/").
           null or any other type is refused (bad_request) and nothing is written.
+        - site_short_name, the name a phone prints under the icon on its home
+          screen, must be a string of at most 30 characters once trimmed, with no
+          control or invisible characters (a right-to-left override, a zero-width
+          space, U+2028). Empty means the site name is used. A number, a
+          boolean, null, a longer string or such a character is refused with 400
+          invalid_site_short_name and nothing is written. It is not session only.
         - saml_metadata_url and saml_metadata_xml cannot both be non-empty after
           the write, and saml_metadata_xml must be SAML IdP metadata of at most
           262144 bytes; either refusal is 400 bad_request. Declared encodings
@@ -6235,7 +6419,7 @@ paths:
           it is applied and the answer is 200 with a warning that names them. If it
           would leave no administrator able to sign in, it is refused with 400.
         - saml_enabled means "staff and users must use SAML" (administrators keep
-          password sign-in). When, after the write and the reload above,
+          password and OIDC sign-in). When, after the write and the reload above,
           saml_enabled is true and SAML is not loaded, staff and users cannot sign in
           at all. The write is still applied, and the answer is 200 with a warning
           to that effect. This is checked only when the body sets saml_enabled or
@@ -6250,7 +6434,8 @@ paths:
         oidc_redirect_url, mfa_enabled, mfa_enforced_roles, passkey_required_roles, allowed_email_domains,
         self_signup_enabled, open_registration_enabled, closed_reopen_policy,
         audit_mask_requester_names, guest_submission_enabled,
-        guest_attachments_enabled, attachment_max_mb, guest_attachment_max_mb,
+        guest_attachments_enabled, users_show_items, guests_show_types, guests_show_items,
+        attachment_max_mb, guest_attachment_max_mb,
         guest_attachment_max_per_ticket, guest_attachment_uploads_per_hour,
         attachment_scan_address, attachment_scan_policy, attachment_allowed_types,
         attachment_infected_handling, attachment_mismatch_handling,
@@ -6312,7 +6497,8 @@ paths:
             invalid_scan_policy, invalid_infected_handling,
             invalid_mismatch_handling, invalid_reputation_refresh,
             invalid_ticket_prefix, invalid_scanner_address, invalid_allowed_types,
-            invalid_reputation_config, invalid_staff_email_override.
+            invalid_reputation_config, invalid_staff_email_override,
+            invalid_site_short_name.
           content:
             application/json:
               schema:
@@ -6329,6 +6515,202 @@ paths:
             text/plain:
               schema:
                 $ref: '#/components/schemas/Error'
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+  /api/v1/admin/settings/icon:
+    get:
+      operationId: getSiteIcon
+      summary: Read the site icon status.
+      description: |
+        Administrators only (second factor required).
+        Whether an icon is uploaded, the home screen background colour, the
+        version that names the generated files, the side of the uploaded square
+        and the seven files with their URLs, pixel sizes and byte lengths. With no
+        icon stored, set is false, the background is the default #ffffff and files
+        is empty.
+      tags: ['Admin: Settings']
+      x-ghd-handler: handleGetSiteIcon
+      security:
+        - sessionCookie: []
+        - apiKey: ['settings:read']
+      x-ghd-roles: [admin]
+      x-ghd-mfa: true
+      responses:
+        '200':
+          description: The icon status.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SiteIconStatus'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          description: The icon could not be read (storage_error).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    post:
+      operationId: uploadSiteIcon
+      summary: Upload the site icon.
+      description: |
+        Administrators only (second factor required).
+        Accepts one PNG, JPEG or GIF of at most 5 MB in the multipart field icon,
+        which must be square, at least 512 and at most 4096 pixels on a side. The
+        format is judged by the file's first bytes, whatever its name or declared
+        type; SVG is refused. An animated GIF contributes its first frame. The
+        server scales the image into the seven served files and a stored 512 pixel
+        master, strips all metadata, and replaces any icon already stored, in one
+        transaction with its audit entry (site_icon_uploaded). The optional
+        multipart field background is a #rrggbb colour that fills the transparent
+        parts of the home screen icons; absent or empty, the stored icon's colour
+        is kept, else #ffffff. Nothing is written on any refusal, and the checks
+        run in the order the codes are listed.
+      tags: ['Admin: Settings']
+      x-ghd-handler: handleUploadSiteIcon
+      security:
+        - sessionCookie: []
+        - apiKey: ['settings:write']
+      x-ghd-roles: [admin]
+      x-ghd-mfa: true
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [icon]
+              properties:
+                icon:
+                  type: string
+                  format: binary
+                  description: The image file. Exactly one.
+                background:
+                  type: string
+                  pattern: '^#[0-9a-fA-F]{6}$'
+                  description: The home screen background colour. Stored in lower case.
+      responses:
+        '200':
+          description: The icon is stored. The new status.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SiteIconStatus'
+        '400':
+          description: |
+            Refused before anything is stored. The checks run in this order and the
+            first to fail answers, so an upload that breaks two rules gets the
+            earlier code: invalid_form (not multipart) or file_too_large (a body
+            over the cap), missing_field (no icon field), invalid_background (not
+            #rrggbb), file_too_large (the file is over 5 MB), invalid_type (not
+            PNG, JPEG or GIF), invalid_image (the header cannot be read),
+            icon_not_square, icon_too_small (under 512) or icon_too_large (over
+            4096), in that order of precedence, then invalid_image again (the
+            decoded size is over the limit, or the image cannot be decoded). The
+            message of the three icon_ codes names the image's size.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          description: The file could not be read, or the icon could not be saved (read_error, storage_error).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    patch:
+      operationId: updateSiteIcon
+      summary: Change the home screen background colour.
+      description: |
+        Administrators only (second factor required).
+        Sets the colour that fills the transparent parts of the four home screen
+        icons. They are made again from the stored files and the version changes;
+        the master and the transparent files are kept byte for byte. The change and
+        its audit entry (site_icon_background_changed) are one transaction. The
+        colour the icon already has is answered with the status, and nothing is
+        written or recorded.
+      tags: ['Admin: Settings']
+      x-ghd-handler: handleUpdateSiteIcon
+      security:
+        - sessionCookie: []
+        - apiKey: ['settings:write']
+      x-ghd-roles: [admin]
+      x-ghd-mfa: true
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [background]
+              properties:
+                background:
+                  type: string
+                  pattern: '^#[0-9a-fA-F]{6}$'
+      responses:
+        '200':
+          description: The new status.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SiteIconStatus'
+        '400':
+          description: |
+            Codes: bad_request (the body is not JSON), invalid_background (missing,
+            not a string, or not #rrggbb).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          description: No icon is uploaded (no_icon).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '500':
+          description: The icon could not be saved (storage_error).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    delete:
+      operationId: deleteSiteIcon
+      summary: Remove the site icon.
+      description: |
+        Administrators only (second factor required).
+        Deletes the stored icon and every file made from it, with its audit entry
+        (site_icon_removed), and the built-in icon is used again. With no icon
+        stored it still answers 204 and records nothing. Icons already on someone's
+        home screen may keep the old picture.
+      tags: ['Admin: Settings']
+      x-ghd-handler: handleDeleteSiteIcon
+      security:
+        - sessionCookie: []
+        - apiKey: ['settings:write']
+      x-ghd-roles: [admin]
+      x-ghd-mfa: true
+      responses:
+        '204':
+          $ref: '#/components/responses/NoContent'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '500':
+          description: The icon could not be removed (storage_error).
+          content:
             application/json:
               schema:
                 $ref: '#/components/schemas/Error'
@@ -11870,7 +12252,7 @@ components:
       allOf:
         - {$ref: '#/components/schemas/User'}
         - type: object
-          required: [can_use_available_queue]
+          required: [can_use_available_queue, can_choose_item]
           properties:
             api_key_max_lifetime_years:
               type: integer
@@ -11914,6 +12296,12 @@ components:
                 The largest file any upload may be, in bytes (attachment_max_mb, #673), so
                 the browser can refuse one before sending it. Always present on GET /me. The login
                 response's user does not carry it; read it from GET /me.
+            can_choose_item:
+              type: boolean
+              description: >-
+                Whether the new-ticket page offers this account an Item selector (#711): always true for staff
+                and administrators, and for a requester whether Items is visible to them (the users_show_items
+                setting, off by default). Always present on GET /me. Not on the public GET /site.
             can_use_available_queue:
               type: boolean
               description: >-
@@ -12077,7 +12465,10 @@ components:
         A reporting user (any role other than staff or administrator) receives
         only these keys: id, tracking_number, subject, description, description_format, status_id,
         priority, category_id, type_id, item_id, created_at, resolved_at,
-        assignee_user_id and resolution_notes. Everything else here
+        assignee_user_id and resolution_notes, except that item_id is sent only
+        while users_show_items is on (#711; off by default, so by default a
+        reporting user receives no item_id, in a ticket, a list, the dashboard,
+        the answer to creating or following up, or over MCP). Everything else here
         (assignee_group_id, reporter_user_id, guest_email, guest_name,
         guest_phone, closed_at, updated_at, pending_since, sla_paused_seconds,
         reopen_count, source_channel, has_quarantined_attachment) is for staff and administrators only. The same list applies to every
@@ -12975,6 +13366,91 @@ components:
         inline:
           type: boolean
           description: True on the one entry that the summary repeats. False on every entry when nothing answered.
+    SiteIconFile:
+      type: object
+      description: One generated file of the site icon.
+      required: [name, url, sizes, bytes]
+      properties:
+        name:
+          type: string
+          enum: [favicon.ico, favicon-16.png, favicon-32.png, apple-touch-icon.png, icon-192.png, icon-512.png, icon-maskable-512.png]
+        url:
+          type: string
+          description: The public URL with the version, for example /api/v1/branding/icons/favicon.ico?v=9f1c2a7b3d4e5f60.
+        sizes:
+          type: array
+          items:
+            type: integer
+          description: The pixel sides inside the file, one for a PNG and 16, 32 and 48 for the .ico.
+        bytes:
+          type: integer
+          description: The length of the file.
+    SiteIconStatus:
+      type: object
+      description: The state of the site icon.
+      required: [set, background, version, source_size, updated_at, files]
+      properties:
+        set:
+          type: boolean
+          description: Whether an icon is uploaded. False means the built-in icon is used.
+        background:
+          type: string
+          pattern: '^#[0-9a-f]{6}$'
+          description: The colour behind the home screen icons. #ffffff when none is stored.
+        version:
+          type: string
+          description: A 16 character digest of the served files, empty when no icon is stored. It changes when a file does.
+        source_size:
+          type: integer
+          description: The side, in pixels, of the square that was uploaded. 0 when none is stored.
+        updated_at:
+          type: [string, 'null']
+          format: date-time
+          description: When the icon was last uploaded or recoloured. Null when none is stored.
+        files:
+          type: array
+          description: The seven served files in a fixed order. Empty when no icon is stored.
+          items:
+            $ref: '#/components/schemas/SiteIconFile'
+    WebManifest:
+      type: object
+      description: The web app manifest. theme_color is absent while no icon is stored.
+      required: [id, name, short_name, start_url, scope, display, background_color, icons]
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+          description: The site name.
+        short_name:
+          type: string
+          description: The home screen name, which is the site name unless site_short_name is set.
+        start_url:
+          type: string
+        scope:
+          type: string
+        display:
+          type: string
+          enum: [standalone]
+        background_color:
+          type: string
+        theme_color:
+          type: string
+        icons:
+          type: array
+          items:
+            type: object
+            required: [src, sizes, type, purpose]
+            properties:
+              src:
+                type: string
+              sizes:
+                type: string
+              type:
+                type: string
+              purpose:
+                type: string
+                enum: [any, maskable]
     SettingsValues:
       description: |
         The setting names this instance reads, with the type each reader expects.
@@ -13036,6 +13512,28 @@ components:
             Whether a guest may attach files from the web page (#445). Off by
             default. Only takes effect while guest_submission_enabled is on.
             Session only.
+        users_show_items:
+          type: boolean
+          description: |
+            Whether registered requesters are shown the Item (#711): the Item
+            selector on the new-ticket page, and item_id on their tickets, in
+            lists, in filters and over MCP. Off by default and after an upgrade
+            (an absent row reads off). Staff and administrators always see items.
+            Session only.
+        guests_show_types:
+          type: boolean
+          description: |
+            Whether guests are shown the Type on the guest form (#711). Off by
+            default and after an upgrade (an absent row reads off). Only takes
+            effect while guest_submission_enabled is on. Turning it on makes every
+            active type name and description public. Session only.
+        guests_show_items:
+          type: boolean
+          description: |
+            Whether guests are shown the Item under the Type (#711). Off by default
+            and after an upgrade (an absent row reads off). Only takes effect while
+            guest_submission_enabled and guests_show_types are on. Turning it on
+            makes every active item name and description public. Session only.
         guest_attachment_max_per_ticket:
           type: integer
           minimum: 1
@@ -13201,6 +13699,12 @@ components:
         site_logo_url:
           type: string
           description: The logo URL, set by the logo upload and cleared by its delete.
+        site_short_name:
+          type: string
+          maxLength: 30
+          description: >-
+            What a phone prints under the icon on its home screen. At most 30
+            characters, no control or invisible characters. Empty or unset means the site name.
         ticket_prefix:
           type: string
           pattern: '^[A-Z0-9]{1,8}$'

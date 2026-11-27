@@ -83,9 +83,12 @@ export async function uploadGuestAttachment(token: string, file: File): Promise<
 export interface GuestTicketInput {
   subject: string
   description: string
-  // Category only. A guest does not pick a type or an item — the server
-  // ignores both, and accepting them here would suggest otherwise.
+  // A guest picks a category, and a type and an item only while the instance
+  // shows guests them (#711, site.guests_show_types and guests_show_items). Otherwise the server
+  // ignores both, so the form does not send them.
   category_id: string
+  type_id?: string
+  item_id?: string
   guest_email: string
   guest_name: string
   guest_phone?: string

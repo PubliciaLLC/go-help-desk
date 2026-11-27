@@ -2,7 +2,6 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <!-- #709: both metas ship as "either" and are narrowed to the chosen theme by
          /theme-init.js before first paint (and by the app afterwards). -->
@@ -17,8 +16,13 @@
     <script src="/theme-init.js"></script>
     <!-- Vite's scaffold default was "frontend" (#57). This is only the value
          shown before React mounts; useSiteBranding then applies the instance's
-         configured site_name. -->
+         configured site_name. The Go server replaces everything between the
+         ghd:head markers per request (#708); the lines inside are what the
+         Vite dev server shows. -->
+    <!-- ghd:head -->
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <title>Go Help Desk</title>
+    <!-- /ghd:head -->
   </head>
   <body>
     <div id="root"></div>

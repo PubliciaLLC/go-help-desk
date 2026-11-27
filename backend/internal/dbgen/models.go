@@ -227,6 +227,21 @@ type Setting struct {
 	Value json.RawMessage `json:"value"`
 }
 
+type SiteIcon struct {
+	ID           bool      `json:"id"`
+	Background   string    `json:"background"`
+	Version      string    `json:"version"`
+	SourceSize   int32     `json:"source_size"`
+	SourceSha256 string    `json:"source_sha256"`
+	UpdatedAt    time.Time `json:"updated_at"`
+}
+
+type SiteIconFile struct {
+	Name   string `json:"name"`
+	IconID bool   `json:"icon_id"`
+	Data   []byte `json:"data"`
+}
+
 type SlaPolicy struct {
 	ID                  uuid.UUID      `json:"id"`
 	Name                string         `json:"name"`

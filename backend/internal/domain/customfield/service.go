@@ -369,9 +369,10 @@ func (s *Service) Attach(ctx context.Context, a Assignment, actor *uuid.UUID) (A
 	return s.store.CreateAssignment(ctx, a, func(info AssignmentInfo) audit.Entry { return entryAttached(actor, info, a) })
 }
 
-// checkGuestScope: a guest chooses a category and nothing below it, so only a
-// category's attachment can be offered to one. A flag on a type or an item would
-// promise a field no guest can ever be given.
+// checkGuestScope: the fields a guest is offered are the category's own, whatever
+// Type and Item they may choose below it (#711), so only a category's attachment
+// can be offered to one. A flag on a type or an item would promise a field no
+// guest can ever be given.
 func checkGuestScope(a Assignment) error {
 	if a.VisibleToGuests && a.ScopeType != CategoryScope {
 		return Invalid("only a field attached to a category can be offered to guests")
@@ -858,9 +859,9 @@ func (s *Service) CheckCreation(ctx context.Context, categoryID uuid.UUID, typeI
 
 // GuestFields is the fields an anonymous visitor filing under the category is
 // offered: the category's own attachments that an administrator switched on for
-// guests, that are shown on the new-ticket form, and whose field is active. A
-// guest picks a category and nothing below it, so nothing attached to a type or
-// an item can be here. Everything else a guest asks about is judged against this
+// guests, that are shown on the new-ticket form, and whose field is active. Only
+// the category's own are offered, even when the guest may choose a Type and Item
+// (#711), so nothing attached to a type or an item can be here. Everything else a guest asks about is judged against this
 // list, which is why it is built from an explicit opt-in and never from "not
 // marked internal": a field added later is not offered until someone says so.
 func (s *Service) GuestFields(ctx context.Context, categoryID uuid.UUID) ([]Assignment, error) {

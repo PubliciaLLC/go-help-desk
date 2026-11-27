@@ -2,9 +2,26 @@ import path from 'path'
 import { defineConfig } from 'vitest/config'
 import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
+import { headMarkersProblem } from './headMarkers.ts'
+
+// The server rewrites the head of the page between two comments (#708). A build
+// that dropped or moved them would ship a server that silently keeps the
+// default icon, so the build fails instead. Runs on the page the build emits.
+const ghdHeadMarkers = {
+  name: 'ghd-head-markers',
+  apply: 'build' as const,
+  transformIndexHtml: {
+    order: 'post' as const,
+    handler(html: string) {
+      const problem = headMarkersProblem(html)
+      if (problem) throw new Error(`index.html: ${problem}`)
+      return html
+    },
+  },
+}
 
 export default defineConfig({
-  plugins: [react(), tailwindcss()],
+  plugins: [react(), tailwindcss(), ghdHeadMarkers],
   resolve: {
     alias: {
       '@': path.resolve(__dirname, './src'),

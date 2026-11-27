@@ -2,7 +2,7 @@ package admin_test
 
 import (
 	"context"
-	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/admin"
@@ -21,7 +21,7 @@ func newFakeAdminStore() *fakeAdminStore {
 func (f *fakeAdminStore) Get(_ context.Context, key string) ([]byte, error) {
 	v, ok := f.data[key]
 	if !ok {
-		return nil, errors.New("not found")
+		return nil, fmt.Errorf("getting setting %q: %w", key, admin.ErrSettingNotFound)
 	}
 	return v, nil
 }

@@ -9,6 +9,14 @@ import type { SettingsDraft } from '@/pages/admin/settings/useSettingsDraft'
 export function SubmissionsSection({ draft }: { draft: SettingsDraft }) {
   const { bool, setBool, num, setNum, has } = draft
   const { overallMB, guestValue } = attachmentLimits(draft)
+  // Why a guest level is unavailable, said in words and tied to its switch.
+  const submissionOff = !bool('guest_submission_enabled')
+  const typesOff = !bool('guests_show_types')
+  const itemsWhy = submissionOff
+    ? 'Unavailable while guest submission is off.'
+    : typesOff
+      ? 'Unavailable while Show Types to guests is off.'
+      : undefined
   return (
     <Section title="Submissions">
       <SettingRow
@@ -31,6 +39,37 @@ export function SubmissionsSection({ draft }: { draft: SettingsDraft }) {
           onChange={(v) => setBool('guest_attachments_enabled', v)}
         />
       </SettingRow>
+      {/* Dependent on guest submission, like the row above, and Items on Types
+          (#711): the server computes the effective values, so the stored ones
+          are kept while a toggle is unavailable. */}
+      <SettingRow
+        label="Show Types to guests"
+        description="Show guests a Type selector under Category on the guest form, with the same descriptions. Off by default: guests choose a Category only. It only takes effect while guest submission is on, and it makes the names and descriptions of every active type public to anyone who can open the form."
+      >
+        <Toggle
+          label="Show Types to guests"
+          checked={bool('guests_show_types')}
+          disabled={submissionOff}
+          describedBy={submissionOff ? 'guests-show-types-why' : undefined}
+          onChange={(v) => setBool('guests_show_types', v)}
+        />
+      </SettingRow>
+      {submissionOff && (
+        <p id="guests-show-types-why" className="px-5 pb-3 text-xs text-gray-500">Unavailable while guest submission is off.</p>
+      )}
+      <SettingRow
+        label="Show Items to guests"
+        description="Show guests an Item selector under Type on the guest form. Needs guest submission on and Show Types to guests, and makes the names and descriptions of every active item public too. This is separate from Show Items to registered users: with this on and that off, a registered user can sign out and read the item list."
+      >
+        <Toggle
+          label="Show Items to guests"
+          checked={bool('guests_show_items')}
+          disabled={Boolean(itemsWhy)}
+          describedBy={itemsWhy ? 'guests-show-items-why' : undefined}
+          onChange={(v) => setBool('guests_show_items', v)}
+        />
+      </SettingRow>
+      {itemsWhy && <p id="guests-show-items-why" className="px-5 pb-3 text-xs text-gray-500">{itemsWhy}</p>}
       <div className="border-t px-5 py-4 space-y-2">
         <div className="text-sm text-fg-faint">
           The largest file a guest may attach. It can never exceed the per-file limit for every upload, {overallMB} MB, set under System → File Attachments.

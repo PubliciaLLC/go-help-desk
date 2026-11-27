@@ -900,6 +900,13 @@ func (s *Service) UpsertFederatedUser(
 	)
 }
 
+// GetByOIDCSubject returns the live account bound to an OIDC subject, or
+// ErrNotFound. It reads and writes nothing else, so a caller can ask who a
+// sign-in would be before UpsertOIDCUser provisions or adopts anything.
+func (s *Service) GetByOIDCSubject(ctx context.Context, subject string) (User, error) {
+	return s.store.GetByOIDCSubject(ctx, strings.TrimSpace(subject))
+}
+
 // UpsertOIDCUser creates or updates a user record from an OIDC identity.
 //
 // The "sub" claim is the primary key: it is immutable and scoped to the

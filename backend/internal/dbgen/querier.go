@@ -376,6 +376,7 @@ type Querier interface {
 	// and MFA reset — the events after which a cookie minted under the old state
 	// must stop working.
 	DeleteSessionsForUser(ctx context.Context, userID uuid.NullUUID) error
+	DeleteSiteIcon(ctx context.Context) (int64, error)
 	// A row only has to outlive the cookie it records. The cookie lives 5 minutes
 	// (auth.SAMLHandoverMaxAge). A day leaves a wide margin for clock differences
 	// between the replica that minted the cookie (whose clock sets its expiry) and
@@ -605,6 +606,10 @@ type Querier interface {
 	// authority left being carried rather than looked up.
 	GetSession(ctx context.Context, id string) (GetSessionRow, error)
 	GetSetting(ctx context.Context, key string) (json.RawMessage, error)
+	// Site icon (#708): one row of metadata and up to eight files (master.png and
+	// the seven the server generates). See domain/siteicon.
+	GetSiteIcon(ctx context.Context) (GetSiteIconRow, error)
+	GetSiteIconFile(ctx context.Context, name string) (GetSiteIconFileRow, error)
 	GetStatus(ctx context.Context, id uuid.UUID) (Status, error)
 	GetStatusByName(ctx context.Context, name string) (Status, error)
 	GetTagByName(ctx context.Context, name string) (Tag, error)
@@ -922,6 +927,7 @@ type Querier interface {
 	// first. A NULL started_at is the ticket's creation.
 	ListSLARecordsForTicket(ctx context.Context, ticketID uuid.UUID) ([]SlaRecord, error)
 	ListSettings(ctx context.Context) ([]Setting, error)
+	ListSiteIconFileSizes(ctx context.Context) ([]ListSiteIconFileSizesRow, error)
 	// The category/type pairs the caller's groups cover, for ListTicketsFiltered's
 	// scoped visibility. type_id NULL means the whole category.
 	ListStaffScopeRows(ctx context.Context, userID uuid.UUID) ([]ListStaffScopeRowsRow, error)
@@ -1050,6 +1056,7 @@ type Querier interface {
 	// UnassignTicketsForGroup and the delete would lose its group silently, which
 	// is the gap this exists to close.
 	LockGroup(ctx context.Context, id uuid.UUID) (uuid.UUID, error)
+	LockSiteIcon(ctx context.Context) (LockSiteIconRow, error)
 	// Takes the user row so that two writers of a first factor are ordered (#617).
 	//
 	// A first TOTP confirm and a first passkey registration each ask "does this
@@ -1603,6 +1610,8 @@ type Querier interface {
 	// reason inverted: a frozen, earlier now() would keep an expired session
 	// loading.
 	UpsertSession(ctx context.Context, arg UpsertSessionParams) error
+	UpsertSiteIcon(ctx context.Context, arg UpsertSiteIconParams) error
+	UpsertSiteIconFile(ctx context.Context, arg UpsertSiteIconFileParams) error
 	// One row per delivery; each attempt updates it. attempts counts them here
 	// rather than trusting the caller, so two replicas cannot disagree.
 	UpsertWebhookDelivery(ctx context.Context, arg UpsertWebhookDeliveryParams) error

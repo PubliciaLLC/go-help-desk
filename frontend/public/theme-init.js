@@ -10,6 +10,12 @@
   if (dark) html.classList.add('dark')
   var cs = document.querySelector('meta[name="color-scheme"]')
   if (cs) cs.setAttribute('content', dark ? 'dark' : 'light')
-  var tc = document.querySelector('meta[name="theme-color"]')
-  if (tc) tc.setAttribute('content', dark ? '#101828' : '#ffffff')
+  // Browsers use the first theme-color meta. When the server adds a second one
+  // (an uploaded icon's background, #708) it is the light colour; the first is
+  // the one this script and theme.ts drive.
+  var tcs = document.querySelectorAll('meta[name="theme-color"]')
+  if (tcs.length) {
+    var light = tcs.length > 1 ? tcs[tcs.length - 1].getAttribute('content') : '#ffffff'
+    tcs[0].setAttribute('content', dark ? '#101828' : light)
+  }
 })()

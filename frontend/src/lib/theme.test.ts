@@ -157,6 +157,23 @@ describe('applyTheme', () => {
     expect(color.getAttribute('content')).toBe(THEME_COLOR.light)
   })
 
+  it('keeps the server\'s icon colour as the light colour (#708): the first meta is driven, the last holds light', () => {
+    const first = document.querySelector('meta[name="theme-color"]')!
+    const server = document.createElement('meta')
+    server.setAttribute('name', 'theme-color')
+    server.setAttribute('content', '#102030')
+    document.head.appendChild(server)
+    try {
+      applyTheme('dark')
+      expect(first.getAttribute('content')).toBe(THEME_COLOR.dark)
+      expect(server.getAttribute('content')).toBe('#102030')
+      applyTheme('light')
+      expect(first.getAttribute('content')).toBe('#102030')
+    } finally {
+      server.remove()
+    }
+  })
+
   it('is idempotent, and a second call with the same theme starts no switch', () => {
     applyTheme('dark')
     html.removeAttribute('data-theme-switching')

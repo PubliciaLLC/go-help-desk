@@ -30,6 +30,16 @@ function run(stored: Stored, systemDark: boolean | 'no-matchmedia') {
   }
 }
 
+describe('theme-init.js with a server theme-color (#708)', () => {
+  it.each([[true, '#101828'], [false, '#102030']])('dark=%s: the first meta shows %s', (systemDark, want) => {
+    const doc = document.implementation.createHTMLDocument('t')
+    doc.head.innerHTML = '<meta name="theme-color" content="#ffffff"><meta name="theme-color" content="#102030">'
+    const win = { localStorage: { getItem: () => null }, matchMedia: () => ({ matches: systemDark }) }
+    new Function('window', 'document', script)(win, doc)
+    expect(doc.querySelectorAll('meta[name="theme-color"]')[0].getAttribute('content')).toBe(want)
+  })
+})
+
 /** What src/lib/theme.ts says for the same inputs. */
 function expected(stored: Stored, systemDark: boolean) {
   const storage = {

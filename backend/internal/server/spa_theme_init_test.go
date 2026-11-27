@@ -23,7 +23,7 @@ func TestSPAHandler_ServesThemeInit(t *testing.T) {
 		"index.html":    &fstest.MapFile{Data: []byte("<!doctype html><title>x</title>")},
 		"theme-init.js": &fstest.MapFile{Data: []byte(script)},
 	}
-	h := server.NewSPAHandler(ui)
+	h := server.NewSPAHandler(ui, nil)
 
 	rr := httptest.NewRecorder()
 	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/theme-init.js", nil))
@@ -55,7 +55,7 @@ func TestSPAHandler_ThemeInitRevalidates(t *testing.T) {
 			req.Header.Set("If-None-Match", inm)
 		}
 		rr := httptest.NewRecorder()
-		server.NewSPAHandler(ui).ServeHTTP(rr, req)
+		server.NewSPAHandler(ui, nil).ServeHTTP(rr, req)
 		return rr
 	}
 
@@ -81,7 +81,7 @@ func TestSPAHandler_MissingThemeInitIsNotFound(t *testing.T) {
 	ui := fstest.MapFS{
 		"index.html": &fstest.MapFile{Data: []byte("<!doctype html><title>x</title>")},
 	}
-	h := server.NewSPAHandler(ui)
+	h := server.NewSPAHandler(ui, nil)
 
 	rr := httptest.NewRecorder()
 	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/theme-init.js", nil))
@@ -95,7 +95,7 @@ func TestSPAHandler_OtherFilesKeepTheirHeaders(t *testing.T) {
 		"index.html":    &fstest.MapFile{Data: []byte("<!doctype html>")},
 		"assets/app.js": &fstest.MapFile{Data: []byte("export {}")},
 	}
-	h := server.NewSPAHandler(ui)
+	h := server.NewSPAHandler(ui, nil)
 	rr := httptest.NewRecorder()
 	h.ServeHTTP(rr, httptest.NewRequest(http.MethodGet, "/assets/app.js", nil))
 	require.Equal(t, http.StatusOK, rr.Code)

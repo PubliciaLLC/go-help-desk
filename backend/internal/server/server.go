@@ -25,6 +25,7 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/audit"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/cannedresponse"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/catalogue"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/category"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/customfield"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/emailtemplate"
@@ -34,6 +35,7 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/plugin"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/registration"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/report"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/siteicon"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/sla"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/tag"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
@@ -263,6 +265,10 @@ type Server struct {
 	// The template editor (#158). Nil unless WithEmailTemplates gave them.
 	emailTemplates emailtemplate.Store
 	templateMailer TemplateMailer
+	// The site icon (#708). Nil unless WithSiteIcons gave one: the icon routes
+	// then answer 404, the manifest and the shell use the built-in icon, and
+	// an administrator's write is refused.
+	siteIcons siteicon.Store
 	// templateTestLimiter caps template test sends per administrator
 	// (templateTestsPerWindow in templateTestWindow).
 	templateTestLimiter *ratelimit.Limiter
@@ -690,6 +696,11 @@ func (s *Server) buildRouter() *chi.Mux {
 		// Public endpoints — no auth required.
 		r.Get("/site", s.handleGetSiteConfig)
 		r.Get("/logo", s.handleServeLogo)
+		// The site icon and the manifest that names it (#708). Public for the
+		// reason the logo is: a browser asks for them with no credential, and
+		// the sign-in page has a tab too.
+		r.Get("/branding/icons/{file}", s.handleServeSiteIcon)
+		r.Get("/branding/manifest.webmanifest", s.handleServeManifest)
 		r.Get("/setup/status", s.handleSetupStatus)
 		r.Post("/setup", s.handleSetup)
 
@@ -827,6 +838,46 @@ func (s *Server) categoryIsActive(ctx context.Context, id uuid.UUID) (bool, erro
 	return c.Active, nil
 }
 
+// levelsFor is what the caller of this request sees of the tree below the
+// category (#711): the one policy, catalogue.VisibleLevels, applied to who is
+// asking. A request with no actor is a guest. A session that has not finished
+// MFA or owes a password change is not staff here, as for the archived rows
+// (catalogueIsFullyVisible), and is a requester. Every surface that serves a
+// type or an item asks this or levelsOfActor and restates nothing.
+func (s *Server) levelsFor(r *http.Request) catalogue.Levels {
+	a := authmw.GetActor(r)
+	switch {
+	case a == nil:
+		return s.levelsOf(r.Context(), catalogue.Guest)
+	case catalogueIsFullyVisible(r):
+		return s.levelsOf(r.Context(), catalogue.Staff)
+	}
+	return s.levelsOf(r.Context(), catalogue.Requester)
+}
+
+// levelsOfActor is the same for a caller that is already an actor: an API key
+// or OAuth client carries its owner's role, so it sees what that person's
+// session sees. A nil actor is nobody (Unknown, which sees nothing below the
+// category), not a guest: the one place that means a guest is levelsFor, on the
+// public catalogue. Everything else, viewerJSON and MCP included, agrees.
+func (s *Server) levelsOfActor(ctx context.Context, a *authmw.Actor) catalogue.Levels {
+	if a == nil {
+		return s.levelsOf(ctx, catalogue.Unknown)
+	}
+	return s.levelsOf(ctx, catalogue.WhoOfRole(a.Role))
+}
+
+func (s *Server) levelsOf(ctx context.Context, who catalogue.Who) catalogue.Levels {
+	return catalogue.VisibleLevels(ctx, s.adminSvc, who)
+}
+
+// VisibleLevels is which levels of the classification the actor may see: the one
+// policy, for the actor's role (mcp.Authorizer). A machine credential's role is
+// its owner's.
+func (s *Server) VisibleLevels(ctx context.Context, a *authmw.Actor) catalogue.Levels {
+	return s.levelsOfActor(ctx, a)
+}
+
 // handleListPublicTypes returns only active types for a category.
 func (s *Server) handleListPublicTypes(w http.ResponseWriter, r *http.Request) {
 	catID, err := uuid.Parse(chi.URLParam(r, "id"))
@@ -835,6 +886,12 @@ func (s *Server) handleListPublicTypes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	staff := catalogueIsFullyVisible(r)
+	// A level the caller may not see is the empty answer of a category with no
+	// children (#711), so a refusal is not a different answer to learn from.
+	if !s.levelsFor(r).Types {
+		JSON(w, http.StatusOK, []category.Type{})
+		return
+	}
 	// Archiving does not cascade, so an archived category's types are still
 	// active. Anyone but staff is offered nothing under a retired parent.
 	if !staff {
@@ -864,6 +921,10 @@ func (s *Server) handleListPublicItems(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	staff := catalogueIsFullyVisible(r)
+	if lv := s.levelsFor(r); !lv.Types || !lv.Items { // see handleListPublicTypes
+		JSON(w, http.StatusOK, []category.Item{})
+		return
+	}
 	if !staff {
 		// The category in the path is not looked up (see the OpenAPI note), so the
 		// type's own category is the one that counts.
@@ -914,12 +975,17 @@ func (s *Server) handleGetSiteConfig(w http.ResponseWriter, r *http.Request) {
 	// anyone can read it, with the effective limit. Accepted (low sensitivity,
 	// and the guest ticket's allow-list stays untouched). The size is the EFFECTIVE limit (the lower of the setting and the
 	// instance-wide maximum), omitted while uploads are off.
+	guestLevels := s.levelsOf(r.Context(), catalogue.Guest)
 	cfg := map[string]any{
 		"name":                      s.adminSvc.SiteName(r.Context()),
 		"logo_url":                  s.adminSvc.SiteLogoURL(r.Context()),
 		"version":                   version.Version,
 		"guest_submission_enabled":  s.adminSvc.GuestSubmissionEnabled(r.Context()),
 		"guest_attachments_enabled": s.adminSvc.GuestAttachmentsEnabled(r.Context()),
+		// The effective value (#711), so the guest form knows whether to offer
+		// a Type and an Item. What opening /submit shows anyone anyway.
+		"guests_show_types": guestLevels.Types,
+		"guests_show_items": guestLevels.Items,
 	}
 	if cfg["guest_attachments_enabled"] == true {
 		cfg["guest_attachment_max_bytes"] = s.guestAttachmentMaxBytes(r.Context())
@@ -1032,8 +1098,8 @@ func (s *Server) InitSAML(ctx context.Context) {
 //
 // Deliberately takes no enabled flag. #304's first draft gave SAML one,
 // reusing the existing saml_enabled setting — which turned out to already
-// have a real, unrelated meaning (user.IsLocalAuthAllowed reads it to decide
-// whether non-admins may still use a password once SAML is configured), so
+// have a real, unrelated meaning (user.MaySignInWithoutSAML reads it to decide
+// whether non-admins may still use a password, or OIDC, once SAML is configured), so
 // wiring it into whether the middleware loads at all would have made
 // flipping that switch — which many operators use purely to require SSO for
 // staff while keeping SAML itself already running — also silently take SAML

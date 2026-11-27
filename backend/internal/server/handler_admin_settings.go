@@ -326,6 +326,19 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The home screen name (#708): what a phone prints under the icon. Any
+	// string up to 30 characters without control or invisible characters; empty means "use
+	// the site name". A number, a boolean or null is refused rather than stored
+	// to be read back as empty.
+	if raw, ok := body[admin.KeySiteShortName]; ok {
+		var v string
+		if err := unmarshalSetting(raw, admin.KeySiteShortName, &v); err != nil || admin.ValidSiteShortName(v) != nil {
+			Error(w, http.StatusBadRequest, "invalid_site_short_name",
+				"the home screen name can be at most 30 characters and cannot contain control or invisible characters")
+			return
+		}
+	}
+
 	// guest_submission_enabled decides whether anonymous people on the
 	// internet can file tickets into this instance, and — since the category
 	// catalogue stopped being anonymous (see requireSignedInOrGuestsEnabled
@@ -488,7 +501,13 @@ func (s *Server) handleUpdateSettings(w http.ResponseWriter, r *http.Request) {
 	// alerts switch (#670): booleans and nothing else. A string "true", a number
 	// or an object would be stored and read back as off, so the operator would
 	// believe they had chosen.
-	for _, key := range []string{admin.KeyUpdateCheckEnabled, admin.KeyPostUpgrade130Seen, admin.KeySLAAlertsEnabled} {
+	//
+	// The three #711 switches are the same: a string "true" would read back as
+	// off, and the administrator would believe they had opened the form.
+	for _, key := range []string{
+		admin.KeyUpdateCheckEnabled, admin.KeyPostUpgrade130Seen, admin.KeySLAAlertsEnabled,
+		admin.KeyUsersShowItems, admin.KeyGuestsShowTypes, admin.KeyGuestsShowItems,
+	} {
 		if raw, ok := body[key]; ok {
 			var on bool
 			if err := unmarshalSetting(raw, key, &on); err != nil {
@@ -1022,9 +1041,9 @@ func isJSONNull(raw json.RawMessage) bool {
 //
 // saml_enabled is deliberately NOT one of the keys this watches. #304's
 // first draft treated it as SAML's counterpart to oidc_enabled; it turned
-// out to already be a real, unrelated setting (user.IsLocalAuthAllowed
-// reads it to decide whether non-admins keep password login once SAML is
-// configured), and reverting that draft took SAML reachability back to
+// out to already be a real, unrelated setting (user.MaySignInWithoutSAML
+// reads it to decide whether non-admins keep password and OIDC sign-in once
+// SAML is configured), and reverting that draft took SAML reachability back to
 // depending on the three config fields alone — see samlFieldsLookConfigured
 // and buildSAMLMiddleware's own comments.
 //

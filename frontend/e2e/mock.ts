@@ -531,6 +531,82 @@ export const SAML_CERT = '-----BEGIN CERTIFICATE-----\nMIIBszCCAVmgAwIBAgIUQ0hlY
 
 const LONG_GROUP = { id: 'grp-1', name: LONG_NAME, description: LONG_DESC }
 
+// ── Site icon (#708) ─────────────────────────────────────────────────────────
+
+/** A 1 x 1 transparent PNG: what every generated icon is served as here. */
+export const TINY_PNG = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==',
+  'base64',
+)
+
+const ICON_VERSION = '9f1c2a7b3d4e5f60'
+const ICON_FILES: Array<[string, number[]]> = [
+  ['favicon.ico', [16, 32, 48]],
+  ['favicon-16.png', [16]],
+  ['favicon-32.png', [32]],
+  ['apple-touch-icon.png', [180]],
+  ['icon-192.png', [192]],
+  ['icon-512.png', [512]],
+  ['icon-maskable-512.png', [512]],
+]
+
+/** GET /admin/settings/icon before anything is uploaded. */
+export const NO_SITE_ICON = {
+  set: false,
+  background: '#ffffff',
+  version: '',
+  source_size: 0,
+  updated_at: null,
+  files: [],
+}
+
+/** The same with an icon stored: seven files, in the order the server lists them. */
+export function siteIconSet(background = '#ffffff') {
+  return {
+    set: true,
+    background,
+    version: ICON_VERSION,
+    source_size: 1024,
+    updated_at: '2026-11-25T10:00:00Z',
+    files: ICON_FILES.map(([name, sizes]) => ({
+      name,
+      url: `/api/v1/branding/icons/${name}?v=${ICON_VERSION}`,
+      sizes,
+      bytes: 1000,
+    })),
+  }
+}
+
+/**
+ * The four admin icon routes and the public icon files, as a small stateful
+ * stand-in: an upload stores an icon, a PATCH changes its colour, a DELETE
+ * clears it. Call after mockAdminApi, whose fixture says "no icon".
+ * `requests` collects what the page sent.
+ */
+export async function mockSiteIcon(page: Page, opts: { set?: boolean } = {}) {
+  let status: object = opts.set ? siteIconSet() : NO_SITE_ICON
+  const requests: Array<{ method: string; body: string | null }> = []
+  await page.route('**/api/v1/branding/icons/**', (route) =>
+    route.fulfill({ status: 200, contentType: 'image/png', body: TINY_PNG }),
+  )
+  await page.route('**/api/v1/admin/settings/icon', async (route) => {
+    const req = route.request()
+    const method = req.method()
+    requests.push({ method, body: req.postData() })
+    if (method === 'DELETE') {
+      status = NO_SITE_ICON
+      return route.fulfill({ status: 204 })
+    }
+    if (method === 'POST') {
+      const colour = /name="background"\r\n\r\n(#[0-9a-fA-F]{6})/.exec(req.postData() ?? '')?.[1]
+      status = siteIconSet(colour)
+    }
+    if (method === 'PATCH') status = siteIconSet((req.postDataJSON() as { background: string }).background)
+    return route.fulfill({ json: status })
+  })
+  return { requests }
+}
+
 export const LONG_USER = {
   id: 'u-long',
   email: LONG_EMAIL,
@@ -621,6 +697,7 @@ export async function mockAdminApi(
       { id: 'sla-1', name: n, priority: 'high', response_target_min: 30, resolution_target_min: 240 },
     ],
     '/api/v1/admin/scopes': [{ scope: 'tickets:read', resource: 'tickets', action: 'read' }],
+    '/api/v1/admin/settings/icon': NO_SITE_ICON,
     '/api/v1/admin/settings': { sla_enabled: true, saml_enabled: false, setup_complete: true, post_upgrade_130_seen: true, ...opts.settings },
     '/api/v1/admin/saml': { configured: true, metadata_url: u, metadata_xml: '', cert_pem: SAML_CERT, cert_not_after: '2036-11-24T12:00:00Z', cert_generated: true, sp_metadata_url: u, sp_acs_url: u },
     '/api/v1/admin/oidc': { enabled: true, issuer_url: u, client_id: d, client_secret: '', redirect_url: u, configured: true },

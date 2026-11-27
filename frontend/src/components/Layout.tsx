@@ -496,7 +496,11 @@ export function Layout({ children }: LayoutProps) {
         </Dialog.Root>
 
         {/* Main */}
-        <main className="flex-1 overflow-auto">
+        {/* relative: the containing block for anything absolutely positioned inside the page, so it
+            scrolls and clips with <main>. Without it, a screen-reader-only element
+            (sr-only is position: absolute) has no positioned ancestor, escapes
+            this overflow and stretches the document past the footer. */}
+        <main className="relative flex-1 overflow-auto">
           <div className="mx-auto max-w-5xl p-4 md:p-6">{children}</div>
         </main>
       </div>

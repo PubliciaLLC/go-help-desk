@@ -260,8 +260,9 @@ func (s *Server) reloadSSOAfterSettings(ctx context.Context, body map[string]jso
 
 // samlRequiredButNotLoadedWarning says so when saml_enabled ("staff and users
 // must use SAML") is on while SAML is not loaded: every password sign-in of
-// theirs is refused with 403 saml_required and the login page has no SAML
-// button, so they have no way in. Administrators keep password sign-in, so the
+// theirs is refused with 403 saml_required, every OIDC sign-in of theirs is
+// refused with saml_required, and the login page has no SAML button, so they
+// have no way in. Administrators keep both, so the
 // instance is not locked out; a warning, not a refusal, as the setting is the
 // administrator's to choose. Read after the save has been applied and SAML
 // reloaded, so a body that sets saml_enabled together with a SAML

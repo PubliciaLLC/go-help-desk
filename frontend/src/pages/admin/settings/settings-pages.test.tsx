@@ -36,7 +36,7 @@ interface PageDef {
 const PAGES: PageDef[] = [
   { path: '/admin/settings/general', Page: GeneralSettingsPage, h1: 'General', h2: ['Tickets', 'Ticket lifecycle', 'Updates'] },
   { path: '/admin/settings/features', Page: FeaturesSettingsPage, h1: 'Features', h2: ['SLA'] },
-  { path: '/admin/settings/branding', Page: BrandingSettingsPage, h1: 'Branding', h2: ['Identity'] },
+  { path: '/admin/settings/branding', Page: BrandingSettingsPage, h1: 'Branding', h2: ['Identity', 'Icon'] },
   { path: '/admin/settings/email', Page: EmailSettingsPage, h1: 'Email', h2: ['Staff email about tickets', 'SLA alerts'] },
   {
     path: '/admin/settings/attachments',

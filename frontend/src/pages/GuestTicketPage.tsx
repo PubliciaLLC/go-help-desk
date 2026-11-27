@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { listPublicCategories } from '@/api/tickets'
+import { listPublicCategories, listPublicItems, listPublicTypes } from '@/api/tickets'
+import { getSiteConfig } from '@/api/admin'
 import { createGuestTicket, listGuestFields } from '@/api/guest'
 import type { GuestField } from '@/api/types'
 import { overLimit } from '@/lib/fieldLimits'
@@ -51,10 +52,47 @@ function GuestFieldInput({
   }
 }
 
+// A line under a selector while its list is loading, when it could not be
+// loaded (which would otherwise look like a category with nothing in it), and
+// when it loaded and is empty, with a real button to ask again. `asked` is
+// whether there is anything to ask for yet.
+function ListHint({
+  query,
+  name,
+  asked,
+  none,
+}: {
+  query: { isLoading: boolean; isError: boolean; isSuccess: boolean; data?: unknown[]; refetch: () => unknown }
+  name: string
+  asked: boolean
+  none: string
+}) {
+  if (!asked) return null
+  if (query.isLoading) {
+    return <p role="status" className="text-xs text-gray-500">Loading {name}…</p>
+  }
+  if (query.isError) {
+    return (
+      <div role="alert" className="flex flex-wrap items-center gap-2 text-xs text-red-600">
+        <span>The {name} could not be loaded; you can still send the request without.</span>
+        <Button type="button" variant="outline" size="sm" onClick={() => query.refetch()}>
+          Retry
+        </Button>
+      </div>
+    )
+  }
+  if (query.isSuccess && (query.data ?? []).length === 0) {
+    return <p className="text-xs text-gray-500">{none}</p>
+  }
+  return null
+}
+
 export function GuestTicketPage() {
   const [subject, setSubject] = useState('')
   const [description, setDescription] = useState('')
   const [categoryId, setCategoryId] = useState('')
+  const [typeId, setTypeId] = useState('')
+  const [itemId, setItemId] = useState('')
   const [fieldValues, setFieldValues] = useState<Record<string, string>>({})
   const [name, setName] = useState('')
   const [email, setEmail] = useState('')
@@ -67,6 +105,33 @@ export function GuestTicketPage() {
     queryKey: ['public-categories'],
     queryFn: listPublicCategories,
   })
+
+  // Which levels below the category this instance shows a guest (#711): the
+  // Type while guests_show_types, the Item under it while guests_show_items. Off,
+  // absent or not yet answered is the category-only form, and no list below the
+  // category is asked for: the server answers those with nothing anyway. An Item
+  // without a Type is not shown: an item hangs under a type.
+  const { data: site } = useQuery({ queryKey: ['site-config'], queryFn: getSiteConfig, retry: false })
+  const showTypes = site?.guests_show_types === true
+  const showItems = showTypes && site?.guests_show_items === true
+
+  // The lists say when they are loading or could not be, so a failure does not
+  // look like a category with no types. The form still files under what is chosen.
+  // The key says whose list this is: a signed-in staff member on /submit would
+  // otherwise be served the archived rows the staff form cached under the same
+  // key.
+  const typesQuery = useQuery({
+    queryKey: ['public-types', 'guest', categoryId],
+    queryFn: () => listPublicTypes(categoryId),
+    enabled: showTypes && !!categoryId,
+  })
+  const types = typesQuery.data ?? []
+  const itemsQuery = useQuery({
+    queryKey: ['public-items', 'guest', categoryId, typeId],
+    queryFn: () => listPublicItems(categoryId, typeId),
+    enabled: showItems && !!categoryId && !!typeId,
+  })
+  const items = itemsQuery.data ?? []
 
   // The custom fields an administrator chose to offer visitors under this
   // category (#627), and only those: the server tells this form which they are
@@ -91,6 +156,8 @@ export function GuestTicketPage() {
 
   function chooseCategory(id: string) {
     setCategoryId(id)
+    setTypeId('')
+    setItemId('')
     // Another category may not offer these fields, and the server refuses a
     // field it did not offer, so nothing typed for one is carried to the next.
     setFieldValues({})
@@ -127,6 +194,8 @@ export function GuestTicketPage() {
         subject,
         description,
         category_id: categoryId,
+        type_id: showTypes ? (typeId || undefined) : undefined,
+        item_id: showItems ? (itemId || undefined) : undefined,
         guest_name: name.trim(),
         guest_email: email.trim(),
         guest_phone: phone.trim() || undefined,
@@ -262,21 +331,69 @@ export function GuestTicketPage() {
                 <TextLimit value={description} />
               </div>
 
-              <div className="space-y-1">
-                <Label htmlFor="category">Category *</Label>
-                <Select
-                  id="category"
-                  aria-describedby="cti-description"
-                  value={categoryId}
-                  onChange={(e) => chooseCategory(e.target.value)}
-                >
-                  <option value="">Select…</option>
-                  {categories.map((c) => (
-                    <option key={c.id} value={c.id}>{c.name}</option>
-                  ))}
-                </Select>
-                {/* Public: this is the text of a category any visitor can open. */}
-                <CtiDescription id="cti-description" category={categories.find((c) => c.id === categoryId)} />
+              {/* The chooser and the text beneath it are one child of the form,
+                  so an empty description leaves no gap. */}
+              <div>
+                <div className="space-y-4">
+                  <div className="space-y-1">
+                    <Label htmlFor="category">Category *</Label>
+                    <Select
+                      id="category"
+                      aria-describedby="cti-description"
+                      value={categoryId}
+                      onChange={(e) => chooseCategory(e.target.value)}
+                    >
+                      <option value="">Select…</option>
+                      {categories.map((c) => (
+                        <option key={c.id} value={c.id}>{c.name}</option>
+                      ))}
+                    </Select>
+                  </div>
+
+                  {showTypes && (
+                    <div className="space-y-1">
+                      <Label htmlFor="type">Type</Label>
+                      <Select
+                        id="type"
+                        aria-describedby="cti-description"
+                        value={typeId}
+                        onChange={(e) => { setTypeId(e.target.value); setItemId('') }}
+                        disabled={!categoryId || types.length === 0}
+                      >
+                        <option value="">Select…</option>
+                        {types.map((t) => (
+                          <option key={t.id} value={t.id}>{t.name}</option>
+                        ))}
+                      </Select>
+                      <ListHint query={typesQuery} name="types" asked={!!categoryId} none="No types for this category." />
+                    </div>
+                  )}
+                  {showItems && (
+                    <div className="space-y-1">
+                      <Label htmlFor="item">Item</Label>
+                      <Select
+                        id="item"
+                        aria-describedby="cti-description"
+                        value={itemId}
+                        onChange={(e) => setItemId(e.target.value)}
+                        disabled={!typeId || items.length === 0}
+                      >
+                        <option value="">Select…</option>
+                        {items.map((i) => (
+                          <option key={i.id} value={i.id}>{i.name}</option>
+                        ))}
+                      </Select>
+                      <ListHint query={itemsQuery} name="items" asked={!!typeId} none="No items for this type." />
+                    </div>
+                  )}
+                </div>
+                {/* Public: this is the text of a row any visitor can open. */}
+                <CtiDescription
+                  id="cti-description"
+                  category={categories.find((c) => c.id === categoryId)}
+                  type={types.find((t) => t.id === typeId)}
+                  item={items.find((i) => i.id === itemId)}
+                />
               </div>
 
               {guestFields.map((f) => (

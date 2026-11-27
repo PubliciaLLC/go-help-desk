@@ -82,7 +82,10 @@ export function ClassificationPanel({ ticketId, categoryId, typeId, itemId, canE
   const { data: items = [] } = useQuery<TicketItem[]>({
     queryKey: ['public-items', activeCategory, activeType],
     queryFn: () => listPublicItems(activeCategory, activeType),
-    enabled: !!activeType,
+    // Only where there is a use for the list: to name the item the ticket has, or
+    // to pick one. A requester's ticket carries no item_id while Items is not
+    // shown to them (#711), and they cannot edit, so the answer would be empty.
+    enabled: !!activeType && (canEdit || !!itemId),
   })
 
   const mutation = useMutation({

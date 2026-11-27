@@ -79,7 +79,14 @@ export function applyTheme(t: ResolvedTheme, doc: Document = document): void {
     frame(() => html.removeAttribute('data-theme-switching'))
   }
   doc.querySelector('meta[name="color-scheme"]')?.setAttribute('content', t)
-  doc.querySelector('meta[name="theme-color"]')?.setAttribute('content', THEME_COLOR[t])
+  // The first theme-color meta is the one browsers use and the one driven here.
+  // A second one, added by the server for an uploaded icon (#708), holds the
+  // light colour; same rule as public/theme-init.js.
+  const tcs = doc.querySelectorAll('meta[name="theme-color"]')
+  if (tcs.length) {
+    const light = tcs.length > 1 ? (tcs[tcs.length - 1].getAttribute('content') ?? THEME_COLOR.light) : THEME_COLOR.light
+    tcs[0].setAttribute('content', dark ? THEME_COLOR.dark : light)
+  }
 }
 
 /**
