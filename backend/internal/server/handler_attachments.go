@@ -124,6 +124,12 @@ const maxImagePixels = 25 << 20
 // the pixel count still bounds the per-pixel work the encoders do on a cheap
 // format — a 100-megapixel greyscale image is only 100 MB but is not something
 // a help desk receives.
+//
+// It counts the decoded image, not what is done with it afterwards. The code
+// that works on the image has to stay inside the same figure: the site icon
+// scales a decoded image of up to 4096 x 4096, and draw.CatmullRom would add a
+// work buffer as large as that image, so siteicon.MasterFrom shrinks a big
+// source in a first step that needs none (test: LargestAcceptedImage).
 const maxDecodedBytes = 100 << 20
 
 // bytesPerPixel is how much heap one pixel of this colour model costs once
@@ -506,7 +512,9 @@ func isJPEGFrameHeader(m byte) bool {
 // together, and the handler has no other concurrency limit — the rate limiter
 // covers login, signup and guest resend, not uploads. Five requests each
 // legitimately inside the budget still add up, so the budget has to be a
-// budget for the process, not for a request.
+// budget for the process, not for a request: four slots of at most
+// maxDecodedBytes each, so about 400 MB of decoded pixels at the worst, and
+// whoever takes a slot must stay inside its figure (see maxDecodedBytes).
 //
 // A package-level value rather than a field on Server, deliberately and
 // against the usual rule: what this protects is the machine's memory. Two

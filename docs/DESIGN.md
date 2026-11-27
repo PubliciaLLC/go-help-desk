@@ -1823,9 +1823,170 @@ Routing is best-effort in one respect: a candidate that cannot be given a ticket
 
 - **Site name** — the product name shown in the sidebar header and browser title. Defaults to "Go Help Desk".
 - **Logo** — uploaded via **Admin → System → Branding**. Accepted formats: PNG, JPEG, GIF. Max 2 MB. Images are proportionally scaled to fit within **320 × 64 px** and re-encoded as PNG. When set, the logo replaces the site name text in the sidebar. **SVG is not accepted** (#165): the logo is the only upload rendered inline in this origin, and pattern-matching SVG for scripts is a game you have to keep winning. An SVG logo uploaded by an earlier release stops being served after the upgrade — the route serves PNG and nothing else, so the sidebar falls back to the site name. The settings page says so where the logo would be: the file picker no longer offers SVG, a sentence explains why it went, and an instance whose stored logo can no longer be loaded is told that rather than shown an empty space.
-- Both settings are stored in the database and managed via **Admin → System → Branding**.
+- Both are managed via **Admin → System → Branding**. The site name and the logo's URL are settings in the database; the logo image itself is a file, `ATTACHMENT_DIR/site/logo.png`, so it is backed up with the attachments volume, not with the database. (The icon below is kept differently, in the database, for the reasons given there.)
 - A public `GET /api/v1/site` endpoint returns `{name, logo_url, version, guest_submission_enabled, guest_attachments_enabled, guests_show_types, guests_show_items}` (the last two, #711, are the effective values: `false` while guest submission is off, items also while types is, and they reveal only what opening `/submit` shows anyone), plus `guest_attachment_max_bytes`, `guest_attachment_max_per_ticket` and `guest_attachment_uploads_per_hour` while guests may attach (#445) — no authentication required, so the shell and the login page render correctly before login (`guest_submission_enabled` is what decides whether the login page links to `/submit`; it reveals only what an unauthenticated `POST /guest/tickets` would reveal by answering 404). `guest_attachments_enabled` and the three figures are different: `POST /guest/attachments` answers the same `404` whether the setting or the token failed, so it never says whether uploads are on, but `/site` does, together with the effective per-file limit, to anyone. That disclosure was accepted (#445): it is low sensitivity, and it keeps the guest ticket response's allow-list unchanged.
 - A public `GET /api/v1/logo` endpoint serves the stored logo file with a 5-minute cache header. `logo_url` in the site response points here when a logo is uploaded.
+- **Icon** and **home screen name** (#708, 1.3.0): below.
+
+#### Icon and home screen (#708)
+
+An administrator uploads one image, and it becomes the icon in the browser tab
+and the icon (and name) a phone or computer puts on its home screen when
+someone uses "Add to Home Screen" or "Install". The server makes every size
+from that one image. With nothing uploaded, nothing changes from 1.2: the tab
+shows the built-in icon (`/favicon.svg`).
+
+**The upload.** **Admin → System → Branding → Icon**. One file, PNG, JPEG or
+GIF (a GIF's first frame), at most **5 MB**. **SVG is not accepted**, for the
+logo's reason (#165): the icon is rendered inline on this origin, and every
+byte served is one the server produced by decoding and re-encoding a raster.
+The image must be **exactly square** (width equals height; no tolerance) and
+from **512 × 512** to **4096 × 4096** pixels. Each refusal says what it saw and
+what to do: a 1200 × 800 image is refused with "The image is 1200 × 800
+pixels. The icon must be square: crop it to the same width and height and
+upload it again." The checks run in this order, and nothing is decoded until
+the header has passed them: the byte limit; the format, from the first bytes
+(the name and the declared type are ignored, so an SVG named `icon.png` is
+refused as an unsupported type); the header's dimensions (square, at least
+512, at most 4096); the decoding budget every uploaded image is held to
+(25 megapixels and 100 MB of decoder allocation, see *Uploaded images are
+capped by what decoding them will cost*), and a JPEG whose header cannot be
+read is refused; then the decode, inside the same process-wide limit on
+images decoded at once. A file that fails is not stored, and what was stored
+before is untouched.
+
+**What is made from it.** The decoded image is scaled once to a 512 × 512
+master (Catmull-Rom, from `golang.org/x/image/draw`), and every file below is
+scaled from the master:
+
+| File | Size | Used by | Transparency |
+| --- | --- | --- | --- |
+| `favicon.ico` | 16, 32 and 48 in one file | browsers, bookmarks | kept |
+| `favicon-16.png` | 16 × 16 | browser tab | kept |
+| `favicon-32.png` | 32 × 32 | browser tab (high density) | kept |
+| `apple-touch-icon.png` | 180 × 180 | iPhone and iPad home screen | filled with the background colour |
+| `icon-192.png` | 192 × 192 | manifest, `purpose: any` | filled |
+| `icon-512.png` | 512 × 512 | manifest, `purpose: any` | filled |
+| `icon-maskable-512.png` | 512 × 512 | manifest, `purpose: maskable` (Android adaptive icons) | filled |
+
+The maskable icon is the master scaled to 410 × 410 and centred on a
+512 × 512 square of the background colour (80 %, a 51-pixel margin), so the
+circle every mask is guaranteed to show (diameter 80 % of the icon) is exactly
+the image's inscribed circle; a launcher's mask may trim the image's corners. There is
+no SVG or `mask-icon` output. Every output is a fresh PNG (the ICO holds three
+PNGs), so nothing from the upload survives but its pixels: no metadata, no
+colour profile, no EXIF. **EXIF orientation is not applied**: a JPEG straight
+from a phone camera that relies on the orientation tag comes out the way its
+pixels are stored, which the previews on the settings page show at once
+(the logo behaves the same).
+
+**Background colour.** An administrator's colour, `#rrggbb`, default
+`#ffffff` (white). It fills the transparent parts of the home screen icons,
+because an iPhone fills them with black, and it is the manifest's
+`background_color` and `theme_color`. The browser tab icons keep their
+transparency. Changing it re-makes the four filled files from the stored
+master; the image does not have to be uploaded again.
+
+**Home screen name.** By default the icon's name on a home screen is the site
+name. Under the site name, a checkbox **Use a different name on the home
+screen** shows a **Home screen name** field, setting `site_short_name`. It is
+at most **30 characters** (after trimming; control, invisible and line-separator characters refused,
+`400 invalid_site_short_name`); the page warns, without refusing, above 12,
+which is about what a home screen shows before cutting a name short. Clearing
+the checkbox stores `""`, which means "use the site name". The manifest's
+`name` is always the site name; its `short_name`, and the shell's
+`apple-mobile-web-app-title`, are `site_short_name` when it is set and the site
+name otherwise. It is an ordinary setting, saved with the page's **Save**,
+available to an API key with the settings scope, and not audited, like the site
+name.
+
+**The manifest.** `GET /api/v1/branding/manifest.webmanifest`, public,
+`application/manifest+json`, generated on each request:
+`{"id": "/", "name", "short_name", "start_url": "/", "scope": "/",
+"display": "standalone", "background_color", "theme_color", "icons"}`.
+`display: standalone` opens the installed app without the browser's address
+bar. There is no service worker and no offline mode: the installed app is the
+same site in its own window and needs the network like the site does. With no
+icon uploaded the manifest still exists: its `icons` list the built-in
+`/favicon.svg` (`sizes: "any"`), `background_color` is `#ffffff` and there is
+no `theme_color`. With one, it lists `icon-192.png`, `icon-512.png` and
+`icon-maskable-512.png`.
+
+**The app shell is rendered per request.** The Go server writes a few lines of
+`index.html`'s `<head>` each time it serves it: the `<title>` (the site name,
+so the tab is right before any script runs), the icon links, the manifest
+link, `theme-color` and `apple-mobile-web-app-title`. Everything else in the
+file is served as built. With no icon uploaded the icon link is exactly 1.2's
+(`/favicon.svg`), and only the manifest link and the home screen title are
+new. Every value is HTML-escaped. If the settings cannot be read, the shell is
+served with the built-in block rather than failing. The shell is served with
+`Cache-Control: no-cache`.
+
+**Routes and caching.** The seven files are served by the public
+`GET /api/v1/branding/icons/{file}` (no session, no rate limit, as for the
+logo; nothing in them is user data). The shell and the manifest link them with
+`?v=<version>`, a 16-hex-digit digest of the files as they are stored, so a new
+upload or colour gets new URLs and nothing has to expire first. A request whose
+`v` is the current version is answered `Cache-Control: public,
+max-age=31536000, immutable`; any other request (no `v`, or an old one) gets
+`Cache-Control: no-cache` and the same bytes; every answer carries
+`ETag: "<version>"` and a matching `If-None-Match` is answered `304`. The icon
+routes carry the logo's sandboxed Content-Security-Policy. The manifest is
+served `no-cache` with an `ETag` of its own content, at a URL that never
+changes, which is what lets an installed app pick up a new icon or name. With
+no icon stored every icon route answers a plain-text `404`.
+
+**Where it is kept.** In the database: one row in `site_icon` (background,
+version, the source's side length and SHA-256, when) and one row per file in
+`site_icon_files` (the master and the seven served files), written together in
+one transaction with the audit entry. Not beside the logo on disk: the
+background colour has to be re-applied to a stored master, the audit entry has
+to commit with the change (as for the SAML certificate), every replica has to
+serve the same bytes, and a database backup should hold the whole of the
+branding that is not a ticket file. A `pg_dump` therefore carries the icon and
+its settings; the logo stays on the attachments volume. About 0.5 MB at most.
+
+**Administration API** (administrators, or a key or client with the settings
+scope, like the logo):
+
+- `GET /api/v1/admin/settings/icon`: `{set, background, version, source_size,
+  updated_at, files}`; `files` lists each served file's name, URL, pixel sizes
+  and byte length, for the previews.
+- `POST /api/v1/admin/settings/icon`: multipart, the file in `icon`, optional
+  `background`. Replaces any icon. Answers as the `GET` does.
+- `PATCH /api/v1/admin/settings/icon`: `{"background": "#rrggbb"}`; re-makes
+  the filled files. `404 no_icon` when nothing is uploaded.
+- `DELETE /api/v1/admin/settings/icon`: `204`, also when there was none.
+  Removing it returns everything to the built-in default.
+
+Refusals: `400 invalid_form`, `missing_field`, `file_too_large`,
+`invalid_type`, `invalid_image` (cannot be decoded, or over the decoding
+budget), `icon_not_square`, `icon_too_small`, `icon_too_large`,
+`invalid_background`; `404 no_icon`.
+
+**Audit.** Each change writes one entry in the same transaction as the change:
+entity `setting` (the id derived from `site_icon`, as for other settings), the
+administrator (or the key's owner) as actor, action `site_icon_uploaded`,
+`site_icon_background_changed` or `site_icon_removed`, with `icon_sha256` (the
+uploaded file's), `icon_source_size`, `icon_background` and `icon_version` in
+`before`/`after` as they apply. The audit view's allow-list gains those four.
+A `DELETE` with nothing stored writes nothing.
+
+**Not changed.** `GET /api/v1/site` gains nothing: the shell gets the icon
+from the server-rendered head, and the settings page from its own endpoint.
+No MCP tool reads or sets branding. Icons already on someone's home screen are
+copies: iOS keeps the picture it took when the icon was added, and Android
+updates an installed app's icon and name from the manifest on its own
+schedule (Chrome checks when the app is opened, at most about daily), so a
+change reaches new installs at once and existing ones later or not at all.
+
+**Upgrading.** Migration `000070_site_icon` creates the two empty tables. Until someone uploads an icon, an
+upgraded instance shows the same tab icon and title as before; the shell gains
+the manifest link (so a browser may now offer to install the site) and
+`apple-mobile-web-app-title` (the site name, which iOS used anyway). Rolling the
+migration back drops both tables and the uploaded icon with them; the
+`site_short_name` setting row is left, as other down steps leave settings rows,
+and older releases ignore it.
 
 ### Update check (opt-in, #170)
 
@@ -1904,7 +2065,7 @@ of `Section`) and keep their current order on the page.
 | --- | --- | --- | --- |
 | **General** | `/admin/settings/general` | Tickets (tracking number prefix, **Show Items to registered users**, #711) · Ticket lifecycle · Updates | General tab |
 | **Features** | `/admin/settings/features` | tab **SLA**: SLA (the `sla_enabled` switch and, while it is on, the SLA Policies editor from #672) | Features tab |
-| **Branding** | `/admin/settings/branding` | Identity (site name, logo) | Branding tab |
+| **Branding** | `/admin/settings/branding` | Identity (site name, home screen name, logo) · Icon (#708) | Branding tab; Icon is new in #708 |
 | **Email** | `/admin/settings/email` | tab **Notifications**: Staff email about tickets (the four overrides, #670's included) · SLA alerts (`sla_alerts_enabled`) | Email tab; SLA alerts from the Features tab (#670) |
 | | `/admin/settings/email/templates` | tab **Templates**: the email template list and editor | the `/admin/email-templates` page |
 | **File Attachments** | `/admin/settings/attachments` | Uploads (allowed types, mismatch handling) · File size (#673) · Malware scanning (with the scanner status block) · Reputation lookup | Attachments tab |
@@ -2062,7 +2223,7 @@ set. The descriptions are:
 | --- | --- |
 | General | Ticket numbers, the ticket lifecycle and update checks. |
 | Features | Optional features of this help desk. |
-| Branding | The name and logo in the sidebar and the browser tab. |
+| Branding | The name, logo and icon in the sidebar, the browser tab and the home screen. |
 | Email | The email staff receive about tickets, and the wording of every email this help desk sends. |
 | File Attachments | What can be uploaded, how large it may be, and how uploads are checked. |
 | Guest Access | Tickets from people without an account. |
@@ -2098,7 +2259,8 @@ from the dump. The other seven pages are each one component with a draft, a
 guard and one `SaveBar`: `GeneralSettingsPage`, `FeaturesSettingsPage`,
 `BrandingSettingsPage`, `AttachmentSettingsPage`, `GuestAccessSettingsPage`,
 `AuthenticationSettingsPage` and `PrivacySettingsPage`. Branding's draft
-holds only the site name; the logo uploader keeps its own state, as today.
+holds only the site name and, since #708, `site_short_name`; the logo uploader
+and the icon section keep their own state, as the logo uploader does today.
 
 **The Templates tab** is the body of today's `EmailTemplatesPage`, moved into
 `frontend/src/pages/admin/settings/EmailTemplatesTab.tsx`: the intro
@@ -4745,7 +4907,9 @@ Three caveats:
   and GIF are accepted, all re-encoded as PNG. The route keeps its own
   sandboxing policy (`sandbox; script-src 'none'`) on top of that, because what
   decides those bytes are an image is a four-byte magic check rather than a
-  proof.
+  proof. The **site icon** (#708) is the second, and is held to the same
+  rules: raster only, every served byte re-encoded by the server, the same
+  sandboxing policy on its route (see *Branding → Icon and home screen*).
 
 ### What an upload actually is
 
@@ -5361,6 +5525,8 @@ Serves both the frontend SPA and external integrations.
 - `GET /health` — liveness, `{"status":"ok"}`. Outside `/api/v1`.
 - `GET /api/v1/site` — branding info, app version, `guest_submission_enabled`, `guests_show_types` and `guests_show_items` (#711) and the guest attachment setting (`guest_attachments_enabled`, `guest_attachment_max_bytes`, `guest_attachment_max_per_ticket`, `guest_attachment_uploads_per_hour`); used by the SPA shell and login page before authentication
 - `GET /api/v1/logo` — the stored logo (PNG), with a 5-minute cache header
+- `GET /api/v1/branding/icons/{file}` — the uploaded site icon's generated files (#708), versioned with `?v=`; `404` while none is uploaded
+- `GET /api/v1/branding/manifest.webmanifest` — the web app manifest (#708), always served
 - `GET /api/v1/setup/status` — whether first-run setup is needed; `POST /api/v1/setup` creates the first administrator (and the first category, see Ticket Classification). It answers `409 already_configured` once **any** user row exists, disabled and deleted accounts included, so setup never reopens.
 - `/api/v1/auth/*` — `POST /local/login`, `POST /local/logout`, `GET /providers`, `POST /oauth/token` (OAuth client credentials), the SAML and OIDC sign-in routes, and `GET /signup/status`, `POST /signup`, `GET` and `POST /verify-email` (see Authentication). `POST /local/mfa/verify` and `POST /local/passkey/*` need the session the password step produced and are refused to machine credentials.
 - `/api/v1/guest/*` — `POST /tickets` (submit), `GET /fields?category_id=` (the custom fields the form offers, #627) and `POST /resend` (re-request a link) are public, throttled, and answer `404` while guest submission is off. `GET /ticket`, `POST /follow-up`, `POST /replies` and `POST /attachments` are authenticated by the per-ticket link token alone (see Guest Submission); `POST /follow-up`, `GET /ticket`, `POST /replies` and `POST /attachments` answer `404` while guest submission is off (#424).
@@ -5899,9 +6065,9 @@ so they are not removed as dead weight:
   process rather than the request. Neither bound depends on the per-file
   byte limit (`attachment_max_mb`, #673), and neither moves when it does.
 - **Security headers** on every response: a content security policy, `nosniff`,
-  `X-Frame-Options: DENY` and a referrer policy. The uploaded logo is served
-  with a stricter, sandboxed policy, so a file that got past the upload check
-  still cannot execute.
+  `X-Frame-Options: DENY` and a referrer policy. The uploaded logo and the
+  site icon's files are served with a stricter, sandboxed policy, so a file
+  that got past the upload check still cannot execute.
 - **Webhook targets are address-checked** at the moment of connection, so a
   hostname resolving to an internal address, a redirect to one, and DNS
   rebinding are all refused. The SAML metadata and OIDC issuer URLs are

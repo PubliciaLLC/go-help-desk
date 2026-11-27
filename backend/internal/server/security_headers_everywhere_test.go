@@ -1,6 +1,8 @@
 package server_test
 
 import (
+	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -24,12 +26,16 @@ import (
 // DESIGN.md says "security headers on every response". These were the two
 // places it was not true.
 func TestSPAHandler_CarriesTheSecurityHeaders(t *testing.T) {
+	// An index with the markers and a head function that answers the built-in
+	// block, so "/", "/index.html" and the fallback go through the rendered
+	// shell (the path every real page load takes), and the asset through the
+	// file server.
 	ui := fstest.MapFS{
-		"index.html":     &fstest.MapFile{Data: []byte("<!doctype html><title>x</title>")},
+		"index.html":     &fstest.MapFile{Data: []byte(shellFixture)},
 		"assets/app.js":  &fstest.MapFile{Data: []byte("export {}")},
 		"assets/app.css": &fstest.MapFile{Data: []byte("body{}")},
 	}
-	h := server.NewSPAHandler(ui)
+	h := server.NewSPAHandler(ui, func(context.Context) string { return defaultBlock })
 
 	for _, path := range []string{
 		"/",               // index
@@ -43,6 +49,11 @@ func TestSPAHandler_CarriesTheSecurityHeaders(t *testing.T) {
 			res := rr.Result()
 			defer res.Body.Close()
 
+			if path != "/assets/app.js" {
+				body, err := io.ReadAll(res.Body)
+				require.NoError(t, err)
+				require.Contains(t, string(body), "<title>Go Help Desk</title>", "%s is the rendered shell", path)
+			}
 			require.NotEmpty(t, res.Header.Get("Content-Security-Policy"),
 				"no CSP, so an injected script has no backstop on the page that runs scripts")
 			require.Equal(t, "DENY", res.Header.Get("X-Frame-Options"),

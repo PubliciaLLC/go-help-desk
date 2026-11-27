@@ -1,6 +1,6 @@
 import { Section } from '@/components/admin/Section'
 import { SettingRow } from '@/pages/admin/settings/primitives'
-import { useRef, useState } from 'react'
+import { useId, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { deleteLogo, getSiteConfig, uploadLogo } from '@/api/admin'
 import { extractError } from '@/api/client'
@@ -9,8 +9,30 @@ import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { Input } from '@/components/ui/input'
 import type { SettingsDraft } from '@/pages/admin/settings/useSettingsDraft'
 
+// Home screens show about this many characters of a name before cutting it
+// short. A display limit that varies by device, so a note and not a refusal;
+// the hard limit is the server's (30).
+const SHORT_NAME_SOFT_LIMIT = 12
+const SHORT_NAME_MAX = 30
+
+const runes = (s: string) => [...s].length
+
 export function IdentitySection({ draft }: { draft: SettingsDraft }) {
   const { str, setStr } = draft
+  // The checkbox is not a setting: the setting is the name, and an empty one
+  // means "use the site name". Ticked when a name is stored; the page shows a
+  // loaded draft, so the first render already knows.
+  const [useShortName, setUseShortName] = useState(() => str('site_short_name').trim() !== '')
+  const shortName = str('site_short_name')
+  // The server trims, then counts characters. So does everything here: the
+  // counter, the note and the over-limit mark all read this one number. There
+  // is no maxLength on the field, because that counts UTF-16 units and would
+  // stop an emoji name the server accepts.
+  const shortLen = runes(shortName.trim())
+  const longName = shortLen > SHORT_NAME_SOFT_LIMIT
+  const overLimit = shortLen > SHORT_NAME_MAX
+  const counterId = useId()
+  const noteId = useId()
   const qc = useQueryClient()
   const fileInputRef = useRef<HTMLInputElement>(null)
   const [logoError, setLogoError] = useState('')
@@ -65,7 +87,7 @@ export function IdentitySection({ draft }: { draft: SettingsDraft }) {
     <Section title="Identity">
       <SettingRow
         label="Site name"
-        description="Displayed in the sidebar header and browser tab when no logo is set."
+        description="Displayed in the sidebar header and browser tab when no logo is set. Also the name used when someone installs the site or adds it to a home screen, unless you set a different home screen name below."
       >
         <Input
           className="w-56"
@@ -74,6 +96,53 @@ export function IdentitySection({ draft }: { draft: SettingsDraft }) {
           onChange={(e) => setStr('site_name', e.target.value)}
         />
       </SettingRow>
+
+      <div className="px-5 py-4">
+        <div className="flex items-center gap-2">
+          <input
+            type="checkbox"
+            id="use-short-name"
+            className="h-4 w-4 rounded border-gray-300"
+            checked={useShortName}
+            onChange={(e) => {
+              setUseShortName(e.target.checked)
+              if (!e.target.checked) setStr('site_short_name', '')
+            }}
+          />
+          <label htmlFor="use-short-name" className="text-sm font-medium text-gray-900">
+            Use a different name on the home screen
+          </label>
+        </div>
+        {!useShortName && (
+          <div className="mt-1 text-sm text-gray-500">The home screen uses the site name.</div>
+        )}
+      </div>
+      {useShortName && (
+        <SettingRow
+          label="Home screen name"
+          description="Shown under the icon when someone adds this site to a phone's home screen."
+        >
+          <div className="space-y-1.5">
+            <Input
+              className="w-56"
+              aria-label="Home screen name"
+              aria-describedby={longName ? `${counterId} ${noteId}` : counterId}
+              aria-invalid={overLimit}
+              placeholder={str('site_name') || 'Go Help Desk'}
+              value={shortName}
+              onChange={(e) => setStr('site_short_name', e.target.value)}
+            />
+            <div id={counterId} className={overLimit ? 'text-xs text-red-600' : 'text-xs text-gray-500'}>
+              {shortLen}/{SHORT_NAME_MAX}
+            </div>
+            {longName && (
+              <p id={noteId} role="note" className="max-w-56 text-sm text-amber-700">
+                Most home screens show about {SHORT_NAME_SOFT_LIMIT} characters and cut longer names short.
+              </p>
+            )}
+          </div>
+        </SettingRow>
+      )}
 
       <div className="px-5 py-4 space-y-3">
         <div>

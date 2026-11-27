@@ -39,7 +39,10 @@ const defaultCSP = "default-src 'self'; " +
 	"base-uri 'none'; " +
 	"form-action 'self'"
 
-// logoCSP makes an uploaded logo inert whatever it contains.
+// logoCSP makes an uploaded logo inert whatever it contains. It guards the site
+// icon files (#708) the same way: they are the server's own re-encoding of an
+// upload, public and served from this origin, and a browser can open one
+// directly.
 //
 // The logo route now serves PNG and nothing else — SVG left the uploader in
 // #165 step 3, because pattern-matching markup for scripts is a losing game

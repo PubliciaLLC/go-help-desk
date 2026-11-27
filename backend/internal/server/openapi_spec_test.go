@@ -424,8 +424,10 @@ func TestDiffRoutes(t *testing.T) {
 // ── test 2: the document is well formed ────────────────────────────────────
 
 var (
-	opIDPattern    = regexp.MustCompile(`^[a-z][A-Za-z0-9]*$`)
-	pathPattern    = regexp.MustCompile(`^/(?:[a-z0-9-]+|\{[A-Za-z][A-Za-z0-9]*\})(?:/(?:[a-z0-9-]+|\{[A-Za-z][A-Za-z0-9]*\}))*$`)
+	opIDPattern = regexp.MustCompile(`^[a-z][A-Za-z0-9]*$`)
+	// A segment may carry one file extension (manifest.webmanifest, #708); not
+	// a bare dot, so "." and ".." are still not paths.
+	pathPattern    = regexp.MustCompile(`^/(?:[a-z0-9-]+(?:\.[a-z0-9]+)?|\{[A-Za-z][A-Za-z0-9]*\})(?:/(?:[a-z0-9-]+(?:\.[a-z0-9]+)?|\{[A-Za-z][A-Za-z0-9]*\}))*$`)
 	statusPattern  = regexp.MustCompile(`^[1-5][0-9][0-9]$`)
 	templateParams = regexp.MustCompile(`\{([^}]+)\}`)
 	pathItemKeys   = []string{"summary", "description", "parameters"}

@@ -117,6 +117,12 @@ describe('attachments are never rendered inline', () => {
     'src/components/MFAEnrollForm.tsx': 1,
     'src/pages/AccountPage.tsx': 1,
     'src/pages/admin/settings/sections/IdentitySection.tsx': 1,
+    // #708: the previews of the instance icon. Not an attachment: an
+    // administrator-uploaded image the server has decoded and re-encoded as
+    // PNG (the bytes served are never the upload's), from its own route under
+    // the same script-blocking policy as the logo (logoCSP). One <img>, in a
+    // loop over the seven generated files.
+    'src/pages/admin/settings/sections/IconSection.tsx': 1,
     // #158, moved from EmailTemplatesPage.tsx by #674: the email template
     // editor's HTML preview. Not an attachment: it is
     // markup an administrator typed, returned by the preview endpoint, shown in
