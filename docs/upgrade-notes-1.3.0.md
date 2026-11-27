@@ -1180,4 +1180,4 @@ cd docker
 
 5. **Check it.** Sign in as an administrator, open a few tickets, and download an attachment. `SELECT version, dirty FROM schema_migrations` should say `21 | f`. `docker compose port db 5432` should say `127.0.0.1:5432`.
 
-To go forward again, run `git checkout -- docker-compose.yml` in `go-help-desk/docker` to drop the edit from step 3, then `git checkout v1.3.0` (it refuses while the file is changed) and start it: it runs every migration from 22, and says so in the log (`database migrated from 21 to 69`).
+To go forward again, run `git checkout -- docker-compose.yml` in `go-help-desk/docker` to drop the edit from step 3, then `git checkout v1.3.0` (it refuses while the file is changed) and start it: it runs every migration from 22, and says so in the log (`database migrated from 21 to 70`).
