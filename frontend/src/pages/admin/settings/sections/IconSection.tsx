@@ -15,7 +15,7 @@ import { cn } from '@/lib/utils'
 // logo does.
 
 const ICON_KEY = ['admin', 'site-icon']
-const DEFAULT_BACKGROUND = '#ffffff'
+const DEFAULT_BACKGROUND = '#ffffff' // theme-ok: the stored icon background's default, data not styling
 const HEX = /^#[0-9a-fA-F]{6}$/
 
 // A button that is busy or has nothing to do says so with aria-disabled and
@@ -179,11 +179,11 @@ export function IconSection() {
       <Section title="Icon">
         <div className="px-5 py-4 space-y-3">
           {loadError ? (
-            <p role="alert" className="text-sm text-red-600">
+            <p role="alert" className="text-sm text-danger-fg">
               {extractError(loadError)}
             </p>
           ) : (
-            <p className="text-sm text-gray-500">Trying again…</p>
+            <p className="text-sm text-fg-faint">Trying again…</p>
           )}
           <Button
             variant="outline"
@@ -203,7 +203,7 @@ export function IconSection() {
   if (loading) {
     return (
       <Section title="Icon">
-        <p className="px-5 py-4 text-sm text-gray-500">Loading…</p>
+        <p className="px-5 py-4 text-sm text-fg-faint">Loading…</p>
       </Section>
     )
   }
@@ -212,13 +212,13 @@ export function IconSection() {
     <Section title="Icon">
       <div className="px-5 py-4 space-y-3">
         <div>
-          <div className="text-sm text-gray-500">
+          <div className="text-sm text-fg-faint">
             The icon in the browser tab, and on a phone or computer&apos;s home screen when someone adds this site
             to it. Upload one square PNG, JPG or GIF, at least 512 × 512 px and at most 5 MB; the server makes
             every size from it.
           </div>
-          <div className="mt-0.5 text-sm text-gray-500">SVG is not accepted, for the same reason as the logo.</div>
-          <div className="mt-0.5 text-sm text-gray-500">
+          <div className="mt-0.5 text-sm text-fg-faint">SVG is not accepted, for the same reason as the logo.</div>
+          <div className="mt-0.5 text-sm text-fg-faint">
             Icons already added to a home screen keep the old picture on iPhone and update later on Android.
           </div>
         </div>
@@ -268,16 +268,16 @@ export function IconSection() {
             )}
           </div>
           {showHint && (
-            <p id={hintId} role="alert" className="text-sm text-red-600">
+            <p id={hintId} role="alert" className="text-sm text-danger-fg">
               Use a colour such as #ffffff.
             </p>
           )}
-          {!set && valid && <p className="text-sm text-gray-500">Used when you upload an icon.</p>}
+          {!set && valid && <p className="text-sm text-fg-faint">Used when you upload an icon.</p>}
         </div>
       </SettingRow>
 
       <div className="px-5 py-4 space-y-3">
-        {!set && <p className="text-sm text-gray-900">No icon uploaded. The built-in icon is used.</p>}
+        {!set && <p className="text-sm text-fg">No icon uploaded. The built-in icon is used.</p>}
 
         {set && status && (
           <>
@@ -298,7 +298,7 @@ export function IconSection() {
                         {/* A hairline edge on every one: a white icon on the white card has none of its own. */}
                         <div
                           className={cn(
-                            'box-content shrink-0 overflow-hidden border border-gray-300',
+                            'box-content shrink-0 overflow-hidden border border-border-strong',
                             p.checker && CHECKERBOARD,
                             p.frame,
                           )}
@@ -307,12 +307,12 @@ export function IconSection() {
                           <img src={f.url} alt="" width={p.size} height={p.size} />
                         </div>
                       </div>
-                      <figcaption className="text-xs text-gray-500">{p.caption}</figcaption>
+                      <figcaption className="text-xs text-fg-faint">{p.caption}</figcaption>
                     </figure>
                   )
                 })}
             </div>
-            <p id={captionId} className="text-xs text-gray-500">
+            <p id={captionId} className="text-xs text-fg-faint">
               A checkerboard behind a preview shows which parts are transparent. &ldquo;Masked&rdquo; is the circle
               crop Android applies to home screen icons; some phones use another shape.
             </p>
@@ -361,11 +361,11 @@ export function IconSection() {
         {/* Always in the page, so a screen reader is already watching it when
             its text changes; a status mounted together with its text is
             missed by several of them. */}
-        <div role="status" className="text-sm text-green-600">
+        <div role="status" className="text-sm text-success-fg">
           {message}
         </div>
         {error && (
-          <p role="alert" className="text-sm text-red-600">
+          <p role="alert" className="text-sm text-danger-fg">
             {error}
           </p>
         )}

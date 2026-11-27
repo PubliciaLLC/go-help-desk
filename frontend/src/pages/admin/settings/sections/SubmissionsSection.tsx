@@ -55,7 +55,7 @@ export function SubmissionsSection({ draft }: { draft: SettingsDraft }) {
         />
       </SettingRow>
       {submissionOff && (
-        <p id="guests-show-types-why" className="px-5 pb-3 text-xs text-gray-500">Unavailable while guest submission is off.</p>
+        <p id="guests-show-types-why" className="px-5 pb-3 text-xs text-fg-faint">Unavailable while guest submission is off.</p>
       )}
       <SettingRow
         label="Show Items to guests"
@@ -69,7 +69,7 @@ export function SubmissionsSection({ draft }: { draft: SettingsDraft }) {
           onChange={(v) => setBool('guests_show_items', v)}
         />
       </SettingRow>
-      {itemsWhy && <p id="guests-show-items-why" className="px-5 pb-3 text-xs text-gray-500">{itemsWhy}</p>}
+      {itemsWhy && <p id="guests-show-items-why" className="px-5 pb-3 text-xs text-fg-faint">{itemsWhy}</p>}
       <div className="border-t px-5 py-4 space-y-2">
         <div className="text-sm text-fg-faint">
           The largest file a guest may attach. It can never exceed the per-file limit for every upload, {overallMB} MB, set under System → File Attachments.

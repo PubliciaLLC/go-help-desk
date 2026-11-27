@@ -69,11 +69,11 @@ function ListHint({
 }) {
   if (!asked) return null
   if (query.isLoading) {
-    return <p role="status" className="text-xs text-gray-500">Loading {name}…</p>
+    return <p role="status" className="text-xs text-fg-faint">Loading {name}…</p>
   }
   if (query.isError) {
     return (
-      <div role="alert" className="flex flex-wrap items-center gap-2 text-xs text-red-600">
+      <div role="alert" className="flex flex-wrap items-center gap-2 text-xs text-danger-fg">
         <span>The {name} could not be loaded; you can still send the request without.</span>
         <Button type="button" variant="outline" size="sm" onClick={() => query.refetch()}>
           Retry
@@ -82,7 +82,7 @@ function ListHint({
     )
   }
   if (query.isSuccess && (query.data ?? []).length === 0) {
-    return <p className="text-xs text-gray-500">{none}</p>
+    return <p className="text-xs text-fg-faint">{none}</p>
   }
   return null
 }

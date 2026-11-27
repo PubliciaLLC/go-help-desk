@@ -102,19 +102,19 @@ export function IdentitySection({ draft }: { draft: SettingsDraft }) {
           <input
             type="checkbox"
             id="use-short-name"
-            className="h-4 w-4 rounded border-gray-300"
+            className="h-4 w-4 rounded border-border-strong"
             checked={useShortName}
             onChange={(e) => {
               setUseShortName(e.target.checked)
               if (!e.target.checked) setStr('site_short_name', '')
             }}
           />
-          <label htmlFor="use-short-name" className="text-sm font-medium text-gray-900">
+          <label htmlFor="use-short-name" className="text-sm font-medium text-fg">
             Use a different name on the home screen
           </label>
         </div>
         {!useShortName && (
-          <div className="mt-1 text-sm text-gray-500">The home screen uses the site name.</div>
+          <div className="mt-1 text-sm text-fg-faint">The home screen uses the site name.</div>
         )}
       </div>
       {useShortName && (
@@ -132,11 +132,11 @@ export function IdentitySection({ draft }: { draft: SettingsDraft }) {
               value={shortName}
               onChange={(e) => setStr('site_short_name', e.target.value)}
             />
-            <div id={counterId} className={overLimit ? 'text-xs text-red-600' : 'text-xs text-gray-500'}>
+            <div id={counterId} className={overLimit ? 'text-xs text-danger-fg' : 'text-xs text-fg-faint'}>
               {shortLen}/{SHORT_NAME_MAX}
             </div>
             {longName && (
-              <p id={noteId} role="note" className="max-w-56 text-sm text-amber-700">
+              <p id={noteId} role="note" className="max-w-56 text-sm text-warning-fg">
                 Most home screens show about {SHORT_NAME_SOFT_LIMIT} characters and cut longer names short.
               </p>
             )}
