@@ -163,12 +163,12 @@ func TestFilterForViewer_RequesterGetsOnlyTheAllowedList(t *testing.T) {
 
 	for _, role := range []user.Role{user.RoleUser, user.Role("auditor"), user.Role("")} {
 		t.Run("one ticket/"+string(role), func(t *testing.T) {
-			got, err := ticket.FilterForViewer(role, tk)
+			got, err := ticket.FilterForViewer(role, allLevels, tk)
 			require.NoError(t, err)
 			require.Equal(t, sorted(ticketAllowed), sorted(keysOf(t, got)), "exactly the allowed keys, none missing")
 		})
 		t.Run("list/"+string(role), func(t *testing.T) {
-			got, err := ticket.FilterForViewer(role, []ticket.Ticket{tk, tk})
+			got, err := ticket.FilterForViewer(role, allLevels, []ticket.Ticket{tk, tk})
 			require.NoError(t, err)
 			b, _ := json.Marshal(got)
 			var rows []map[string]json.RawMessage
@@ -182,7 +182,7 @@ func TestFilterForViewer_RequesterGetsOnlyTheAllowedList(t *testing.T) {
 			}
 		})
 		t.Run("wrapped/"+string(role), func(t *testing.T) {
-			got, err := ticket.FilterForViewer(role, wrapped)
+			got, err := ticket.FilterForViewer(role, allLevels, wrapped)
 			require.NoError(t, err)
 			keys := keysOf(t, got)
 			for k := range keys {
@@ -203,7 +203,7 @@ func TestFilterForViewer_RequesterGetsOnlyTheAllowedList(t *testing.T) {
 func TestFilterForViewer_StaffAndAdminAreUntouched(t *testing.T) {
 	tk := filledTicket(t)
 	for _, role := range []user.Role{user.RoleStaff, user.RoleAdmin} {
-		got, err := ticket.FilterForViewer(role, tk)
+		got, err := ticket.FilterForViewer(role, allLevels, tk)
 		require.NoError(t, err)
 		require.Equal(t, keysOf(t, tk), keysOf(t, got), role)
 		require.Contains(t, keysOf(t, got), "sla_paused_seconds")
@@ -230,14 +230,14 @@ func TestFilterForViewer_DropsTheStaffOnlyRequesterKeyFromARequesterView(t *test
 	require.Contains(t, keysOf(t, v), "requester", "precondition: the view carries the line")
 
 	for _, role := range []user.Role{user.RoleUser, user.Role("auditor"), user.Role("")} {
-		got, err := ticket.FilterForViewer(role, v)
+		got, err := ticket.FilterForViewer(role, allLevels, v)
 		require.NoError(t, err)
 		require.NotContains(t, keysOf(t, got), "requester", "role %q", role)
 		b, _ := json.Marshal(got)
 		require.NotContains(t, string(b), "ada@example.test", "role %q", role)
 	}
 	for _, role := range []user.Role{user.RoleStaff, user.RoleAdmin} {
-		got, err := ticket.FilterForViewer(role, v)
+		got, err := ticket.FilterForViewer(role, allLevels, v)
 		require.NoError(t, err)
 		require.Contains(t, keysOf(t, got), "requester", "role %q", role)
 	}
@@ -246,7 +246,7 @@ func TestFilterForViewer_DropsTheStaffOnlyRequesterKeyFromARequesterView(t *test
 // Values are not rewritten, only keys dropped; and nothing else is lost.
 func TestFilterForViewer_KeepsValuesAndNonTicketPayloadsAlone(t *testing.T) {
 	id := uuid.New()
-	got, err := ticket.FilterForViewer(user.RoleUser, ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb, ID: id, Subject: "s", Priority: ticket.PriorityHigh, ReopenCount: 3})
+	got, err := ticket.FilterForViewer(user.RoleUser, allLevels, ticket.Ticket{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb, ID: id, Subject: "s", Priority: ticket.PriorityHigh, ReopenCount: 3})
 	require.NoError(t, err)
 	b, _ := json.Marshal(got)
 	require.Contains(t, string(b), id.String())
@@ -254,7 +254,7 @@ func TestFilterForViewer_KeepsValuesAndNonTicketPayloadsAlone(t *testing.T) {
 	require.NotContains(t, string(b), "reopen_count")
 
 	// Not an object or array: passed through.
-	got, err = ticket.FilterForViewer(user.RoleUser, nil)
+	got, err = ticket.FilterForViewer(user.RoleUser, allLevels, nil)
 	require.NoError(t, err)
 	require.Nil(t, got)
 }
@@ -285,7 +285,7 @@ func TestFilterForGuest_IsASubsetOfTheRequesterList(t *testing.T) {
 // one. Neither is a Ticket field, so each is a wrapper key on its own list.
 func TestFilter_TheFollowUpReachesTheRequesterAndTheGuestIsToldOnlyThatThereIsOne(t *testing.T) {
 	ref := ticket.FollowUpRef{ID: uuid.New(), TrackingNumber: "GHD-2026-000043"}
-	got, err := ticket.FilterForViewer(user.RoleUser, map[string]any{"id": "i", "follow_up": ref})
+	got, err := ticket.FilterForViewer(user.RoleUser, allLevels, map[string]any{"id": "i", "follow_up": ref})
 	require.NoError(t, err)
 	require.Contains(t, keysOf(t, got), "follow_up")
 
@@ -304,7 +304,7 @@ func TestFilterForViewer_BigIntegersSurviveUnchanged(t *testing.T) {
 		"replies": []any{map[string]any{"n": big}},
 		"nested":  "dropped",
 	}
-	got, err := ticket.FilterForViewer(user.RoleUser, in)
+	got, err := ticket.FilterForViewer(user.RoleUser, allLevels, in)
 	require.NoError(t, err)
 	b, err := json.Marshal(got)
 	require.NoError(t, err)
@@ -335,7 +335,7 @@ func TestFilterForViewer_RequesterSeesExactlyTheseKeys(t *testing.T) {
 		Ticket: filledTicket(t), Replies: []any{"r"}, Links: []any{"l"},
 		Warnings: []any{map[string]any{"field_id": "f", "reason": "inactive"}}, Extra: "x",
 	}
-	got, err := ticket.FilterForViewer(user.RoleUser, wrapped)
+	got, err := ticket.FilterForViewer(user.RoleUser, allLevels, wrapped)
 	require.NoError(t, err)
 
 	want := []string{
@@ -367,7 +367,7 @@ func TestReplyMatch_IsARequesterWrapperKeyAndNotAGuestKey(t *testing.T) {
 	v := view{Ticket: filledTicket(t), Match: &ticket.ReplyMatch{ReplyID: uuid.New(), Snippet: "x"}}
 
 	for _, role := range []user.Role{user.RoleUser, user.Role("auditor"), user.Role("")} {
-		got, err := ticket.FilterForViewer(role, []view{v})
+		got, err := ticket.FilterForViewer(role, allLevels, []view{v})
 		require.NoError(t, err)
 		b, _ := json.Marshal(got)
 		require.Contains(t, string(b), `"reply_match"`, role)

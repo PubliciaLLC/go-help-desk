@@ -15,6 +15,7 @@ import (
 
 	"github.com/google/uuid"
 
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/catalogue"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/customfield"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
@@ -69,11 +70,16 @@ func (s *Server) handleGuestCreateTicket(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// No type_id or item_id. DESIGN.md gives a guest the category only, and
-	// accepting them cost more than a mismatched form: they went to the
-	// database unvalidated, so a random uuid hit a foreign key AFTER NextSeq
-	// had consumed a tracking number — an unauthenticated 500 that burns a
-	// number from the sequence on every call.
+	// No type_id unless guests_show_types is on, and no item_id unless
+	// guests_show_items is too (#711: the levels guests are shown).
+	// DESIGN.md gives a guest the category only by default, and accepting them
+	// unchecked cost more than a mismatched form: they went to the database
+	// unvalidated, so a random uuid hit a foreign key AFTER NextSeq had
+	// consumed a tracking number — an unauthenticated 500 that burns a number
+	// from the sequence on every call. They are raw here so that, while the
+	// level is not shown, whatever a client sends under its name is ignored as
+	// it always was, a malformed value included; once it is shown it is
+	// parsed and checked before anything is written (see guestPick).
 	//
 	// custom_fields takes only the fields an administrator offered to guests on
 	// this category (customfield.Service.GuestFields), and anything else is a
@@ -83,6 +89,8 @@ func (s *Server) handleGuestCreateTicket(w http.ResponseWriter, r *http.Request)
 		Description string          `json:"description"`
 		Format      json.RawMessage `json:"format"` // optional; see restTextFormat
 		CategoryID  uuid.UUID       `json:"category_id"`
+		TypeID      json.RawMessage `json:"type_id"`
+		ItemID      json.RawMessage `json:"item_id"`
 		GuestEmail  string          `json:"guest_email"`
 		GuestName   string          `json:"guest_name"`
 		GuestPhone  string          `json:"guest_phone"`
@@ -138,6 +146,15 @@ func (s *Server) handleGuestCreateTicket(w http.ResponseWriter, r *http.Request)
 		Error(w, http.StatusBadRequest, "bad_request", "category_id is not a category open to guests")
 		return
 	}
+	// The Type and Item, only for a level guests are shown (#711: the one
+	// policy). Refused before anything is written, like every other check here.
+	// The chain (the type belongs to the category, the item to the type, nothing
+	// archived) is the ticket service's, the same code staff go through.
+	typeID, itemID, err := guestPick(s.levelsOf(ctx, catalogue.Guest), body.TypeID, body.ItemID)
+	if err != nil {
+		Error(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
 	// Refused before anything is written, so a bad value spends no tracking
 	// number (#627).
 	if err := s.customFields.CheckGuestValues(ctx, body.CategoryID, body.CustomFields); err != nil {
@@ -152,12 +169,14 @@ func (s *Server) handleGuestCreateTicket(w http.ResponseWriter, r *http.Request)
 		DescriptionFormat: descFormat,
 		SourceChannel:     ticket.ChannelGuest,
 		CategoryID:        body.CategoryID,
+		TypeID:            typeID,
+		ItemID:            itemID,
 		Priority:          ticket.PriorityMedium,
 		GuestEmail:        &email,
 		GuestName:         name,
 		GuestPhone:        strings.TrimSpace(body.GuestPhone),
 		TrackingPrefix:    s.adminSvc.TicketPrefix(ctx),
-		AutoAssign:        s.Routing(ctx, body.CategoryID, nil), // a guest picks a category and nothing below it
+		AutoAssign:        s.Routing(ctx, body.CategoryID, typeID), // nil unless they were let choose one (#711)
 	}
 	t, err := s.tickets.Create(ctx, in)
 	if err != nil {
@@ -199,6 +218,48 @@ func (s *Server) handleGuestCreateTicket(w http.ResponseWriter, r *http.Request)
 	JSON(w, http.StatusCreated, guestJSON(map[string]string{
 		"tracking_number": string(t.TrackingNumber),
 	}))
+}
+
+// guestPick reads the Type and Item a guest chose, for the levels guests are
+// shown (#711). Both are optional. A level that is not shown is not read at all,
+// so an id sent for it, a malformed one included, is ignored as it always was.
+// A malformed id for a shown level is an error the guest is told. Everything
+// else is ticket.Service.Create's, which every ticket goes through and which
+// answers a 400 before a tracking number is taken: the type must be one of the
+// category and the item one of the type (an item needs its type), and nothing
+// archived is accepted.
+func guestPick(lv catalogue.Levels, rawType, rawItem json.RawMessage) (typeID, itemID *uuid.UUID, err error) {
+	if lv.Types {
+		if typeID, err = optionalID("type_id", rawType); err != nil {
+			return nil, nil, err
+		}
+	}
+	if lv.Types && lv.Items {
+		if itemID, err = optionalID("item_id", rawItem); err != nil {
+			return nil, nil, err
+		}
+	}
+	return typeID, itemID, nil
+}
+
+// optionalID parses a JSON string that is a UUID, or nothing: an absent key,
+// null and "" all read as no choice.
+func optionalID(name string, raw json.RawMessage) (*uuid.UUID, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	var s *string
+	if err := json.Unmarshal(raw, &s); err != nil {
+		return nil, fmt.Errorf("%s is not a valid id", name)
+	}
+	if s == nil || *s == "" {
+		return nil, nil
+	}
+	id, err := uuid.Parse(*s)
+	if err != nil {
+		return nil, fmt.Errorf("%s is not a valid id", name)
+	}
+	return &id, nil
 }
 
 // guestValuesNotSaved is the answer to a guest whose ticket was filed but whose
@@ -609,7 +670,8 @@ func retryAfterSeconds(d time.Duration) string {
 //
 // It is a guest ticket creation, so it is held to what POST /guest/tickets is:
 // the same switch, the same per-address budget (shared, not a second one), and
-// category only; the body is ignored, so there is no field to set. The new
+// the category (plus the original's type while guests may choose one, #711); the
+// body is ignored, so there is no field to set. The new
 // ticket is for the same guest (address, name, phone from the original). Its
 // link goes by the ordinary guest-ticket-created mail, as a normal guest
 // ticket's does, and is NOT in the response: the answer is the new tracking
@@ -628,9 +690,17 @@ func (s *Server) handleGuestFollowUp(w http.ResponseWriter, r *http.Request) {
 	if !allowOrRefuse(ctx, w, s.loginLimiter, "guest-submit:"+authmw.ClientAddr(r)) {
 		return
 	}
-	created, err := s.tickets.CreateRequesterFollowUp(ctx, t.ID, s.adminSvc.TicketPrefix(ctx), ticket.ChannelGuest,
-		ticket.Actor{Role: user.RoleUser}, s.requesterClassificationOpen,
-		s.Routing(ctx, t.CategoryID, nil)...) // a guest's follow-up carries no type
+	// What the guest chose is kept while guests are shown it (#711), and the
+	// type routes the follow-up to the queue the original went to; a level
+	// archived since falls back, silently. Otherwise it carries none, as before.
+	keep := s.followUpKeep(ctx, t, s.levelsOf(ctx, catalogue.Guest))
+	var routedType *uuid.UUID
+	if keep.Types {
+		routedType = t.TypeID
+	}
+	created, err := s.tickets.CreateRequesterFollowUpKeeping(ctx, t.ID, s.adminSvc.TicketPrefix(ctx), ticket.ChannelGuest,
+		ticket.Actor{Role: user.RoleUser}, keep, s.requesterClassificationOpen,
+		s.Routing(ctx, t.CategoryID, routedType)...)
 	if err != nil {
 		switch {
 		case errors.Is(err, ticket.ErrNotClosed), errors.Is(err, ticket.ErrFollowUpExists),

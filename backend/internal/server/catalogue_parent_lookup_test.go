@@ -22,6 +22,10 @@ func TestCatalogue_ParentLookupFailureIsNotServedAsActive(t *testing.T) {
 	defer cleanup()
 	ctx := context.Background()
 	require.NoError(t, h.adminSvc.SetBool(ctx, admin.KeyGuestSubmissionEnabled, true))
+	// A guest lists types and items only while guests are shown them, and a
+	// requester items only while registered users are (#711).
+	setChoice(t, h, guestsTypeItemKey, true)
+	setChoice(t, h, usersItemKey, true)
 
 	cat, err := h.categorySvc.CreateCategory(ctx, "Hardware", 90)
 	require.NoError(t, err)

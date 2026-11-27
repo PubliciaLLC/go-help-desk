@@ -233,3 +233,29 @@ describe('edit mode', () => {
     expect(screen.queryByRole('button', { name: 'Save' })).toBeNull()
   })
 })
+
+// #711: a requester's ticket carries no item_id while Items is not shown to them,
+// and they cannot edit, so the panel has no use for the list of items: asking
+// for it is a wasted request that can only answer an empty list.
+describe('items (#711)', () => {
+  it('are not requested for a viewer who cannot edit and whose ticket has no item', async () => {
+    const items = vi.spyOn(ticketsApi, 'listPublicItems')
+    renderPanel({ canEdit: false, itemId: null })
+    await screen.findByText('VPN')
+    expect(items).not.toHaveBeenCalled()
+  })
+
+  it('are requested to name the item the ticket has, even for a viewer who cannot edit', async () => {
+    const items = vi.spyOn(ticketsApi, 'listPublicItems')
+    renderPanel({ canEdit: false, itemId: 'item-cert' })
+    expect(await screen.findByText('Certificate')).toBeTruthy()
+    expect(items).toHaveBeenCalled()
+  })
+
+  it('are requested for an editor, who may pick one', async () => {
+    const items = vi.spyOn(ticketsApi, 'listPublicItems')
+    renderPanel({ canEdit: true, itemId: null })
+    await screen.findByText('VPN')
+    await waitFor(() => expect(items).toHaveBeenCalled())
+  })
+})

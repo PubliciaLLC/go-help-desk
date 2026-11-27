@@ -60,6 +60,18 @@ describe('AreaChart: text outside the picture', () => {
     expect(container.textContent).toContain('d:03')
   })
 
+  // A table keeps its content's size whatever sr-only says (overflow does not
+  // apply to it), so the hidden table is as tall as the chart has days. With no
+  // positioned, clipping ancestor it stretched the whole document: the page
+  // scrolled below the footer on Reports and the dashboard. BarChart has the
+  // same guard.
+  it('contains its hidden table in a positioned, clipping figure', () => {
+    const { container } = render(<AreaChart {...props()} />)
+    const figure = container.querySelector('table.sr-only')!.closest('figure')!
+    expect(figure.className).toContain('relative')
+    expect(figure.className).toContain('overflow-hidden')
+  })
+
   it('puts every value in a visually hidden table', () => {
     const { container } = render(<AreaChart {...props({ formatLabel: (l) => `L${l.slice(-2)}` })} />)
     const table = container.querySelector('table.sr-only')!

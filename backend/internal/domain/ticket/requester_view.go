@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/catalogue"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 )
 
@@ -35,6 +36,21 @@ var requesterTicketKeys = []string{
 	"assignee_user_id",
 	"resolution_notes",
 }
+
+// requesterTypeKeys and requesterItemKeys are keys on the allowed list that a
+// requester gets only for a level of the classification the one policy lets
+// them see (catalogue.VisibleLevels, #711). The allowed list is the most a
+// requester can ever be sent; FilterForViewer takes these away below it. The
+// classification test still decides every key against the allowed and never
+// lists, and a test holds these to being a subset of the allowed one.
+//
+// Withholding item_id is the strictest reading of "a registered user may not
+// query down to the item level", and a decision that is easy to relax: it is
+// the one condition in FilterForViewer.
+var (
+	requesterTypeKeys = []string{"type_id"}
+	requesterItemKeys = []string{"item_id"}
+)
 
 // requesterNeverTicketKeys are the Ticket JSON keys a requester does not
 // receive, so that the test over Ticket's fields can tell "left out on purpose"
@@ -87,6 +103,11 @@ func RequesterNeverTicketKeys() []string { return append([]string(nil), requeste
 // RequesterWrapperKeys returns a copy of the wrapper keys a requester keeps.
 func RequesterWrapperKeys() []string { return append([]string(nil), requesterWrapperKeys...) }
 
+// RequesterTypeKeys and RequesterItemKeys return the keys withheld when Types or
+// Items is not visible to the requester.
+func RequesterTypeKeys() []string { return append([]string(nil), requesterTypeKeys...) }
+func RequesterItemKeys() []string { return append([]string(nil), requesterItemKeys...) }
+
 // GuestTicketKeys returns a copy of the Ticket keys a guest receives.
 func GuestTicketKeys() []string { return append([]string(nil), guestTicketKeys...) }
 
@@ -97,11 +118,34 @@ func GuestTicketKeys() []string { return append([]string(nil), guestTicketKeys..
 // allowed list and the wrapper keys are kept. That covers one ticket, a list of
 // tickets, and a ticket wrapped with extra fields. Values are not rewritten, and
 // nested values (replies, links) are not looked into: they are not tickets.
-func FilterForViewer(role user.Role, v any) (any, error) {
+//
+// lv is what the one policy lets this caller see of the classification
+// (catalogue.VisibleLevels): below the category, a level that is not visible is
+// not sent, so a requester whose Items is off receives no item_id, in a ticket,
+// a list or a wrapped ticket alike. It is required, with no default, so that a
+// caller cannot send a requester more than the policy allows by omission.
+func FilterForViewer(role user.Role, lv catalogue.Levels, v any) (any, error) {
 	if role == user.RoleStaff || role == user.RoleAdmin {
 		return v, nil
 	}
-	return keepKeys(v, append(append([]string(nil), requesterTicketKeys...), requesterWrapperKeys...))
+	hidden := map[string]bool{}
+	if !lv.Types {
+		for _, k := range requesterTypeKeys {
+			hidden[k] = true
+		}
+	}
+	if !lv.Types || !lv.Items { // an item hangs under a type
+		for _, k := range requesterItemKeys {
+			hidden[k] = true
+		}
+	}
+	keep := make([]string, 0, len(requesterTicketKeys)+len(requesterWrapperKeys))
+	for _, k := range append(append([]string(nil), requesterTicketKeys...), requesterWrapperKeys...) {
+		if !hidden[k] {
+			keep = append(keep, k)
+		}
+	}
+	return keepKeys(v, keep)
 }
 
 // FilterForGuest is FilterForViewer for the guest's view, which is a subset of

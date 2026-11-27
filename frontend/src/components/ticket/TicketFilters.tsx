@@ -360,7 +360,10 @@ export function TicketFilters({
       v => onChange({ type: v, item: undefined }),
       !value.category,
     ),
-    item: selectOf('Item', 'Any item', value.item, items, v => onChange({ item: v }), !value.type),
+    // Not offered to a requester who has no items to choose from: with Items
+    // not shown to them (#711) the list is empty, and a filter on an item is
+    // refused. Staff keep it.
+    item: (staff || items.length > 0) && selectOf('Item', 'Any item', value.item, items, v => onChange({ item: v }), !value.type),
     assignee:
       staff &&
       offers('assignee') &&
@@ -413,7 +416,7 @@ export function TicketFilters({
 
   // What is behind the button, named from what is in it.
   const moreNames = [
-    'item',
+    fields.item && 'item',
     fields.assignee && 'assignee',
     fields.group && 'group',
     fields.updated && 'last updated',

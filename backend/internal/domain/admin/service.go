@@ -101,8 +101,9 @@ func (s *Service) SAMLEnabled(ctx context.Context) bool {
 }
 
 // SetSAMLEnabled persists whether SAML authentication is enabled — read by
-// user.IsLocalAuthAllowed to decide whether non-admins keep password login
-// once SAML is configured (a stricter posture an operator opts into
+// user.MaySignInWithoutSAML (through IsLocalAuthAllowed for passwords, and
+// directly on the OIDC callback) to decide whether non-admins keep password
+// and OIDC sign-in once SAML is configured (a stricter posture an operator opts into
 // separately from whether SAML itself is configured at all). #304 first
 // treated this as also gating whether the SAML middleware loads, the way
 // oidc_enabled gates OIDC — that conflated two different questions under
@@ -270,6 +271,25 @@ func (s *Service) GuestAttachmentsEnabled(ctx context.Context) bool {
 		return false
 	}
 	v, _ := s.GetBool(ctx, KeyGuestAttachmentsEnabled)
+	return v
+}
+
+// UsersShowItems, GuestsShowTypes and GuestsShowItems are the stored values of
+// the three #711 switches: off unless saved, upgrades included. They are not
+// what a caller sees; that is catalogue.VisibleLevels, which combines them with
+// guest submission and with each other. Nothing else should read them.
+func (s *Service) UsersShowItems(ctx context.Context) bool {
+	v, _ := s.GetBool(ctx, KeyUsersShowItems)
+	return v
+}
+
+func (s *Service) GuestsShowTypes(ctx context.Context) bool {
+	v, _ := s.GetBool(ctx, KeyGuestsShowTypes)
+	return v
+}
+
+func (s *Service) GuestsShowItems(ctx context.Context) bool {
+	v, _ := s.GetBool(ctx, KeyGuestsShowItems)
 	return v
 }
 

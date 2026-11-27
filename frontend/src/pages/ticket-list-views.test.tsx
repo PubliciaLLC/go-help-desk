@@ -194,7 +194,9 @@ describe('the address is translated once, after /me has answered', () => {
     await waitFor(() => expect(router.search).toEqual({ q: 'printer' }))
     await waitFor(() => expect(lastCall()).toMatchObject({ scope: 'mine', q: 'printer' }))
     expect(lastCall()).not.toHaveProperty('held_by')
-    expect(meCalls).toBe(0)
+    // It asks /me once, for whether items are shown (#711), and does not wait for
+    // it: the address was rewritten and the list asked for above without it.
+    expect(meCalls).toBeLessThanOrEqual(1)
     expect(heading()).toBe('Tickets')
   })
 })

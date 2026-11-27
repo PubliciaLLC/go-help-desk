@@ -71,6 +71,7 @@ describe('SSO error messages', () => {
     ['saml_nameid_format', 'Your identity provider cannot issue the persistent identifier this help desk asks for. Ask an administrator to check the single sign-on setup.'],
     ['domain_not_allowed', 'Accounts from your email domain cannot sign in here.'],
     ['account_disabled', 'This account is disabled. Ask an administrator if you need access.'],
+    ['saml_required', 'Staff and users must sign in with SAML here. Sign in with SAML if it is offered, or ask an administrator.'],
     ['account_link_refused', 'Your single sign-on identity could not be linked to the existing account with that email address. Ask an administrator.'],
     ['invalid_assertion', 'Your identity provider did not send the details this help desk needs. Ask an administrator to check the single sign-on setup.'],
     ['email_not_verified', 'Your identity provider did not send a verified email address, so you could not be signed in.'],

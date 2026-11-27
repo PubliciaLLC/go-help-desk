@@ -99,8 +99,8 @@ describe('SAML section', () => {
     await openPage()
     expect(screen.queryByText('Enable SAML login')).toBeNull()
     const hint = screen.getByText(/Save SAML config/, { selector: 'div' })
-    expect(hint.textContent).toMatch(/administrators keep password sign-in/i)
-    expect(hint.textContent).toMatch(/password sign-in for staff and users/i)
+    expect(hint.textContent).toMatch(/administrators keep both/i)
+    expect(hint.textContent).toMatch(/password and OIDC sign-in for staff and users/i)
   })
 
   it('shows the Entity ID and the ACS URL before SAML is configured, and copies them', async () => {

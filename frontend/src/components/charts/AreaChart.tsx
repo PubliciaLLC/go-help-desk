@@ -64,7 +64,12 @@ export function AreaChart({
   const last = labels[labels.length - 1]
 
   return (
-    <figure>
+    // relative + overflow-hidden: a table keeps its content's size whatever
+    // sr-only says, so the hidden table below, positioned absolutely, is as
+    // tall as the chart has days. Without a positioned, clipping ancestor it
+    // escaped <main> and stretched the document (a blank block under the
+    // footer). BarChart has the same guard.
+    <figure className="relative overflow-hidden">
       <div className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-2">
         <div className="text-right text-xs tabular-nums text-gray-500" style={{ height }}>
           {formatValue(max)}

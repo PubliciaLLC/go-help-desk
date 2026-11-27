@@ -196,8 +196,9 @@ func (s *Server) dashboardAttention(r *http.Request, a *authmw.Actor, vis ticket
 		return nil, err
 	}
 	out := make([]dashboardAttention, len(items))
+	lv := s.levelsOfActor(ctx, a) // once for the page, not once per ticket
 	for i, it := range items {
-		out[i] = dashboardAttention{Reason: it.Reason, Since: it.Since.UTC(), Ticket: viewerJSON(a, views[i])}
+		out[i] = dashboardAttention{Reason: it.Reason, Since: it.Since.UTC(), Ticket: viewerJSON(a, lv, views[i])}
 	}
 	return out, nil
 }
