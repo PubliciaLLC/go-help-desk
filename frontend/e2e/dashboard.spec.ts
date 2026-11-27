@@ -19,6 +19,18 @@ async function noHorizontalScroll(page: Page, width: number) {
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width)
 }
 
+
+// The shell is exactly one viewport tall (h-dvh) and scrolls inside <main>, so
+// the document itself must never scroll. A screen-reader-only chart table that
+// escaped <main>'s clipping made it scroll: a blank block under the footer.
+async function documentDoesNotScroll(page: Page) {
+  const { scrollHeight, innerHeight } = await page.evaluate(() => ({
+    scrollHeight: document.documentElement.scrollHeight,
+    innerHeight: window.innerHeight,
+  }))
+  expect(scrollHeight, 'the page scrolls as a whole: something escapes <main>').toBeLessThanOrEqual(innerHeight)
+}
+
 const roles = [
   { who: 'an administrator', me: ME_ADMIN, nav: 'Your queue', cells: 5, staff: true },
   { who: 'staff', me: ME_STAFF, nav: 'Your queue', cells: 5, staff: true },
@@ -78,3 +90,13 @@ for (const { who, me, nav, cells, staff } of roles) {
     })
   })
 }
+
+test.describe('the dashboard does not scroll as a whole', () => {
+  for (const [w, h] of [[1280, 900], [1920, 1000], [375, 800]] as const) {
+    test(`at ${w}x${h}, with the 30-day trend`, async ({ page }) => {
+      await page.setViewportSize({ width: w, height: h })
+      await open(page, ME_STAFF, 'Your queue')
+      await documentDoesNotScroll(page)
+    })
+  }
+})
