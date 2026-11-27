@@ -5,7 +5,7 @@ import { AxiosError, type AxiosResponse } from 'axios'
 import { renderWithQuery } from '@/test/render'
 import { api } from '@/api/client'
 import type { SiteIconStatus } from '@/api/admin'
-import { IconSection } from './settings/sections/IconSection'
+import { IconSection } from './IconSection'
 
 // The site icon section of System -> Branding (#708): one upload, seven
 // generated files the server serves, a background colour for the home screen
