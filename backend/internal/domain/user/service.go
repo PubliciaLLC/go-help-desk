@@ -254,8 +254,11 @@ func (s *Service) newUser(in CreateUserInput) (User, error) {
 		Role:        in.Role,
 		SAMLSubject: in.SAMLSubject,
 		OIDCSubject: in.OIDCSubject,
-		CreatedAt:   time.Now(),
-		UpdatedAt:   time.Now(),
+		// What the column's default gives the row, so the create answers
+		// (setup, the New user form) say "device" and not "" (#709).
+		Theme:     ThemeDevice,
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
 	}
 	if err := u.Validate(); err != nil {
 		return User{}, err
@@ -427,6 +430,15 @@ func (s *Service) UpdateProfile(ctx context.Context, id uuid.UUID, email, displa
 // SetEmailPreferences changes the caller's own staff-email switches (#441).
 func (s *Service) SetEmailPreferences(ctx context.Context, id uuid.UUID, p EmailPreferencesPatch) error {
 	return s.store.SetEmailPreferences(ctx, id, p)
+}
+
+// SetTheme changes the caller's own appearance choice (#709). A value that is
+// not one of the three never reaches the store.
+func (s *Service) SetTheme(ctx context.Context, id uuid.UUID, t Theme) error {
+	if !t.Valid() {
+		return ErrInvalidTheme
+	}
+	return s.store.SetTheme(ctx, id, t)
 }
 
 // ValidateDisplayName is the display-name rule UpdateProfile applies, for a

@@ -1616,7 +1616,7 @@ A label that begins with `=`, `+`, `-`, `@`, a tab or a carriage return is prefi
 2. `readBoxes(root: HTMLElement, measure: Measure): Box[]` walks `root`'s subtree in document order and returns what to paint, in CSS pixels relative to `root.getBoundingClientRect()`. `Box` is `{kind: 'fill', x, y, w, h, color, radius} | {kind: 'border', x, y, w, h, color, width, radius} | {kind: 'text', x, y, h, text, font, color} | {kind: 'image', x, y, w, h, src}`. For each element: skip it and its subtree if it matches `.sr-only, [data-export="skip"]` or its computed `visibility` is `hidden` (an element with `display: none` has no box and adds nothing); a non-transparent computed `background-color` is a `fill` (radius from `border-top-left-radius`); a non-zero `border-top-width` with a non-transparent colour is a `border` (the cards use one width and colour on all four sides; nothing else is read); an `<svg>` is an `image` from `inlineSvg` at its rect's size, and its children are not walked. For each text node: `font` is the parent's computed `font-style font-weight font-size font-family` and `color` its computed `color`; its lines come from the browser, by asking a `Range` for the rect of each character and grouping them with `linesFromCharRects` (below), one `text` box per line, so wrapped text is wrapped where the screen wraps it. A text node whose parent has computed `text-overflow: ellipsis` and `scrollWidth > clientWidth` (a truncated bar label) is one `text` box, cut with "…" to the parent's `clientWidth` by `measure`, as the browser cuts it. `measure(text, font)` is the canvas's `measureText` width in the browser and a fixed-width fake in tests.
 3. `linesFromCharRects(text: string, rects: {left: number; top: number; height: number}[]): {text: string; x: number; y: number; h: number}[]`, pure: consecutive characters whose `top` is within 1 px of the line's first are one line; `x` is the first character's `left`, the line's text has its trailing whitespace dropped, and an all-whitespace line is dropped.
 4. `contextBox(lines: string[], widthPx, measure, top = 0): {boxes: Box[], h: number}`, pure: the one thing added below the captured element (`top` is where the strip starts, the height of the element, so its boxes are placed in the same coordinates; 0 when omitted), a strip 12 px muted text wrapped to the width (by `measure`, at spaces) with 12 px padding and a top border, holding the period and the comparison period, the filters ("All categories · All priorities · All groups" when none), and "Created <local date and time> · <site name>". A card on its own does not say which period or filters it shows; the strip makes the image say it. It is on every image, card and board.
-5. `paintPng(boxes: Box[], widthPx: number, heightPx: number, background: string): Promise<string>`: wait for `document.fonts.ready`; load each image (`new Image()`, `src` the data URL, `await img.decode()`); make a canvas at the size × 2, or × 1 if either side × 2 would exceed 16,384 px; fill `background` (the computed `background-color` of the root, or of its nearest ancestor that has one, so a dark page gives a dark image); paint the boxes in order (`fill` and `border` with `roundRect`, `text` with `fillText` and `textBaseline = 'middle'` at `y + h / 2`, `image` with `drawImage`); `canvas.toDataURL('image/png')`. If the URL is longer than 2 MiB (`2 * 1024 * 1024` characters, the longest `data:` URL Chromium will download), paint again at × 1; if still longer, reject. Returns the data URL.
+5. `paintPng(boxes: Box[], widthPx: number, heightPx: number, background: string): Promise<string>`: wait for `document.fonts.ready`; load each image (`new Image()`, `src` the data URL, `await img.decode()`); make a canvas at the size × 2, or × 1 if either side × 2 would exceed 16,384 px; fill `background` (the computed `background-color` of the root, or of its nearest ancestor that has one; the boxes and the background are read with the light theme applied, so an image is the same whichever theme the person uses: see Appearance (dark mode), Charts and exports); paint the boxes in order (`fill` and `border` with `roundRect`, `text` with `fillText` and `textBaseline = 'middle'` at `y + h / 2`, `image` with `drawImage`); `canvas.toDataURL('image/png')`. If the URL is longer than 2 MiB (`2 * 1024 * 1024` characters, the longest `data:` URL Chromium will download), paint again at × 1; if still longer, reject. Returns the data URL.
 
 `components/reports/exportElement.ts` joins these to the page and holds what needs the browser: `canvasMeasure()` (the `measure` function, canvas `measureText`, or 7 px a character where there is no canvas, as in jsdom), `backgroundOf(el)` (the `background` that `paintPng` takes: the element's own computed `background-color` or its nearest ancestor's that is not transparent, white when none), `exportElement(el, contextLines, filename)` (read the boxes, add the strip below the element at `top` = the element's height, paint at the element's width and the height plus the strip's, save with `saveDataUrl`), the failure message (`IMAGE_FAILED`, the text under **Failure** below) and the hook `useImageExport()` that gives each image button its `busy` and `failed` state and a `run`.
 
@@ -1987,6 +1987,263 @@ the manifest link (so a browser may now offer to install the site) and
 migration back drops both tables and the uploaded icon with them; the
 `site_short_name` setting row is left, as other down steps leave settings rows,
 and older releases ignore it.
+
+### Appearance (dark mode) (#709, 1.3.0)
+
+Every person chooses how the help desk looks: **Light**, **Dark** or **Match my
+device** (the default). The choice belongs to the account, so it follows the
+person from the office desktop to their phone. It is a personal preference, not
+an instance setting: there is no administrator switch, no instance default and
+no way for an administrator to set it for someone else. 1.3.0 is not tagged
+until this ships.
+
+#### The choice and where it is stored
+
+- **Values.** `light`, `dark`, `device`. Nothing else is accepted anywhere: the
+  API refuses any other value, the database has a `CHECK` that refuses it, and
+  the browser ignores any other value it finds in its own storage.
+  `device` means "follow `prefers-color-scheme`", re-evaluated live: when the
+  operating system switches to dark at sunset, an open tab follows without a
+  reload.
+- **Column.** `users.theme text NOT NULL DEFAULT 'device'` with
+  `CHECK (theme IN ('light','dark','device'))`. It is migration 000071
+  (000070 is the branding icon); nothing depends on the number.
+  The constant default is a catalogue change only, no table rewrite.
+- **Upgrade.** Every existing account reads `device`, which is what 1.2 looked
+  like for anyone whose device is light, and dark for anyone whose device is
+  dark. Nobody is asked anything and the post-upgrade wizard has no step for it.
+  A service account (an OAuth client's identity, #420) has the column like any
+  row and never uses it.
+- **API.** `theme` is a field of the user object, so it is in `GET /api/v1/me`,
+  in the user object a sign-in answers with, and in the administrator's user
+  views (read-only there). It is changed only by the person, with
+  `PATCH /api/v1/me/appearance` and body `{"theme": "dark"}`: a session that has
+  passed its second factor, any role; refused to API keys and OAuth clients (a
+  key has no screen to look at), like `PATCH /me/email-preferences`. A missing,
+  null, non-string or unknown value is `400 invalid_theme`, "theme must be
+  light, dark or device". The answer is the `/me` view as saved. `updated_at` is
+  not touched: the account did not change. Not audited: it is a display
+  preference and changes nothing anyone else sees. `PATCH /admin/users/{id}` does not read the field, and the
+  administrator's whole-row `UpdateUser` does not write the column, so an
+  administrator saving a user page cannot put back an older choice.
+
+#### Which theme a page uses (precedence)
+
+The browser keeps one value, the key `ghd.theme` in `localStorage`, holding the
+last choice made on this browser by anyone, signed in or not. The rules:
+
+1. **Signed in, `/me` (or the sign-in answer) read:** the account's `theme`
+   wins, always. It is written to `ghd.theme` as it arrives, so the next visit
+   to the login page on this browser looks the same as the session did. An
+   account that says `device` while `ghd.theme` says `dark` is `device`, and
+   `ghd.theme` becomes `device`.
+2. **Not signed in (login, setup, sign-up, email verification, forgot and reset
+   password, the guest submit, track and ticket pages), or signed in before the
+   account has been read:** `ghd.theme` if it holds one of the three values.
+3. **Otherwise:** `device`.
+
+`device` then resolves through `matchMedia('(prefers-color-scheme: dark)')`;
+a browser without `matchMedia` is light.
+
+- **Signing in** replaces whatever the login page showed with the account's
+  value (rule 1). The page may change theme once at that moment, when the
+  person chose differently on another device; that is the only time a page
+  changes theme without being asked.
+- **Signing out** keeps `ghd.theme` as it is, so the login page goes on looking
+  the way the session did. On a shared computer the next person sees the last
+  person's choice until they sign in; nothing about the account is revealed by
+  it.
+- **Choosing on the login page** (or any pre-sign-in page) writes `ghd.theme`
+  only. It is not sent anywhere: there is no account yet. When that person then
+  signs in, rule 1 applies and their account's value wins, even if it differs.
+- **Choosing while signed in** (sidebar or Your account) applies at once,
+  writes `ghd.theme`, and sends `PATCH /me/appearance`. If the request fails,
+  the previous value is put back (on screen and in `ghd.theme`) and the switch
+  says "Couldn't save your appearance. Try again." in a polite live region.
+  While the request is in flight, an older `/me` answer arriving from elsewhere
+  does not overwrite the new choice.
+- **Other tabs** follow: a change to `ghd.theme` fires the `storage` event in
+  every other tab of this browser, and each adopts the new value without a
+  reload or a request. A value that is not one of the three is ignored.
+- **No storage.** Every `localStorage` access is wrapped: a browser that refuses
+  storage (some private modes, a blocked site, a full quota) reads as "nothing
+  stored", so the login page follows the device and a signed-in page follows
+  the account. A failed write is ignored; the choice still applies to the open
+  page and, when signed in, is still saved on the account.
+
+#### No flash of the wrong theme
+
+The theme is decided before the first paint. `index.html` loads
+`/theme-init.js`, a classic (non-module, render-blocking) script in `<head>`,
+before the stylesheet and the application bundle. It reads `ghd.theme`
+(in `try`), resolves `device` with `matchMedia`, and sets `class="dark"` on
+`<html>` or leaves it off, sets `<meta name="color-scheme">` to `light` or
+`dark` (the HTML ships `light dark`), and sets `<meta name="theme-color">`
+(`#ffffff` light, `#101828` dark: the top bar's colour, so a phone's browser
+chrome matches). It is about fifteen lines with no imports.
+
+- **Why a file and not an inline script.** The Content-Security-Policy is
+  `script-src 'self'` (`backend/internal/server/security_headers.go`): an inline
+  script would be blocked, and loosening the policy with `'unsafe-inline'` or
+  maintaining a hash of the script beside the policy is a worse trade than one
+  small same-origin request. The file is in `frontend/public/`, so Vite copies it
+  unhashed into the build and the SPA handler serves it like any other file
+  (`text/javascript`, with `nosniff`).
+- **One source of truth.** The script and the React code read the same key with
+  the same rules; the application takes over from what the script set and never
+  re-applies the theme at mount unless it differs.
+- **No animated switch.** Changing theme sets a `data-theme-switching` attribute
+  for one frame, during which transitions are off
+  (`[data-theme-switching] * { transition: none !important }`), so buttons
+  with `transition-colors` do not fade. Nothing about the theme animates, so
+  `prefers-reduced-motion` needs no special case.
+- **Portals.** Dialogs, the mobile drawer and the select popovers render in
+  Radix portals at the end of `<body>`; the class is on `<html>`, so they are
+  themed like the page.
+
+#### The switch
+
+One component, `ThemeSwitch`, in three places:
+
+- **Sidebar footer.** Three icon-only segments (sun, moon, monitor) at the right
+  end of the Sign out row, directly under **Your account**. The row already
+  exists, so the sidebar is no taller (the 768-pixel budget, see Settings pages
+  under System → Sidebar). The mobile drawer has the same footer.
+- **Pre-sign-in pages.** The same icon switch in the top right corner of every
+  page that has no sidebar: login, setup, sign-up, email verification, forgot
+  password, reset password, and the guest submit, track and ticket pages.
+- **Your account.** A new first section, **Appearance**, with the three choices
+  as labelled options: "Light", "Dark", "Match my device", and the line "Saved
+  to your account, so it follows you to other devices." It saves on change
+  (there is no Save button) and confirms "Saved." politely. Every role has it,
+  requesters included.
+
+Accessibility: the switch is a native radio group (`fieldset` with the legend
+"Appearance", visually hidden in the icon form), so Tab reaches it once and the
+arrow keys move between and select the options, as for any radio group. Each icon
+option has an accessible name ("Light", "Dark", "Match my device") and the same
+words as a tooltip (`title`). The selected option is visibly filled, not marked
+by colour alone. Targets are 28 px (44 px on a coarse pointer, as elsewhere in
+the sidebar). The focus ring is the shared `ring` colour, visible in both
+themes.
+
+#### Colours: tokens, not palette classes
+
+Before this, about 1,500 Tailwind palette classes (`bg-white`, `text-gray-500`,
+`text-red-600`, ...) across 108 source files fixed every colour to the light
+look, and the shadcn token classes the `ui/` components used (`bg-background`,
+`border-input`, `text-muted-foreground`) produced no CSS at all: Tailwind v4
+only generates colour utilities for colours registered in `@theme`, and none
+were. 1.3.0 replaces every palette class with a **semantic token** and registers
+the tokens:
+
+- `src/index.css` defines each token as a CSS custom property on `:root`
+  (light) and `.dark`, mostly as references to Tailwind's own palette
+  (`--fg-muted: var(--color-gray-600)`), so the light value of a token is the
+  class it replaced and the light theme looks as it did. `@theme inline` maps
+  each to a Tailwind colour (`--color-fg-muted: var(--fg-muted)`), which makes
+  `text-fg-muted`, `bg-card`, `border-border`, `ring-ring` and the rest real
+  utilities that change with the theme.
+- `@custom-variant dark (&:where(.dark, .dark *));` makes Tailwind's `dark:`
+  variant follow the class instead of the media query. Tokens are the rule;
+  `dark:` is for the rare non-colour difference (a shadow).
+- **The families.** Surfaces (`canvas`, `card`, `subtle`, `muted`,
+  `muted-strong`, `popover`, `overlay`, `inverse`), text (`fg`, `fg-soft`,
+  `fg-muted`, `fg-faint`, `link`), lines (`border`, `border-strong`, `input`,
+  `ring`), selection (`selected`, `selected-fg`), and one family per meaning
+  (`danger`, `warning`, `attention`, `success`, `info`), each with a solid fill
+  and its foreground, a text colour, a stronger text colour for use on its tint,
+  a tint and a border. `highlight` is the search-match mark. Charts have
+  `chart-blue`, `chart-green`, `chart-amber`, `chart-red`, `chart-gray`.
+- **Meaning survives the theme.** Status, priority, SLA and notice colours are
+  the same family in both themes (a breached SLA is `danger` in both, high
+  priority is `attention` in both); only the shade changes so that it stays
+  readable. An administrator's own status colour (Admin → Statuses) is drawn
+  as chosen in the light theme; in the dark theme its text and border are
+  lightened, in steps of 10% toward white keeping the hue, until the text
+  reaches 4.5:1 on the card, and the dot is drawn as chosen.
+- **Contrast.** Every text token reaches WCAG AA (4.5:1) on every surface it is
+  used on, in both themes; the focus `ring`, the chart colours and the status
+  dots reach 3:1 against the card (WCAG 1.4.11). Input borders are not held to
+  3:1, as before; a field is identified by its label. Three text colours
+  measure just under 4.5:1 on a gray-100 chip in the light theme (`fg-faint`
+  4.39, `danger-fg` 4.33, `success-fg` 4.49) and `fg-faint` 4.44 on the
+  selected tint; they are not allowed there (see Guard), and a chip uses
+  `fg-muted` or the `-strong` level of its family.
+- **Intended changes to the light theme.** Those are the only ones:
+  - Colours that failed AA move to the nearest shade that passes:
+    `text-gray-400` (2.5:1 on white) is now `fg-faint`, which is gray-500;
+    `text-red-500` is red-600; `text-green-600` and white on `bg-green-600` are
+    green-700; white on `bg-yellow-500` becomes dark text on amber-500.
+  - Near-duplicates are merged: `text-gray-800` is `fg` (gray-900), the
+    `-900`/`-950` text of a family is its `-fg-strong`, and `border-gray-200`
+    and `border-gray-100` are the default border colour.
+  - The shadcn classes the UI components always used now produce CSS (Tailwind
+    v4 generates a colour utility only for a registered colour). So cards and
+    inputs and outline buttons are white (`bg-card`, `bg-background`); ghost and
+    outline buttons gain their hover fill (gray-100); input focus rings are
+    blue-500, and so is the primary button's (it was blue-600); body text is
+    `#101828` (it was `#020817`); the page behind the shell is gray-50.
+  A unit test computes every pair from the token definitions; an axe check
+  runs on key pages in both themes.
+- **Guard.** A unit test fails on any Tailwind palette colour class (including
+  the inset-ring, inset-shadow, text-shadow and drop-shadow families), arbitrary
+  colour value (`bg-[#...]`, `text-[red]`, `bg-(--x)`, an arbitrary property
+  such as `[background-color:#fff]`, a colour inside a longer value), colour
+  literal (a hex anywhere in a string, a named colour in a `style` or a `fill`,
+  a canvas `fillStyle`) in a `.ts`/`.tsx` file under `src/` (tests excepted),
+  and on a palette utility, raw palette variable or literal colour in a
+  stylesheet outside the token blocks. It also fails on a class string that
+  puts `fg-faint`, `danger-fg` or `success-fg` on a gray-100/gray-200 or
+  selected tint. A literal that is data rather than styling (the default status
+  colour) is kept with a `theme-ok:` comment on its line giving the reason; a
+  block that must stay literal (the starter HTML of an email, which mail
+  clients draw in fixed colours) is bracketed by `theme-ok-begin:` and
+  `theme-ok-end`. The number of such places is capped. New code cannot bring a
+  light-only colour back.
+
+#### Charts and exports
+
+- **On screen.** The reports and the dashboard trend draw their marks in
+  `currentColor` from the chart tone classes, which are now the `chart-*`
+  tokens: the 600 shades in light, the 400 shades in dark (each at least 3:1 on
+  the dark card). Axis labels, gridlines and legends use the text and border
+  tokens. Area fills keep their 15% opacity, which reads on both cards.
+- **PNG export is always light.** The image is read back from the page (KPI
+  reports → Image export). The read happens with the `dark` class taken off
+  `<html>` and put back in the same task (`withLightTheme`), so the browser
+  never paints the light page and the image is exactly what 1.3.0 exports
+  without dark mode, whichever theme the person uses: images are pasted into
+  documents and printed. The fallback background stays white.
+- **Unaffected.** CSV export, emails (their templates have their own fixed
+  colours), attachments (download-only, never rendered) and the API are not
+  touched by the theme.
+
+#### Editor and rendered Markdown
+
+The Markdown editor's writing surface (`.md-editor`) and rendered ticket text
+(`[data-md-body]`) use the tokens for text, links, quotes, tables and the code
+box. Code highlighting keeps its light colours and gains a dark set, each colour
+at least 4.5:1 on the dark code box. Both move out of `index.css` into
+`src/styles/markdown.css`.
+
+#### Website screenshots
+
+The project site's screenshots stay light. The capture script
+(`frontend/scripts/screenshots/capture.mjs`) already makes its browser contexts
+with `colorScheme: 'light'`; it also stores `ghd.theme = light` before each page
+loads and refuses to take a shot if `<html>` has the `dark` class, so neither
+the seed's accounts (all `device`) nor a runner's default can turn a shot dark.
+No new screenshots are needed. A light and dark pair of the dashboard is
+optional and is not part of 1.3.0.
+
+#### Not in scope
+
+Per-instance default themes, an administrator forcing a theme, high-contrast
+or additional colour themes, theming emails, and a theme for the API docs page.
+Branding (logo and site name) is unchanged; a logo designed for a white
+background may look wrong on dark, which is the administrator's to fix with the
+logo they upload.
 
 ### Update check (opt-in, #170)
 
@@ -6119,6 +6376,7 @@ on the existing webhook feature instead of as plugins.
 ### Theming
 
 - **CSS/branding only** — logo, colors, fonts configurable in admin UI
+- Light and dark are not plugin theming: they are a per-person choice built on the colour tokens (see Appearance (dark mode), #709). A plugin theme would set token values, never palette classes.
 - Not full layout-level theming
 
 ### Trust Model

@@ -67,9 +67,9 @@ export function AuditDiff({ before, after, names }: AuditDiffProps) {
   if (changed.length === 0) return null
 
   return (
-    <ul className="mt-1 space-y-0.5 border-l-2 border-gray-100 pl-2">
+    <ul className="mt-1 space-y-0.5 border-l-2 border-border pl-2">
       {changed.map((k) => (
-        <li key={k} className="text-gray-500 wrap-anywhere">
+        <li key={k} className="text-fg-faint wrap-anywhere">
           <span className="font-mono">{k}</span>
           {': '}
           {renderValue(before[k], names)} → {renderValue(after[k], names)}

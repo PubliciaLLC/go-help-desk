@@ -126,14 +126,14 @@ export function FilterChips({
         {shown.map(k => (
           <li
             key={k}
-            className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-gray-300 bg-gray-100 py-0.5 pl-2.5 pr-1.5 text-xs font-medium text-gray-700 pointer-coarse:min-h-11"
+            className="inline-flex max-w-full items-center gap-1.5 rounded-full border border-border-strong bg-muted py-0.5 pl-2.5 pr-1.5 text-xs font-medium text-fg-soft pointer-coarse:min-h-11"
           >
             <span className="min-w-0 wrap-anywhere">
               {k === 'awaiting' ? (
                 LABEL[k]
               ) : (
                 <>
-                  <span className="font-normal text-gray-500">
+                  <span className="font-normal text-fg-muted">
                     {k === 'requester' && !search.reporter ? 'Requester contains:' : `${LABEL[k]}:`}
                   </span>{' '}
                   {value(k)}
@@ -144,7 +144,7 @@ export function FilterChips({
               type="button"
               aria-label={`Remove ${LABEL[k]} filter`}
               onClick={() => onClear(k)}
-              className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-gray-500 hover:bg-gray-200 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 pointer-coarse:h-9 pointer-coarse:w-9"
+              className="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-fg-muted hover:bg-muted-strong focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring pointer-coarse:h-9 pointer-coarse:w-9"
             >
               <XIcon aria-hidden="true" className="h-3 w-3" />
             </button>
@@ -154,7 +154,7 @@ export function FilterChips({
       <button
         type="button"
         onClick={onClearAll}
-        className="rounded-sm text-xs text-gray-500 underline underline-offset-2 hover:text-gray-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 pointer-coarse:min-h-11 pointer-coarse:px-2"
+        className="rounded-sm text-xs text-fg-faint underline underline-offset-2 hover:text-fg-soft focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring pointer-coarse:min-h-11 pointer-coarse:px-2"
       >
         Clear all
       </button>

@@ -53,6 +53,7 @@
 
 import fs from 'node:fs'
 import path from 'node:path'
+import { assertLight, pinLight } from './lightPin.mjs'
 
 const DESK = { width: 1440, height: 900 }
 const MOBILE = { width: 390, height: 844 }
@@ -1141,7 +1142,10 @@ async function newContext(browser, shot) {
     reducedMotion: 'reduce',
   }
   if (shot.mobile) Object.assign(opts, { isMobile: true, hasTouch: true })
-  return browser.newContext(opts)
+  const ctx = await browser.newContext(opts)
+  // Light whatever the account or the browser says (#709): see lightPin.mjs.
+  await pinLight(ctx)
+  return ctx
 }
 
 // Grow the viewport to the content height of <main>, which is the scroller
@@ -1224,6 +1228,8 @@ async function captureShot(browser, shot, s) {
     }
     if (shot.css) await page.addStyleTag({ content: shot.css })
     await settle(page, { keepFocus: false })
+    // The website's pictures are light. The backstop for an account that says dark.
+    await assertLight(page, shot.file)
 
     const t = shot.target ?? 'viewport'
     const screenshotOpts = { animations: 'disabled', caret: 'hide', scale: 'device' }

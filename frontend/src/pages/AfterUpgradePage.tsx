@@ -51,21 +51,21 @@ function UpdateCheckStep({ settings, get, set }: StepProps) {
   const on = get('update_check_enabled') === true
   return (
     <div className="space-y-3">
-      <p className="text-sm text-gray-700">
+      <p className="text-sm text-fg-soft">
         New in 1.3.0. This server can check for new releases of Go Help Desk, so that an out-of-date install does not go
         unnoticed. It does nothing unless you turn it on here.
       </p>
-      <p className="text-sm text-gray-500">{UPDATE_CHECK_DETAIL}</p>
-      <p className="text-sm text-gray-700">Currently: {settings.update_check_enabled === true ? 'on' : 'off'}.</p>
+      <p className="text-sm text-fg-faint">{UPDATE_CHECK_DETAIL}</p>
+      <p className="text-sm text-fg-soft">Currently: {settings.update_check_enabled === true ? 'on' : 'off'}.</p>
       <div className="flex items-start gap-2">
         <input
           id="wiz-update-check"
           type="checkbox"
-          className="mt-0.5 h-4 w-4 shrink-0 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+          className="mt-0.5 h-4 w-4 shrink-0 rounded border-border-strong text-primary focus:ring-ring"
           checked={on}
           onChange={(e) => set('update_check_enabled', e.target.checked)}
         />
-        <label htmlFor="wiz-update-check" className="text-sm font-medium text-gray-900">
+        <label htmlFor="wiz-update-check" className="text-sm font-medium text-fg">
           {UPDATE_CHECK_LABEL}
         </label>
       </div>
@@ -101,16 +101,16 @@ function StaffEmailStep({ settings, draft, set, unset }: StepProps) {
 
   return (
     <div className="space-y-3">
-      <p className="text-sm text-gray-700">
+      <p className="text-sm text-fg-soft">
         Staff can be emailed when a ticket is assigned to them or their group, and when a requester replies on a ticket
         that is theirs. Upgrading from 1.2 turned them off, so that no staff email started without you deciding it. Email
         only has an effect once it is set up on the server.
       </p>
-      <p className="text-sm text-gray-700">
+      <p className="text-sm text-fg-soft">
         The fourth, SLA alerts, is mail about an SLA target that has breached or is at risk of breaching. It follows the
         same choice; the SLA alerts setting under System → Email decides whether those alerts are sent at all.
       </p>
-      <p className="text-sm text-gray-700">
+      <p className="text-sm text-fg-soft">
         Currently: {same ? OVERRIDE_TEXT[stored[0]] ?? stored[0] : 'a mix of settings'}.
       </p>
       <Select aria-label="Staff email notifications" value={choice} onChange={(e) => pick(e.target.value)}>
@@ -128,12 +128,12 @@ function ApiKeysStep({ settings, get, set }: StepProps) {
   const years = typeof settings.api_key_max_lifetime_years === 'number' ? settings.api_key_max_lifetime_years : 2
   return (
     <div className="space-y-3">
-      <p className="text-sm text-gray-700">
+      <p className="text-sm text-fg-soft">
         New in 1.3.0: staff can create their own API keys when you allow it. A key acts as its owner and can carry only
         what that owner&rsquo;s role may do. Every new key must expire within the longest lifetime set here (2 years
         unless you change it); keys that already exist are not affected.
       </p>
-      <p className="text-sm text-gray-700">
+      <p className="text-sm text-fg-soft">
         Currently: staff {settings.staff_can_create_api_keys === true ? 'can' : 'cannot'} create keys; new keys may live
         up to {years === -1 ? 'any length of time' : years === 1 ? '1 year' : `${years} years`}.
       </p>
@@ -141,11 +141,11 @@ function ApiKeysStep({ settings, get, set }: StepProps) {
         <input
           id="wiz-staff-keys"
           type="checkbox"
-          className="mt-0.5 h-4 w-4 shrink-0 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+          className="mt-0.5 h-4 w-4 shrink-0 rounded border-border-strong text-primary focus:ring-ring"
           checked={get('staff_can_create_api_keys') === true}
           onChange={(e) => set('staff_can_create_api_keys', e.target.checked)}
         />
-        <label htmlFor="wiz-staff-keys" className="text-sm font-medium text-gray-900">
+        <label htmlFor="wiz-staff-keys" className="text-sm font-medium text-fg">
           Staff may create their own API keys
         </label>
       </div>
@@ -164,14 +164,14 @@ function PasswordsStep({ settings, get, set, extra }: StepProps) {
   const n = extra.oldPasswordAccounts
   return (
     <div className="space-y-3">
-      <p className="text-sm text-gray-700">
+      <p className="text-sm text-fg-soft">
         1.3.0 saves passwords in a stronger form. An account is upgraded the next time its owner signs in. Once the window
         below has passed since 1.3.0 first started, anyone whose password is still in the old form must reset it before
         signing in. Administrators are exempt, so the instance cannot lock itself out. The default is 30 days.
       </p>
-      <p className="text-sm text-gray-700">Currently: {stored} days.</p>
+      <p className="text-sm text-fg-soft">Currently: {stored} days.</p>
       {n !== undefined && (
-        <p className="text-sm text-gray-700">
+        <p className="text-sm text-fg-soft">
           {n === 0
             ? 'No enabled account is still on an old password.'
             : `${n} ${n === 1 ? 'account is' : 'accounts are'} still on an old password.`}{' '}
@@ -188,7 +188,7 @@ function PasswordsStep({ settings, get, set, extra }: StepProps) {
           onChange={(e) => set('password_rehash_grace_days', Math.min(365, Math.max(0, parseInt(e.target.value, 10) || 0)))}
           onBlur={() => { if (days < 1) set('password_rehash_grace_days', 1) }}
         />
-        <span className="text-sm text-gray-500">days</span>
+        <span className="text-sm text-fg-faint">days</span>
       </div>
     </div>
   )
@@ -215,27 +215,27 @@ function GuestUploadsStep({ settings, get, set }: StepProps) {
   const limitMB = shownAttachmentMaxMB(settings.attachment_max_mb)
   return (
     <div className="space-y-3">
-      <p className="text-sm text-gray-700">
+      <p className="text-sm text-fg-soft">
         In 1.2, a guest could upload files through the API whenever guest submission was on. 1.3.0 switches that off
         until you turn it on here. Uploads are scanned and held to the same rules as everyone else&rsquo;s, and are
         download-only. Skip this step to keep them off.
       </p>
-      <p className="text-sm text-gray-700">
+      <p className="text-sm text-fg-soft">
         Currently: guest uploads are {settings.guest_attachments_enabled === true ? 'on' : 'off'}.
       </p>
       <div className="flex items-start gap-2">
         <input
           id="wiz-guest-uploads"
           type="checkbox"
-          className="mt-0.5 h-4 w-4 shrink-0 rounded border-gray-300 text-blue-600 focus:ring-blue-500"
+          className="mt-0.5 h-4 w-4 shrink-0 rounded border-border-strong text-primary focus:ring-ring"
           checked={on}
           onChange={(e) => set('guest_attachments_enabled', e.target.checked)}
         />
-        <label htmlFor="wiz-guest-uploads" className="text-sm font-medium text-gray-900">
+        <label htmlFor="wiz-guest-uploads" className="text-sm font-medium text-fg">
           Guests may attach files
         </label>
       </div>
-      <p className="text-sm text-gray-500">
+      <p className="text-sm text-fg-faint">
         The largest file a guest may attach. It can never exceed the per-file limit for every upload, {limitMB} MB, set
         under System → File Attachments.
       </p>
@@ -299,7 +299,7 @@ export function AfterUpgradePage() {
   }, [index, settings])
 
   if (!settings) {
-    return <div className="p-6 text-sm text-gray-500">Loading…</div>
+    return <div className="p-6 text-sm text-fg-faint">Loading…</div>
   }
 
   const steps = STEPS.filter((s) => !s.when || s.when(settings))
@@ -341,20 +341,20 @@ export function AfterUpgradePage() {
   }
 
   return (
-    <div className="flex min-h-dvh items-start justify-center bg-gray-50 p-4">
+    <div className="flex min-h-dvh items-start justify-center bg-canvas p-4">
       <Card className="w-full max-w-lg">
         <CardHeader>
           <h1 className="text-xl font-semibold tracking-tight">After upgrading to 1.3.0</h1>
-          <p className="mt-1 text-sm text-gray-500">
+          <p className="mt-1 text-sm text-fg-faint">
             A few things changed. Each step shows what your install does today. Next saves a change; Skip leaves the
             setting as it is. You will not be asked again.
           </p>
         </CardHeader>
         <CardContent className="space-y-4">
-          <p aria-live="polite" className="text-xs font-medium uppercase tracking-wider text-gray-400">
+          <p aria-live="polite" className="text-xs font-medium uppercase tracking-wider text-fg-faint">
             Step {index + 1} of {steps.length}
           </p>
-          <h2 ref={headingRef} tabIndex={-1} className="text-lg font-semibold text-gray-900 focus:outline-none">
+          <h2 ref={headingRef} tabIndex={-1} className="text-lg font-semibold text-fg focus:outline-none">
             {step.title}
           </h2>
           <step.Body
@@ -366,12 +366,12 @@ export function AfterUpgradePage() {
             extra={{ oldPasswordAccounts: upgrade?.old_password_accounts, emailEnabled: warnings?.email?.enabled }}
           />
           {last && guestStepHidden && (
-            <p className="text-sm text-gray-500">
+            <p className="text-sm text-fg-faint">
               Guest file uploads stay off. They need guest submission, which is off; turn it on under System, Guest Access,
               and the upload switch and limits appear there.
             </p>
           )}
-          {error && <p role="alert" className="break-words text-sm text-red-600">{error}</p>}
+          {error && <p role="alert" className="break-words text-sm text-danger-fg">{error}</p>}
           <div className="flex flex-wrap items-center justify-between gap-2 pt-2">
             <Button type="button" variant="outline" disabled={index === 0 || save.isPending} onClick={() => { setError(''); setIndex(index - 1) }}>
               Back

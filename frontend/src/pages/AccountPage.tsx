@@ -16,6 +16,7 @@ import { Layout } from '@/components/Layout'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { ApiKeysSection } from '@/components/ApiKeysSection'
+import { AppearanceSection } from '@/components/AppearanceSection'
 import { EmailNotificationsSection } from '@/components/EmailNotificationsSection'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { Input } from '@/components/ui/input'
@@ -39,12 +40,12 @@ function Section({
   children: React.ReactNode
 }) {
   return (
-    <section className="rounded-lg border bg-white">
+    <section className="rounded-lg border bg-card">
       <div className="flex items-start gap-3 border-b p-4">
-        <div className="mt-0.5 text-gray-400">{icon}</div>
+        <div className="mt-0.5 text-fg-faint">{icon}</div>
         <div className="min-w-0">
-          <h2 className="text-sm font-semibold text-gray-900">{title}</h2>
-          <p className="mt-0.5 text-xs text-gray-500">{description}</p>
+          <h2 className="text-sm font-semibold text-fg">{title}</h2>
+          <p className="mt-0.5 text-xs text-fg-faint">{description}</p>
         </div>
       </div>
       <div className="p-4">{children}</div>
@@ -59,8 +60,8 @@ function Notice({ kind, children }: { kind: 'error' | 'ok'; children: React.Reac
       role={kind === 'error' ? 'alert' : 'status'}
       className={
         kind === 'error'
-          ? 'mt-3 text-sm text-red-600'
-          : 'mt-3 text-sm text-green-700'
+          ? 'mt-3 text-sm text-danger-fg'
+          : 'mt-3 text-sm text-success-fg'
       }
     >
       {children}
@@ -113,13 +114,13 @@ function StepUpPanel({ onCancel, onVerified }: { onCancel: () => void; onVerifie
     <div
       role="group"
       aria-labelledby={titleId}
-      className="mt-4 space-y-3 rounded-md border border-amber-300 bg-amber-50 p-3"
+      className="mt-4 space-y-3 rounded-md border border-warning-border bg-warning-soft p-3"
     >
       <div>
-        <h3 id={titleId} className="text-sm font-semibold text-gray-900">
+        <h3 id={titleId} className="text-sm font-semibold text-fg">
           Verify your second factor
         </h3>
-        <p className="mt-0.5 text-xs text-gray-600">
+        <p className="mt-0.5 text-xs text-fg-muted">
           This account already has a second factor. Verify with it before changing it, and what you
           were doing will carry on.
         </p>
@@ -134,7 +135,7 @@ function StepUpPanel({ onCancel, onVerified }: { onCancel: () => void; onVerifie
           }}
         >
           <div className="min-w-[12rem] flex-1">
-            <label htmlFor={codeId} className="mb-1 block text-xs font-medium text-gray-700">
+            <label htmlFor={codeId} className="mb-1 block text-xs font-medium text-fg-soft">
               Code from your authenticator app
             </label>
             <Input
@@ -165,7 +166,7 @@ function StepUpPanel({ onCancel, onVerified }: { onCancel: () => void; onVerifie
       )}
 
       {!hasCode && !hasPasskey && !passkeys.isLoading && (
-        <p className="text-sm text-gray-600">
+        <p className="text-sm text-fg-muted">
           There is nothing here to verify with. Ask an administrator to reset your second factor.
         </p>
       )}
@@ -246,7 +247,7 @@ function PasswordSection() {
     >
       <form onSubmit={submit} className="max-w-sm space-y-3">
         <div>
-          <label htmlFor="current-password" className="mb-1 block text-xs font-medium text-gray-700">
+          <label htmlFor="current-password" className="mb-1 block text-xs font-medium text-fg-soft">
             Current password
           </label>
           <Input
@@ -259,7 +260,7 @@ function PasswordSection() {
           />
         </div>
         <div>
-          <label htmlFor="new-password" className="mb-1 block text-xs font-medium text-gray-700">
+          <label htmlFor="new-password" className="mb-1 block text-xs font-medium text-fg-soft">
             New password
           </label>
           <Input
@@ -272,7 +273,7 @@ function PasswordSection() {
           />
         </div>
         <div>
-          <label htmlFor="confirm-password" className="mb-1 block text-xs font-medium text-gray-700">
+          <label htmlFor="confirm-password" className="mb-1 block text-xs font-medium text-fg-soft">
             Confirm new password
           </label>
           <Input
@@ -315,7 +316,7 @@ function PasskeyRow({ p, onRemove }: { p: Passkey; onRemove: (p: Passkey) => voi
     <li className="flex flex-wrap items-center gap-x-3 gap-y-1 py-3">
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
-          <span className="truncate text-sm font-medium text-gray-900" title={labelFor(p)}>{labelFor(p)}</span>
+          <span className="truncate text-sm font-medium text-fg" title={labelFor(p)}>{labelFor(p)}</span>
           {/* backup_eligible, not backup_state: a key that CAN sync and
               currently is not is still a synced credential, and that is the
               distinction the phishing-resistance claim turns on. */}
@@ -323,7 +324,7 @@ function PasskeyRow({ p, onRemove }: { p: Passkey; onRemove: (p: Passkey) => voi
             {p.backup_eligible ? 'Synced' : 'This device only'}
           </Badge>
         </div>
-        <p className="mt-0.5 text-xs text-gray-500">
+        <p className="mt-0.5 text-xs text-fg-faint">
           Added {new Date(p.created_at).toLocaleDateString()}
           {' · '}
           {p.last_used_at ? `last used ${new Date(p.last_used_at).toLocaleDateString()}` : 'never used'}
@@ -332,7 +333,7 @@ function PasskeyRow({ p, onRemove }: { p: Passkey; onRemove: (p: Passkey) => voi
       <Button
         variant="ghost"
         size="sm"
-        className="text-red-600 hover:bg-red-50 hover:text-red-700"
+        className="text-danger-fg hover:bg-danger-soft hover:text-danger-fg-strong"
         onClick={() => onRemove(p)}
         aria-label={`Remove ${labelFor(p)}`}
       >
@@ -387,7 +388,7 @@ function PasskeySection() {
         title="Passkeys"
         description="Sign in with your fingerprint, face, screen lock or a security key."
       >
-        <p className="text-sm text-gray-500">
+        <p className="text-sm text-fg-faint">
           Passkeys are not available on this instance. Ask an administrator, who can see why under the
           security warnings.
         </p>
@@ -402,7 +403,7 @@ function PasskeySection() {
         title="Passkeys"
         description="Sign in with your fingerprint, face, screen lock or a security key."
       >
-        <p className="text-sm text-gray-500">
+        <p className="text-sm text-fg-faint">
           This browser does not support passkeys.
         </p>
       </Section>
@@ -420,7 +421,7 @@ function PasskeySection() {
       {passkeys.isLoading ? (
         <Spinner />
       ) : list.length === 0 ? (
-        <p className="text-sm text-gray-500">No passkeys yet.</p>
+        <p className="text-sm text-fg-faint">No passkeys yet.</p>
       ) : (
         <ul className="divide-y">
           {list.map((p) => (
@@ -438,7 +439,7 @@ function PasskeySection() {
         }}
       >
         <div className="min-w-[12rem] flex-1">
-          <label htmlFor="passkey-name" className="mb-1 block text-xs font-medium text-gray-700">
+          <label htmlFor="passkey-name" className="mb-1 block text-xs font-medium text-fg-soft">
             Name this key
           </label>
           <Input
@@ -525,7 +526,7 @@ function AuthenticatorSection() {
               an authenticator, because an account's second factor should not
               be strippable by whoever is holding the session. An
               administrator resets it with `/app/server reset-factors`. */}
-          <p className="text-xs text-gray-500">
+          <p className="text-xs text-fg-faint">
             To replace it, ask an administrator to reset your second factor.
           </p>
         </div>
@@ -538,13 +539,13 @@ function AuthenticatorSection() {
             confirm.mutate()
           }}
         >
-          <p className="text-sm text-gray-600">Scan this with your authenticator app:</p>
+          <p className="text-sm text-fg-muted">Scan this with your authenticator app:</p>
           {qr && <img src={qr} alt="Scan this code with your authenticator app" className="h-44 w-44" />}
-          <p className="text-xs text-gray-500">
+          <p className="text-xs text-fg-faint">
             Or enter this code by hand: <code className="font-mono">{secret}</code>
           </p>
           <div>
-            <label htmlFor="totp-code" className="mb-1 block text-xs font-medium text-gray-700">
+            <label htmlFor="totp-code" className="mb-1 block text-xs font-medium text-fg-soft">
               Enter the six-digit code to finish
             </label>
             <Input
@@ -578,9 +579,10 @@ export function AccountPage() {
     <Layout>
       <div className="space-y-6">
         <div>
-          <h1 className="text-xl font-semibold text-gray-900">Your account</h1>
-          <p className="mt-1 text-sm text-gray-500">{user?.email}</p>
+          <h1 className="text-xl font-semibold text-fg">Your account</h1>
+          <p className="mt-1 text-sm text-fg-faint">{user?.email}</p>
         </div>
+        <AppearanceSection />
         <EmailNotificationsSection />
         <PasswordSection />
         <PasskeySection />

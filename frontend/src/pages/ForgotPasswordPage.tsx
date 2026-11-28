@@ -35,27 +35,27 @@ export function ForgotPasswordPage() {
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-gray-50">
+    <div className="flex min-h-screen items-center justify-center bg-canvas">
       <Card className="w-full max-w-sm">
         <CardHeader>
           <CardTitle className="text-xl">Forgot your password?</CardTitle>
         </CardHeader>
         <CardContent>
           {done ? (
-            <div className="space-y-3 text-sm text-gray-700">
+            <div className="space-y-3 text-sm text-fg-soft">
               <p role="status">
                 If that address has an account, we have emailed it a link to choose a new
                 password. The link works for 30 minutes.
               </p>
               <p>
-                <Link to="/login" className="text-blue-600 hover:underline">
+                <Link to="/login" className="text-link hover:underline">
                   Back to sign in
                 </Link>
               </p>
             </div>
           ) : (
             <form onSubmit={handleSubmit} className="space-y-4">
-              <p className="text-sm text-gray-600">
+              <p className="text-sm text-fg-muted">
                 Enter the email address of your account and we will send you a link to
                 choose a new password.
               </p>
@@ -70,12 +70,12 @@ export function ForgotPasswordPage() {
                   autoComplete="email"
                 />
               </div>
-              {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
+              {error && <p role="alert" className="text-sm text-danger-fg">{error}</p>}
               <Button type="submit" className="w-full" disabled={loading}>
                 {loading ? 'Sending…' : 'Send reset link'}
               </Button>
-              <p className="text-center text-sm text-gray-500">
-                <Link to="/login" className="text-blue-600 hover:underline">
+              <p className="text-center text-sm text-fg-faint">
+                <Link to="/login" className="text-link hover:underline">
                   Back to sign in
                 </Link>
               </p>

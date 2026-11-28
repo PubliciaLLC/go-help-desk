@@ -500,7 +500,7 @@ describe('the previews', () => {
     for (const i of imgs()) {
       const cls = i.parentElement!.className
       expect(cls, i.getAttribute('src')!).toMatch(/\bborder\b/)
-      expect(cls, i.getAttribute('src')!).toMatch(/\bborder-gray-/)
+      expect(cls, i.getAttribute('src')!).toMatch(/\bborder-border-strong\b/)
     }
   })
 

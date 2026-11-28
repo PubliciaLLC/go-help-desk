@@ -37,7 +37,7 @@ function toggle<T>(list: T[] | undefined, v: T): T[] | undefined {
 function Group({ legend, layout, row, children }: { legend: string; layout: Layout; row?: boolean; children: ReactNode }) {
   return (
     <fieldset className="min-w-0">
-      <legend className="mb-1 text-xs font-semibold text-gray-700">{legend}</legend>
+      <legend className="mb-1 text-xs font-semibold text-fg-soft">{legend}</legend>
       <div className={layout === 'dialog' ? 'grid grid-cols-2 gap-x-3' : row ? 'flex flex-wrap gap-x-5' : 'flex flex-col'}>{children}</div>
     </fieldset>
   )
@@ -57,13 +57,13 @@ function Check({
   return (
     <label
       className={
-        'flex cursor-pointer items-center gap-2 text-sm text-gray-700 ' +
+        'flex cursor-pointer items-center gap-2 text-sm text-fg-soft ' +
         (layout === 'dialog' ? 'min-h-11' : 'min-h-7 pointer-coarse:min-h-11')
       }
     >
       <input
         type="checkbox"
-        className={layout === 'dialog' ? 'h-5 w-5 shrink-0 rounded border-gray-300' : 'h-4 w-4 shrink-0 rounded border-gray-300'}
+        className={layout === 'dialog' ? 'h-5 w-5 shrink-0 rounded border-border-strong' : 'h-4 w-4 shrink-0 rounded border-border-strong'}
         checked={checked}
         onChange={onChange}
       />
@@ -75,7 +75,7 @@ function Check({
 function Field({ label, htmlFor, children }: { label: string; htmlFor: string; children: ReactNode }) {
   return (
     <div className="min-w-0 space-y-1">
-      <label htmlFor={htmlFor} className="block text-xs font-semibold text-gray-700">
+      <label htmlFor={htmlFor} className="block text-xs font-semibold text-fg-soft">
         {label}
       </label>
       {children}
@@ -140,17 +140,17 @@ function RequesterField({
         : { name: `Requester contains “${requester}”`, sub: '' }
     return (
       <div className="space-y-1">
-        <span className="block text-xs font-semibold text-gray-700">Requester</span>
+        <span className="block text-xs font-semibold text-fg-soft">Requester</span>
         <div className="flex items-center gap-2 rounded-md border border-input bg-background px-3 py-1">
-          <div className="min-w-0 flex-1 text-sm leading-tight text-gray-900">
+          <div className="min-w-0 flex-1 text-sm leading-tight text-fg">
             <div className="wrap-anywhere">{who.name}</div>
-            {who.sub && <div className="wrap-anywhere text-xs text-gray-500">{who.sub}</div>}
+            {who.sub && <div className="wrap-anywhere text-xs text-fg-faint">{who.sub}</div>}
           </div>
           <button
             type="button"
             aria-label="Clear requester"
             onClick={clear}
-            className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded text-gray-500 hover:bg-gray-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 pointer-coarse:h-11 pointer-coarse:w-11"
+            className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded text-fg-faint hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring pointer-coarse:h-11 pointer-coarse:w-11"
           >
             <XIcon aria-hidden="true" className="h-4 w-4" />
           </button>
@@ -162,7 +162,7 @@ function RequesterField({
   const textOk = queryLength(text.trim()) >= MIN_QUERY
   return (
     <div className="space-y-1">
-      <label htmlFor={id} className="block text-xs font-semibold text-gray-700">
+      <label htmlFor={id} className="block text-xs font-semibold text-fg-soft">
         Requester
       </label>
       <Input
@@ -184,27 +184,27 @@ function RequesterField({
         }}
       />
       {textOk && (
-        <ul aria-label="Requester suggestions" className="divide-y divide-gray-100 rounded-md border border-gray-200 bg-white">
+        <ul aria-label="Requester suggestions" className="divide-y divide-border rounded-md border border-border bg-card">
           {searching &&
             hits.map(h => (
               <li key={h.id}>
                 <button
                   type="button"
-                  className="flex min-h-11 w-full flex-col justify-center px-3 py-1.5 text-left text-sm hover:bg-gray-50 focus-visible:bg-gray-50 focus-visible:outline-none"
+                  className="flex min-h-11 w-full flex-col justify-center px-3 py-1.5 text-left text-sm hover:bg-subtle focus-visible:bg-subtle focus-visible:outline-none"
                   onClick={() => {
                     setText('')
                     onChange({ reporter: h.id, requester: undefined })
                   }}
                 >
-                  <span className="font-medium text-gray-900 wrap-anywhere">{h.display_name}</span>
-                  <span className="text-xs text-gray-500 wrap-anywhere">{h.email}</span>
+                  <span className="font-medium text-fg wrap-anywhere">{h.display_name}</span>
+                  <span className="text-xs text-fg-faint wrap-anywhere">{h.email}</span>
                 </button>
               </li>
             ))}
           <li>
             <button
               type="button"
-              className="min-h-11 w-full px-3 py-1.5 text-left text-sm text-blue-700 hover:bg-gray-50 focus-visible:bg-gray-50 focus-visible:outline-none"
+              className="min-h-11 w-full px-3 py-1.5 text-left text-sm text-link hover:bg-subtle focus-visible:bg-subtle focus-visible:outline-none"
               onClick={takeText}
             >
               <span className="wrap-anywhere">Any requester matching “{text.trim()}”</span>
@@ -212,7 +212,7 @@ function RequesterField({
           </li>
         </ul>
       )}
-      <p role="status" className="text-xs text-gray-500">
+      <p role="status" className="text-xs text-fg-faint">
         {textOk && searching && !isFetching && hits.length === 0
           ? 'No account matches. Use the last option to match guests and addresses too.'
           : 'Pick a person, or match part of a name or address. Guests are found too.'}
@@ -253,7 +253,7 @@ export function TicketFilters({
     const bad = value[from] && value[to] && value[from]! > value[to]!
     return (
       <div className="min-w-0 space-y-1">
-        <span className="block text-xs font-semibold text-gray-700">{label}</span>
+        <span className="block text-xs font-semibold text-fg-soft">{label}</span>
         <div className={dialog ? 'space-y-2' : 'flex items-center gap-2'}>
           <Input
             type="date"
@@ -263,7 +263,7 @@ export function TicketFilters({
             value={value[from] ?? ''}
             onChange={e => onChange({ [from]: e.target.value || undefined })}
           />
-          {!dialog && <span className="text-sm text-gray-500">to</span>}
+          {!dialog && <span className="text-sm text-fg-faint">to</span>}
           <Input
             type="date"
             aria-label={`${label} to`}
@@ -274,7 +274,7 @@ export function TicketFilters({
           />
         </div>
         {bad && (
-          <p role="alert" className="text-xs text-red-600">
+          <p role="alert" className="text-xs text-danger-fg">
             The end date is before the start date.
           </p>
         )}
@@ -439,7 +439,7 @@ export function TicketFilters({
           type="button"
           aria-expanded={more}
           onClick={() => setMore(v => !v)}
-          className="flex min-h-11 w-full items-center justify-between gap-3 rounded-md text-left text-sm text-blue-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500"
+          className="flex min-h-11 w-full items-center justify-between gap-3 rounded-md text-left text-sm text-link focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
           <span>{moreLabel}</span>
           <ChevronDownIcon aria-hidden="true" className={'h-4 w-4 shrink-0 transition-transform ' + (more ? 'rotate-180' : '')} />

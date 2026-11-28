@@ -199,8 +199,8 @@ export function MilkdownView({ ref, value, onChange, labelId, disabled, placehol
             onMouseDown={(e) => e.preventDefault()}
             onClick={onClick}
             className={cn(
-              'inline-flex h-8 w-8 items-center justify-center rounded text-gray-700 hover:bg-gray-100 focus-visible:outline focus-visible:outline-2 disabled:opacity-50',
-              pressed && 'bg-gray-200',
+              'inline-flex h-8 w-8 items-center justify-center rounded text-fg-muted hover:bg-muted focus-visible:outline focus-visible:outline-2 disabled:opacity-50',
+              pressed && 'bg-muted-strong',
             )}
           >
             <Icon className="h-4 w-4" aria-hidden="true" />
@@ -235,7 +235,7 @@ export function MilkdownView({ ref, value, onChange, labelId, disabled, placehol
             Cancel
           </button>
           {linkError && (
-            <p id={`${labelId}-linkerr`} role="alert" className="w-full text-xs text-red-600">
+            <p id={`${labelId}-linkerr`} role="alert" className="w-full text-xs text-danger-fg">
               {linkError}
             </p>
           )}

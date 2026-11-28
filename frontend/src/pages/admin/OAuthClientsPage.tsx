@@ -32,27 +32,27 @@ function SecretBanner({
   }
 
   return (
-    <div className="rounded-lg border border-green-200 bg-green-50 p-4 space-y-3">
+    <div className="rounded-lg border border-success-border bg-success-soft p-4 space-y-3">
       <div className="flex items-start justify-between gap-4">
         <div>
-          <p className="text-sm font-medium text-green-800">{heading}</p>
-          <p className="text-xs text-green-700 mt-0.5">It will not be shown again.</p>
+          <p className="text-sm font-medium text-success-fg-strong">{heading}</p>
+          <p className="text-xs text-success-fg-strong mt-0.5">It will not be shown again.</p>
         </div>
-        <button onClick={onDismiss} className="text-green-600 hover:text-green-800 text-xs">
+        <button onClick={onDismiss} className="text-success-fg-strong hover:opacity-70 text-xs">
           Dismiss
         </button>
       </div>
       <div className="space-y-2">
         <div>
-          <p className="text-xs text-green-700 mb-1">Client ID</p>
-          <code className="block rounded border border-green-200 bg-white px-3 py-2 font-mono text-xs text-gray-800 break-all">
+          <p className="text-xs text-success-fg-strong mb-1">Client ID</p>
+          <code className="block rounded border border-success-border bg-card px-3 py-2 font-mono text-xs text-fg break-all">
             {clientID}
           </code>
         </div>
         <div>
-          <p className="text-xs text-green-700 mb-1">Client secret</p>
+          <p className="text-xs text-success-fg-strong mb-1">Client secret</p>
           <div className="flex items-center gap-2">
-            <code className="flex-1 rounded border border-green-200 bg-white px-3 py-2 font-mono text-xs text-gray-800 break-all">
+            <code className="flex-1 rounded border border-success-border bg-card px-3 py-2 font-mono text-xs text-fg break-all">
               {secret}
             </code>
             <Button size="sm" variant="outline" onClick={copy} className="shrink-0">
@@ -128,8 +128,8 @@ export function OAuthClientsPage() {
     <Layout>
       <div className="space-y-6">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">OAuth Clients</h1>
-          <p className="mt-1 text-sm text-gray-500">
+          <h1 className="text-2xl font-bold text-fg">OAuth Clients</h1>
+          <p className="mt-1 text-sm text-fg-faint">
             Machine-to-machine integrations exchange a client ID and secret for a short-lived
             token. Each client acts as its own service user, and that user's groups are the
             client's ticket scope. Deleting a client stops its existing tokens working
@@ -154,8 +154,8 @@ export function OAuthClientsPage() {
           />
         )}
 
-        <div className="rounded-lg border bg-white p-4">
-          <p className="mb-3 text-sm font-medium text-gray-700">Create new client</p>
+        <div className="rounded-lg border bg-card p-4">
+          <p className="mb-3 text-sm font-medium text-fg-soft">Create new client</p>
           <div className="space-y-4">
             <Input
               placeholder="Client name (e.g. JIRA sync, CI pipeline)"
@@ -182,7 +182,7 @@ export function OAuthClientsPage() {
               {createMutation.isPending ? 'Creating…' : 'Create'}
             </Button>
           </div>
-          {createError && <p role="alert" className="mt-2 text-sm text-red-600">{createError}</p>}
+          {createError && <p role="alert" className="mt-2 text-sm text-danger-fg">{createError}</p>}
         </div>
 
         {isLoading ? (
@@ -190,9 +190,9 @@ export function OAuthClientsPage() {
             <Spinner />
           </div>
         ) : (
-          <div className="rounded-lg border bg-white overflow-x-auto">
+          <div className="rounded-lg border bg-card overflow-x-auto">
             <table className="w-full text-sm">
-              <thead className="bg-gray-50 text-xs text-gray-500 uppercase">
+              <thead className="bg-subtle text-xs text-fg-faint uppercase">
                 <tr>
                   <th className="px-4 py-3 text-left">Name</th>
                   <th className="px-4 py-3 text-left">Client ID</th>
@@ -205,28 +205,28 @@ export function OAuthClientsPage() {
               </thead>
               <tbody className="divide-y">
                 {clients.map((c) => (
-                  <tr key={c.id} className="hover:bg-gray-50">
-                    <td className="px-4 py-3 font-medium text-gray-900">
+                  <tr key={c.id} className="hover:bg-subtle">
+                    <td className="px-4 py-3 font-medium text-fg">
                       <span className="flex items-center gap-2">
-                        <PlugIcon className="h-3.5 w-3.5 text-gray-400 shrink-0" />
+                        <PlugIcon className="h-3.5 w-3.5 text-fg-faint shrink-0" />
                         <span className="min-w-0 wrap-anywhere">{c.name}</span>
                       </span>
                     </td>
-                    <td className="px-4 py-3 font-mono text-xs text-gray-600 wrap-anywhere">{c.client_id}</td>
+                    <td className="px-4 py-3 font-mono text-xs text-fg-muted wrap-anywhere">{c.client_id}</td>
                     <td className="px-4 py-3">
                       {c.scopes?.length ? (
                         <div className="flex flex-wrap gap-1">
                           {c.scopes.map((sc) => (
                             <span
                               key={sc}
-                              className="rounded bg-gray-100 px-1.5 py-0.5 font-mono text-xs text-gray-700"
+                              className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs text-fg-soft"
                             >
                               {sc}
                             </span>
                           ))}
                         </div>
                       ) : (
-                        <span className="text-xs text-amber-700">
+                        <span className="text-xs text-warning-fg">
                           None — this client is refused everywhere
                         </span>
                       )}
@@ -236,32 +236,32 @@ export function OAuthClientsPage() {
                         <Link
                           to="/admin/users/$id"
                           params={{ id: c.user_id }}
-                          className="text-blue-600 hover:underline wrap-anywhere"
+                          className="text-link hover:underline wrap-anywhere"
                         >
                           {c.name} (service user)
                         </Link>
                       ) : (
-                        <span className="text-gray-400">—</span>
+                        <span className="text-fg-faint">—</span>
                       )}
                     </td>
                     <td className="px-4 py-3">
                       {c.groups?.length ? (
                         <div className="flex flex-wrap gap-1">
                           {c.groups.map((g) => (
-                            <span key={g.id} className="rounded bg-blue-50 px-1.5 py-0.5 text-xs text-blue-800 wrap-anywhere">
+                            <span key={g.id} className="rounded bg-info-soft px-1.5 py-0.5 text-xs text-info-fg-strong wrap-anywhere">
                               {g.name}
                             </span>
                           ))}
                         </div>
                       ) : c.groups ? (
-                        <span className="text-xs text-amber-700">
+                        <span className="text-xs text-warning-fg">
                           No groups: with ticket scope on, this client sees no tickets
                         </span>
                       ) : (
-                        <span className="text-gray-400">—</span>
+                        <span className="text-fg-faint">—</span>
                       )}
                     </td>
-                    <td className="px-4 py-3 text-gray-500">{fmt(c.created_at)}</td>
+                    <td className="px-4 py-3 text-fg-faint">{fmt(c.created_at)}</td>
                     <td className="px-4 py-3 text-right whitespace-nowrap">
                       <Button
                         size="sm"
@@ -275,7 +275,7 @@ export function OAuthClientsPage() {
                       <Button
                         size="sm"
                         variant="outline"
-                        className="text-red-600 border-red-200 hover:bg-red-50"
+                        className="text-danger-fg border-danger-border hover:bg-danger-soft"
                         onClick={() => setPendingDelete(c)}
                         disabled={deleteMutation.isPending}
                       >
@@ -286,7 +286,7 @@ export function OAuthClientsPage() {
                 ))}
                 {clients.length === 0 && (
                   <tr>
-                    <td colSpan={7} className="px-4 py-8 text-center text-gray-400">
+                    <td colSpan={7} className="px-4 py-8 text-center text-fg-faint">
                       No OAuth clients yet.
                     </td>
                   </tr>

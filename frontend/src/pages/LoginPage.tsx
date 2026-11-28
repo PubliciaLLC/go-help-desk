@@ -287,7 +287,7 @@ export function LoginPage() {
     : `Sign in to ${siteName}`
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-gray-50">
+    <div className="flex min-h-screen items-center justify-center bg-canvas">
       <Card className="w-full max-w-sm">
         <CardHeader>
           <CardTitle className="text-xl wrap-anywhere">{title}</CardTitle>
@@ -320,31 +320,31 @@ export function LoginPage() {
               </div>
               {resetOffered && (
                 <p className="text-right text-sm">
-                  <Link to="/forgot-password" className="text-blue-600 hover:underline">
+                  <Link to="/forgot-password" className="text-link hover:underline">
                     Forgot password?
                   </Link>
                 </p>
               )}
-              {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
+              {error && <p role="alert" className="text-sm text-danger-fg">{error}</p>}
               <Button type="submit" className="w-full" disabled={loading}>
                 {loading ? 'Signing in…' : 'Sign in'}
               </Button>
               {signupEnabled && (
-                <p className="text-center text-sm text-gray-500">
+                <p className="text-center text-sm text-fg-faint">
                   Don't have an account?{' '}
-                  <Link to="/signup" className="text-blue-600 hover:underline">
+                  <Link to="/signup" className="text-link hover:underline">
                     Create one
                   </Link>
                 </p>
               )}
               {guestEnabled && (
-                <p className="text-center text-sm text-gray-500">
+                <p className="text-center text-sm text-fg-faint">
                   No account?{' '}
-                  <Link to="/submit" className="text-blue-600 hover:underline">
+                  <Link to="/submit" className="text-link hover:underline">
                     Submit a ticket
                   </Link>
                   {' · '}
-                  <Link to="/track" className="text-blue-600 hover:underline">
+                  <Link to="/track" className="text-link hover:underline">
                     Find an existing one
                   </Link>
                 </p>
@@ -354,7 +354,7 @@ export function LoginPage() {
 	    {providers.oidc && (
               <Button
                 type="button"
-                className="w-full mt-3 bg-green-600 text-white hover:bg-green-700"
+                className="w-full mt-3 bg-success text-success-foreground hover:bg-success-hover"
                 onClick={() => window.location.href = '/api/v1/auth/oidc/login'}
                >
                 Sign in with OIDC
@@ -366,7 +366,7 @@ export function LoginPage() {
             {providers.saml && (
               <a
                 href="/api/v1/auth/saml/login"
-                className="mt-3 inline-flex h-10 w-full items-center justify-center rounded-md bg-green-600 px-4 py-2 text-sm font-medium text-white transition-colors hover:bg-green-700 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2"
+                className="mt-3 inline-flex h-10 w-full items-center justify-center rounded-md bg-success px-4 py-2 text-sm font-medium text-success-foreground transition-colors hover:bg-success-hover focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-2"
               >
                 Sign in with SAML
               </a>
@@ -376,7 +376,7 @@ export function LoginPage() {
 
           {step === 'newpassword' && (
             <form onSubmit={handleNewPassword} className="space-y-4">
-              <p className="text-sm text-gray-600">
+              <p className="text-sm text-fg-muted">
                 You signed in with a password an administrator generated for you. Choose a
                 new one to continue.
               </p>
@@ -403,7 +403,7 @@ export function LoginPage() {
                   autoComplete="new-password"
                 />
               </div>
-              {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
+              {error && <p role="alert" className="text-sm text-danger-fg">{error}</p>}
               <Button type="submit" className="w-full" disabled={loading}>
                 {loading ? 'Saving…' : 'Change password'}
               </Button>
@@ -412,7 +412,7 @@ export function LoginPage() {
 
           {step === 'verify' && (
             <form onSubmit={handleVerify} className="space-y-4">
-              <p className="text-sm text-gray-600">Enter the 6-digit code from your authenticator app.</p>
+              <p className="text-sm text-fg-muted">Enter the 6-digit code from your authenticator app.</p>
               <div className="space-y-1">
                 <Label htmlFor="mfa">Verification code</Label>
                 <Input
@@ -426,7 +426,7 @@ export function LoginPage() {
                   autoComplete="one-time-code"
                 />
               </div>
-              {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
+              {error && <p role="alert" className="text-sm text-danger-fg">{error}</p>}
               <Button type="submit" className="w-full" disabled={loading}>
                 {loading ? 'Verifying…' : 'Verify'}
               </Button>
@@ -435,10 +435,10 @@ export function LoginPage() {
 
           {step === 'passkey' && (
             <div className="space-y-4">
-              <p className="text-sm text-gray-600">
+              <p className="text-sm text-fg-muted">
                 Use your fingerprint, face, screen lock or security key to finish signing in.
               </p>
-              {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
+              {error && <p role="alert" className="text-sm text-danger-fg">{error}</p>}
               <Button type="button" className="w-full" disabled={loading} onClick={handlePasskey}>
                 {loading ? 'Waiting for your key…' : 'Continue with a passkey'}
               </Button>

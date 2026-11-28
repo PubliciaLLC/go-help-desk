@@ -155,6 +155,69 @@ test.describe('Reports exports', () => {
     expect(png.height).toBeGreaterThan(2 * shown.height)
   })
 
+  // #709: an image is the same whichever theme the person is in (it is for
+  // printing). Exported from the dark theme it must be the image the light theme
+  // exports: the paper (top-left pixel) is white, and the two agree on all but a
+  // sliver of pixels. Not all: the line of small text under the chart is
+  // anti-aliased a hair differently from one run to the next, in light against
+  // light as well. A dark-themed export would differ on nearly every pixel.
+  test('Download image while dark is the same image as in light, white paper', async ({ browser }) => {
+    async function exportCard(theme: 'light' | 'dark') {
+      const context = await browser.newContext({ viewport: { width: 1280, height: 900 }, colorScheme: 'light' })
+      await context.addInitScript((t) => window.localStorage.setItem('ghd.theme', t), theme)
+      const page = await context.newPage()
+      await mockApi(page, { me: { ...ME_ADMIN, theme }, categories: CATEGORIES })
+      await page.goto('/reports')
+      const card = page.getByRole('region', { name: 'Time to resolve' })
+      await expect(card.getByText('79 tickets resolved')).toBeVisible()
+      expect(await page.evaluate(() => document.documentElement.classList.contains('dark'))).toBe(theme === 'dark')
+      const [download] = await Promise.all([
+        page.waitForEvent('download'),
+        card.getByRole('button', { name: 'Download Time to resolve as an image' }).click(),
+      ])
+      const bytes = readFileSync((await download.path())!)
+      // Still the theme it was: the export put it back.
+      expect(await page.evaluate(() => document.documentElement.classList.contains('dark'))).toBe(theme === 'dark')
+      await context.close()
+      return bytes.toString('base64')
+    }
+
+    const light = await exportCard('light')
+    const dark = await exportCard('dark')
+    // Decode both in a page with a canvas and compare the pixels.
+    const page = await browser.newPage()
+    await page.goto('about:blank')
+    const result = await page.evaluate(async ([a, b]) => {
+      async function pixels(b64: string) {
+        const img = new Image()
+        img.src = 'data:image/png;base64,' + b64
+        await img.decode()
+        const c = document.createElement('canvas')
+        c.width = img.width
+        c.height = img.height
+        const ctx = c.getContext('2d')!
+        ctx.drawImage(img, 0, 0)
+        return { width: img.width, height: img.height, data: ctx.getImageData(0, 0, img.width, img.height).data }
+      }
+      const [x, y] = [await pixels(a), await pixels(b)]
+      let different = 0
+      for (let i = 0; i < x.data.length; i += 4) {
+        if (x.data[i] !== y.data[i] || x.data[i + 1] !== y.data[i + 1] || x.data[i + 2] !== y.data[i + 2]) different++
+      }
+      return {
+        sameSize: x.width === y.width && x.height === y.height,
+        lightTopLeft: Array.from(x.data.slice(0, 4)),
+        darkTopLeft: Array.from(y.data.slice(0, 4)),
+        share: different / (x.data.length / 4),
+      }
+    }, [light, dark])
+    await page.close()
+    expect(result.lightTopLeft).toEqual([255, 255, 255, 255])
+    expect(result.darkTopLeft).toEqual([255, 255, 255, 255])
+    expect(result.sameSize).toBe(true)
+    expect(result.share, 'the dark export differs from the light one').toBeLessThan(0.02)
+  })
+
   test('Download image on the board yields a PNG twice as wide as the board on screen', async ({ page }) => {
     await mockApi(page, { me: ME_STAFF, categories: CATEGORIES })
     await page.goto('/reports')

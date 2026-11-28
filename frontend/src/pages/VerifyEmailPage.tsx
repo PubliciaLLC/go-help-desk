@@ -101,7 +101,7 @@ export function VerifyEmailPage() {
   }
 
   return (
-    <div className="flex min-h-screen items-center justify-center bg-gray-50">
+    <div className="flex min-h-screen items-center justify-center bg-canvas">
       <Card className="w-full max-w-sm">
         <CardHeader>
           <CardTitle className="text-xl">
@@ -116,10 +116,10 @@ export function VerifyEmailPage() {
           ) : mustEnrol ? (
             <MFAEnrollForm onEnrolled={finishSignIn} />
           ) : linkDead ? (
-            <div className="space-y-3 text-sm text-gray-700">
-              <p role="alert" className="text-red-600">{error}</p>
+            <div className="space-y-3 text-sm text-fg-soft">
+              <p role="alert" className="text-danger-fg">{error}</p>
               <p>
-                <Link to="/signup" className="text-blue-600 hover:underline">
+                <Link to="/signup" className="text-link hover:underline">
                   Back to sign up
                 </Link>
               </p>
@@ -167,7 +167,7 @@ export function VerifyEmailPage() {
                   autoComplete="new-password"
                 />
               </div>
-              {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
+              {error && <p role="alert" className="text-sm text-danger-fg">{error}</p>}
               <Button type="submit" className="w-full" disabled={loading}>
                 {loading ? 'Creating account…' : 'Create account'}
               </Button>

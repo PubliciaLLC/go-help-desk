@@ -3,6 +3,17 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- #709: both metas ship as "either" and are narrowed to the chosen theme by
+         /theme-init.js before first paint (and by the app afterwards). -->
+    <meta name="color-scheme" content="light dark" />
+    <meta name="theme-color" content="#ffffff" />
+    <!-- #709: sets class="dark" on <html> before the first paint, so a dark page
+         never flashes light. A classic, render-blocking script on purpose, and a
+         file because the Content-Security-Policy is script-src 'self'. It must
+         stay after the two metas and before the module script. Vite warns that it
+         "can't be bundled without type=module" and copies it untouched from
+         public/; that warning is expected. -->
+    <script src="/theme-init.js"></script>
     <!-- Vite's scaffold default was "frontend" (#57). This is only the value
          shown before React mounts; useSiteBranding then applies the instance's
          configured site_name. The Go server replaces everything between the

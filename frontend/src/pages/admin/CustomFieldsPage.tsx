@@ -48,9 +48,9 @@ function invalidateForms(qc: QueryClient) {
 
 // Small buttons are h-8; a finger needs 44px.
 const BTN_TOUCH = 'pointer-coarse:min-h-11 pointer-coarse:min-w-11'
-const CHECK_LABEL = `inline-flex cursor-pointer select-none items-center gap-2 text-sm text-gray-700 ${TOUCH_SIZE}`
-const LABEL = 'block text-xs font-medium uppercase tracking-wide text-gray-500'
-const SECTION_HEAD = 'text-xs font-semibold uppercase tracking-wide text-gray-500'
+const CHECK_LABEL = `inline-flex cursor-pointer select-none items-center gap-2 text-sm text-fg-soft ${TOUCH_SIZE}`
+const LABEL = 'block text-xs font-medium uppercase tracking-wide text-fg-faint'
+const SECTION_HEAD = 'text-xs font-semibold uppercase tracking-wide text-fg-faint'
 
 // One empty list, so the effect that reads the list is not re-run on every render before it loads.
 const NO_FIELDS: FieldDef[] = []
@@ -223,7 +223,7 @@ function OptionsEditor({
                   className="h-9 min-w-0 flex-1 basis-40 pointer-coarse:h-11"
                 />
                 <div className="flex items-center gap-2 max-sm:basis-full max-sm:justify-end">
-                  {n !== undefined && <span className="whitespace-nowrap text-xs text-gray-500">{plural(n, 'ticket', 'tickets')}</span>}
+                  {n !== undefined && <span className="whitespace-nowrap text-xs text-fg-faint">{plural(n, 'ticket', 'tickets')}</span>}
                   {row.original !== null && (
                     <Button type="button" size="sm" variant="outline" className={BTN_TOUCH} aria-label={`Retire ${name}`} onClick={() => draft.retire(row.key)}>
                       Retire
@@ -234,15 +234,15 @@ function OptionsEditor({
                       Remove
                     </Button>
                   ) : n === 0 ? (
-                    <Button type="button" size="sm" variant="outline" className={`text-red-700 ${BTN_TOUCH}`} aria-label={`Delete ${name}`} onClick={() => draft.remove(row.key)}>
+                    <Button type="button" size="sm" variant="outline" className={`text-danger-fg ${BTN_TOUCH}`} aria-label={`Delete ${name}`} onClick={() => draft.remove(row.key)}>
                       Delete
                     </Button>
                   ) : null}
                 </div>
               </div>
-              {errors[row.key] && <p role="alert" className="mt-1 text-xs text-red-600 wrap-anywhere">{errors[row.key]}</p>}
+              {errors[row.key] && <p role="alert" className="mt-1 text-xs text-danger-fg wrap-anywhere">{errors[row.key]}</p>}
               {isRenameOfHeld(row, usage) && ticketsHolding(usage, row.original as string) !== undefined && (
-                <p className="mt-1 text-xs text-gray-500 wrap-anywhere">
+                <p className="mt-1 text-xs text-fg-faint wrap-anywhere">
                   {plural(ticketsHolding(usage, row.original as string) as number, 'ticket keeps', 'tickets keep')} "{row.original}" as a retired option.
                 </p>
               )}
@@ -251,7 +251,7 @@ function OptionsEditor({
         }}
       />
 
-      {draft.rows.length === 0 && <p role="alert" className="text-xs text-red-600">Add at least one option.</p>}
+      {draft.rows.length === 0 && <p role="alert" className="text-xs text-danger-fg">Add at least one option.</p>}
       <Button type="button" size="sm" variant="outline" className={BTN_TOUCH} onClick={draft.add}>
         <PlusIcon aria-hidden="true" className="mr-1 h-3.5 w-3.5" /> Add option
       </Button>
@@ -259,19 +259,19 @@ function OptionsEditor({
       {persisted && showRetired && (
         <div className="space-y-1 border-t pt-2">
           <span className={LABEL}>Retired</span>
-          {draft.retiredRows.length === 0 && <p className="text-sm text-gray-500">No retired options.</p>}
+          {draft.retiredRows.length === 0 && <p className="text-sm text-fg-faint">No retired options.</p>}
           {draft.retiredRows.map((r) => {
             const n = ticketsHolding(usage, r.text)
             return (
               <div key={r.key} className="flex flex-wrap items-center gap-x-2 gap-y-1 py-1">
-                <span className="min-w-0 flex-1 basis-40 text-sm text-gray-700 wrap-anywhere">{r.text}</span>
+                <span className="min-w-0 flex-1 basis-40 text-sm text-fg-soft wrap-anywhere">{r.text}</span>
                 <div className="flex items-center gap-2 max-sm:basis-full max-sm:justify-end">
-                  {n !== undefined && <span className="whitespace-nowrap text-xs text-gray-500">{plural(n, 'ticket', 'tickets')}</span>}
+                  {n !== undefined && <span className="whitespace-nowrap text-xs text-fg-faint">{plural(n, 'ticket', 'tickets')}</span>}
                   <Button type="button" size="sm" variant="outline" className={BTN_TOUCH} aria-label={`Bring back ${r.text}`} onClick={() => draft.bringBack(r.key)}>
                     Bring back
                   </Button>
                   {n === 0 && (
-                    <Button type="button" size="sm" variant="outline" className={`text-red-700 ${BTN_TOUCH}`} aria-label={`Delete ${r.text}`} onClick={() => draft.removeRetired(r.key)}>
+                    <Button type="button" size="sm" variant="outline" className={`text-danger-fg ${BTN_TOUCH}`} aria-label={`Delete ${r.text}`} onClick={() => draft.removeRetired(r.key)}>
                       Delete
                     </Button>
                   )}
@@ -312,11 +312,11 @@ function MaxLengthField({
         onChange={(e) => onChange(e.target.value)}
         className="max-w-40 pointer-coarse:h-11"
       />
-      <p className="text-xs text-gray-500">
+      <p className="text-xs text-fg-faint">
         {maxLengthHint(type)}
         {note ? ` ${note}` : ''}
       </p>
-      {attempted && !parsed.ok && <p role="alert" className="text-sm text-red-600">{parsed.message}</p>}
+      {attempted && !parsed.ok && <p role="alert" className="text-sm text-danger-fg">{parsed.message}</p>}
     </div>
   )
 }
@@ -432,8 +432,8 @@ function FieldDetails({
         {inUse ? (
           <div className="space-y-1">
             <span className={LABEL}>Type</span>
-            <p className="text-sm font-medium text-gray-900">{typeLabel(def.field_type)}</p>
-            <p className="text-xs text-gray-500">
+            <p className="text-sm font-medium text-fg">{typeLabel(def.field_type)}</p>
+            <p className="text-xs text-fg-faint">
               Fixed: {plural(usage?.tickets_with_value ?? 0, 'ticket has', 'tickets have')} a value for this field.
             </p>
           </div>
@@ -450,7 +450,7 @@ function FieldDetails({
             >
               {FIELD_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
             </Select>
-            {usageQuery.isError && <p className="text-xs text-gray-500">Could not check whether tickets use this field.</p>}
+            {usageQuery.isError && <p className="text-xs text-fg-faint">Could not check whether tickets use this field.</p>}
           </div>
         )}
       </div>
@@ -465,10 +465,10 @@ function FieldDetails({
 
       {type === 'select' && <OptionsEditor draft={draft} usage={usage} attempted={attempted} persisted showRetired={showRetired} onShowRetired={onShowRetired} />}
 
-      {attempted && !name.trim() && <p role="alert" className="text-sm text-red-600">A field needs a name.</p>}
-      {error && <p role="alert" className="text-sm text-red-600 wrap-anywhere">{error}</p>}
+      {attempted && !name.trim() && <p role="alert" className="text-sm text-danger-fg">A field needs a name.</p>}
+      {error && <p role="alert" className="text-sm text-danger-fg wrap-anywhere">{error}</p>}
       {changedElsewhere && (
-        <p role="status" className="text-sm text-amber-700">This field was changed elsewhere. Cancel to load the latest.</p>
+        <p role="status" className="text-sm text-warning-fg">This field was changed elsewhere. Cancel to load the latest.</p>
       )}
       <div className="flex justify-end gap-2">
         <Button size="sm" variant="outline" className={BTN_TOUCH} onClick={onCancel} disabled={saveMutation.isPending}>Cancel</Button>
@@ -568,19 +568,19 @@ function PlacesSection({ def, autoFocusAdd }: { def: FieldDef; autoFocusAdd: boo
   return (
     <div className="space-y-3">
       {placesQuery.isLoading && <Spinner />}
-      {placesQuery.isError && <p role="alert" className="text-sm text-red-600">Could not load where this field appears.</p>}
-      {placesQuery.isSuccess && places.length === 0 && <p className="text-sm text-gray-600">Not on any form yet.</p>}
+      {placesQuery.isError && <p role="alert" className="text-sm text-danger-fg">Could not load where this field appears.</p>}
+      {placesQuery.isSuccess && places.length === 0 && <p className="text-sm text-fg-muted">Not on any form yet.</p>}
 
       {places.length > 0 && (
         <>
-          <ul className="divide-y rounded-md border bg-white">
+          <ul className="divide-y rounded-md border bg-card">
             {places.map((p) => {
               const path = pathOf(p)
               const below = overlapsBelow(p, places)
               return (
                 <li key={p.id} className="px-3 py-2">
                   <div className="flex flex-wrap items-center gap-x-4 gap-y-1">
-                    <span className="min-w-0 flex-1 basis-40 text-sm font-medium text-gray-800 wrap-anywhere max-sm:order-1">
+                    <span className="min-w-0 flex-1 basis-40 text-sm font-medium text-fg wrap-anywhere max-sm:order-1">
                       {path}
                       {isArchived(p) && <Badge variant="secondary" className="ml-2">Archived</Badge>}
                     </span>
@@ -625,13 +625,13 @@ function PlacesSection({ def, autoFocusAdd }: { def: FieldDef; autoFocusAdd: boo
                       aria-label={`Remove ${path}`}
                       onClick={() => removeMutation.mutate(p)}
                       disabled={removeMutation.isPending}
-                      className={`rounded text-gray-400 hover:text-red-600 max-sm:order-2 ${TOUCH_SIZE}`}
+                      className={`rounded text-fg-faint hover:text-danger-fg max-sm:order-2 ${TOUCH_SIZE}`}
                     >
                       <XIcon aria-hidden="true" className="h-4 w-4" />
                     </button>
                   </div>
                   {below.length > 0 && (
-                    <p className="mt-1 text-xs text-amber-700 wrap-anywhere">
+                    <p className="mt-1 text-xs text-warning-fg wrap-anywhere">
                       Overlaps {below.map(pathOf).join(', ')}, where that place's settings apply.
                     </p>
                   )}
@@ -639,13 +639,13 @@ function PlacesSection({ def, autoFocusAdd }: { def: FieldDef; autoFocusAdd: boo
               )
             })}
           </ul>
-          <p className="text-sm text-gray-600 wrap-anywhere">{describePlaces(places)}</p>
+          <p className="text-sm text-fg-muted wrap-anywhere">{describePlaces(places)}</p>
           {places.some((p) => p.scope_type === 'item' && p.visible_on_new) && (
-            <p className="text-sm text-gray-600">Requesters don't pick items, so only staff will see this.</p>
+            <p className="text-sm text-fg-muted">Requesters don't pick items, so only staff will see this.</p>
           )}
         </>
       )}
-      {error && <p role="alert" className="text-sm text-red-600 wrap-anywhere">{error}</p>}
+      {error && <p role="alert" className="text-sm text-danger-fg wrap-anywhere">{error}</p>}
 
       <Button
         ref={addRef}
@@ -738,7 +738,7 @@ function AddPlaceForm({
   const archived = (active: boolean) => (active ? '' : ' (archived)')
 
   return (
-    <div role="group" aria-label="Add a place" className="space-y-3 rounded-md border bg-white p-3">
+    <div role="group" aria-label="Add a place" className="space-y-3 rounded-md border bg-card p-3">
       <div className="grid gap-3 sm:grid-cols-2">
         <div className="space-y-1">
           <label htmlFor={`${ids}-cat`} className={LABEL}>Category</label>
@@ -817,8 +817,8 @@ function AddPlaceForm({
         </label>
       </div>
 
-      {conflict && <p className="text-xs text-amber-700 wrap-anywhere">That place is {conflict}. Choose another.</p>}
-      {addMutation.isError && <p role="alert" className="text-sm text-red-600">{extractError(addMutation.error)}</p>}
+      {conflict && <p className="text-xs text-warning-fg wrap-anywhere">That place is {conflict}. Choose another.</p>}
+      {addMutation.isError && <p role="alert" className="text-sm text-danger-fg">{extractError(addMutation.error)}</p>}
       <div className="flex gap-2">
         <Button size="sm" className={BTN_TOUCH} onClick={() => addMutation.mutate()} disabled={!cand.categoryId || !!conflict || addMutation.isPending}>
           Add
@@ -896,18 +896,18 @@ function FieldRow({
           type="button"
           aria-expanded={expanded}
           onClick={onToggle}
-          className={`flex min-w-0 flex-1 basis-48 items-center gap-2 rounded py-1 text-left hover:bg-gray-50 ${TOUCH_SIZE} pointer-coarse:justify-start`}
+          className={`flex min-w-0 flex-1 basis-48 items-center gap-2 rounded py-1 text-left hover:bg-subtle ${TOUCH_SIZE} pointer-coarse:justify-start`}
         >
           {expanded
-            ? <ChevronDownIcon aria-hidden="true" className="h-4 w-4 shrink-0 text-gray-400" />
-            : <ChevronRightIcon aria-hidden="true" className="h-4 w-4 shrink-0 text-gray-400" />}
+            ? <ChevronDownIcon aria-hidden="true" className="h-4 w-4 shrink-0 text-fg-faint" />
+            : <ChevronRightIcon aria-hidden="true" className="h-4 w-4 shrink-0 text-fg-faint" />}
           <span className="flex min-w-0 flex-1 flex-col sm:flex-row sm:items-center sm:gap-4">
-            <span className={`min-w-0 text-sm font-medium wrap-anywhere sm:flex-1 ${def.active ? 'text-gray-900' : 'text-gray-500'}`}>{def.name}</span>
-            <span className="flex flex-wrap items-center gap-x-1 text-xs text-gray-500 sm:gap-x-4">
+            <span className={`min-w-0 text-sm font-medium wrap-anywhere sm:flex-1 ${def.active ? 'text-fg' : 'text-fg-faint'}`}>{def.name}</span>
+            <span className="flex flex-wrap items-center gap-x-1 text-xs text-fg-faint sm:gap-x-4">
               <span className="sm:w-20">{typeLabel(def.field_type)}</span>
               <span aria-hidden="true" className="sm:hidden">·</span>
               {count === undefined ? null : count === 0
-                ? <span className="font-medium text-amber-700 sm:w-44">Not on any form yet</span>
+                ? <span className="font-medium text-warning-fg sm:w-44">Not on any form yet</span>
                 : <span className="sm:w-44">On {plural(count, 'place', 'places')}</span>}
             </span>
           </span>
@@ -919,7 +919,7 @@ function FieldRow({
             <Button
               size="sm"
               variant="outline"
-              className={`text-green-700 ${BTN_TOUCH}`}
+              className={`text-success-fg ${BTN_TOUCH}`}
               aria-label={`Reactivate ${def.name}`}
               onClick={() => activeMutation.mutate(true)}
               disabled={activeMutation.isPending}
@@ -932,11 +932,11 @@ function FieldRow({
 
       {/* Reactivate has no dialog to carry its error; Deactivate shows its own inside the dialog. */}
       {activeMutation.isError && !confirmOpen && (
-        <p role="alert" className="px-3 pb-2 text-sm text-red-600 wrap-anywhere sm:ml-12">{extractError(activeMutation.error)}</p>
+        <p role="alert" className="px-3 pb-2 text-sm text-danger-fg wrap-anywhere sm:ml-12">{extractError(activeMutation.error)}</p>
       )}
 
       {expanded && (
-        <div className="space-y-5 border-t bg-gray-50 px-3 py-4 sm:ml-12">
+        <div className="space-y-5 border-t bg-subtle px-3 py-4 sm:ml-12">
           <section className="space-y-2">
             <h3 className={SECTION_HEAD}>Details</h3>
             <FieldDetails
@@ -962,7 +962,7 @@ function FieldRow({
               <Button
                 size="sm"
                 variant="outline"
-                className={`border-yellow-300 text-yellow-700 hover:bg-yellow-50 ${BTN_TOUCH}`}
+                className={`border-warning-border text-warning-fg hover:bg-warning-soft hover:text-warning-fg-strong ${BTN_TOUCH}`}
                 onClick={() => setConfirmOpen(true)}
               >
                 Deactivate…
@@ -1029,10 +1029,10 @@ function CreateForm({
 
   return (
     <div
-      className="space-y-3 rounded-lg border bg-white p-4"
+      className="space-y-3 rounded-lg border bg-card p-4"
       onKeyDown={(e) => { if (e.key === 'Escape') onCancel() }}
     >
-      <p className="text-sm font-medium text-gray-700">New custom field</p>
+      <p className="text-sm font-medium text-fg-soft">New custom field</p>
       <div className="grid gap-3 sm:grid-cols-2">
         <div className="space-y-1">
           <label htmlFor={`${ids}-name`} className={LABEL}>Name</label>
@@ -1063,7 +1063,7 @@ function CreateForm({
       </div>
       <MaxLengthField type={type} text={maxText} onChange={setMaxText} attempted={attempted} />
       {type === 'select' && <OptionsEditor draft={draft} usage={undefined} attempted={attempted} persisted={false} />}
-      {createMutation.isError && <p role="alert" className="text-sm text-red-600">{extractError(createMutation.error)}</p>}
+      {createMutation.isError && <p role="alert" className="text-sm text-danger-fg">{extractError(createMutation.error)}</p>}
       <div className="flex gap-2">
         <Button className={BTN_TOUCH} onClick={submit} disabled={!name.trim() || createMutation.isPending}>
           {createMutation.isPending ? 'Creating…' : 'Create field'}
@@ -1079,7 +1079,7 @@ function CreateForm({
 function CreatedBanner({ name, placeCount, onDismiss }: { name: string; placeCount: number | undefined; onDismiss: () => void }) {
   if (placeCount) return null
   return (
-    <div role="status" className="flex items-start justify-between gap-3 rounded-md border border-green-200 bg-green-50 px-3 py-2 text-sm text-green-900">
+    <div role="status" className="flex items-start justify-between gap-3 rounded-md border border-success-border bg-success-soft px-3 py-2 text-sm text-success-fg-strong">
       <p className="min-w-0 wrap-anywhere">
         {name} created. It isn't on any ticket form yet. Choose where it appears.
       </p>
@@ -1087,7 +1087,7 @@ function CreatedBanner({ name, placeCount, onDismiss }: { name: string; placeCou
         type="button"
         aria-label="Dismiss"
         onClick={onDismiss}
-        className={`shrink-0 rounded text-green-800 hover:text-green-950 ${TOUCH_SIZE}`}
+        className={`shrink-0 rounded text-success-fg-strong hover:opacity-70 ${TOUCH_SIZE}`}
       >
         <XIcon aria-hidden="true" className="h-4 w-4" />
       </button>
@@ -1185,8 +1185,8 @@ export function CustomFieldsPage() {
       <div className="space-y-6">
         <div className="flex flex-col items-start gap-3 sm:flex-row sm:justify-between sm:gap-0">
           <div className="min-w-0">
-            <h1 className="text-2xl font-bold text-gray-900">Custom Fields</h1>
-            <p className="mt-1 text-sm text-gray-500">
+            <h1 className="text-2xl font-bold text-fg">Custom Fields</h1>
+            <p className="mt-1 text-sm text-fg-faint">
               Extra questions on a ticket. A field appears only where you attach it: to a category, a type or an item.
             </p>
           </div>
@@ -1216,23 +1216,23 @@ export function CustomFieldsPage() {
           <div className="flex justify-center py-12"><Spinner /></div>
         ) : isError && !data ? (
           // Nothing to show. A failed refresh with a list already loaded is the notice below.
-          <p role="alert" className="text-sm text-red-600">Could not load custom fields.</p>
+          <p role="alert" className="text-sm text-danger-fg">Could not load custom fields.</p>
         ) : (
           <div className="space-y-2">
             {isError && (
-              <p role="alert" className="text-sm text-red-600">Couldn't refresh the list. Showing what was loaded before.</p>
+              <p role="alert" className="text-sm text-danger-fg">Couldn't refresh the list. Showing what was loaded before.</p>
             )}
-            <p className="text-sm text-gray-500">
+            <p className="text-sm text-fg-faint">
               Drag to set the order fields appear in. On a ticket, fields still appear by level: the category's first, then the type's, then the item's.
             </p>
-            {reorderError && <p role="alert" className="text-sm text-red-600">{reorderError}</p>}
+            {reorderError && <p role="alert" className="text-sm text-danger-fg">{reorderError}</p>}
             {visible.length === 0 ? (
-              <p className="rounded-lg border bg-white px-4 py-10 text-center text-sm text-gray-400">
+              <p className="rounded-lg border bg-card px-4 py-10 text-center text-sm text-fg-faint">
                 No custom fields defined yet.
               </p>
             ) : (
               <SortableList
-                className="rounded-lg border bg-white"
+                className="rounded-lg border bg-card"
                 items={visible.map((d) => ({ id: d.id, label: d.name, def: d }))}
                 onReorder={(ids) => reorderMutation.mutate(mergeOrder(defs, isVisible, ids))}
                 renderItem={({ def }, handle) => (

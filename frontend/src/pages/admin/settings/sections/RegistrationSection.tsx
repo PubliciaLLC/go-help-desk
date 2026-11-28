@@ -25,13 +25,13 @@ export function RegistrationSection({ draft }: { draft: SettingsDraft }) {
       {bool('self_signup_enabled') && (
         <>
           <div className="border-t px-5 py-4 space-y-2">
-            <div className="text-sm font-medium text-gray-900">Allowed email domains</div>
-            <div className="text-sm text-gray-500">
+            <div className="text-sm font-medium text-fg">Allowed email domains</div>
+            <div className="text-sm text-fg-faint">
               One domain per line (e.g. <span className="font-mono">company.com</span>). Leave empty and enable open registration to allow any email.
             </div>
             <textarea
               rows={3}
-              className="w-full max-w-xs rounded border border-gray-300 p-2 font-mono text-sm"
+              className="w-full max-w-xs rounded border border-border-strong bg-background p-2 font-mono text-sm"
               placeholder={'company.com\nexample.org'}
               value={domainsText}
               onChange={(e) => setDomainsText(e.target.value)}

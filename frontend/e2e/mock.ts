@@ -12,6 +12,7 @@ export const ME_STAFF = {
   display_name: 'Sam Staff',
   role: 'staff',
   mfa_enabled: false,
+  theme: 'device',
   created_at: '2026-01-01T00:00:00Z',
   updated_at: '2026-01-01T00:00:00Z',
   // #676: the setting is off by default (admins only), so Available is not listed.
@@ -24,6 +25,7 @@ export const ME_REPORTER = {
   display_name: 'Rita Reporter',
   role: 'user',
   mfa_enabled: false,
+  theme: 'device',
   created_at: '2026-01-01T00:00:00Z',
   updated_at: '2026-01-01T00:00:00Z',
 }
@@ -34,6 +36,7 @@ export const ME_ADMIN = {
   display_name: 'Ada Admin',
   role: 'admin',
   mfa_enabled: false,
+  theme: 'device',
   created_at: '2026-01-01T00:00:00Z',
   updated_at: '2026-01-01T00:00:00Z',
   can_use_available_queue: true,

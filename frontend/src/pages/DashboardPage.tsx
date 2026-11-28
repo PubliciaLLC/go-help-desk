@@ -30,7 +30,7 @@ function Loading({ testId, className }: { testId: string; className: string }) {
 function Block({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <section className="min-w-0 space-y-3 rounded-lg border bg-card p-4 shadow-sm">
-      <h2 className="text-base font-semibold text-gray-900">{title}</h2>
+      <h2 className="text-base font-semibold text-fg">{title}</h2>
       {children}
     </section>
   )
@@ -69,8 +69,8 @@ export function DashboardPage() {
       <div className="space-y-6">
         <div className="flex items-center justify-between">
           <div>
-            <h1 className="text-2xl font-bold text-gray-900">Dashboard</h1>
-            <p className="text-sm text-gray-500 wrap-anywhere">Welcome back, {user?.display_name}</p>
+            <h1 className="text-2xl font-bold text-fg">Dashboard</h1>
+            <p className="text-sm text-fg-faint wrap-anywhere">Welcome back, {user?.display_name}</p>
           </div>
           <Link to="/tickets/new">
             <Button>
@@ -83,7 +83,7 @@ export function DashboardPage() {
         {isAdmin && <AdminHealthCard />}
 
         {summary.isError ? (
-          <div role="alert" className="flex flex-wrap items-center gap-3 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
+          <div role="alert" className="flex flex-wrap items-center gap-3 rounded-lg border border-danger-border bg-danger-soft px-4 py-3 text-sm text-danger-fg-strong">
             <span>The dashboard summary could not be loaded.</span>
             <Button variant="outline" size="sm" onClick={() => void summary.refetch()} disabled={summary.isFetching}>
               Retry
@@ -93,7 +93,7 @@ export function DashboardPage() {
           <QueueStrip queues={summary.data.queues ?? []} requester={requester} />
         ) : (
           <section className="space-y-2">
-            <h2 className="text-base font-semibold text-gray-900">{requester ? 'Your tickets' : 'Your queue'}</h2>
+            <h2 className="text-base font-semibold text-fg">{requester ? 'Your tickets' : 'Your queue'}</h2>
             <Loading testId="dashboard-strip-loading" className="min-h-[5rem]" />
           </section>
         )}
@@ -108,10 +108,10 @@ export function DashboardPage() {
               <Link key={s.id} to="/tickets" search={{ status: [s.id], reporter: undefined }} className="block group">
                 <Card className="border-l-4 transition-shadow group-hover:shadow-md cursor-pointer" style={{ borderLeftColor: s.color }}>
                   <CardHeader className="pb-1">
-                    <CardTitle className="text-sm font-medium text-gray-500 [overflow-wrap:anywhere]">{s.name}</CardTitle>
+                    <CardTitle className="text-sm font-medium text-fg-faint [overflow-wrap:anywhere]">{s.name}</CardTitle>
                   </CardHeader>
                   <CardContent>
-                    <p className="text-3xl font-bold text-gray-900">{s.ticket_count}</p>
+                    <p className="text-3xl font-bold text-fg">{s.ticket_count}</p>
                   </CardContent>
                 </Card>
               </Link>
@@ -146,18 +146,18 @@ export function DashboardPage() {
 
         {isAdmin && clients.length > 0 && (
           <div className="space-y-3">
-            <h2 className="text-base font-semibold text-gray-900">By Client</h2>
+            <h2 className="text-base font-semibold text-fg">By Client</h2>
             <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
               {clients.map(c => (
                 <Link key={c.id} to="/tickets" search={{ reporter: c.id, status: undefined }} className="block group">
                   <Card className="transition-shadow group-hover:shadow-md cursor-pointer">
                     <CardContent className="flex items-center gap-3 py-3 px-4">
-                      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gray-100 text-gray-500">
+                      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-muted text-fg-muted">
                         <UserIcon className="h-4 w-4" />
                       </div>
                       <div className="min-w-0">
-                        <p className="truncate text-sm font-medium text-gray-900" title={c.display_name}>{c.display_name}</p>
-                        <p className="truncate text-xs text-gray-500" title={c.email}>{c.email}</p>
+                        <p className="truncate text-sm font-medium text-fg" title={c.display_name}>{c.display_name}</p>
+                        <p className="truncate text-xs text-fg-faint" title={c.email}>{c.email}</p>
                       </div>
                     </CardContent>
                   </Card>

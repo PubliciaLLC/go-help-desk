@@ -478,6 +478,10 @@ func (s *Server) meRouter() *chi.Mux {
 			// inbox of its own to choose for.
 			r.With(authmw.RequireRole(user.RoleAdmin, user.RoleStaff)).
 				Patch("/email-preferences", s.handleUpdateEmailPreferences)
+			// Every role, requesters included (#709): how the page looks is
+			// nobody's business but the person's. Refused to machine
+			// credentials with the rest of this group; a key has no screen.
+			r.Patch("/appearance", s.handleUpdateAppearance)
 		})
 	})
 

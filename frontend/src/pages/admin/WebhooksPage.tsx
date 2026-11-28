@@ -63,17 +63,17 @@ const FAILURE_LABEL: Record<string, string> = {
 }
 
 function LastDelivery({ d }: { d: WebhookDelivery | null | undefined }) {
-  if (d == null) return <span className="text-xs text-gray-400">No deliveries yet</span>
+  if (d == null) return <span className="text-xs text-fg-faint">No deliveries yet</span>
   const ok = d.error === ''
   const what = ok || d.error === 'http_status' ? String(d.status) : (FAILURE_LABEL[d.error] ?? 'error')
   return (
     <div className="space-y-0.5">
       <span className={ok
-        ? 'rounded bg-green-50 px-1.5 py-0.5 text-xs text-green-700'
-        : 'rounded bg-red-50 px-1.5 py-0.5 text-xs text-red-700'}>
+        ? 'rounded bg-success-soft px-1.5 py-0.5 text-xs text-success-fg-strong'
+        : 'rounded bg-danger-soft px-1.5 py-0.5 text-xs text-danger-fg-strong'}>
         {ok ? 'Delivered' : 'Failing'} · {what}
       </span>
-      <time dateTime={d.at} className="block text-xs text-gray-500">
+      <time dateTime={d.at} className="block text-xs text-fg-faint">
         {new Date(d.at).toLocaleString()}
       </time>
     </div>
@@ -256,10 +256,10 @@ function CheckGroup({
 }) {
   return (
     <fieldset className="space-y-1">
-      <legend className="text-xs font-medium text-gray-700">{legend}</legend>
+      <legend className="text-xs font-medium text-fg-soft">{legend}</legend>
       <div className="grid grid-cols-1 gap-x-4 gap-y-1 sm:grid-cols-2 lg:grid-cols-3">
         {options.map((o) => (
-          <label key={o.value} className="flex min-h-[24px] min-w-0 items-center gap-2 text-sm text-gray-700">
+          <label key={o.value} className="flex min-h-[24px] min-w-0 items-center gap-2 text-sm text-fg-soft">
             <input
               type="checkbox"
               checked={selected.includes(o.value)}
@@ -377,7 +377,7 @@ function WebhookFields({
               <option key={f.value} value={f.value}>{f.label}</option>
             ))}
           </Select>
-          <p className="text-xs text-gray-500">
+          <p className="text-xs text-fg-faint">
             Raw sends ids only: the event name, ticket id and timestamp, no text or addresses. The others build a message for that service&apos;s incoming
             webhook.
           </p>
@@ -391,14 +391,14 @@ function WebhookFields({
             value={form.secret}
             onChange={(e) => onChange({ ...form, secret: e.target.value })}
           />
-          <p className="text-xs text-gray-500">{secretHint}</p>
+          <p className="text-xs text-fg-faint">{secretHint}</p>
         </div>
       </div>
 
       <fieldset className="space-y-2">
-        <legend className="text-xs font-medium text-gray-700">Events</legend>
+        <legend className="text-xs font-medium text-fg-soft">Events</legend>
         <div className="grid grid-cols-1 gap-x-4 gap-y-1 sm:grid-cols-2 lg:grid-cols-3">
-          <label className="flex min-h-[24px] items-center gap-2 text-sm font-medium text-gray-900">
+          <label className="flex min-h-[24px] items-center gap-2 text-sm font-medium text-fg">
             <input
               type="checkbox"
               checked={form.all}
@@ -407,7 +407,7 @@ function WebhookFields({
             <span>All events</span>
           </label>
           {EVENTS.map((e) => (
-            <label key={e} className="flex min-h-[24px] items-center gap-2 text-sm text-gray-700">
+            <label key={e} className="flex min-h-[24px] items-center gap-2 text-sm text-fg-soft">
               <input
                 type="checkbox"
                 checked={form.all || form.events.includes(e)}
@@ -418,12 +418,12 @@ function WebhookFields({
             </label>
           ))}
         </div>
-        <p className="pt-1 text-xs text-gray-500">
+        <p className="pt-1 text-xs text-fg-faint">
           Sent only when ticked, even with All events: they say who follows a ticket, by id.
         </p>
         <div className="grid grid-cols-1 gap-x-4 gap-y-1 sm:grid-cols-2 lg:grid-cols-3">
           {OPT_IN_EVENTS.map((e) => (
-            <label key={e} className="flex min-h-[24px] items-center gap-2 text-sm text-gray-700">
+            <label key={e} className="flex min-h-[24px] items-center gap-2 text-sm text-fg-soft">
               <input
                 type="checkbox"
                 checked={form.events.includes(e)}
@@ -436,8 +436,8 @@ function WebhookFields({
       </fieldset>
 
       <fieldset className="space-y-3">
-        <legend className="text-xs font-medium text-gray-700">Tickets</legend>
-        <p className="text-xs text-gray-500">
+        <legend className="text-xs font-medium text-fg-soft">Tickets</legend>
+        <p className="text-xs text-fg-faint">
           Leave everything unticked to send for every ticket. Within a list any ticked value
           matches; every list with a tick must match. Group is the group the ticket is assigned to.
         </p>
@@ -522,7 +522,7 @@ function EditRow({
 
   return (
     <tr>
-      <td colSpan={7} className="bg-gray-50 px-4 py-4">
+      <td colSpan={7} className="bg-subtle px-4 py-4">
         <form
           aria-label="Edit webhook"
           className="space-y-3"
@@ -541,7 +541,7 @@ function EditRow({
             categories={categories}
             groups={groups}
           />
-          {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
+          {error && <p role="alert" className="text-sm text-danger-fg">{error}</p>}
           <div className="flex gap-2">
             <Button type="submit" size="sm" disabled={!canSubmit(form) || save.isPending}>
               {save.isPending ? 'Saving…' : 'Save'}
@@ -595,21 +595,21 @@ function HistoryRow({ hook }: { hook: WebhookConfig }) {
 
   return (
     <tr>
-      <td colSpan={6} className="bg-gray-50 px-4 py-4">
+      <td colSpan={6} className="bg-subtle px-4 py-4">
         <section aria-label="Delivery history" className="space-y-2">
-          <p className="text-xs text-gray-500">
+          <p className="text-xs text-fg-faint">
             The last 25 deliveries. Outcomes only: no payloads and no error text are kept.
             Redeliver sends the event again as a new delivery; a chat message is rebuilt from the ticket as it is now.
           </p>
-          {notice && <p role="status" className="text-sm text-green-700">{notice}</p>}
-          {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
+          {notice && <p role="status" className="text-sm text-success-fg">{notice}</p>}
+          {error && <p role="alert" className="text-sm text-danger-fg">{error}</p>}
           {isLoading ? (
             <Spinner />
           ) : (deliveries ?? []).length === 0 ? (
-            <p className="text-sm text-gray-400">No deliveries yet.</p>
+            <p className="text-sm text-fg-faint">No deliveries yet.</p>
           ) : (
             <table className="w-full text-xs">
-              <thead className="text-left uppercase text-gray-500">
+              <thead className="text-left uppercase text-fg-faint">
                 <tr>
                   <th className="py-1 pr-3">Event</th>
                   <th className="py-1 pr-3">Result</th>
@@ -716,8 +716,8 @@ export function WebhooksPage() {
     <Layout>
       <div className="space-y-6">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">Webhooks</h1>
-          <p className="mt-1 text-sm text-gray-500">
+          <h1 className="text-2xl font-bold text-fg">Webhooks</h1>
+          <p className="mt-1 text-sm text-fg-faint">
             Send ticket events to another system as an HTTP POST. Targets must be public
             addresses. When a secret is set, each delivery is signed with it in the{' '}
             <code className="font-mono text-xs">X-GHD-Signature</code> header. A secret is never
@@ -750,7 +750,7 @@ export function WebhooksPage() {
                 groups={groups}
               />
               <div className="space-y-1">
-                <label className="flex min-h-[24px] items-center gap-2 text-sm text-gray-900">
+                <label className="flex min-h-[24px] items-center gap-2 text-sm text-fg">
                   <input
                     type="checkbox"
                     checked={createEnabled}
@@ -762,11 +762,11 @@ export function WebhooksPage() {
                   />
                   <span>Enabled</span>
                 </label>
-                <p id="new-webhook-enabled-hint" className="text-xs text-gray-500">
+                <p id="new-webhook-enabled-hint" className="text-xs text-fg-faint">
                   A disabled hook is saved but receives no deliveries until it is enabled.
                 </p>
               </div>
-              {createError && <p role="alert" className="text-sm text-red-600">{createError}</p>}
+              {createError && <p role="alert" className="text-sm text-danger-fg">{createError}</p>}
               <Button type="submit" size="sm" disabled={!canSubmit(form) || createMutation.isPending}>
                 <PlusIcon className="mr-2 h-4 w-4" />
                 {createMutation.isPending ? 'Creating…' : 'Create'}
@@ -775,14 +775,14 @@ export function WebhooksPage() {
           </CardContent>
         </Card>
 
-        {rowError && <p role="alert" className="text-sm text-red-600">{rowError}</p>}
+        {rowError && <p role="alert" className="text-sm text-danger-fg">{rowError}</p>}
 
         {isLoading ? (
           <div className="flex justify-center py-12"><Spinner /></div>
         ) : (
-          <div className="overflow-x-auto rounded-lg border bg-white">
+          <div className="overflow-x-auto rounded-lg border bg-card">
             <table className="w-full text-sm">
-              <thead className="bg-gray-50 text-xs uppercase text-gray-500">
+              <thead className="bg-subtle text-xs uppercase text-fg-faint">
                 <tr>
                   <th className="px-4 py-3 text-left">URL</th>
                   <th className="px-4 py-3 text-left">Format</th>
@@ -806,19 +806,19 @@ export function WebhooksPage() {
                   ) : (
                     <Fragment key={h.id}>
                     <tr>
-                      <td className="px-4 py-3 font-mono text-xs text-gray-900 break-all">{h.url}</td>
-                      <td className="px-4 py-3 text-gray-700">{formatLabel(h.payload_format)}</td>
+                      <td className="px-4 py-3 font-mono text-xs text-fg break-all">{h.url}</td>
+                      <td className="px-4 py-3 text-fg-soft">{formatLabel(h.payload_format)}</td>
                       <td className="px-4 py-3">
                         <div className="flex flex-wrap gap-1">
                           {h.events.length === 0 || h.events.includes('*') ? (
                             <>
-                              <span className="rounded bg-gray-100 px-1.5 py-0.5 text-xs text-gray-700">
+                              <span className="rounded bg-muted px-1.5 py-0.5 text-xs text-fg-soft">
                                 All events
                               </span>
                               {h.events.filter(isOptIn).map((e) => (
                                 <span
                                   key={e}
-                                  className="rounded bg-gray-100 px-1.5 py-0.5 font-mono text-xs text-gray-700"
+                                  className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs text-fg-soft"
                                 >
                                   {e}
                                 </span>
@@ -828,7 +828,7 @@ export function WebhooksPage() {
                             h.events.map((e) => (
                               <span
                                 key={e}
-                                className="rounded bg-gray-100 px-1.5 py-0.5 font-mono text-xs text-gray-700"
+                                className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs text-fg-soft"
                               >
                                 {e}
                               </span>
@@ -839,7 +839,7 @@ export function WebhooksPage() {
                       <td className="px-4 py-3">
                         <div className="flex flex-wrap gap-1">
                           {filterSummary(h.filter, categories, groups).map((chip) => (
-                            <span key={chip} className="rounded bg-gray-100 px-1.5 py-0.5 text-xs text-gray-700 wrap-anywhere">
+                            <span key={chip} className="rounded bg-muted px-1.5 py-0.5 text-xs text-fg-soft wrap-anywhere">
                               {chip}
                             </span>
                           ))}
@@ -849,18 +849,18 @@ export function WebhooksPage() {
                         <span
                           className={
                             h.enabled
-                              ? 'rounded bg-green-50 px-1.5 py-0.5 text-xs text-green-700'
-                              : 'rounded bg-gray-100 px-1.5 py-0.5 text-xs text-gray-500'
+                              ? 'rounded bg-success-soft px-1.5 py-0.5 text-xs text-success-fg-strong'
+                              : 'rounded bg-muted px-1.5 py-0.5 text-xs text-fg-muted'
                           }
                         >
                           {h.enabled ? 'Enabled' : 'Disabled'}
                         </span>
                         {h.paused && (
                           <div className="mt-1">
-                            <span className="rounded bg-amber-50 px-1.5 py-0.5 text-xs font-medium text-amber-800">
+                            <span className="rounded bg-warning-soft px-1.5 py-0.5 text-xs font-medium text-warning-fg-strong">
                               Paused
                             </span>
-                            <div className="mt-0.5 text-xs text-amber-700">
+                            <div className="mt-0.5 text-xs text-warning-fg">
                               {h.paused_reason ?? "Its API key, or that key's owner, is no longer active"}
                             </div>
                           </div>
@@ -902,7 +902,7 @@ export function WebhooksPage() {
                           <Button
                             size="sm"
                             variant="outline"
-                            className="border-red-200 text-red-600 hover:bg-red-50"
+                            className="border-danger-border text-danger-fg hover:bg-danger-soft hover:text-danger-fg-strong"
                             onClick={() => setPendingDelete(h)}
                           >
                             <Trash2Icon className="mr-1 h-3.5 w-3.5" />
@@ -917,7 +917,7 @@ export function WebhooksPage() {
                 )}
                 {hooks.length === 0 && (
                   <tr>
-                    <td colSpan={7} className="px-4 py-8 text-center text-gray-400">
+                    <td colSpan={7} className="px-4 py-8 text-center text-fg-faint">
                       No webhooks yet.
                     </td>
                   </tr>

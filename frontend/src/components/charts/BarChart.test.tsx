@@ -37,9 +37,9 @@ describe('BarChart', () => {
 
   it('takes its colour from the tone, blue by default', () => {
     const { container, rerender } = render(<BarChart rows={rows} ariaLabel="x" />)
-    expect(container.querySelector('svg')!.getAttribute('class')).toContain('text-blue-600')
+    expect(container.querySelector('svg')!.getAttribute('class')).toContain('text-chart-blue')
     rerender(<BarChart rows={rows} ariaLabel="x" tone="amber" />)
-    expect(container.querySelector('svg')!.getAttribute('class')).toContain('text-amber-600')
+    expect(container.querySelector('svg')!.getAttribute('class')).toContain('text-chart-amber')
   })
 
   it('puts the full label in title on a one-line truncated label', () => {

@@ -3,10 +3,16 @@ package server
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"io/fs"
 	"net/http"
 	"strings"
 )
+
+// themeInitPath is the same-origin script index.html loads to set the theme
+// before first paint (#709). A file because the CSP is script-src 'self'.
+const themeInitPath = "theme-init.js"
 
 // The region of index.html the server rewrites on every request (#708): the
 // tags that name the page, its icons and its home screen name. The frontend
@@ -79,6 +85,26 @@ func (s *SPAHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	path := strings.TrimPrefix(r.URL.Path, "/")
 	if path == "" {
 		path = "index.html"
+	}
+	if path == themeInitPath {
+		// The script that sets the theme before first paint (#709). It is not
+		// hashed into the build, so it must be revalidated or an upgrade would
+		// leave browsers on the old one. A build without it is a 404: the
+		// fallback below would hand the browser a page of HTML to run as a
+		// script.
+		body, err := fs.ReadFile(s.fs, path)
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		// An ETag of the content, so the revalidation is a 304 and an upgraded
+		// script is a new tag.
+		sum := sha256.Sum256(body)
+		w.Header().Set("ETag", `"`+hex.EncodeToString(sum[:8])+`"`)
+		w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Content-Type", "text/javascript; charset=utf-8")
+		s.root.ServeHTTP(w, r)
+		return
 	}
 	_, err := fs.Stat(s.fs, path)
 	if s.index != nil && (path == "index.html" || err != nil) {

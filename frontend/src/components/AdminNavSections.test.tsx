@@ -181,8 +181,8 @@ describe('what is open', () => {
   it('marks Email as the current link on the Templates address, and System stays open', () => {
     renderAt('/admin/settings/email/templates')
     expect(openSections()).toEqual(['System'])
-    expect(screen.getByRole('link', { name: 'Email' }).className).toContain('text-blue-700')
-    expect(screen.getByRole('link', { name: 'General' }).className).not.toContain('text-blue-700')
+    expect(screen.getByRole('link', { name: 'Email' }).className).toContain('text-selected-fg')
+    expect(screen.getByRole('link', { name: 'General' }).className).not.toContain('text-selected-fg')
   })
 
   // The System section has nine links and can be taller than a 768px screen

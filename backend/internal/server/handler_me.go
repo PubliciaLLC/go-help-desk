@@ -161,6 +161,33 @@ func (s *Server) handleUpdateEmailPreferences(w http.ResponseWriter, r *http.Req
 	JSON(w, http.StatusOK, s.meView(r.Context(), u))
 }
 
+// PATCH /api/v1/me/appearance
+//
+// The caller's own choice of how the web UI looks (#709): {"theme": "light" |
+// "dark" | "device"}. A missing, null, non-string or unknown value is
+// 400 invalid_theme. The answer is the /me view as saved. Not audited: it is a
+// display preference and changes nothing anyone else sees. Any role.
+func (s *Server) handleUpdateAppearance(w http.ResponseWriter, r *http.Request) {
+	a := authmw.GetActor(r)
+	var body struct {
+		Theme *string `json:"theme"`
+	}
+	if err := DecodeJSON(r, &body); err != nil || body.Theme == nil || !user.Theme(*body.Theme).Valid() {
+		Error(w, http.StatusBadRequest, "invalid_theme", user.ErrInvalidTheme.Error())
+		return
+	}
+	if err := s.users.SetTheme(r.Context(), a.UserID, user.Theme(*body.Theme)); err != nil {
+		handleError(w, err)
+		return
+	}
+	u, err := s.users.GetByID(r.Context(), a.UserID)
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+	JSON(w, http.StatusOK, s.meView(r.Context(), u))
+}
+
 // PATCH /api/v1/me/password
 func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 	a := authmw.GetActor(r)

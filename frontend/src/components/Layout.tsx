@@ -11,6 +11,7 @@ import { clearDismissedNotices } from '@/lib/noticeDismissal'
 import { VIEW_NAME, type View } from '@/lib/ticketSearch'
 import { BrandLogo } from '@/components/BrandLogo'
 import { Button } from '@/components/ui/button'
+import { ThemeSwitch } from '@/components/theme/ThemeSwitch'
 import { TicketIcon, UsersIcon, SettingsIcon, LogOutIcon, HomeIcon, FolderIcon, CircleDotIcon, ShieldIcon, UsersRoundIcon, TagIcon, SlidersIcon, KeyIcon, MessageSquareTextIcon, PlugIcon, WebhookIcon, RouteIcon, MenuIcon,
   UserIcon, HistoryIcon, MailIcon, ChevronDownIcon, WrenchIcon, ChartColumnIcon,
   ToggleRightIcon, PaletteIcon, PaperclipIcon, DoorOpenIcon, LockIcon, EyeOffIcon,
@@ -49,8 +50,8 @@ function NavItem({ to, icon, label, onNavigate, dense }: NavItemProps) {
         'flex items-center gap-3 rounded-md px-3 text-sm font-medium transition-colors',
         dense ? 'py-1 pointer-coarse:py-2' : 'py-2',
         active
-          ? 'bg-blue-50 text-blue-700'
-          : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900'
+          ? 'bg-selected text-selected-fg'
+          : 'text-fg-muted hover:bg-muted hover:text-fg'
       )}
     >
       {icon}
@@ -216,7 +217,7 @@ function AdminSections({ nav, onNavigate }: { nav: AdminNav; onNavigate?: () => 
         aria-expanded={adminOpen}
         aria-controls={adminPanelId}
         onClick={() => nav.toggle(ADMIN_ID)}
-        className="flex w-full items-center gap-3 rounded-md px-3 py-1 text-sm font-medium text-gray-600 hover:bg-gray-100 hover:text-gray-900 pointer-coarse:min-h-11"
+        className="flex w-full items-center gap-3 rounded-md px-3 py-1 text-sm font-medium text-fg-muted hover:bg-muted hover:text-fg pointer-coarse:min-h-11"
       >
         <WrenchIcon className="h-4 w-4" />
         <span className="flex-1 text-left">Admin</span>
@@ -231,7 +232,7 @@ function AdminSections({ nav, onNavigate }: { nav: AdminNav; onNavigate?: () => 
           system-ui often is, and a label on a second line makes its row 20px
           taller and costs the 768px budget its headroom
           (admin-nav-sections.spec.ts). */}
-      <div id={adminPanelId} hidden={!adminOpen} className="ml-3 border-l border-gray-200 pl-1">
+      <div id={adminPanelId} hidden={!adminOpen} className="ml-3 border-l border-border pl-1">
         {ADMIN_SECTIONS.map((s) => {
           const open = nav.isOpen(s.id)
           const headingId = `${uid}-${s.id}-heading`
@@ -244,7 +245,7 @@ function AdminSections({ nav, onNavigate }: { nav: AdminNav; onNavigate?: () => 
                 aria-expanded={open}
                 aria-controls={panelId}
                 onClick={() => nav.toggle(s.id)}
-                className="flex w-full items-center justify-between rounded-md px-3 py-1 text-xs font-semibold uppercase tracking-wider text-gray-500 hover:bg-gray-100 hover:text-gray-900 pointer-coarse:min-h-11"
+                className="flex w-full items-center justify-between rounded-md px-3 py-1 text-xs font-semibold uppercase tracking-wider text-fg-faint hover:bg-muted hover:text-fg pointer-coarse:min-h-11"
               >
                 {s.label}
                 <ChevronDownIcon className={cn('h-4 w-4 transition-transform', !open && '-rotate-90')} />
@@ -289,7 +290,7 @@ function TicketViewsNav({ user, onNavigate }: { user: User; onNavigate?: () => v
 
   return (
     <div>
-      <div id={labelId} className="flex items-center gap-3 px-3 py-1 text-sm font-medium text-gray-600">
+      <div id={labelId} className="flex items-center gap-3 px-3 py-1 text-sm font-medium text-fg-muted">
         <TicketIcon className="h-4 w-4" />
         Tickets
       </div>
@@ -309,8 +310,8 @@ function TicketViewsNav({ user, onNavigate }: { user: User; onNavigate?: () => v
                 // must still fit on a 768-pixel-high screen (admin-nav-sections.spec.ts).
                 'flex items-center rounded-md py-1 pl-10 pr-3 text-sm font-medium transition-colors pointer-coarse:min-h-11',
                 active
-                  ? 'bg-blue-50 text-blue-700'
-                  : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900'
+                  ? 'bg-selected text-selected-fg'
+                  : 'text-fg-muted hover:bg-muted hover:text-fg'
               )}
             >
               {VIEW_NAME[v]}
@@ -339,7 +340,7 @@ function SidebarContent({ user, adminNav, branding, onNavigate, onLogout }: Side
         <BrandLogo
           {...branding}
           imgClassName="h-8 max-w-[160px] object-contain"
-          fallbackClassName="text-lg font-semibold text-gray-900 wrap-anywhere"
+          fallbackClassName="text-lg font-semibold text-fg wrap-anywhere"
         />
       </div>
 
@@ -365,7 +366,7 @@ function SidebarContent({ user, adminNav, branding, onNavigate, onLogout }: Side
       </nav>
 
       <div className="space-y-0.5 border-t px-3 py-1">
-        <div className="px-3 text-xs text-gray-500 truncate" title={user?.email}>{user?.email}</div>
+        <div className="px-3 text-xs text-fg-faint truncate" title={user?.email}>{user?.email}</div>
         {/* Your own account, not an admin screen: it sits with the identity
             it belongs to rather than in the nav list above. */}
         <NavItem
@@ -375,10 +376,22 @@ function SidebarContent({ user, adminNav, branding, onNavigate, onLogout }: Side
           onNavigate={onNavigate}
           dense
         />
-        <Button variant="ghost" size="sm" className="h-7 w-full justify-start gap-2 pointer-coarse:h-8" onClick={onLogout}>
-          <LogOutIcon className="h-4 w-4" />
-          Sign out
-        </Button>
+        {/* The appearance switch (#709) shares the Sign out row, so the sidebar
+            is no taller. Sign out gives up the width the switch needs; if the two
+            cannot fit (a touch screen's larger targets), the switch wraps under it
+            rather than squeezing "Sign out" onto two lines. */}
+        <div className="flex flex-wrap items-center gap-1">
+          <Button variant="ghost" size="sm" className="h-7 min-w-fit flex-1 justify-start gap-2 whitespace-nowrap pointer-coarse:h-8" onClick={onLogout}>
+            <LogOutIcon className="h-4 w-4" />
+            Sign out
+          </Button>
+          {/* With a fine pointer the switch is 28px of segment plus a 1px
+              padding and 1px border each side, 32px. The 2px negative margins
+              take the difference out of the footer's own padding and the gap
+              above, so the row stays 28px. A coarse pointer's segments are 44px
+              tall: no negative margin, the row grows to fit them. */}
+          <ThemeSwitch variant="icons" className="-my-[2px] pointer-coarse:my-0" />
+        </div>
       </div>
     </>
   )
@@ -428,33 +441,33 @@ export function Layout({ children }: LayoutProps) {
   }
 
   return (
-    <div className="flex h-dvh flex-col bg-gray-50">
+    <div className="flex h-dvh flex-col bg-canvas">
       {/* Above everything, including the sidebar: an instance signing sessions
           with a published key is not a detail to scroll past. */}
       <InsecureConfigBanner isAdmin={user?.role === 'admin'} />
 
       {/* Mobile top bar: the sidebar's branding plus the drawer trigger,
           replacing the permanent sidebar below md. */}
-      <div className="flex h-14 shrink-0 items-center gap-2 border-b bg-white px-3 md:hidden">
+      <div className="flex h-14 shrink-0 items-center gap-2 border-b bg-card px-3 md:hidden">
         <button
           type="button"
           aria-label="Open navigation menu"
           onClick={() => setDrawerOpen(true)}
-          className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md text-gray-600 hover:bg-gray-100"
+          className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md text-fg-muted hover:bg-muted"
         >
           <MenuIcon className="h-5 w-5" />
         </button>
         <BrandLogo
           {...branding}
           imgClassName="h-7 max-w-[140px] object-contain"
-          fallbackClassName="truncate text-base font-semibold text-gray-900"
+          fallbackClassName="truncate text-base font-semibold text-fg"
         />
       </div>
 
       {/* Body row: sidebar + main */}
       <div className="flex flex-1 overflow-hidden">
         {/* Sidebar — permanent from md up */}
-        <aside className="hidden w-60 flex-col border-r bg-white md:flex">
+        <aside className="hidden w-60 flex-col border-r bg-card md:flex">
           <SidebarContent user={user} adminNav={adminNav} branding={branding} onLogout={handleLogout} />
         </aside>
 
@@ -462,9 +475,9 @@ export function Layout({ children }: LayoutProps) {
             it, since there is no room to share. */}
         <Dialog.Root open={drawerOpen} onOpenChange={setDrawerOpen}>
           <Dialog.Portal>
-            <Dialog.Overlay className="fixed inset-0 z-40 bg-black/40 md:hidden" />
+            <Dialog.Overlay className="fixed inset-0 z-40 bg-overlay md:hidden" />
             <Dialog.Content
-              className="fixed inset-y-0 left-0 z-50 flex w-72 max-w-[85vw] flex-col bg-white shadow-lg outline-none md:hidden"
+              className="fixed inset-y-0 left-0 z-50 flex w-72 max-w-[85vw] flex-col bg-card shadow-lg outline-none md:hidden"
               aria-describedby={undefined}
             >
               {/* Visually redundant with the top bar's own branding right
@@ -494,7 +507,7 @@ export function Layout({ children }: LayoutProps) {
 
       {/* Footer — full width across the bottom */}
       {version && (
-        <footer className="border-t bg-white px-6 py-2 text-center text-[11px] text-gray-400">
+        <footer className="border-t bg-card px-6 py-2 text-center text-[11px] text-fg-faint">
           Powered by{' '}
           <a
             href="https://github.com/PubliciaLLC/go-help-desk"

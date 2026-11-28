@@ -465,7 +465,7 @@ function BrokenTemplateNotice({ template, title, onReverted }: { template: Broke
       <p className="mt-2 flex flex-wrap items-center gap-3">
         <button
           type="button"
-          className="min-h-[44px] rounded-md border border-red-400 bg-white px-3 text-sm font-medium text-red-900 hover:bg-red-100 disabled:opacity-50"
+          className="min-h-[44px] rounded-md border border-danger-border bg-card px-3 text-sm font-medium text-danger-fg-strong hover:bg-danger-soft disabled:opacity-50"
           disabled={revert.isPending}
           onClick={() => revert.mutate()}
         >
@@ -480,4 +480,4 @@ function BrokenTemplateNotice({ template, title, onReverted }: { template: Broke
   )
 }
 
-const CODE = 'rounded bg-black/10 px-1 py-0.5 font-mono text-xs [overflow-wrap:anywhere]'
+const CODE = 'rounded bg-code px-1 py-0.5 font-mono text-xs [overflow-wrap:anywhere]'

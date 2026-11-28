@@ -43,7 +43,7 @@ export function LifetimeSlider({ value, onChange }: { value?: number; onChange: 
 
   return (
     <div className="w-full max-w-md space-y-1">
-      <label htmlFor={id} className="block text-sm font-medium text-gray-700">
+      <label htmlFor={id} className="block text-sm font-medium text-fg-soft">
         Longest an API key may live
       </label>
       <input
@@ -58,13 +58,13 @@ export function LifetimeSlider({ value, onChange }: { value?: number; onChange: 
         onKeyDown={onKeyDown}
         className="w-full"
       />
-      <div data-testid="lifetime-ticks" className="flex justify-between text-xs text-gray-500" aria-hidden="true">
+      <div data-testid="lifetime-ticks" className="flex justify-between text-xs text-fg-faint" aria-hidden="true">
         {STOPS.map((y) => (
-          <span key={y} className={y === years ? 'font-semibold text-gray-900' : ''}>{stopLabel(y)}</span>
+          <span key={y} className={y === years ? 'font-semibold text-fg' : ''}>{stopLabel(y)}</span>
         ))}
       </div>
       {(years === NEVER || years > DEFAULT_YEARS) && (
-        <p role="alert" aria-label="Keys may live longer than 2 years" className="rounded border border-red-200 bg-red-50 px-3 py-2 text-xs font-medium text-red-700">
+        <p role="alert" aria-label="Keys may live longer than 2 years" className="rounded border border-danger-border bg-danger-soft px-3 py-2 text-xs font-medium text-danger-fg-strong">
           {years === NEVER
             ? 'Warning: with no limit, an API key can be made that never expires. A leaked key then works until someone notices and revokes it.'
             : `Warning: keys can live up to ${years} years. The default is 2. A leaked key keeps working until it expires or is revoked.`}

@@ -102,19 +102,19 @@ export function IdentitySection({ draft }: { draft: SettingsDraft }) {
           <input
             type="checkbox"
             id="use-short-name"
-            className="h-4 w-4 rounded border-gray-300"
+            className="h-4 w-4 rounded border-border-strong"
             checked={useShortName}
             onChange={(e) => {
               setUseShortName(e.target.checked)
               if (!e.target.checked) setStr('site_short_name', '')
             }}
           />
-          <label htmlFor="use-short-name" className="text-sm font-medium text-gray-900">
+          <label htmlFor="use-short-name" className="text-sm font-medium text-fg">
             Use a different name on the home screen
           </label>
         </div>
         {!useShortName && (
-          <div className="mt-1 text-sm text-gray-500">The home screen uses the site name.</div>
+          <div className="mt-1 text-sm text-fg-faint">The home screen uses the site name.</div>
         )}
       </div>
       {useShortName && (
@@ -132,11 +132,11 @@ export function IdentitySection({ draft }: { draft: SettingsDraft }) {
               value={shortName}
               onChange={(e) => setStr('site_short_name', e.target.value)}
             />
-            <div id={counterId} className={overLimit ? 'text-xs text-red-600' : 'text-xs text-gray-500'}>
+            <div id={counterId} className={overLimit ? 'text-xs text-danger-fg' : 'text-xs text-fg-faint'}>
               {shortLen}/{SHORT_NAME_MAX}
             </div>
             {longName && (
-              <p id={noteId} role="note" className="max-w-56 text-sm text-amber-700">
+              <p id={noteId} role="note" className="max-w-56 text-sm text-warning-fg">
                 Most home screens show about {SHORT_NAME_SOFT_LIMIT} characters and cut longer names short.
               </p>
             )}
@@ -146,14 +146,14 @@ export function IdentitySection({ draft }: { draft: SettingsDraft }) {
 
       <div className="px-5 py-4 space-y-3">
         <div>
-          <div className="text-sm font-medium text-gray-900">Logo</div>
-          <div className="mt-0.5 text-sm text-gray-500">
+          <div className="text-sm font-medium text-fg">Logo</div>
+          <div className="mt-0.5 text-sm text-fg-faint">
             Target size: <span className="font-medium">320 × 64 px</span> · PNG, JPG, or GIF · Max 2 MB.
             Larger images are scaled proportionally to fit. The logo replaces the site name in the sidebar.
           </div>
           {/* One sentence, not a warning: an operator who used an SVG logo
               and finds the option gone should know it was deliberate. */}
-          <div className="mt-0.5 text-sm text-gray-500">
+          <div className="mt-0.5 text-sm text-fg-faint">
             SVG is not accepted. The logo is the one uploaded file this application renders inside its own
             origin, and an SVG is a document that can carry script.
           </div>
@@ -179,7 +179,7 @@ export function IdentitySection({ draft }: { draft: SettingsDraft }) {
               </Button>
             </div>
             {logoUnavailable && (
-              <p className="text-sm text-amber-700">
+              <p className="text-sm text-warning-fg">
                 This instance has a logo stored, but it cannot be loaded and is no longer served — an SVG
                 uploaded by an earlier version is the usual reason. The sidebar is showing the site name
                 instead. Upload a PNG, JPG or GIF to replace it.
@@ -215,7 +215,7 @@ export function IdentitySection({ draft }: { draft: SettingsDraft }) {
           />
         </div>
 
-        {logoError && <p role="alert" className="text-sm text-red-600">{logoError}</p>}
+        {logoError && <p role="alert" className="text-sm text-danger-fg">{logoError}</p>}
       </div>
     </Section>
   )

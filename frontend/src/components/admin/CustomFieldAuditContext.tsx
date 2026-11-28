@@ -26,7 +26,7 @@ export function CustomFieldAuditContext({
   const option = pick('option_value')
   const path = pick('scope_path')
   return (
-    <p className="mt-0.5 text-gray-600 wrap-anywhere">
+    <p className="mt-0.5 text-fg-muted wrap-anywhere">
       <span className="font-medium">{name}</span>
       {option && ` · option "${option}"`}
       {path && ` · ${path}`}

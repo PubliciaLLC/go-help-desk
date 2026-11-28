@@ -141,7 +141,7 @@ describe('the current view link', () => {
 
     const current = within(ticketsGroup()).getAllByRole('link').filter((a) => a.getAttribute('aria-current') === 'page')
     expect(current.map((a) => a.textContent)).toEqual([label])
-    expect(current[0].className).toContain('text-blue-700')
+    expect(current[0].className).toContain('text-selected-fg')
   })
 
   it('no view is current on /tickets without a view, or on a ticket page', () => {

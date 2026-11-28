@@ -25,9 +25,9 @@ export function ExpiryField({
   const limited = maxYears !== NO_LIMIT
   const tooLate = pastLimit(value, maxYears)
   return (
-    <label className="block text-sm text-gray-700">
+    <label className="block text-sm text-fg-soft">
       <span className="font-medium">Expires</span>
-      <span className="ml-2 text-xs text-gray-500">
+      <span className="ml-2 text-xs text-fg-faint">
         {limited
           ? `required — at most ${maxYears === 1 ? '1 year' : `${maxYears} years`} from today`
           : 'optional — leave empty for a key that never expires'}
@@ -42,7 +42,7 @@ export function ExpiryField({
         className="mt-1 max-w-xs"
       />
       {tooLate && (
-        <span role="alert" className="mt-1 block text-xs text-red-600">
+        <span role="alert" className="mt-1 block text-xs text-danger-fg">
           That is later than the {maxYears === 1 ? '1 year' : `${maxYears} year`} limit.
         </span>
       )}

@@ -70,7 +70,7 @@ export function linesFromCharRects(
 
 // Only an alpha of zero is transparent. The alpha is the fourth comma argument
 // of rgba()/hsla() or what follows "/" in the space-separated form; the last
-// channel of an opaque rgb(r, g, b), such as black's rgb(0, 0, 0), is not one.
+// channel of an opaque colour, such as black as rgb(0, 0, 0), is not one.
 const ZERO_ALPHA = /^(?:(?:rgba|hsla)\([^,)]*,[^,)]*,[^,)]*,|[^/)]*\/)\s*0(?:\.0+)?%?\s*\)$/
 
 export function isTransparent(color: string): boolean {
@@ -165,8 +165,8 @@ export function readBoxes(root: HTMLElement, measure: Measure): Box[] {
 }
 
 const CONTEXT_FONT = '12px ui-sans-serif, system-ui, sans-serif'
-const CONTEXT_COLOR = '#6b7280'
-const CONTEXT_RULE = '#e5e7eb'
+const CONTEXT_COLOR = '#6b7280' // theme-ok: the export is always light, never themed
+const CONTEXT_RULE = '#e5e7eb' // theme-ok: the export is always light, never themed
 const PAD = 12
 const LINE = 16
 

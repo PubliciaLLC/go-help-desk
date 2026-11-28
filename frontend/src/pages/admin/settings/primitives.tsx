@@ -1,3 +1,4 @@
+import { createContext, useContext, useId } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { getSecurityWarnings } from '@/api/admin'
 import { Button } from '@/components/ui/button'
@@ -9,6 +10,10 @@ import { cn } from '@/lib/utils'
 // from one place.
 export { Section } from '@/components/admin/Section'
 
+// The id of the label of the SettingRow a control sits in, so a switch with no
+// label of its own is named by it.
+const RowLabelId = createContext<string | undefined>(undefined)
+
 export function Toggle({ checked, onChange, label, disabled, describedBy }: {
   checked: boolean
   onChange: (v: boolean) => void
@@ -18,23 +23,25 @@ export function Toggle({ checked, onChange, label, disabled, describedBy }: {
   /** The id of the text that says why the switch is unavailable, when it is. */
   describedBy?: string
 }) {
+  const rowLabel = useContext(RowLabelId)
   return (
     <button
       type="button"
       role="switch"
       aria-checked={checked}
       aria-label={label}
+      aria-labelledby={label ? undefined : rowLabel}
       aria-describedby={describedBy}
       disabled={disabled}
       onClick={() => onChange(!checked)}
       className={cn(
-        'relative inline-flex h-6 w-11 shrink-0 cursor-pointer items-center disabled:cursor-not-allowed disabled:opacity-50 rounded-full border-2 border-transparent transition-colors focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2',
-        checked ? 'bg-blue-600' : 'bg-gray-200'
+        'relative inline-flex h-6 w-11 shrink-0 cursor-pointer items-center disabled:cursor-not-allowed disabled:opacity-50 rounded-full border-2 border-transparent transition-colors focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 focus:ring-offset-background',
+        checked ? 'bg-primary' : 'bg-muted-strong'
       )}
     >
       <span
         className={cn(
-          'inline-block h-5 w-5 transform rounded-full bg-white shadow-sm ring-0 transition-transform',
+          'inline-block h-5 w-5 transform rounded-full bg-primary-foreground shadow-sm ring-0 transition-transform',
           checked ? 'translate-x-5' : 'translate-x-0'
         )}
       />
@@ -49,7 +56,7 @@ export function EmailStatusNote({ on }: { on: boolean }) {
   const email = data?.email
   if (!email || email.enabled) return null
   return (
-    <p role="note" className="px-5 pb-4 text-sm text-amber-800">
+    <p role="note" className="px-5 pb-4 text-sm text-warning-fg">
       Email is not set up ({email.missing.join(' and ')} not set in docker/.env)
       {on ? ": people using this aren't getting their mail." : ', so this cannot be turned on until it is.'} Set{' '}
       {email.missing.length === 1 ? 'it' : 'both'} and restart the server.
@@ -66,15 +73,18 @@ export function SettingRow({
   description?: string
   children: React.ReactNode
 }) {
+  const labelId = useId()
   return (
     // Stacked below sm: a control that cannot shrink (a select, a number box)
     // beside its label is wider than a phone's content box (#522).
     <div className="flex flex-col gap-2 px-5 py-4 sm:flex-row sm:items-center sm:justify-between sm:gap-8">
       <div className="min-w-0 flex-1">
-        <div className="text-sm font-medium text-gray-900">{label}</div>
-        {description && <div className="mt-0.5 text-sm text-gray-500">{description}</div>}
+        <div id={labelId} className="text-sm font-medium text-fg">{label}</div>
+        {description && <div className="mt-0.5 text-sm text-fg-faint">{description}</div>}
       </div>
-      <div className="min-w-0 max-w-full sm:shrink-0">{children}</div>
+      <RowLabelId.Provider value={labelId}>
+        <div className="min-w-0 max-w-full sm:shrink-0">{children}</div>
+      </RowLabelId.Provider>
     </div>
   )
 }
@@ -90,8 +100,8 @@ export function SaveBar({ onSave, isPending, error, saved }: {
       <Button onClick={onSave} disabled={isPending}>
         {isPending ? 'Saving…' : 'Save changes'}
       </Button>
-      {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
-      {saved && <p className="text-sm text-green-600">Saved.</p>}
+      {error && <p role="alert" className="text-sm text-danger-fg">{error}</p>}
+      {saved && <p className="text-sm text-success-fg">Saved.</p>}
     </div>
   )
 }

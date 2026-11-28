@@ -67,8 +67,8 @@ export function EmailTemplatesTab() {
   return (
     <div className="space-y-6">
       <div>
-        <h2 className="text-lg font-semibold text-gray-900">Email templates</h2>
-        <p className="mt-1 text-sm text-gray-500">
+        <h2 className="text-lg font-semibold text-fg">Email templates</h2>
+        <p className="mt-1 text-sm text-fg-faint">
           The wording of the mail this help desk sends. Templates cannot include ticket text, by design: mail leaves
           from your domain, and whoever files a ticket chooses its subject and replies, so a template only gets the
           tracking number, links this server builds and, for SLA alerts, a status phrase from a fixed list (see{' '}
@@ -86,7 +86,7 @@ export function EmailTemplatesTab() {
 function TemplateList({ onOpen }: { onOpen: (name: string) => void }) {
   const { data, isLoading, error } = useQuery({ queryKey, queryFn: listEmailTemplates })
   if (isLoading) return <div className="flex justify-center py-12"><Spinner /></div>
-  if (error) return <p role="alert" className="text-sm text-red-600">{extractError(error)}</p>
+  if (error) return <p role="alert" className="text-sm text-danger-fg">{extractError(error)}</p>
 
   return (
     <div className="space-y-5">
@@ -95,8 +95,8 @@ function TemplateList({ onOpen }: { onOpen: (name: string) => void }) {
         if (rows.length === 0) return null
         return (
           <section key={g.id} aria-labelledby={`grp-${g.id}`}>
-            <h2 id={`grp-${g.id}`} className="mb-2 text-sm font-semibold text-gray-700">{g.title}</h2>
-            <ul className="divide-y rounded-lg border bg-white">
+            <h2 id={`grp-${g.id}`} className="mb-2 text-sm font-semibold text-fg-soft">{g.title}</h2>
+            <ul className="divide-y rounded-lg border bg-card">
               {rows.map((t) => (
                 <li key={t.name}>
                   <TemplateRow t={t} onOpen={onOpen} />
@@ -115,12 +115,12 @@ function TemplateRow({ t, onOpen }: { t: EmailTemplateSummary; onOpen: (name: st
     <button
       type="button"
       onClick={() => onOpen(t.name)}
-      className="flex min-h-[44px] w-full flex-wrap items-center gap-2 px-4 py-2 text-left text-sm hover:bg-gray-50"
+      className="flex min-h-[44px] w-full flex-wrap items-center gap-2 px-4 py-2 text-left text-sm hover:bg-subtle"
     >
-      <span className="font-medium text-gray-900 wrap-anywhere">{t.label}</span>
-      {t.broken && <span className="rounded bg-red-100 px-1.5 py-0.5 text-xs font-medium text-red-800">Broken</span>}
-      {t.customised && <span className="rounded bg-blue-50 px-1.5 py-0.5 text-xs text-blue-800">Customised</span>}
-      {t.has_html && <span className="rounded bg-gray-100 px-1.5 py-0.5 text-xs text-gray-700">HTML</span>}
+      <span className="font-medium text-fg wrap-anywhere">{t.label}</span>
+      {t.broken && <span className="rounded bg-danger-soft px-1.5 py-0.5 text-xs font-medium text-danger-fg-strong">Broken</span>}
+      {t.customised && <span className="rounded bg-info-soft px-1.5 py-0.5 text-xs text-info-fg-strong">Customised</span>}
+      {t.has_html && <span className="rounded bg-muted px-1.5 py-0.5 text-xs text-fg-soft">HTML</span>}
     </button>
   )
 }
@@ -136,7 +136,7 @@ function Editor({ name, onBack }: { name: string; onBack: () => void }) {
         All templates
       </Button>
       {isLoading && <div className="flex justify-center py-12"><Spinner /></div>}
-      {error && <p role="alert" className="text-sm text-red-600">{extractError(error)}</p>}
+      {error && <p role="alert" className="text-sm text-danger-fg">{extractError(error)}</p>}
       {/* Keyed by what was saved, so a save or a revert starts the draft afresh. */}
       {data && <EditorForm key={`${data.name}|${data.updated_at ?? ''}|${data.customised}`} detail={data} />}
     </div>
@@ -165,6 +165,7 @@ const escapeText = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;')
 // other: nothing is saved until the person presses Save, and the server checks
 // them the same way. The header opens a layout that the footer closes, so a
 // pair of them brands every mail that has an HTML part.
+// theme-ok-begin: starter HTML for an email, which mail clients draw in fixed colours and never theme
 const HEADER_STARTER = `<!DOCTYPE html>
 <html>
 <body style="margin:0;padding:0;background:#f4f4f5;font-family:Arial,Helvetica,sans-serif;color:#18181b">
@@ -182,6 +183,7 @@ const FOOTER_STARTER = `
 </body>
 </html>
 `
+// theme-ok-end
 
 // The template's own text as paragraphs, with its link made clickable.
 function contentStarter(detail: EmailTemplateDetail, text: string): string {
@@ -325,16 +327,16 @@ function EditorForm({ detail }: { detail: EmailTemplateDetail }) {
         if (canSave) save.mutate()
       }}
     >
-      <h2 className="text-lg font-semibold text-gray-900 wrap-anywhere">{detail.label}</h2>
+      <h2 className="text-lg font-semibold text-fg wrap-anywhere">{detail.label}</h2>
       {detail.shell && (
-        <p className="text-sm text-gray-500">
+        <p className="text-sm text-fg-faint">
           Shared by all mail: added to the start (header) or the end (footer) of every message, whichever template it
           is. Leave it empty to add nothing. It cannot use the tracking number or any link.
         </p>
       )}
 
       {detail.broken && (
-        <div role="alert" className="rounded-md border border-red-300 bg-red-50 p-3 text-sm text-red-900">
+        <div role="alert" className="rounded-md border border-danger-border bg-danger-soft p-3 text-sm text-danger-fg-strong">
           <p className="font-semibold">The saved version does not work with this release, so mail that uses it is not being sent.</p>
           {detail.broken_reason && <p className="mt-1 wrap-anywhere">{detail.broken_reason}</p>}
           <p className="mt-1">Fix it below, or revert to the default.</p>
@@ -418,22 +420,22 @@ function EditorForm({ detail }: { detail: EmailTemplateDetail }) {
       </Button>
 
       <div>
-        <p className="text-sm font-medium text-gray-900">Variables</p>
+        <p className="text-sm font-medium text-fg">Variables</p>
         <ul className="mt-1 space-y-1">
           {detail.variables.map((v) => (
             <li key={v.name} className="flex flex-wrap items-baseline gap-x-2 text-sm">
               <button
                 type="button"
                 onClick={() => insert(`{{.${v.name}}}`)}
-                className={`inline-flex items-center rounded bg-gray-100 px-1.5 py-1 font-mono text-xs text-gray-900 hover:bg-gray-200 ${TOUCH}`}
+                className={`inline-flex items-center rounded bg-muted px-1.5 py-1 font-mono text-xs text-fg hover:bg-muted-strong ${TOUCH}`}
               >
                 {`{{.${v.name}}}`}
               </button>
-              <span className="text-gray-500 wrap-anywhere">{v.description}</span>
+              <span className="text-fg-faint wrap-anywhere">{v.description}</span>
             </li>
           ))}
         </ul>
-        <p className="mt-1 text-xs text-gray-500">
+        <p className="mt-1 text-xs text-fg-faint">
           Also allowed: {'{{if .Name}} … {{else}} … {{end}}'}. Nothing else.
         </p>
       </div>
@@ -452,15 +454,15 @@ function EditorForm({ detail }: { detail: EmailTemplateDetail }) {
         )}
       </div>
 
-      {!settled && <p className="text-xs text-gray-500">Checking…</p>}
+      {!settled && <p className="text-xs text-fg-faint">Checking…</p>}
       {settled && check.failure && (
-        <p className="text-sm text-red-600 wrap-anywhere">The draft could not be checked: {check.failure}</p>
+        <p className="text-sm text-danger-fg wrap-anywhere">The draft could not be checked: {check.failure}</p>
       )}
       {serverRefused && problems.length === 0 && (
-        <p role="alert" className="text-sm text-red-600 wrap-anywhere">{serverRefused.message}</p>
+        <p role="alert" className="text-sm text-danger-fg wrap-anywhere">{serverRefused.message}</p>
       )}
       {notice && (
-        <p role="status" className={cn('text-sm wrap-anywhere', noticeIsError ? 'text-red-600' : 'text-green-700')}>
+        <p role="status" className={cn('text-sm wrap-anywhere', noticeIsError ? 'text-danger-fg' : 'text-success-fg')}>
           {notice}
         </p>
       )}
@@ -502,12 +504,12 @@ function Field({
         'aria-describedby': problem ? errorId : hintId,
       })}
       {problem ? (
-        <p id={errorId} className="text-sm text-red-600 wrap-anywhere">
+        <p id={errorId} className="text-sm text-danger-fg wrap-anywhere">
           {problem.line > 0 ? `Line ${problem.line}, column ${problem.col}: ` : ''}
           {problem.message}
         </p>
       ) : (
-        <p id={hintId} className="text-xs text-gray-500 wrap-anywhere">{hint}</p>
+        <p id={hintId} className="text-xs text-fg-faint wrap-anywhere">{hint}</p>
       )}
     </div>
   )
@@ -521,41 +523,45 @@ function Field({
 function Preview({ result, hasHTML }: { result: EmailTemplatePreview | null; hasHTML: boolean }) {
   return (
     <div>
-      <p className="text-sm font-medium text-gray-900">Preview</p>
-      <p className="text-xs text-gray-500">Sample data. The links are not real.</p>
-      {result?.preview_error && <p className="mt-1 text-sm text-red-600 wrap-anywhere">{result.preview_error}</p>}
+      <p className="text-sm font-medium text-fg">Preview</p>
+      <p className="text-xs text-fg-faint">Sample data. The links are not real.</p>
+      {result?.preview_error && <p className="mt-1 text-sm text-danger-fg wrap-anywhere">{result.preview_error}</p>}
       {result?.valid && result.body !== undefined ? (
-        <div className="mt-1 rounded-md border bg-gray-50 p-3 text-sm">
+        <div className="mt-1 rounded-md border bg-subtle p-3 text-sm">
           <p className="font-medium wrap-anywhere">Subject: {result.subject}</p>
-          <p className="mt-2 text-xs font-medium text-gray-700">Plain text part</p>
+          <p className="mt-2 text-xs font-medium text-fg-soft">Plain text part</p>
           <pre className="mt-1 whitespace-pre-wrap font-mono text-xs [overflow-wrap:anywhere]">{result.body}</pre>
         </div>
       ) : (
-        <p className="mt-1 text-sm text-gray-500">The preview appears when the draft is valid.</p>
+        <p className="mt-1 text-sm text-fg-faint">The preview appears when the draft is valid.</p>
       )}
       {result?.valid && result.body !== undefined && (
         <div className="mt-3">
-          <p className="text-xs font-medium text-gray-700">HTML part</p>
+          <p className="text-xs font-medium text-fg-soft">HTML part</p>
           {result.html ? (
             <>
               {!hasHTML && (
-                <p className="text-xs text-gray-500">
+                <p className="text-xs text-fg-faint">
                   This template has no HTML of its own: its text is shown as paragraphs between the HTML header and footer.
                 </p>
               )}
-              <p className="text-xs text-gray-500">
+              <p className="text-xs text-fg-faint">
                 Images from other sites do not load in this preview. Use Send test to see the real thing.
               </p>
-              <iframe
-                title="HTML preview"
-                sandbox=""
-                referrerPolicy="no-referrer"
-                srcDoc={previewDocument(result.html)}
-                className="mt-1 h-96 w-full rounded-md border bg-white"
-              />
+              {/* The email's own HTML, in its own colours: emails are the same in both
+                  themes. The frame makes it read as a preview in dark mode. */}
+              <div className="mt-1 rounded-md border bg-subtle p-2">
+                <iframe
+                  title="HTML preview"
+                  sandbox=""
+                  referrerPolicy="no-referrer"
+                  srcDoc={previewDocument(result.html)}
+                  className="h-96 w-full rounded border border-border-strong"
+                />
+              </div>
             </>
           ) : (
-            <p className="mt-1 text-sm text-gray-500">This template has no HTML part: it is sent as plain text.</p>
+            <p className="mt-1 text-sm text-fg-faint">This template has no HTML part: it is sent as plain text.</p>
           )}
         </div>
       )}

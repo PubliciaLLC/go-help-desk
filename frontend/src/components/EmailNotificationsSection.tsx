@@ -67,14 +67,14 @@ export function EmailNotificationsSection() {
   if (!user || user.role === 'user') return null
 
   return (
-    <section className="rounded-lg border bg-white">
+    <section className="rounded-lg border bg-card">
       <div className="flex items-start gap-3 border-b p-4">
-        <div className="mt-0.5 text-gray-400">
+        <div className="mt-0.5 text-fg-faint">
           <MailIcon className="h-4 w-4" />
         </div>
         <div className="min-w-0">
-          <h2 className="text-sm font-semibold text-gray-900">Email about tickets</h2>
-          <p className="mt-0.5 text-xs text-gray-500">
+          <h2 className="text-sm font-semibold text-fg">Email about tickets</h2>
+          <p className="mt-0.5 text-xs text-fg-faint">
             Choose which emails you get. Nobody is emailed about something they did themselves. An administrator can
             turn any of these on or off for everyone.
           </p>
@@ -93,22 +93,22 @@ export function EmailNotificationsSection() {
               <input
                 id={id}
                 type="checkbox"
-                className="mt-1 h-4 w-4 rounded border-gray-300"
+                className="mt-1 h-4 w-4 rounded border-border-strong"
                 checked={shown}
                 disabled={save.isPending || forced}
                 onChange={(e) => save.mutate({ [key]: e.target.checked })}
               />
               <label htmlFor={id} className="min-w-0 cursor-pointer">
-                <span className="block text-sm font-medium text-gray-900">{label}</span>
-                <span className="block text-xs text-gray-500">{help}</span>
-                {forced && <span className="mt-0.5 block text-xs font-medium text-amber-700">Set by your administrator</span>}
+                <span className="block text-sm font-medium text-fg">{label}</span>
+                <span className="block text-xs text-fg-faint">{help}</span>
+                {forced && <span className="mt-0.5 block text-xs font-medium text-warning-fg">Set by your administrator</span>}
               </label>
             </li>
           )
         })}
       </ul>
       {error && (
-        <p role="alert" className="border-t p-4 text-sm text-red-600">
+        <p role="alert" className="border-t p-4 text-sm text-danger-fg">
           {error}
         </p>
       )}

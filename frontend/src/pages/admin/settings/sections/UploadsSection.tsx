@@ -44,10 +44,10 @@ export function UploadsSection({ draft }: { draft: SettingsDraft }) {
   return (
     <Section title="Uploads">
       <div className="space-y-2 px-5 py-4">
-        <label htmlFor="attachment-allowed-types" className="block text-sm font-medium text-gray-900">
+        <label htmlFor="attachment-allowed-types" className="block text-sm font-medium text-fg">
           Allowed file types
         </label>
-        <div className="text-sm text-gray-500">
+        <div className="text-sm text-fg-faint">
           One extension per line, with the leading dot — <span className="font-mono">.pdf</span>. Anything
           else is refused at upload, before the file is read. An empty list means this instance accepts no
           attachments at all.
@@ -55,12 +55,12 @@ export function UploadsSection({ draft }: { draft: SettingsDraft }) {
         <textarea
           id="attachment-allowed-types"
           rows={9}
-          className="w-full max-w-xs rounded border border-gray-300 p-2 font-mono text-sm"
+          className="w-full max-w-xs rounded border border-border-strong bg-background p-2 font-mono text-sm"
           value={typesText}
           onChange={(e) => editTypes(e.target.value)}
         />
         {!typesSet && (
-          <p className="text-xs text-gray-500">
+          <p className="text-xs text-fg-faint">
             This instance has never set a list, so the built-in default is shown. It is saved only if you
             change it.
           </p>

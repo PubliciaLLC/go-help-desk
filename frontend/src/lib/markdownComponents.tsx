@@ -115,7 +115,7 @@ function renderLink({ href, children }: Tag<'a'>) {
   if (isOwnAttachmentRoute(safe)) {
     return (
       <span>
-        {children} <span className="text-xs text-gray-500">(attachment: open it from the attachments list)</span>
+        {children} <span className="text-xs text-fg-faint">(attachment: open it from the attachments list)</span>
       </span>
     )
   }
@@ -126,14 +126,14 @@ function renderLink({ href, children }: Tag<'a'>) {
         href={safe}
         target="_blank"
         rel="noopener noreferrer nofollow ugc"
-        className="text-blue-600 underline wrap-anywhere"
+        className="text-link underline wrap-anywhere"
       >
         {children}
       </a>
       {!textIsExactDestination(text, safe) && (
         // dir=ltr and isolate: the label reads left to right and cannot be
         // reordered by the right-to-left text before it.
-        <span dir="ltr" className="ml-1 text-xs text-gray-500 wrap-anywhere [unicode-bidi:isolate]">
+        <span dir="ltr" className="ml-1 text-xs text-fg-faint wrap-anywhere [unicode-bidi:isolate]">
           ({describeTarget(safe)})
         </span>
       )}
@@ -153,7 +153,7 @@ export const markdownComponents: Components = {
   h5: heading,
   h6: heading,
   blockquote: ({ children }) => (
-    <blockquote className="border-l-4 border-gray-300 pl-3 text-gray-600">{children}</blockquote>
+    <blockquote className="border-l-4 border-border-strong pl-3 text-fg-muted">{children}</blockquote>
   ),
   ul: ({ children }) => <ul className="list-disc space-y-1 pl-5">{children}</ul>,
   ol: ({ start, children }) => (
@@ -163,11 +163,11 @@ export const markdownComponents: Components = {
   ),
   li: ({ children }) => <li className="whitespace-pre-line wrap-anywhere">{children}</li>,
   pre: ({ children }) => (
-    <pre className="max-w-full overflow-x-auto rounded bg-gray-100 p-2 text-xs" tabIndex={0}>
+    <pre className="max-w-full overflow-x-auto rounded bg-muted p-2 text-xs" tabIndex={0}>
       {children}
     </pre>
   ),
-  hr: () => <hr className="my-2 border-gray-200" />,
+  hr: () => <hr className="my-2 border-border" />,
   table: ({ children }) => (
     <div className="max-w-full overflow-x-auto" tabIndex={0}>
       <table className="border-collapse text-sm">{children}</table>
@@ -177,9 +177,9 @@ export const markdownComponents: Components = {
   tbody: ({ children }) => <tbody>{children}</tbody>,
   tr: ({ children }) => <tr>{children}</tr>,
   th: ({ children }) => (
-    <th className="border border-gray-300 px-2 py-1 text-left font-semibold break-words">{children}</th>
+    <th className="border border-border-strong px-2 py-1 text-left font-semibold break-words">{children}</th>
   ),
-  td: ({ children }) => <td className="border border-gray-300 px-2 py-1 break-words">{children}</td>,
+  td: ({ children }) => <td className="border border-border-strong px-2 py-1 break-words">{children}</td>,
   em: ({ children }) => <em>{children}</em>,
   strong: ({ children }) => <strong>{children}</strong>,
   del: ({ children }) => <del>{children}</del>,

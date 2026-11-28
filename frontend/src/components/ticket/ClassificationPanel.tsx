@@ -132,12 +132,12 @@ export function ClassificationPanel({ ticketId, categoryId, typeId, itemId, canE
     <Card>
       <CardHeader className="pb-2">
         <div className="flex items-center justify-between">
-          <CardTitle className="text-xs font-semibold uppercase tracking-wider text-gray-400">
+          <CardTitle className="text-xs font-semibold uppercase tracking-wider text-fg-faint">
             Classification
           </CardTitle>
           {canEdit && !locked && !editing && (
             <button
-              className="min-h-6 rounded px-2 py-1 text-xs text-blue-600 hover:underline"
+              className="min-h-6 rounded px-2 py-1 text-xs text-link hover:underline"
               onClick={startEdit}
             >
               Edit
@@ -152,7 +152,7 @@ export function ClassificationPanel({ ticketId, categoryId, typeId, itemId, canE
             <div>
               <div className="space-y-2">
                 <div className="space-y-0.5">
-                  <Label htmlFor={categorySelectId} className="text-xs text-gray-500">Category</Label>
+                  <Label htmlFor={categorySelectId} className="text-xs text-fg-faint">Category</Label>
                   <Select
                     id={categorySelectId}
                     aria-describedby={descriptionId}
@@ -166,7 +166,7 @@ export function ClassificationPanel({ ticketId, categoryId, typeId, itemId, canE
                 </div>
                 {types.length > 0 && (
                   <div className="space-y-0.5">
-                    <Label htmlFor={typeSelectId} className="text-xs text-gray-500">Type</Label>
+                    <Label htmlFor={typeSelectId} className="text-xs text-fg-faint">Type</Label>
                     <Select
                       id={typeSelectId}
                       aria-describedby={descriptionId}
@@ -181,7 +181,7 @@ export function ClassificationPanel({ ticketId, categoryId, typeId, itemId, canE
                 )}
                 {items.length > 0 && (
                   <div className="space-y-0.5">
-                    <Label htmlFor={itemSelectId} className="text-xs text-gray-500">Item</Label>
+                    <Label htmlFor={itemSelectId} className="text-xs text-fg-faint">Item</Label>
                     <Select
                       id={itemSelectId}
                       aria-describedby={descriptionId}
@@ -202,7 +202,7 @@ export function ClassificationPanel({ ticketId, categoryId, typeId, itemId, canE
                 item={items.find((i) => i.id === draftItem)}
               />
             </div>
-            {error && <p role="alert" className="text-xs text-red-600">{error}</p>}
+            {error && <p role="alert" className="text-xs text-danger-fg">{error}</p>}
             <div className="flex gap-2 pt-1">
               <Button
                 size="sm"
@@ -225,23 +225,23 @@ export function ClassificationPanel({ ticketId, categoryId, typeId, itemId, canE
         ) : (
           <>
             {canEdit && locked && (
-              <p className="text-xs text-gray-400">
+              <p className="text-xs text-fg-faint">
                 Classification is locked on a Resolved or Closed ticket.
               </p>
             )}
             <div className="flex justify-between gap-2">
-              <span className="text-gray-500">Category</span>
+              <span className="text-fg-faint">Category</span>
               <span className="min-w-0 text-right text-xs font-medium wrap-anywhere">{categoryName ?? '—'}</span>
             </div>
             {typeId && (
               <div className="flex justify-between gap-2">
-                <span className="text-gray-500">Type</span>
+                <span className="text-fg-faint">Type</span>
                 <span className="min-w-0 text-right text-xs wrap-anywhere">{typeName ?? '—'}</span>
               </div>
             )}
             {itemId && (
               <div className="flex justify-between gap-2">
-                <span className="text-gray-500">Item</span>
+                <span className="text-fg-faint">Item</span>
                 <span className="min-w-0 text-right text-xs wrap-anywhere">{itemName ?? '—'}</span>
               </div>
             )}

@@ -59,29 +59,29 @@ function SLARestarted({ earlier }: { earlier: SLAEarlierRecord }) {
         aria-expanded={open}
         title="The SLA clock restarted when this ticket was reopened. The earlier record is kept; select to see it."
         onClick={() => setOpen((o) => !o)}
-        className="inline-flex items-center rounded-full border border-gray-300 px-2 py-0.5 text-xs font-medium text-gray-700 underline decoration-dotted underline-offset-2 hover:bg-gray-50"
+        className="inline-flex items-center rounded-full border border-border-strong px-2 py-0.5 text-xs font-medium text-fg-soft underline decoration-dotted underline-offset-2 hover:bg-subtle"
       >
         SLA restarted
       </button>
       {open && (
         <dl
           data-testid="sla-earlier"
-          className="absolute left-0 z-10 mt-1 w-64 space-y-1 rounded-md border border-gray-200 bg-white p-3 text-xs text-gray-700 shadow-md"
+          className="absolute left-0 z-10 mt-1 w-64 space-y-1 rounded-md border border-border bg-popover p-3 text-xs text-fg-soft shadow-md"
         >
           <div>
-            <dt className="font-medium text-gray-900">Earlier SLA record</dt>
+            <dt className="font-medium text-fg">Earlier SLA record</dt>
             <dd>{earlier.policy_name}</dd>
           </div>
           <div>
-            <dt className="text-gray-500">Started</dt>
+            <dt className="text-fg-faint">Started</dt>
             <dd>{new Date(earlier.started_at).toLocaleString()}</dd>
           </div>
           <div>
-            <dt className="text-gray-500">Replaced</dt>
+            <dt className="text-fg-faint">Replaced</dt>
             <dd>{new Date(earlier.superseded_at).toLocaleString()}</dd>
           </div>
           <div>
-            <dt className="text-gray-500">Outcome</dt>
+            <dt className="text-fg-faint">Outcome</dt>
             <dd>{earlier.outcome === 'breached' ? 'Breached' : 'Met'}</dd>
           </div>
         </dl>
@@ -91,15 +91,15 @@ function SLARestarted({ earlier }: { earlier: SLAEarlierRecord }) {
 }
 
 const DOT_COLOR: Record<SLAColor, string> = {
-  green: 'bg-green-500',
-  amber: 'bg-amber-500',
-  red: 'bg-red-500',
+  green: 'bg-chart-green',
+  amber: 'bg-chart-amber',
+  red: 'bg-chart-red',
 }
 
 const PILL_COLOR: Record<SLAColor, string> = {
-  green: 'border-green-300 text-green-700',
-  amber: 'border-amber-300 text-amber-700',
-  red: 'border-red-300 text-red-700',
+  green: 'border-success-border text-success-fg',
+  amber: 'border-warning-border text-warning-fg',
+  red: 'border-danger-border text-danger-fg',
 }
 
 function SLATarget({

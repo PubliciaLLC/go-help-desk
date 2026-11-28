@@ -5,6 +5,7 @@ import { getSettings } from '@/api/admin'
 import { needsAfterUpgrade } from '@/lib/afterUpgrade'
 import { AfterUpgradePage } from '@/pages/AfterUpgradePage'
 import { useAuthStore } from '@/store/auth'
+import { RootShell } from '@/components/theme/RootShell'
 import { LoginPage } from '@/pages/LoginPage'
 import { SetupPage } from '@/pages/SetupPage'
 import { AccountPage } from '@/pages/AccountPage'
@@ -71,7 +72,8 @@ async function requireStaff() {
 }
 
 // ── Root ──────────────────────────────────────────────────────────────────────
-const rootRoute = createRootRoute()
+// The shell adds the appearance switch to the pages that have no sidebar (#709).
+const rootRoute = createRootRoute({ component: RootShell })
 
 // ── Public ────────────────────────────────────────────────────────────────────
 const loginRoute = createRoute({

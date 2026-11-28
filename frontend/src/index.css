@@ -1,64 +1,292 @@
 @import "tailwindcss";
+@import "./styles/markdown.css";
 
+/* #709: dark mode. `dark:` follows the class on <html> (set by
+   public/theme-init.js before first paint and by src/lib/theme.ts after), not
+   the operating system's setting: the person's choice, including "Match my
+   device", is resolved in script. Tokens are the rule; `dark:` is for the rare
+   non-colour difference. */
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* The colour tokens. Every colour in the app is one of these, used through the
+   utilities @theme below registers (bg-card, text-fg-muted, border-border,
+   ring-ring, ...). A light value is a reference to Tailwind's own palette, so it
+   is exactly the class it replaced; a dark value is the same family one step
+   over. The contrast test (src/test/theme-contrast.test.ts) reads these two
+   blocks and checks every pair a token is used in, so change a value here and
+   run it. A guard (src/test/theme-colours.test.ts) keeps palette classes out of
+   the source. Full colour values, not HSL triplets: a utility is `bg-card`,
+   never `bg-[hsl(var(--card))]`. */
 @layer base {
   :root {
-    --background: 0 0% 100%;
-    --foreground: 222.2 84% 4.9%;
-    --card: 0 0% 100%;
-    --card-foreground: 222.2 84% 4.9%;
-    --popover: 0 0% 100%;
-    --popover-foreground: 222.2 84% 4.9%;
-    --primary: 221.2 83.2% 53.3%;
-    --primary-foreground: 210 40% 98%;
-    --secondary: 210 40% 96.1%;
-    --secondary-foreground: 222.2 47.4% 11.2%;
-    --muted: 210 40% 96.1%;
-    --muted-foreground: 215.4 16.3% 46.9%;
-    --accent: 210 40% 96.1%;
-    --accent-foreground: 222.2 47.4% 11.2%;
-    --destructive: 0 84.2% 60.2%;
-    --destructive-foreground: 210 40% 98%;
-    --border: 214.3 31.8% 91.4%;
-    --input: 214.3 31.8% 91.4%;
-    --ring: 221.2 83.2% 53.3%;
+    color-scheme: light;
+
+    /* Surfaces */
+    --canvas: var(--color-gray-50);
+    --card: var(--color-white);
+    --card-foreground: var(--color-gray-900);
+    --popover: var(--color-white);
+    --popover-foreground: var(--color-gray-900);
+    --background: var(--color-white);
+    --foreground: var(--color-gray-900);
+    --subtle: var(--color-gray-50);
+    --muted: var(--color-gray-100);
+    --muted-strong: var(--color-gray-200);
+    --overlay: oklch(0 0 0 / 0.4);
+    --code: oklch(0 0 0 / 0.1);
+    --highlight: var(--color-yellow-200);
+    --inverse: var(--color-gray-900);
+    --inverse-foreground: var(--color-white);
+
+    /* Text */
+    --fg: var(--color-gray-900);
+    --fg-soft: var(--color-gray-700);
+    --fg-muted: var(--color-gray-600);
+    --fg-faint: var(--color-gray-500);
+    --link: var(--color-blue-600);
+
+    /* shadcn aliases */
+    --muted-foreground: var(--fg-faint);
+    --secondary: var(--muted);
+    --secondary-foreground: var(--fg);
+    --accent: var(--muted);
+    --accent-foreground: var(--fg);
+
+    /* Lines */
+    --border: hsl(214.3 31.8% 91.4%);
+    --border-strong: var(--color-gray-300);
+    --input: var(--border);
+    --ring: var(--color-blue-500);
+
+    /* Selection and the primary action */
+    --selected: var(--color-blue-50);
+    --selected-fg: var(--color-blue-700);
+    --selected-strong: var(--color-blue-100);
+    --primary: var(--color-blue-600);
+    --primary-foreground: var(--color-white);
+    --primary-hover: var(--color-blue-700);
+
+    /* One family per meaning: a solid fill with its foreground, text on the
+       page, text on the tint, the tint and its border. */
+    --danger: var(--color-red-600);
+    --danger-foreground: var(--color-white);
+    --danger-hover: var(--color-red-700);
+    --danger-fg: var(--color-red-600);
+    --danger-fg-strong: var(--color-red-800);
+    --danger-soft: var(--color-red-50);
+    --danger-border: var(--color-red-200);
+
+    --warning: var(--color-amber-500);
+    --warning-foreground: var(--color-gray-950);
+    --warning-fg: var(--color-amber-700);
+    --warning-fg-strong: var(--color-amber-900);
+    --warning-soft: var(--color-amber-50);
+    --warning-border: var(--color-amber-300);
+
+    --attention-fg: var(--color-orange-700);
+    --attention-soft: var(--color-orange-100);
+    --attention-border: var(--color-orange-300);
+
+    --success: var(--color-green-700);
+    --success-foreground: var(--color-white);
+    --success-hover: var(--color-green-800);
+    --success-fg: var(--color-green-700);
+    --success-fg-strong: var(--color-green-800);
+    --success-soft: var(--color-green-50);
+    --success-border: var(--color-green-200);
+
+    --info: var(--color-blue-600);
+    --info-foreground: var(--color-white);
+    --info-fg: var(--color-blue-700);
+    --info-fg-strong: var(--color-blue-800);
+    --info-soft: var(--color-blue-50);
+    --info-border: var(--color-blue-200);
+
+    /* Chart marks and status dots */
+    --chart-blue: var(--color-blue-600);
+    --chart-green: var(--color-green-600);
+    --chart-amber: var(--color-amber-600);
+    --chart-red: var(--color-red-600);
+    --chart-gray: var(--color-gray-500);
+
     --radius: 0.5rem;
   }
 
+  /* Only what differs. The tints are color-mix over the card (gray-900) so they
+     sit on it without a hard edge. */
   .dark {
-    --background: 222.2 84% 4.9%;
-    --foreground: 210 40% 98%;
-    --card: 222.2 84% 4.9%;
-    --card-foreground: 210 40% 98%;
-    --popover: 222.2 84% 4.9%;
-    --popover-foreground: 210 40% 98%;
-    --primary: 217.2 91.2% 59.8%;
-    --primary-foreground: 222.2 47.4% 11.2%;
-    --secondary: 217.2 32.6% 17.5%;
-    --secondary-foreground: 210 40% 98%;
-    --muted: 217.2 32.6% 17.5%;
-    --muted-foreground: 215 20.2% 65.1%;
-    --accent: 217.2 32.6% 17.5%;
-    --accent-foreground: 210 40% 98%;
-    --destructive: 0 62.8% 30.6%;
-    --destructive-foreground: 210 40% 98%;
-    --border: 217.2 32.6% 17.5%;
-    --input: 217.2 32.6% 17.5%;
-    --ring: 224.3 76.3% 48%;
+    color-scheme: dark;
+
+    --canvas: var(--color-gray-950);
+    --card: var(--color-gray-900);
+    --card-foreground: var(--color-gray-50);
+    --popover: var(--color-gray-900);
+    --popover-foreground: var(--color-gray-50);
+    --background: var(--color-gray-950);
+    --foreground: var(--color-gray-50);
+    --subtle: color-mix(in oklab, var(--color-gray-800) 50%, var(--color-gray-900));
+    --muted: var(--color-gray-800);
+    --muted-strong: var(--color-gray-700);
+    --overlay: oklch(0 0 0 / 0.6);
+    --code: oklch(1 0 0 / 0.1);
+    --highlight: color-mix(in oklab, var(--color-yellow-400) 35%, transparent);
+    --inverse: var(--color-gray-100);
+    --inverse-foreground: var(--color-gray-900);
+
+    --fg: var(--color-gray-50);
+    --fg-soft: var(--color-gray-200);
+    --fg-muted: var(--color-gray-300);
+    --fg-faint: var(--color-gray-400);
+    --link: var(--color-blue-400);
+
+    --border: var(--color-gray-800);
+    --border-strong: var(--color-gray-700);
+    --input: var(--color-gray-700);
+    --ring: var(--color-blue-400);
+
+    --selected: color-mix(in oklab, var(--color-blue-500) 18%, var(--color-gray-900));
+    --selected-fg: var(--color-blue-200);
+    --selected-strong: color-mix(in oklab, var(--color-blue-500) 30%, var(--color-gray-900));
+
+    --danger-fg: var(--color-red-400);
+    --danger-fg-strong: var(--color-red-200);
+    --danger-soft: color-mix(in oklab, var(--color-red-500) 15%, var(--color-gray-900));
+    --danger-border: var(--color-red-800);
+
+    --warning-fg: var(--color-amber-400);
+    --warning-fg-strong: var(--color-amber-200);
+    --warning-soft: color-mix(in oklab, var(--color-amber-500) 15%, var(--color-gray-900));
+    --warning-border: var(--color-amber-800);
+
+    --attention-fg: var(--color-orange-300);
+    --attention-soft: color-mix(in oklab, var(--color-orange-500) 18%, var(--color-gray-900));
+    --attention-border: var(--color-orange-800);
+
+    --success-fg: var(--color-green-400);
+    --success-fg-strong: var(--color-green-200);
+    --success-soft: color-mix(in oklab, var(--color-green-500) 15%, var(--color-gray-900));
+    --success-border: var(--color-green-800);
+
+    --info-fg: var(--color-blue-300);
+    --info-fg-strong: var(--color-blue-200);
+    --info-soft: color-mix(in oklab, var(--color-blue-500) 15%, var(--color-gray-900));
+    --info-border: var(--color-blue-800);
+
+    --chart-blue: var(--color-blue-400);
+    --chart-green: var(--color-green-400);
+    --chart-amber: var(--color-amber-400);
+    --chart-red: var(--color-red-400);
+    --chart-gray: var(--color-gray-400);
   }
+}
+
+/* Tailwind generates a colour utility only for a colour registered here. Before
+   #709 nothing was, so bg-background, border-input and text-muted-foreground
+   (used by components/ui) produced no CSS at all. `inline` makes each utility
+   read the token itself (var(--card)), not a copy taken at :root, so .dark
+   changes it. */
+@theme inline {
+  --color-canvas: var(--canvas);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-subtle: var(--subtle);
+  --color-muted: var(--muted);
+  --color-muted-strong: var(--muted-strong);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-overlay: var(--overlay);
+  --color-code: var(--code);
+  --color-highlight: var(--highlight);
+  --color-inverse: var(--inverse);
+  --color-inverse-foreground: var(--inverse-foreground);
+
+  --color-fg: var(--fg);
+  --color-fg-soft: var(--fg-soft);
+  --color-fg-muted: var(--fg-muted);
+  --color-fg-faint: var(--fg-faint);
+  --color-link: var(--link);
+
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+
+  --color-selected: var(--selected);
+  --color-selected-fg: var(--selected-fg);
+  --color-selected-strong: var(--selected-strong);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-primary-hover: var(--primary-hover);
+
+  --color-danger: var(--danger);
+  --color-danger-foreground: var(--danger-foreground);
+  --color-danger-hover: var(--danger-hover);
+  --color-danger-fg: var(--danger-fg);
+  --color-danger-fg-strong: var(--danger-fg-strong);
+  --color-danger-soft: var(--danger-soft);
+  --color-danger-border: var(--danger-border);
+
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
+  --color-warning-fg: var(--warning-fg);
+  --color-warning-fg-strong: var(--warning-fg-strong);
+  --color-warning-soft: var(--warning-soft);
+  --color-warning-border: var(--warning-border);
+
+  --color-attention-fg: var(--attention-fg);
+  --color-attention-soft: var(--attention-soft);
+  --color-attention-border: var(--attention-border);
+
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-success-hover: var(--success-hover);
+  --color-success-fg: var(--success-fg);
+  --color-success-fg-strong: var(--success-fg-strong);
+  --color-success-soft: var(--success-soft);
+  --color-success-border: var(--success-border);
+
+  --color-info: var(--info);
+  --color-info-foreground: var(--info-foreground);
+  --color-info-fg: var(--info-fg);
+  --color-info-fg-strong: var(--info-fg-strong);
+  --color-info-soft: var(--info-soft);
+  --color-info-border: var(--info-border);
+
+  --color-chart-blue: var(--chart-blue);
+  --color-chart-green: var(--chart-green);
+  --color-chart-amber: var(--chart-amber);
+  --color-chart-red: var(--chart-red);
+  --color-chart-gray: var(--chart-gray);
 }
 
 @layer base {
   * {
-    border-color: hsl(var(--border));
+    border-color: var(--border);
     box-sizing: border-box;
   }
   body {
     margin: 0;
-    background-color: hsl(var(--background));
-    color: hsl(var(--foreground));
+    background-color: var(--canvas);
+    color: var(--fg);
     font-family: system-ui, -apple-system, sans-serif;
     -webkit-font-smoothing: antialiased;
   }
+}
+
+/* A theme change is not animated: for the one frame after it, every transition
+   is off, so buttons with transition-colors do not fade (src/lib/theme.ts sets
+   and clears the attribute). */
+[data-theme-switching] *,
+[data-theme-switching] *::before,
+[data-theme-switching] *::after {
+  transition: none !important;
 }
 
 /* Long plain-text posts are laid out only when they scroll near the screen.
@@ -80,47 +308,3 @@
     contain-intrinsic-block-size: auto calc(var(--text-rows, 1) * 1lh);
   }
 }
-
-/* #443: code highlighting. highlight.js token classes only; no theme
-   stylesheet is imported, so the colours here are all there is. Contrast is
-   at least 4.5:1 on the code box's gray-100 background. */
-[data-md-body] code .hljs-comment,
-[data-md-body] code .hljs-quote { color: #4b5563; font-style: italic; }
-[data-md-body] code .hljs-keyword,
-[data-md-body] code .hljs-selector-tag,
-[data-md-body] code .hljs-meta { color: #7c1d8f; }
-[data-md-body] code .hljs-string,
-[data-md-body] code .hljs-regexp,
-[data-md-body] code .hljs-addition { color: #0b6b2d; }
-[data-md-body] code .hljs-number,
-[data-md-body] code .hljs-literal,
-[data-md-body] code .hljs-symbol { color: #0b5cad; }
-[data-md-body] code .hljs-built_in,
-[data-md-body] code .hljs-type,
-[data-md-body] code .hljs-class { color: #8a4600; }
-[data-md-body] code .hljs-title,
-[data-md-body] code .hljs-section { color: #1d4ed8; font-weight: 600; }
-[data-md-body] code .hljs-variable,
-[data-md-body] code .hljs-attr,
-[data-md-body] code .hljs-attribute,
-[data-md-body] code .hljs-name { color: #9a1b1b; }
-[data-md-body] code .hljs-deletion { color: #9a1b1b; background: #fee2e2; }
-[data-md-body] code .hljs-addition { background: #dcfce7; }
-
-/* #443: the Markdown editor's writing surface. Tailwind's reset removes list
-   markers and heading sizes, so the few structures the editor allows get them
-   back here. Headings are one small size, as in the renderer. */
-.md-editor .ProseMirror { min-height: 7rem; outline: none; white-space: pre-wrap; overflow-wrap: anywhere; }
-.md-editor .ProseMirror > * + * { margin-top: 0.5rem; }
-.md-editor .ProseMirror h1, .md-editor .ProseMirror h2, .md-editor .ProseMirror h3,
-.md-editor .ProseMirror h4, .md-editor .ProseMirror h5, .md-editor .ProseMirror h6 { font-size: 0.875rem; font-weight: 600; }
-.md-editor .ProseMirror ul { list-style: disc; padding-left: 1.25rem; }
-.md-editor .ProseMirror ol { list-style: decimal; padding-left: 1.25rem; }
-.md-editor .ProseMirror blockquote { border-left: 4px solid #d1d5db; padding-left: 0.75rem; color: #4b5563; }
-.md-editor .ProseMirror pre { max-width: 100%; overflow-x: auto; background: #f3f4f6; padding: 0.5rem; font-size: 0.75rem; position: relative; }
-.md-editor .ProseMirror pre[data-language]::before { content: attr(data-language); display: block; font-size: 0.65rem; text-transform: uppercase; color: #6b7280; margin-bottom: 0.25rem; }
-.md-editor .ProseMirror code { font-family: ui-monospace, monospace; }
-.md-editor .ProseMirror a { color: #2563eb; text-decoration: underline; }
-.md-editor .ProseMirror table { border-collapse: collapse; }
-.md-editor .ProseMirror th, .md-editor .ProseMirror td { border: 1px solid #d1d5db; padding: 0.125rem 0.5rem; }
-.md-editor .md-image { color: #2563eb; text-decoration: underline; }

@@ -25,6 +25,9 @@ import { AttachmentList, QuarantineBanner } from '@/components/ticket/Attachment
 import { listAssignableStaff, listStatuses, type AssignableStaff } from '@/api/admin'
 import { apiRefusal, extractError } from '@/api/client'
 import { useAuthStore } from '@/store/auth'
+import { useResolvedTheme } from '@/store/theme'
+import { readableStatusColor } from '@/lib/statusColor'
+import { StatusDot } from '@/components/ticket/StatusDot'
 import { Layout } from '@/components/Layout'
 import { Button } from '@/components/ui/button'
 import { Badge } from '@/components/ui/badge'
@@ -137,7 +140,7 @@ function AssigneePanel({ ticketId, assigneeUserId, assigneeGroupId, users, haveS
           <span className="font-medium">{currentUser.display_name}</span>
         ) : currentGroup ? (
           <span className="inline-flex items-center gap-1 font-medium">
-            <span className="h-2 w-2 rounded-full bg-blue-400" />
+            <span className="h-2 w-2 rounded-full bg-chart-blue" />
             {currentGroup.name}
           </span>
         ) : assigneeUserId && haveStaffList ? (
@@ -151,17 +154,17 @@ function AssigneePanel({ ticketId, assigneeUserId, assigneeGroupId, users, haveS
           // "Former staff member" whenever the list was empty, which for a
           // staff member was always — so every live colleague was reported as
           // having left. A page that cannot tell should say nothing, not guess.
-          <span className="text-gray-500 italic">Former staff member</span>
+          <span className="text-fg-faint italic">Former staff member</span>
         ) : assigneeUserId ? (
-          <span className="text-gray-400">Assigned</span>
+          <span className="text-fg-faint">Assigned</span>
         ) : (
-          <span className="text-gray-400">Unassigned</span>
+          <span className="text-fg-faint">Unassigned</span>
         )}
       </div>
 
       {!assigneeUserId && !closed && meId && (
         <button
-          className="min-h-6 rounded px-1 py-1 text-xs text-blue-600 hover:underline"
+          className="min-h-6 rounded px-1 py-1 text-xs text-link hover:underline"
           onClick={() => assignToMeMutation.mutate()}
           disabled={assignToMeMutation.isPending}
         >
@@ -172,13 +175,13 @@ function AssigneePanel({ ticketId, assigneeUserId, assigneeGroupId, users, haveS
       {/* Assignment controls */}
       <div className="flex gap-1 text-xs">
         <button
-          className={`min-h-6 rounded px-2.5 py-1.5 ${mode === 'user' ? 'bg-blue-100 text-blue-700 font-medium' : 'text-gray-500 hover:text-gray-700'}`}
+          className={`min-h-6 rounded px-2.5 py-1.5 ${mode === 'user' ? 'bg-selected-strong text-selected-fg font-medium' : 'text-fg-faint hover:text-fg-soft'}`}
           onClick={() => setMode('user')}
         >
           User
         </button>
         <button
-          className={`min-h-6 rounded px-2.5 py-1.5 ${mode === 'group' ? 'bg-blue-100 text-blue-700 font-medium' : 'text-gray-500 hover:text-gray-700'}`}
+          className={`min-h-6 rounded px-2.5 py-1.5 ${mode === 'group' ? 'bg-selected-strong text-selected-fg font-medium' : 'text-fg-faint hover:text-fg-soft'}`}
           onClick={() => setMode('group')}
         >
           Group
@@ -188,6 +191,7 @@ function AssigneePanel({ ticketId, assigneeUserId, assigneeGroupId, users, haveS
       <div className="flex gap-2">
         <Select
           className="h-8 text-xs flex-1"
+          aria-label={mode === 'user' ? 'Staff member to assign' : 'Group to assign'}
           value={selectedId}
           onChange={(e) => setSelectedId(e.target.value)}
         >
@@ -212,14 +216,14 @@ function AssigneePanel({ ticketId, assigneeUserId, assigneeGroupId, users, haveS
 
       {(assigneeUserId || assigneeGroupId) && (
         <button
-          className="min-h-6 rounded px-1 py-1 text-xs text-gray-400 hover:text-gray-600"
+          className="min-h-6 rounded px-1 py-1 text-xs text-fg-faint hover:text-fg-muted"
           onClick={() => unassignMutation.mutate()}
           disabled={unassignMutation.isPending}
         >
           Clear assignment
         </button>
       )}
-      {error && <p role="alert" className="text-xs text-red-600">{error}</p>}
+      {error && <p role="alert" className="text-xs text-danger-fg">{error}</p>}
     </div>
   )
 }
@@ -299,6 +303,9 @@ export function TicketDetailPage() {
 
   const statusName = statuses.find((s) => s.id === ticket?.status_id)?.name ?? '…'
   const statusColor = statuses.find((s) => s.id === ticket?.status_id)?.color
+  // Text and border in dark are lightened until they read; the dot keeps the raw colour (#709).
+  const theme = useResolvedTheme()
+  const statusInk = readableStatusColor(statusColor, theme)
 
   const statusMutation = useMutation({
     mutationFn: (statusId: string) => updateTicket(id, { status_id: statusId }),
@@ -385,7 +392,7 @@ export function TicketDetailPage() {
       : message ? message
       : status ? `This ticket could not be loaded (error ${status}).`
       : 'This ticket could not be loaded.'
-    return <Layout><p role="alert" className="text-red-600">{text}</p></Layout>
+    return <Layout><p role="alert" className="text-danger-fg">{text}</p></Layout>
   }
 
   const canResolve = isStaffOrAdmin && statusName !== 'Resolved' && statusName !== 'Closed'
@@ -415,7 +422,7 @@ export function TicketDetailPage() {
             column of ~120px at 375px and ran the number under "Reopen". */}
         <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
           <div className="min-w-0 space-y-1">
-            <div className="flex flex-wrap items-center gap-x-2 text-sm text-gray-500">
+            <div className="flex flex-wrap items-center gap-x-2 text-sm text-fg-faint">
               <span className="whitespace-nowrap">{ticket.tracking_number}</span>
               <span>·</span>
               <span>Opened {formatDate(ticket.created_at)}</span>
@@ -426,26 +433,26 @@ export function TicketDetailPage() {
                 </>
               )}
             </div>
-            <h1 className="text-2xl font-bold text-gray-900 wrap-anywhere">{ticket.subject}</h1>
+            <h1 className="text-2xl font-bold text-fg wrap-anywhere">{ticket.subject}</h1>
             {isStaffOrAdmin && (
-              <p data-testid="requester-line" className="text-sm text-gray-600 wrap-anywhere">
+              <p data-testid="requester-line" className="text-sm text-fg-muted wrap-anywhere">
                 Requester:{' '}
                 {ticket.requester ? (
                   <>
-                    <span className="font-medium text-gray-900">{ticket.requester.name}</span>{' '}
+                    <span className="font-medium text-fg">{ticket.requester.name}</span>{' '}
                     ({ticket.requester.email})
                   </>
                 ) : (
-                  <span className="text-gray-400">unknown</span>
+                  <span className="text-fg-faint">unknown</span>
                 )}
               </p>
             )}
             <div className="flex items-center gap-2 flex-wrap">
               <span
                 className="inline-flex max-w-full items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-xs font-medium"
-                style={{ borderColor: statusColor, color: statusColor }}
+                style={{ borderColor: statusInk, color: statusInk }}
               >
-                <span className="h-1.5 w-1.5 shrink-0 rounded-full" style={{ backgroundColor: statusColor }} />
+                <StatusDot color={statusColor} />
                 <span className="min-w-0 wrap-anywhere">{statusName}</span>
               </span>
               <Badge variant={priorityVariant(ticket.priority) as never}>
@@ -506,11 +513,11 @@ export function TicketDetailPage() {
             the status did not change, which reads as the app being broken.
             The status picker below already did this; these three did not. */}
         {lifecycleError && (
-          <p role="alert" className="text-sm text-red-600">{lifecycleError}</p>
+          <p role="alert" className="text-sm text-danger-fg">{lifecycleError}</p>
         )}
 
         {followUpMutation.isSuccess && (
-          <p role="status" className="text-sm text-green-700">
+          <p role="status" className="text-sm text-success-fg">
             Follow-up created:{' '}
             <Link
               to="/tickets/$id"
@@ -523,7 +530,7 @@ export function TicketDetailPage() {
         )}
 
         {existingFollowUp && !followUpMutation.isSuccess && (
-          <p className="text-sm text-gray-700">
+          <p className="text-sm text-fg-soft">
             A follow-up has been opened:{' '}
             <Link
               to="/tickets/$id"
@@ -538,7 +545,7 @@ export function TicketDetailPage() {
         {/* A closed ticket is an archive. Said once, near the top, so a
             requester who cannot find the reply box knows it is not a bug. */}
         {isClosed && (
-          <p role="note" className="rounded-md border border-gray-200 bg-gray-50 p-3 text-sm text-gray-700">
+          <p role="note" className="rounded-md border border-border bg-subtle p-3 text-sm text-fg-soft">
             {isStaffOrAdmin
               ? canReopen
                 ? 'This ticket is closed. You can reopen it, or use “Create follow-up” to continue the work in a new, linked ticket.'
@@ -558,22 +565,22 @@ export function TicketDetailPage() {
             {/* Description */}
             <Card>
               <CardHeader>
-                <CardTitle className="text-sm text-gray-500">Description</CardTitle>
+                <CardTitle className="text-sm text-fg-faint">Description</CardTitle>
               </CardHeader>
               <CardContent>
                 {ticket.description ? (
                   <TicketText text={ticket.description} format={ticket.description_format} className="text-sm" />
                 ) : (
-                  <p className="text-sm text-gray-400">No description provided.</p>
+                  <p className="text-sm text-fg-faint">No description provided.</p>
                 )}
               </CardContent>
             </Card>
 
             {/* Timeline */}
             <div className="space-y-2">
-              <h2 className="text-base font-semibold text-gray-900">Timeline</h2>
+              <h2 className="text-base font-semibold text-fg">Timeline</h2>
               {timeline.length === 0 && (
-                <p className="text-sm text-gray-400">No activity yet.</p>
+                <p className="text-sm text-fg-faint">No activity yet.</p>
               )}
               {timeline.map((item) => {
                 if (item.kind === 'reply') {
@@ -581,9 +588,9 @@ export function TicketDetailPage() {
                   return (
                     <div
                       key={r.id}
-                      className={`rounded-lg border p-4 text-sm ${r.internal ? 'border-yellow-200 bg-yellow-50' : 'bg-white'}`}
+                      className={`rounded-lg border p-4 text-sm ${r.internal ? 'border-warning-border bg-warning-soft' : 'bg-card'}`}
                     >
-                      <div className="mb-1 flex items-center justify-between gap-2 text-xs text-gray-500">
+                      <div className="mb-1 flex items-center justify-between gap-2 text-xs text-fg-faint">
                         {/* The name, not the id. This printed r.author_id,
                             so every reply from a registered account showed as
                             a bare UUID and nobody could tell who had said
@@ -593,7 +600,7 @@ export function TicketDetailPage() {
                           {r.author_name || (r.author_id ? 'Unknown user' : 'Customer')}
                         </span>
                         <span className="flex items-center gap-2">
-                          {r.internal && <span className="text-yellow-600 font-medium">Internal note</span>}
+                          {r.internal && <span className="text-warning-fg-strong font-medium">Internal note</span>}
                           {formatDate(r.created_at)}
                         </span>
                       </div>
@@ -604,16 +611,16 @@ export function TicketDetailPage() {
                 // Status history event
                 const h = item.data
                 return (
-                  <div key={h.id} className="flex items-center gap-3 py-1 text-xs text-gray-400">
-                    <div className="flex-1 border-t border-gray-100" />
+                  <div key={h.id} className="flex items-center gap-3 py-1 text-xs text-fg-faint">
+                    <div className="flex-1 border-t border-border" />
                     <span className="min-w-0 text-center wrap-anywhere">
                       {h.from_status_id ? (
                         <>
-                          <span style={{ color: h.from_status_color || undefined }} className="font-medium">
+                          <span style={{ color: readableStatusColor(h.from_status_color || undefined, theme) }} className="font-medium">
                             {h.from_status_name}
                           </span>
                           {' → '}
-                          <span style={{ color: h.to_status_color || undefined }} className="font-medium">
+                          <span style={{ color: readableStatusColor(h.to_status_color || undefined, theme) }} className="font-medium">
                             {h.to_status_name}
                           </span>
                           {h.changed_by_masked
@@ -623,7 +630,7 @@ export function TicketDetailPage() {
                       ) : (
                         <>
                           Ticket opened as{' '}
-                          <span style={{ color: h.to_status_color || undefined }} className="font-medium">
+                          <span style={{ color: readableStatusColor(h.to_status_color || undefined, theme) }} className="font-medium">
                             {h.to_status_name}
                           </span>
                         </>
@@ -631,7 +638,7 @@ export function TicketDetailPage() {
                       {' · '}
                       {formatDate(h.created_at)}
                     </span>
-                    <div className="flex-1 border-t border-gray-100" />
+                    <div className="flex-1 border-t border-border" />
                   </div>
                 )
               })}
@@ -643,7 +650,7 @@ export function TicketDetailPage() {
             {(!isClosed || isStaffOrAdmin) && (
               <>
                 {isClosed && (
-                  <p className="text-sm text-gray-500">Replying does not reopen this ticket.</p>
+                  <p className="text-sm text-fg-faint">Replying does not reopen this ticket.</p>
                 )}
                 <ReplyComposer ticketId={id} isStaffOrAdmin={isStaffOrAdmin} />
               </>
@@ -655,7 +662,7 @@ export function TicketDetailPage() {
             {isStaffOrAdmin && (
               <Card>
                 <CardHeader className="pb-2">
-                  <CardTitle className="text-xs font-semibold uppercase tracking-wider text-gray-400">
+                  <CardTitle className="text-xs font-semibold uppercase tracking-wider text-fg-faint">
                     Assignee
                   </CardTitle>
                 </CardHeader>
@@ -684,7 +691,7 @@ export function TicketDetailPage() {
             {isStaffOrAdmin && (!isClosed || canReopen) && (
               <Card>
                 <CardHeader className="pb-2">
-                  <CardTitle className="text-xs font-semibold uppercase tracking-wider text-gray-400">
+                  <CardTitle className="text-xs font-semibold uppercase tracking-wider text-fg-faint">
                     Status
                   </CardTitle>
                 </CardHeader>
@@ -704,7 +711,7 @@ export function TicketDetailPage() {
                     ))}
                   </Select>
                   {statusMutation.isError && (
-                    <p role="alert" className="mt-1 text-xs text-red-600">{extractError(statusMutation.error)}</p>
+                    <p role="alert" className="mt-1 text-xs text-danger-fg">{extractError(statusMutation.error)}</p>
                   )}
                 </CardContent>
               </Card>
@@ -720,7 +727,7 @@ export function TicketDetailPage() {
 
             <Card>
               <CardHeader className="pb-2">
-                <CardTitle className="text-xs font-semibold uppercase tracking-wider text-gray-400">
+                <CardTitle className="text-xs font-semibold uppercase tracking-wider text-fg-faint">
                   Tags
                 </CardTitle>
               </CardHeader>
@@ -746,7 +753,7 @@ export function TicketDetailPage() {
             {attachments.length > 0 && (
               <Card>
                 <CardHeader className="pb-2">
-                  <CardTitle className="text-xs font-semibold uppercase tracking-wider text-gray-400">
+                  <CardTitle className="text-xs font-semibold uppercase tracking-wider text-fg-faint">
                     Attachments
                   </CardTitle>
                 </CardHeader>
@@ -767,7 +774,7 @@ export function TicketDetailPage() {
 
             <Card>
               <CardHeader className="pb-2">
-                <CardTitle className="text-xs font-semibold uppercase tracking-wider text-gray-400">
+                <CardTitle className="text-xs font-semibold uppercase tracking-wider text-fg-faint">
                   Details
                 </CardTitle>
               </CardHeader>
@@ -778,7 +785,7 @@ export function TicketDetailPage() {
                   // card's full width at 390px. Resolved and Closed lock it:
                   // the server answers 409 ticket_closed there.
                   <div className="space-y-1">
-                    <span className="text-gray-500">Priority</span>
+                    <span className="text-fg-faint">Priority</span>
                     <PriorityControl
                       ticketId={id}
                       priority={ticket.priority}
@@ -787,17 +794,17 @@ export function TicketDetailPage() {
                   </div>
                 ) : (
                   <div className="flex justify-between">
-                    <span className="text-gray-500">Priority</span>
+                    <span className="text-fg-faint">Priority</span>
                     <Badge variant={priorityVariant(ticket.priority) as never}>{ticket.priority}</Badge>
                   </div>
                 )}
                 <div className="flex justify-between">
-                  <span className="text-gray-500">Created</span>
+                  <span className="text-fg-faint">Created</span>
                   <span className="text-right text-xs">{formatDate(ticket.created_at)}</span>
                 </div>
                 {ticket.resolved_at && (
                   <div className="flex justify-between">
-                    <span className="text-gray-500">Resolved</span>
+                    <span className="text-fg-faint">Resolved</span>
                     <span className="text-right text-xs">{formatDate(ticket.resolved_at)}</span>
                   </div>
                 )}

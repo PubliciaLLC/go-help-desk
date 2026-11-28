@@ -20,8 +20,8 @@ describe('VolumeTrend', () => {
     expect(svg.getAttribute('aria-label')).toBe('Tickets created and resolved per day, last 30 days')
     const groups = Array.from(svg.querySelectorAll('g'))
     expect(groups).toHaveLength(2)
-    expect(groups[0].getAttribute('class')).toContain('text-blue-600')
-    expect(groups[1].getAttribute('class')).toContain('text-green-600')
+    expect(groups[0].getAttribute('class')).toContain('text-chart-blue')
+    expect(groups[1].getAttribute('class')).toContain('text-chart-green')
   })
 
   it('shows each series 30-day total in the legend', () => {

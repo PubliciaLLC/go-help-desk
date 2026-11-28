@@ -3,8 +3,8 @@
 export function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <div>
-      <h2 className="mb-3 text-xs font-semibold uppercase tracking-wider text-gray-400">{title}</h2>
-      <div className="divide-y rounded-lg border bg-white">{children}</div>
+      <h2 className="mb-3 text-xs font-semibold uppercase tracking-wider text-fg-faint">{title}</h2>
+      <div className="divide-y rounded-lg border bg-card">{children}</div>
     </div>
   )
 }

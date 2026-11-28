@@ -643,6 +643,21 @@ func (s *Store) SetEmailPreferences(ctx context.Context, id uuid.UUID, p user.Em
 	return nil
 }
 
+// SetTheme writes only the person's appearance choice (#709). It leaves
+// updated_at alone: the account did not change.
+func (s *Store) SetTheme(ctx context.Context, id uuid.UUID, t user.Theme) error {
+	n, err := s.q.SetUserTheme(ctx, dbgen.SetUserThemeParams{ID: id, Theme: string(t)})
+	if err != nil {
+		return fmt.Errorf("setting theme: %w", err)
+	}
+	// The statement skips deleted accounts, so no row means the account is
+	// gone or never existed, not that the write succeeded.
+	if n == 0 {
+		return fmt.Errorf("%w: user %s", ErrNotFound, id)
+	}
+	return nil
+}
+
 // UpdateProfile writes only the address and the name.
 func (s *Store) UpdateProfile(ctx context.Context, id uuid.UUID, email, displayName string) error {
 	n, err := s.q.UpdateUserProfile(ctx, dbgen.UpdateUserProfileParams{
@@ -724,6 +739,8 @@ func fromRow(r dbgen.User) user.User {
 		EmailNotifyActivity: r.EmailNotifyActivity,
 		EmailNotifyGroup:    r.EmailNotifyGroup,
 		EmailNotifySLA:      r.EmailNotifySla,
+
+		Theme: user.Theme(r.Theme),
 	}
 }
 

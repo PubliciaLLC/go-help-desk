@@ -24,7 +24,7 @@ export function BoundedNumberInput({ label, hint, value, min, max, onChange, dis
 
   return (
     <div className="space-y-1">
-      <label htmlFor={id} className="block text-sm font-medium text-gray-700">{label}</label>
+      <label htmlFor={id} className="block text-sm font-medium text-fg-soft">{label}</label>
       <input
         id={id}
         type="number"
@@ -42,9 +42,9 @@ export function BoundedNumberInput({ label, hint, value, min, max, onChange, dis
           if (Number.isFinite(n)) onChange(clamp(n))
         }}
         onBlur={() => setDraft(null)}
-        className="w-24 rounded-md border border-gray-300 px-2 py-1 text-right text-sm disabled:cursor-not-allowed disabled:opacity-50"
+        className="w-24 rounded-md border border-border-strong bg-background px-2 py-1 text-right text-sm disabled:cursor-not-allowed disabled:opacity-50"
       />
-      <p id={hintId} className="text-xs text-gray-500">{hint}</p>
+      <p id={hintId} className="text-xs text-fg-faint">{hint}</p>
     </div>
   )
 }

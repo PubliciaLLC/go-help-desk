@@ -65,8 +65,8 @@ export function ScopePicker({
   return (
     <div className="space-y-2">
       <div className="flex items-baseline justify-between">
-        <p className="text-sm font-medium text-gray-700">Permissions</p>
-        <p className="text-xs text-gray-500">
+        <p className="text-sm font-medium text-fg-soft">Permissions</p>
+        <p className="text-xs text-fg-faint">
           {selected.length === 0
             ? 'No permissions — this credential will be refused everywhere'
             : `${selected.length} selected`}
@@ -77,16 +77,16 @@ export function ScopePicker({
         {[...byResource.entries()].map(([resource, scopes]) => (
           <div key={resource} className="flex items-center justify-between gap-4 px-3 py-2">
             <div>
-              <span className="text-sm capitalize text-gray-800">{label(resource)}</span>
+              <span className="text-sm capitalize text-fg">{label(resource)}</span>
               {RESOURCE_HELP[resource] && (
-                <p className="text-xs text-gray-500">{RESOURCE_HELP[resource]}</p>
+                <p className="text-xs text-fg-faint">{RESOURCE_HELP[resource]}</p>
               )}
             </div>
             <div className="flex gap-4">
               {scopes.map((s) => (
                 <label
                   key={s.scope}
-                  className="flex items-center gap-1.5 text-xs text-gray-600"
+                  className="flex items-center gap-1.5 text-xs text-fg-muted"
                 >
                   <input
                     type="checkbox"
@@ -94,7 +94,7 @@ export function ScopePicker({
                     disabled={disabled}
                     onChange={() => toggle(s)}
                     aria-label={s.scope}
-                    className="h-3.5 w-3.5 rounded border-gray-300"
+                    className="h-3.5 w-3.5 rounded border-border-strong"
                   />
                   {s.action}
                 </label>
@@ -105,7 +105,7 @@ export function ScopePicker({
       </div>
 
       {selected.length === 0 && (
-        <p className="text-xs text-amber-700">
+        <p className="text-xs text-warning-fg">
           A credential with no permissions cannot do anything. Select at least one.
         </p>
       )}

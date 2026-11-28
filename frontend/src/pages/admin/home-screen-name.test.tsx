@@ -160,7 +160,7 @@ describe('the home screen name', () => {
     fireEvent.change(field()!, { target: { value: '😀'.repeat(30) } })
     expect(field()!.value).toBe('😀'.repeat(30))
     const counter = screen.getByText('30/30')
-    expect(counter.className).not.toContain('text-red')
+    expect(counter.className).not.toContain('text-danger-fg')
     expect(field()!.getAttribute('aria-invalid')).not.toBe('true')
   })
 
@@ -170,7 +170,7 @@ describe('the home screen name', () => {
     fireEvent.change(field()!, { target: { value: 'a'.repeat(31) } })
     expect(field()!.value).toHaveLength(31)
     const counter = screen.getByText('31/30')
-    expect(counter.className).toContain('text-red')
+    expect(counter.className).toContain('text-danger-fg')
     expect(field()!.getAttribute('aria-invalid')).toBe('true')
     expect(save().disabled).toBe(false)
   })
