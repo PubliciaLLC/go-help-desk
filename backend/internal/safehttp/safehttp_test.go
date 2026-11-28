@@ -1,6 +1,7 @@
 package safehttp
 
 import (
+	"context"
 	"net"
 	"testing"
 
@@ -62,6 +63,18 @@ func TestValidateURL(t *testing.T) {
 	require.Error(t, ValidateURL("://nonsense"), "unparseable")
 }
 
+// The lookup follows the caller's context: net.LookupIP takes none, so a save
+// of a webhook URL whose resolver stalls held the request open until the
+// resolver's own timeout, whether or not the client had gone. A cancelled
+// context must end it at once. The name is not an address literal, which is
+// resolved without a lookup.
+func TestValidateURLContext_ALookupFollowsTheContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := ValidateURLContext(ctx, "http://hook.example.test/")
+	require.ErrorIs(t, err, context.Canceled)
+}
+
 // The dialer is the boundary, not ValidateURL: a name that passes validation
 // can resolve elsewhere by the time it is used, and a redirect never goes
 // through validation at all.
@@ -73,4 +86,32 @@ func TestGuardedDial_RefusesLoopback(t *testing.T) {
 	_, err = guardedDial(t.Context(), "tcp", srv.Addr().String())
 	require.Error(t, err, "the dialer must refuse loopback even for a live listener")
 	require.Contains(t, err.Error(), "loopback")
+}
+
+// Refusals to dial internal addresses wrap ErrBlockedAddress so callers can
+// tell them apart from ordinary network failures.
+func TestCheckIP_RefusalsWrapErrBlockedAddress(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		ip          string
+		expectedMsg string
+	}{
+		{"loopback 127.0.0.1", "127.0.0.1", "refusing to connect to loopback address 127.0.0.1"},
+		{"private 10.0.0.1", "10.0.0.1", "refusing to connect to private address 10.0.0.1"},
+		{"cloud metadata", "169.254.169.254", "refusing to connect to link-local address 169.254.169.254"},
+		{"Alibaba metadata", "100.100.100.200", "refusing to connect to internal address 100.100.100.200"},
+		{"unspecified", "0.0.0.0", "refusing to connect to unspecified address 0.0.0.0"},
+		{"link-local multicast", "224.0.0.1", "refusing to connect to link-local address 224.0.0.1"},
+		{"multicast", "239.1.1.1", "refusing to connect to multicast address 239.1.1.1"},
+		{"IPv4-mapped loopback", "::ffff:127.0.0.1", "refusing to connect to loopback address 127.0.0.1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ip := net.ParseIP(tc.ip)
+			require.NotNil(t, ip, "bad test fixture %q", tc.ip)
+			err := checkIP(ip)
+			require.Error(t, err)
+			require.ErrorIs(t, err, ErrBlockedAddress, "must wrap ErrBlockedAddress")
+			require.Equal(t, tc.expectedMsg, err.Error(), "error message must match exactly")
+		})
+	}
 }

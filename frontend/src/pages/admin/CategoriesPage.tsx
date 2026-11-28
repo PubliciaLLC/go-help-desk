@@ -1,5 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { Link } from '@tanstack/react-router'
 import {
   DndContext, closestCenter, PointerSensor, useSensor, useSensors,
   type DragEndEvent,
@@ -20,15 +21,19 @@ import {
   updateCategoryAssignment, updateTypeAssignment, updateItemAssignment,
   deleteCategoryAssignment, deleteTypeAssignment, deleteItemAssignment,
 } from '@/api/admin'
-import { extractError } from '@/api/client'
+import { extractError, extractErrorCode } from '@/api/client'
 import { Layout } from '@/components/Layout'
 import { Button } from '@/components/ui/button'
 import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { Input } from '@/components/ui/input'
 import { Spinner } from '@/components/ui/spinner'
+import { TOUCH_SIZE, ROW_BTN } from '@/components/admin/touchTargets'
+import { DescriptionField } from '@/components/admin/DescriptionField'
+import { isDescriptionTooLong, trimDescription } from '@/lib/ctiDescription'
 import {
   ChevronRightIcon, ChevronDownIcon, PlusIcon, TrashIcon,
   GripVerticalIcon, PencilIcon, CheckIcon, XIcon, UsersRoundIcon, SlidersIcon,
+  ArchiveIcon, ArchiveRestoreIcon,
 } from 'lucide-react'
 import type { Category, TicketType, TicketItem, Group, Assignment } from '@/api/types'
 
@@ -71,7 +76,7 @@ function InlineName({
 
   if (editing) {
     return (
-      <div className="flex flex-1 items-center gap-1" onClick={(e) => e.stopPropagation()}>
+      <div className="flex min-w-0 flex-1 items-center gap-1" onClick={(e) => e.stopPropagation()}>
         <Input
           ref={inputRef}
           value={draft}
@@ -80,18 +85,18 @@ function InlineName({
             if (e.key === 'Enter') commit()
             if (e.key === 'Escape') cancel()
           }}
-          className="h-6 py-0 text-sm"
+          className="h-6 py-0 text-sm max-sm:min-w-0"
           disabled={saving}
         />
         <button
           onClick={commit}
           disabled={saving || !draft.trim()}
-          className="text-green-600 hover:text-green-700 disabled:opacity-40"
+          className={`text-success-fg hover:text-success-fg disabled:opacity-40 ${TOUCH_SIZE}`}
           title="Save"
         >
           <CheckIcon className="h-3.5 w-3.5" />
         </button>
-        <button onClick={cancel} className="text-gray-400 hover:text-gray-600" title="Cancel">
+        <button onClick={cancel} className={`text-fg-faint hover:text-fg-muted ${TOUCH_SIZE}`} title="Cancel">
           <XIcon className="h-3.5 w-3.5" />
         </button>
       </div>
@@ -99,16 +104,160 @@ function InlineName({
   }
 
   return (
-    <span className={`group/name flex flex-1 items-center gap-1 ${className ?? ''}`}>
-      <span>{value}</span>
+    <span className={`group/name flex min-w-0 flex-1 items-center gap-1 ${className ?? ''}`}>
+      <span className="min-w-0 wrap-anywhere">{value}</span>
       <button
         onClick={(e) => { e.stopPropagation(); setDraft(value); setEditing(true) }}
-        className="invisible text-gray-300 hover:text-gray-600 group-hover/name:visible"
+        className={`shrink-0 ${ROW_BTN} hover:text-fg-muted group-hover/name:visible`}
         title="Rename"
       >
         <PencilIcon className="h-3 w-3" />
       </button>
     </span>
+  )
+}
+
+// ── Archive / restore ─────────────────────────────────────────────────────────
+
+type CtiKind = 'category' | 'type' | 'item'
+
+const IN_USE_CODES = new Set(['category_in_use', 'type_in_use', 'item_in_use'])
+
+// A delete refused because tickets use the entry (409) points at the way out.
+function deleteErrorText(err: unknown): string {
+  const message = extractError(err)
+  if (!IN_USE_CODES.has(extractErrorCode(err))) return message
+  return `${message.replace(/[.\s]+$/, '')}. Archive it instead to keep the tickets and hide it from new ones.`
+}
+
+// Archiving asks first because it changes what requesters see; restoring only
+// undoes it, so it does not.
+function ArchiveControl({
+  kind, name, archived, setActive, onChanged, iconClass,
+}: {
+  kind: CtiKind
+  name: string
+  archived: boolean
+  setActive: (active: boolean) => Promise<unknown>
+  onChanged: () => void
+  iconClass: string
+}) {
+  const [confirmOpen, setConfirmOpen] = useState(false)
+  const mutation = useMutation({
+    mutationFn: (active: boolean) => setActive(active),
+    onSuccess: () => {
+      onChanged()
+      setConfirmOpen(false)
+    },
+  })
+
+  if (archived) {
+    return (
+      <>
+        {mutation.isError && <span role="alert" className="text-xs text-danger-fg max-sm:order-last max-sm:basis-full max-sm:text-right max-sm:wrap-anywhere">{extractError(mutation.error)}</span>}
+      <button
+        onClick={() => mutation.mutate(true)}
+        disabled={mutation.isPending}
+        className={`${ROW_BTN} hover:text-success-fg`}
+        title={`Restore ${kind}`}
+      >
+        <ArchiveRestoreIcon className={iconClass} />
+      </button>
+      </>
+    )
+  }
+
+  return (
+    <>
+      <button
+        onClick={() => setConfirmOpen(true)}
+        className={`${ROW_BTN} hover:text-warning-fg`}
+        title={`Archive ${kind}`}
+      >
+        <ArchiveIcon className={iconClass} />
+      </button>
+      <ConfirmDialog
+        open={confirmOpen}
+        onOpenChange={(open) => { setConfirmOpen(open); if (!open) mutation.reset() }}
+        error={mutation.isError ? extractError(mutation.error) : undefined}
+        title={`Archive ${kind} "${name}"?`}
+        description="Requesters will no longer see it or be able to file new tickets under it. Tickets already filed keep it. You can restore it at any time."
+        confirmLabel={`Archive ${kind}`}
+        destructive={false}
+        isPending={mutation.isPending}
+        onConfirm={() => mutation.mutate(false)}
+      />
+    </>
+  )
+}
+
+function ArchivedBadge() {
+  return <span className="rounded bg-muted-strong px-1.5 py-0.5 text-xs text-fg">Archived</span>
+}
+
+// ── Description ───────────────────────────────────────────────────────────────
+
+// The public lists the ticket forms read; they hold descriptions, so an edit here
+// must not leave a form on this browser showing the old text.
+function invalidatePublicCatalogue(qc: ReturnType<typeof useQueryClient>) {
+  for (const key of ['public-categories', 'public-types', 'public-items']) {
+    qc.invalidateQueries({ queryKey: [key] })
+  }
+}
+
+// The edit side of a node's description: the field and its own Save. It is a
+// form of its own, so Enter in the box is a line break and saving is deliberate.
+function DescriptionEditor({
+  id, value, save, onSaved,
+}: {
+  id: string
+  value: string
+  save: (description: string) => Promise<unknown>
+  onSaved: () => void
+}) {
+  const qc = useQueryClient()
+  const [draft, setDraft] = useState(value)
+  // The row can change under an open box (another administrator's edit, a refetch).
+  // A box nothing has been typed in follows it; one being typed in is left alone.
+  // Derived while rendering, from the value the last render saw.
+  const [seen, setSeen] = useState(value)
+  if (seen !== value) {
+    setSeen(value)
+    if (trimDescription(draft) === trimDescription(seen)) setDraft(value)
+  }
+  const mutation = useMutation({
+    mutationFn: () => save(draft),
+    onSuccess: () => {
+      // What the server stored is trimmed; show that, so the box and the row agree.
+      setDraft((d) => trimDescription(d))
+      onSaved()
+      invalidatePublicCatalogue(qc)
+    },
+  })
+  const unchanged = trimDescription(draft) === trimDescription(value)
+
+  return (
+    <form
+      className="space-y-2 px-3 py-2"
+      onSubmit={(e) => {
+        e.preventDefault()
+        if (!unchanged && !isDescriptionTooLong(draft)) mutation.mutate()
+      }}
+    >
+      <DescriptionField id={id} value={draft} onChange={(v) => { setDraft(v); mutation.reset() }} />
+      {mutation.isError && (
+        <p role="alert" className="text-xs text-danger-fg wrap-anywhere">{extractError(mutation.error)}</p>
+      )}
+      <Button
+        type="submit"
+        size="sm"
+        className="h-7 text-xs"
+        disabled={unchanged || isDescriptionTooLong(draft) || mutation.isPending}
+        aria-label="Save description"
+      >
+        {mutation.isPending ? 'Saving…' : 'Save'}
+      </Button>
+    </form>
   )
 }
 
@@ -155,26 +304,28 @@ function GroupsSubsection({
     mutationFn: (groupId: string) => removeGroupScope(groupId, { category_id: categoryId, type_id: typeId }),
     onSuccess: () => qc.invalidateQueries({ queryKey }),
   })
+  const removeError = removeMutation.isError ? extractError(removeMutation.error) : ''
 
   const assignedIds = new Set(assignedGroups.map((g) => g.id))
   const available = allGroups.filter((g) => !assignedIds.has(g.id))
 
   return (
-    <div className="px-3 py-2 border-t border-gray-100">
+    <div className="px-3 py-2 border-t border-border">
       <div className="flex items-center gap-1.5 mb-2">
-        <UsersRoundIcon className="h-3 w-3 text-gray-400" />
-        <span className="text-xs font-semibold uppercase tracking-wide text-gray-400">Groups</span>
+        <UsersRoundIcon className="h-3 w-3 text-fg-faint" />
+        <span className="text-xs font-semibold uppercase tracking-wide text-fg-faint">Groups</span>
       </div>
+      {removeError && <p role="alert" className="mb-2 text-xs text-danger-fg">{removeError}</p>}
       <div className="flex flex-wrap gap-1.5">
         {assignedGroups.map((g) => (
           <span
             key={g.id}
-            className="inline-flex items-center gap-1 rounded-full bg-blue-50 px-2.5 py-0.5 text-xs font-medium text-blue-700"
+            className="inline-flex max-w-full items-center gap-1 rounded-full bg-selected px-2.5 py-0.5 text-xs font-medium text-selected-fg"
           >
-            {g.name}
+            <span className="min-w-0 wrap-anywhere">{g.name}</span>
             <button
               onClick={() => removeMutation.mutate(g.id)}
-              className="text-blue-400 hover:text-blue-700"
+              className="shrink-0 text-link hover:text-selected-fg"
               title="Remove group"
             >
               <XIcon className="h-3 w-3" />
@@ -185,7 +336,7 @@ function GroupsSubsection({
           <div className="flex items-center gap-1.5">
             <select
               autoFocus
-              className="rounded border border-gray-300 bg-white px-2 py-0.5 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500"
+              className="rounded border border-border-strong bg-background px-2 py-0.5 text-xs focus:outline-none focus:ring-1 focus:ring-ring"
               value={selectedGroupId}
               onChange={(e) => setSelectedGroupId(e.target.value)}
             >
@@ -214,7 +365,7 @@ function GroupsSubsection({
         ) : (
           <button
             onClick={() => setAddingGroup(true)}
-            className="inline-flex items-center gap-1 rounded-full border border-dashed border-gray-300 px-2.5 py-0.5 text-xs text-gray-400 hover:border-blue-300 hover:text-blue-600"
+            className="inline-flex items-center gap-1 rounded-full border border-dashed border-border-strong px-2.5 py-0.5 text-xs text-fg-faint hover:border-info-border hover:text-link"
           >
             <PlusIcon className="h-3 w-3" /> Add group
           </button>
@@ -230,6 +381,13 @@ type FieldsScope =
   | { kind: 'category'; categoryId: string }
   | { kind: 'type'; categoryId: string; typeId: string }
   | { kind: 'item'; categoryId: string; typeId: string; itemId: string }
+
+// visible_to_guests is sent for a category's own attachment only; the server
+// refuses it on a type or an item, where no guest can reach the field (#627).
+type AssignmentPatch = { visible_on_new?: boolean; required_on_new?: boolean; visible_to_guests?: boolean }
+
+const FIELD_CHECK = `inline-flex cursor-pointer select-none items-center gap-2 text-fg-soft ${TOUCH_SIZE}`
+const fieldName = (a: Assignment) => a.field_def?.name ?? a.field_def_id
 
 function FieldsSubsection({ scope }: { scope: FieldsScope }) {
   const qc = useQueryClient()
@@ -261,6 +419,16 @@ function FieldsSubsection({ scope }: { scope: FieldsScope }) {
   const assignedDefIds = new Set(assignments.map((a) => a.field_def_id))
   const available = allDefs.filter((d) => d.active && !assignedDefIds.has(d.id))
 
+  // The new-ticket form and the ticket page cache the resolved list under their
+  // own key (the one above holds a single level), and the Custom Fields page
+  // keeps each field's place count and places under ['admin', 'custom-fields'],
+  // so a change here clears all three.
+  function invalidateAssignments() {
+    qc.invalidateQueries({ queryKey })
+    qc.invalidateQueries({ queryKey: ['ctiFieldsResolved'] })
+    qc.invalidateQueries({ queryKey: ['admin', 'custom-fields'] })
+  }
+
   const addMutation = useMutation({
     mutationFn: () => {
       const input = { field_def_id: selectedDefId, sort_order: assignments.length + 1, visible_on_new: true, required_on_new: false }
@@ -271,7 +439,7 @@ function FieldsSubsection({ scope }: { scope: FieldsScope }) {
     onSuccess: () => {
       setAddingField(false)
       setSelectedDefId('')
-      qc.invalidateQueries({ queryKey })
+      invalidateAssignments()
     },
   })
 
@@ -281,7 +449,7 @@ function FieldsSubsection({ scope }: { scope: FieldsScope }) {
     return deleteItemAssignment(scope.categoryId, scope.typeId, scope.itemId, assignmentId)
   }
 
-  function updateAssignment(assignmentId: string, patch: { visible_on_new?: boolean; required_on_new?: boolean }) {
+  function updateAssignment(assignmentId: string, patch: AssignmentPatch) {
     if (scope.kind === 'category') return updateCategoryAssignment(scope.categoryId, assignmentId, patch)
     if (scope.kind === 'type') return updateTypeAssignment(scope.categoryId, scope.typeId, assignmentId, patch)
     return updateItemAssignment(scope.categoryId, scope.typeId, scope.itemId, assignmentId, patch)
@@ -289,25 +457,28 @@ function FieldsSubsection({ scope }: { scope: FieldsScope }) {
 
   const removeMutation = useMutation({
     mutationFn: (assignmentId: string) => removeAssignment(assignmentId),
-    onSuccess: () => qc.invalidateQueries({ queryKey }),
+    onSuccess: invalidateAssignments,
   })
+  const removeError = removeMutation.isError ? extractError(removeMutation.error) : ''
 
   const toggleMutation = useMutation({
-    mutationFn: ({ id, patch }: { id: string; patch: { visible_on_new?: boolean; required_on_new?: boolean } }) =>
+    mutationFn: ({ id, patch }: { id: string; patch: AssignmentPatch }) =>
       updateAssignment(id, patch),
-    onSuccess: () => qc.invalidateQueries({ queryKey }),
+    onSuccess: invalidateAssignments,
   })
+  const addError = addMutation.isError ? extractError(addMutation.error) : ''
+  const toggleError = toggleMutation.isError ? extractError(toggleMutation.error) : ''
 
   if (assignments.length === 0 && !addingField) {
     return (
-      <div className="px-3 py-2 border-t border-gray-100">
+      <div className="px-3 py-2 border-t border-border">
         <div className="flex items-center gap-1.5 mb-1">
-          <SlidersIcon className="h-3 w-3 text-gray-400" />
-          <span className="text-xs font-semibold uppercase tracking-wide text-gray-400">Fields</span>
+          <SlidersIcon className="h-3 w-3 text-fg-faint" />
+          <span className="text-xs font-semibold uppercase tracking-wide text-fg-faint">Fields</span>
         </div>
         <button
           onClick={() => setAddingField(true)}
-          className="inline-flex items-center gap-1 rounded-full border border-dashed border-gray-300 px-2.5 py-0.5 text-xs text-gray-400 hover:border-blue-300 hover:text-blue-600"
+          className="inline-flex items-center gap-1 rounded-full border border-dashed border-border-strong px-2.5 py-0.5 text-xs text-fg-faint hover:border-info-border hover:text-link"
         >
           <PlusIcon className="h-3 w-3" /> Assign field
         </button>
@@ -316,39 +487,70 @@ function FieldsSubsection({ scope }: { scope: FieldsScope }) {
   }
 
   return (
-    <div className="px-3 py-2 border-t border-gray-100">
+    <div className="px-3 py-2 border-t border-border">
       <div className="flex items-center gap-1.5 mb-2">
-        <SlidersIcon className="h-3 w-3 text-gray-400" />
-        <span className="text-xs font-semibold uppercase tracking-wide text-gray-400">Fields</span>
+        <SlidersIcon className="h-3 w-3 text-fg-faint" />
+        <span className="text-xs font-semibold uppercase tracking-wide text-fg-faint">Fields</span>
       </div>
+      <p className="mb-2 text-xs text-fg-faint">Order is set on Custom Fields.</p>
+      {removeError && <p role="alert" className="mb-2 text-xs text-danger-fg">{removeError}</p>}
+      {toggleError && <p role="alert" className="mb-2 text-xs text-danger-fg">{toggleError}</p>}
+      {addError && <p role="alert" className="mb-2 text-xs text-danger-fg">{addError}</p>}
       <div className="space-y-1">
         {(assignments as Assignment[]).map((a) => (
-          <div key={a.id} className="group flex items-center gap-2 rounded px-2 py-1 hover:bg-gray-50 text-xs">
-            <span className="flex-1 font-medium text-gray-700">
-              {a.field_def?.name ?? a.field_def_id}
-              <span className="ml-1.5 text-gray-400 font-normal">{a.field_def?.field_type}</span>
+          <div key={a.id} className="group flex flex-wrap items-center gap-x-4 gap-y-1 rounded px-2 py-1 hover:bg-subtle text-xs">
+            <span className="min-w-0 flex-1 basis-40 font-medium text-fg-soft wrap-anywhere">
+              <Link
+                to="/admin/custom-fields"
+                search={{ field: a.field_def_id }}
+                className="rounded text-link hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                {a.field_def?.name ?? a.field_def_id}
+              </Link>
+              <span className="ml-1.5 text-fg-faint font-normal">{a.field_def?.field_type}</span>
             </span>
-            <label className="flex items-center gap-1 text-gray-500 cursor-pointer select-none">
+            <label className={FIELD_CHECK}>
+              {/* The field goes in the name so a screen reader can tell the rows apart. */}
               <input
                 type="checkbox"
+                aria-label={`Show on new-ticket form for ${fieldName(a)}`}
                 checked={a.visible_on_new}
                 onChange={(e) => toggleMutation.mutate({ id: a.id, patch: { visible_on_new: e.target.checked } })}
                 className="h-3 w-3"
               />
-              visible
+              Show on new-ticket form
             </label>
-            <label className="flex items-center gap-1 text-gray-500 cursor-pointer select-none">
+            <label className={FIELD_CHECK}>
               <input
                 type="checkbox"
+                aria-label={`Required for ${fieldName(a)}`}
                 checked={a.required_on_new}
+                // Required only means anything on a form the field is shown on.
+                disabled={!a.visible_on_new}
                 onChange={(e) => toggleMutation.mutate({ id: a.id, patch: { required_on_new: e.target.checked } })}
                 className="h-3 w-3"
               />
-              required
+              Required
             </label>
+            {scope.kind === 'category' && (
+              <label className={FIELD_CHECK}>
+                <input
+                  type="checkbox"
+                  aria-label={`Offer to guests for ${fieldName(a)}`}
+                  checked={a.visible_to_guests ?? false}
+                  // Guests are offered a field only while it is on the form, so it
+                  // cannot be switched on for one that is not. A box already on
+                  // stays enabled, so it can still be turned off.
+                  disabled={!a.visible_on_new && !a.visible_to_guests}
+                  onChange={(e) => toggleMutation.mutate({ id: a.id, patch: { visible_to_guests: e.target.checked } })}
+                  className="h-3 w-3"
+                />
+                Offer to guests
+              </label>
+            )}
             <button
               onClick={() => removeMutation.mutate(a.id)}
-              className="invisible text-gray-300 hover:text-red-500 group-hover:visible"
+              className="opacity-0 focus-visible:opacity-100 group-focus-within:opacity-100 group-hover:opacity-100 text-fg-faint hover:text-danger-fg"
               title="Remove assignment"
             >
               <XIcon className="h-3.5 w-3.5" />
@@ -359,7 +561,7 @@ function FieldsSubsection({ scope }: { scope: FieldsScope }) {
           <div className="flex items-center gap-1.5 pt-1">
             <select
               autoFocus
-              className="rounded border border-gray-300 bg-white px-2 py-0.5 text-xs focus:outline-none focus:ring-1 focus:ring-blue-500"
+              className="rounded border border-border-strong bg-background px-2 py-0.5 text-xs focus:outline-none focus:ring-1 focus:ring-ring"
               value={selectedDefId}
               onChange={(e) => setSelectedDefId(e.target.value)}
             >
@@ -388,7 +590,7 @@ function FieldsSubsection({ scope }: { scope: FieldsScope }) {
         ) : (
           <button
             onClick={() => setAddingField(true)}
-            className="inline-flex items-center gap-1 rounded-full border border-dashed border-gray-300 px-2.5 py-0.5 text-xs text-gray-400 hover:border-blue-300 hover:text-blue-600"
+            className="inline-flex items-center gap-1 rounded-full border border-dashed border-border-strong px-2.5 py-0.5 text-xs text-fg-faint hover:border-info-border hover:text-link"
           >
             <PlusIcon className="h-3 w-3" /> Assign field
           </button>
@@ -432,44 +634,63 @@ function SortableItemRow({
 
   return (
     <div ref={setNodeRef} style={style} className={isDragging ? 'opacity-50' : ''}>
-      <div className="group flex items-center gap-2 py-2 pl-3 pr-3 hover:bg-gray-50">
+      <div data-archived={!item.active} className={`group flex items-center max-sm:flex-wrap gap-2 py-2 pl-3 pr-3 hover:bg-subtle`}>
         <button
           {...attributes}
           {...listeners}
-          className="cursor-grab text-gray-200 hover:text-gray-400 active:cursor-grabbing"
+          className="cursor-grab text-fg-faint hover:text-fg-faint active:cursor-grabbing"
           title="Drag to reorder"
         >
           <GripVerticalIcon className="h-3.5 w-3.5" />
         </button>
         <button
           onClick={() => setExpanded((v) => !v)}
-          className="flex h-4 w-4 shrink-0 items-center justify-center text-gray-400 hover:text-gray-600"
+          aria-label={expanded ? 'Collapse' : 'Expand'}
+          className="flex h-4 w-4 shrink-0 items-center justify-center text-fg-faint hover:text-fg-muted"
         >
           {expanded ? <ChevronDownIcon className="h-3.5 w-3.5" /> : <ChevronRightIcon className="h-3.5 w-3.5" />}
         </button>
-        <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-gray-300" />
+        <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-muted-strong" />
         <InlineName
           value={item.name}
           onSave={(name) => renameMutation.mutateAsync(name)}
-          className="text-sm text-gray-700"
+          className={`text-sm text-fg-soft ${item.active ? '' : 'opacity-60'}`}
         />
-        <button
-          onClick={() => setConfirmOpen(true)}
-          disabled={deleteMutation.isPending}
-          className="invisible text-gray-300 hover:text-red-500 group-hover:visible"
-          title="Delete item"
-        >
-          <TrashIcon className="h-3.5 w-3.5" />
-        </button>
+        <div className="flex items-center gap-2 max-sm:basis-full max-sm:flex-wrap max-sm:justify-end">
+          {!item.active && <ArchivedBadge />}
+          <ArchiveControl
+            kind="item"
+            name={item.name}
+            archived={!item.active}
+            setActive={(active) => updateItem(categoryId, typeId, item.id, { active })}
+            onChanged={() => qc.invalidateQueries({ queryKey: ['admin', 'items', categoryId, typeId] })}
+            iconClass="h-3.5 w-3.5"
+          />
+          <button
+            onClick={() => setConfirmOpen(true)}
+            disabled={deleteMutation.isPending}
+            className={`${ROW_BTN} hover:text-danger-fg`}
+            title="Delete item"
+          >
+            <TrashIcon className="h-3.5 w-3.5" />
+          </button>
+        </div>
       </div>
       {expanded && (
-        <div className="ml-8 border-l border-gray-100 pl-2">
+        <div className="ml-8 max-sm:ml-4 border-l border-border pl-2">
+          <DescriptionEditor
+            id={`description-item-${item.id}`}
+            value={item.description ?? ''}
+            save={(description) => updateItem(categoryId, typeId, item.id, { description })}
+            onSaved={() => qc.invalidateQueries({ queryKey: ['admin', 'items', categoryId, typeId] })}
+          />
           <FieldsSubsection scope={{ kind: 'item', categoryId, typeId, itemId: item.id }} />
         </div>
       )}
       <ConfirmDialog
         open={confirmOpen}
-        onOpenChange={setConfirmOpen}
+        onOpenChange={(open) => { setConfirmOpen(open); if (!open) deleteMutation.reset() }}
+        error={deleteMutation.isError ? deleteErrorText(deleteMutation.error) : undefined}
         title={`Delete item "${item.name}"?`}
         description="Tickets already classified with this item keep their classification but it can no longer be selected for new tickets."
         confirmLabel="Delete item"
@@ -493,6 +714,7 @@ function SortableTypeRow({
   const [expanded, setExpanded] = useState(false)
   const [addingItem, setAddingItem] = useState(false)
   const [itemName, setItemName] = useState('')
+  const [itemDescription, setItemDescription] = useState('')
   const [confirmOpen, setConfirmOpen] = useState(false)
 
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
@@ -519,11 +741,13 @@ function SortableTypeRow({
   })
 
   const addItemMutation = useMutation({
-    mutationFn: () => createItem(categoryId, type.id, { name: itemName.trim(), sort_order: items.length + 1 }),
+    mutationFn: () => createItem(categoryId, type.id, { name: itemName.trim(), description: itemDescription, sort_order: items.length + 1 }),
     onSuccess: () => {
       setItemName('')
+      setItemDescription('')
       setAddingItem(false)
       qc.invalidateQueries({ queryKey: ['admin', 'items', categoryId, type.id] })
+      invalidatePublicCatalogue(qc)
     },
   })
 
@@ -546,38 +770,51 @@ function SortableTypeRow({
 
   return (
     <div ref={setNodeRef} style={style} className={isDragging ? 'opacity-50' : ''}>
-      <div className="group flex items-center gap-2 py-2.5 pl-2 pr-3 hover:bg-gray-50">
+      <div data-archived={!type.active} className={`group flex items-center max-sm:flex-wrap gap-2 py-2.5 pl-2 pr-3 hover:bg-subtle`}>
         <button
           {...attributes}
           {...listeners}
-          className="cursor-grab text-gray-200 hover:text-gray-400 active:cursor-grabbing"
+          className="cursor-grab text-fg-faint hover:text-fg-faint active:cursor-grabbing"
           title="Drag to reorder"
         >
           <GripVerticalIcon className="h-3.5 w-3.5" />
         </button>
         <button
           onClick={() => setExpanded((v) => !v)}
-          className="flex h-5 w-5 shrink-0 items-center justify-center text-gray-400 hover:text-gray-600"
+          aria-label={expanded ? 'Collapse' : 'Expand'}
+          className="flex h-5 w-5 shrink-0 items-center justify-center text-fg-faint hover:text-fg-muted"
         >
           {expanded ? <ChevronDownIcon className="h-4 w-4" /> : <ChevronRightIcon className="h-4 w-4" />}
         </button>
         <InlineName
           value={type.name}
           onSave={(name) => renameMutation.mutateAsync(name)}
-          className="text-sm font-medium text-gray-800"
+          className={`text-sm font-medium text-fg ${type.active ? '' : 'opacity-60'}`}
         />
-        <button
-          onClick={() => setConfirmOpen(true)}
-          disabled={deleteMutation.isPending}
-          className="invisible text-gray-300 hover:text-red-500 group-hover:visible"
-          title="Delete type"
-        >
-          <TrashIcon className="h-3.5 w-3.5" />
-        </button>
+        <div className="flex items-center gap-2 max-sm:basis-full max-sm:flex-wrap max-sm:justify-end">
+          {!type.active && <ArchivedBadge />}
+          <ArchiveControl
+            kind="type"
+            name={type.name}
+            archived={!type.active}
+            setActive={(active) => updateType(categoryId, type.id, { active })}
+            onChanged={() => qc.invalidateQueries({ queryKey: ['admin', 'types', categoryId] })}
+            iconClass="h-3.5 w-3.5"
+          />
+          <button
+            onClick={() => setConfirmOpen(true)}
+            disabled={deleteMutation.isPending}
+            className={`${ROW_BTN} hover:text-danger-fg`}
+            title="Delete type"
+          >
+            <TrashIcon className="h-3.5 w-3.5" />
+          </button>
+        </div>
       </div>
       <ConfirmDialog
         open={confirmOpen}
-        onOpenChange={setConfirmOpen}
+        onOpenChange={(open) => { setConfirmOpen(open); if (!open) deleteMutation.reset() }}
+        error={deleteMutation.isError ? deleteErrorText(deleteMutation.error) : undefined}
         title={`Delete type "${type.name}"?`}
         description="All items under this type will also be removed. Tickets already classified under them keep their classification."
         confirmLabel="Delete type"
@@ -586,7 +823,13 @@ function SortableTypeRow({
       />
 
       {expanded && (
-        <div className="ml-8 border-l border-gray-100 pl-2 pb-1">
+        <div className="ml-8 max-sm:ml-4 border-l border-border pl-2 pb-1">
+          <DescriptionEditor
+            id={`description-type-${type.id}`}
+            value={type.description ?? ''}
+            save={(description) => updateType(categoryId, type.id, { description })}
+            onSaved={() => qc.invalidateQueries({ queryKey: ['admin', 'types', categoryId] })}
+          />
           <GroupsSubsection categoryId={categoryId} typeId={type.id} />
           <FieldsSubsection scope={{ kind: 'type', categoryId, typeId: type.id }} />
           <div className="pt-1">
@@ -602,25 +845,28 @@ function SortableTypeRow({
                   </SortableContext>
                 </DndContext>
                 {addingItem ? (
-                  <div className="flex items-center gap-2 py-2 pl-4 pr-3">
-                    <Input
-                      autoFocus
-                      placeholder="Item name"
-                      value={itemName}
-                      onChange={(e) => setItemName(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter' && itemName.trim()) addItemMutation.mutate()
-                        if (e.key === 'Escape') { setAddingItem(false); setItemName('') }
-                      }}
-                      className="h-7 text-sm"
-                    />
-                    <Button size="sm" className="h-7 text-xs" onClick={() => addItemMutation.mutate()} disabled={!itemName.trim() || addItemMutation.isPending}>Add</Button>
-                    <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => { setAddingItem(false); setItemName('') }}>Cancel</Button>
+                  <div className="space-y-2 py-2 pl-4 pr-3">
+                    <div className="flex items-center gap-2">
+                      <Input
+                        autoFocus
+                        placeholder="Item name"
+                        value={itemName}
+                        onChange={(e) => setItemName(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' && itemName.trim() && !isDescriptionTooLong(itemDescription)) addItemMutation.mutate()
+                          if (e.key === 'Escape') { setAddingItem(false); setItemName(''); setItemDescription('') }
+                        }}
+                        className="h-7 text-sm"
+                      />
+                      <Button size="sm" className="h-7 text-xs" onClick={() => addItemMutation.mutate()} disabled={!itemName.trim() || isDescriptionTooLong(itemDescription) || addItemMutation.isPending}>Add</Button>
+                      <Button size="sm" variant="ghost" className="h-7 text-xs" onClick={() => { setAddingItem(false); setItemName(''); setItemDescription('') }}>Cancel</Button>
+                    </div>
+                    <DescriptionField id={`new-item-description-${type.id}`} value={itemDescription} onChange={setItemDescription} />
                   </div>
                 ) : (
                   <button
                     onClick={() => setAddingItem(true)}
-                    className="flex items-center gap-1.5 py-2 pl-5 text-xs text-gray-400 hover:text-gray-600"
+                    className="flex items-center gap-1.5 py-2 pl-5 text-xs text-fg-faint hover:text-fg-muted"
                   >
                     <PlusIcon className="h-3 w-3" /> Add item
                   </button>
@@ -641,6 +887,7 @@ function SortableCategoryRow({ cat }: { cat: Category }) {
   const [expanded, setExpanded] = useState(false)
   const [addingType, setAddingType] = useState(false)
   const [typeName, setTypeName] = useState('')
+  const [typeDescription, setTypeDescription] = useState('')
   const [confirmOpen, setConfirmOpen] = useState(false)
 
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } =
@@ -667,11 +914,13 @@ function SortableCategoryRow({ cat }: { cat: Category }) {
   })
 
   const addTypeMutation = useMutation({
-    mutationFn: () => createType(cat.id, { name: typeName.trim(), sort_order: types.length + 1 }),
+    mutationFn: () => createType(cat.id, { name: typeName.trim(), description: typeDescription, sort_order: types.length + 1 }),
     onSuccess: () => {
       setTypeName('')
+      setTypeDescription('')
       setAddingType(false)
       qc.invalidateQueries({ queryKey: ['admin', 'types', cat.id] })
+      invalidatePublicCatalogue(qc)
     },
   })
 
@@ -692,41 +941,51 @@ function SortableCategoryRow({ cat }: { cat: Category }) {
 
   return (
     <div ref={setNodeRef} style={style} className={`border-b last:border-b-0 ${isDragging ? 'opacity-50' : ''}`}>
-      <div className="group flex items-center gap-2 px-4 py-3 hover:bg-gray-50">
+      <div data-archived={!cat.active} className={`group flex items-center max-sm:flex-wrap gap-2 px-4 py-3 hover:bg-subtle`}>
         <button
           {...attributes}
           {...listeners}
-          className="cursor-grab text-gray-200 hover:text-gray-400 active:cursor-grabbing"
+          className="cursor-grab text-fg-faint hover:text-fg-faint active:cursor-grabbing"
           title="Drag to reorder"
         >
           <GripVerticalIcon className="h-4 w-4" />
         </button>
         <button
           onClick={() => setExpanded((v) => !v)}
-          className="flex h-5 w-5 shrink-0 items-center justify-center text-gray-500 hover:text-gray-700"
+          aria-label={expanded ? 'Collapse' : 'Expand'}
+          className="flex h-5 w-5 shrink-0 items-center justify-center text-fg-faint hover:text-fg-soft"
         >
           {expanded ? <ChevronDownIcon className="h-4 w-4" /> : <ChevronRightIcon className="h-4 w-4" />}
         </button>
         <InlineName
           value={cat.name}
           onSave={(name) => renameMutation.mutateAsync(name)}
-          className="text-sm font-semibold text-gray-900"
+          className={`text-sm font-semibold text-fg ${cat.active ? '' : 'opacity-60'}`}
         />
-        {!cat.active && (
-          <span className="rounded bg-yellow-100 px-1.5 py-0.5 text-xs text-yellow-700">inactive</span>
-        )}
-        <button
-          onClick={() => setConfirmOpen(true)}
-          disabled={deleteMutation.isPending}
-          className="invisible text-gray-300 hover:text-red-500 group-hover:visible"
-          title="Delete category"
-        >
-          <TrashIcon className="h-4 w-4" />
-        </button>
+        <div className="flex items-center gap-2 max-sm:basis-full max-sm:flex-wrap max-sm:justify-end">
+          {!cat.active && <ArchivedBadge />}
+          <ArchiveControl
+            kind="category"
+            name={cat.name}
+            archived={!cat.active}
+            setActive={(active) => updateCategory(cat.id, { active })}
+            onChanged={() => qc.invalidateQueries({ queryKey: ['admin', 'categories'] })}
+            iconClass="h-4 w-4"
+          />
+          <button
+            onClick={() => setConfirmOpen(true)}
+            disabled={deleteMutation.isPending}
+            className={`${ROW_BTN} hover:text-danger-fg`}
+            title="Delete category"
+          >
+            <TrashIcon className="h-4 w-4" />
+          </button>
+        </div>
       </div>
       <ConfirmDialog
         open={confirmOpen}
-        onOpenChange={setConfirmOpen}
+        onOpenChange={(open) => { setConfirmOpen(open); if (!open) deleteMutation.reset() }}
+        error={deleteMutation.isError ? deleteErrorText(deleteMutation.error) : undefined}
         title={`Delete category "${cat.name}"?`}
         description="All types and items under this category will also be removed. Tickets already classified keep their classification."
         confirmLabel="Delete category"
@@ -735,7 +994,13 @@ function SortableCategoryRow({ cat }: { cat: Category }) {
       />
 
       {expanded && (
-        <div className="ml-11 border-l border-gray-100 pl-2 pb-2">
+        <div className="ml-11 max-sm:ml-4 border-l border-border pl-2 pb-2">
+          <DescriptionEditor
+            id={`description-category-${cat.id}`}
+            value={cat.description ?? ''}
+            save={(description) => updateCategory(cat.id, { description })}
+            onSaved={() => qc.invalidateQueries({ queryKey: ['admin', 'categories'] })}
+          />
           <GroupsSubsection categoryId={cat.id} />
           <FieldsSubsection scope={{ kind: 'category', categoryId: cat.id }} />
           <div className="pt-1">
@@ -751,25 +1016,28 @@ function SortableCategoryRow({ cat }: { cat: Category }) {
                   </SortableContext>
                 </DndContext>
                 {addingType ? (
-                  <div className="flex items-center gap-2 py-2 pl-3 pr-3">
-                    <Input
-                      autoFocus
-                      placeholder="Type name"
-                      value={typeName}
-                      onChange={(e) => setTypeName(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter' && typeName.trim()) addTypeMutation.mutate()
-                        if (e.key === 'Escape') { setAddingType(false); setTypeName('') }
-                      }}
-                      className="h-8 text-sm"
-                    />
-                    <Button size="sm" className="h-8 text-xs" onClick={() => addTypeMutation.mutate()} disabled={!typeName.trim() || addTypeMutation.isPending}>Add</Button>
-                    <Button size="sm" variant="ghost" className="h-8 text-xs" onClick={() => { setAddingType(false); setTypeName('') }}>Cancel</Button>
+                  <div className="space-y-2 py-2 pl-3 pr-3">
+                    <div className="flex items-center gap-2">
+                      <Input
+                        autoFocus
+                        placeholder="Type name"
+                        value={typeName}
+                        onChange={(e) => setTypeName(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter' && typeName.trim() && !isDescriptionTooLong(typeDescription)) addTypeMutation.mutate()
+                          if (e.key === 'Escape') { setAddingType(false); setTypeName(''); setTypeDescription('') }
+                        }}
+                        className="h-8 text-sm"
+                      />
+                      <Button size="sm" className="h-8 text-xs" onClick={() => addTypeMutation.mutate()} disabled={!typeName.trim() || isDescriptionTooLong(typeDescription) || addTypeMutation.isPending}>Add</Button>
+                      <Button size="sm" variant="ghost" className="h-8 text-xs" onClick={() => { setAddingType(false); setTypeName(''); setTypeDescription('') }}>Cancel</Button>
+                    </div>
+                    <DescriptionField id={`new-type-description-${cat.id}`} value={typeDescription} onChange={setTypeDescription} />
                   </div>
                 ) : (
                   <button
                     onClick={() => setAddingType(true)}
-                    className="flex items-center gap-1.5 py-2 pl-3 text-xs text-gray-400 hover:text-gray-600"
+                    className="flex items-center gap-1.5 py-2 pl-3 text-xs text-fg-faint hover:text-fg-muted"
                   >
                     <PlusIcon className="h-3.5 w-3.5" /> Add type
                   </button>
@@ -789,6 +1057,7 @@ export function CategoriesPage() {
   const qc = useQueryClient()
   const [addingCategory, setAddingCategory] = useState(false)
   const [catName, setCatName] = useState('')
+  const [catDescription, setCatDescription] = useState('')
   const [formError, setFormError] = useState('')
 
   const { data: categories = [], isLoading } = useQuery({
@@ -797,12 +1066,14 @@ export function CategoriesPage() {
   })
 
   const addCategoryMutation = useMutation({
-    mutationFn: () => createCategory({ name: catName.trim(), sort_order: categories.length + 1 }),
+    mutationFn: () => createCategory({ name: catName.trim(), description: catDescription, sort_order: categories.length + 1 }),
     onSuccess: () => {
       setCatName('')
+      setCatDescription('')
       setAddingCategory(false)
       setFormError('')
       qc.invalidateQueries({ queryKey: ['admin', 'categories'] })
+      invalidatePublicCatalogue(qc)
     },
     onError: (err) => setFormError(extractError(err)),
   })
@@ -827,23 +1098,23 @@ export function CategoriesPage() {
   return (
     <Layout>
       <div className="space-y-6">
-        <div className="flex items-start justify-between">
-          <div>
-            <h1 className="text-2xl font-bold text-gray-900">Categories</h1>
-            <p className="mt-1 text-sm text-gray-500">
+        <div className="flex flex-col items-start gap-3 sm:flex-row sm:justify-between sm:gap-0">
+          <div className="min-w-0">
+            <h1 className="text-2xl font-bold text-fg">Categories</h1>
+            <p className="mt-1 text-sm text-fg-faint">
               Define the three-level classification hierarchy: Category → Type → Item.
               Expand any node to manage its linked groups and custom field assignments.
             </p>
           </div>
-          <Button onClick={() => setAddingCategory(true)} className="ml-6 shrink-0">
+          <Button onClick={() => setAddingCategory(true)} className="shrink-0 sm:ml-6">
             <PlusIcon className="mr-2 h-4 w-4" />
             New Category
           </Button>
         </div>
 
         {addingCategory && (
-          <div className="rounded-lg border bg-white p-4">
-            <p className="mb-3 text-sm font-medium text-gray-700">New category</p>
+          <div className="rounded-lg border bg-card p-4">
+            <p className="mb-3 text-sm font-medium text-fg-soft">New category</p>
             <div className="flex items-center gap-3">
               <Input
                 autoFocus
@@ -851,28 +1122,31 @@ export function CategoriesPage() {
                 value={catName}
                 onChange={(e) => setCatName(e.target.value)}
                 onKeyDown={(e) => {
-                  if (e.key === 'Enter' && catName.trim()) addCategoryMutation.mutate()
-                  if (e.key === 'Escape') { setAddingCategory(false); setCatName('') }
+                  if (e.key === 'Enter' && catName.trim() && !isDescriptionTooLong(catDescription)) addCategoryMutation.mutate()
+                  if (e.key === 'Escape') { setAddingCategory(false); setCatName(''); setCatDescription('') }
                 }}
                 className="max-w-xs"
               />
-              <Button onClick={() => addCategoryMutation.mutate()} disabled={!catName.trim() || addCategoryMutation.isPending}>
+              <Button onClick={() => addCategoryMutation.mutate()} disabled={!catName.trim() || isDescriptionTooLong(catDescription) || addCategoryMutation.isPending}>
                 {addCategoryMutation.isPending ? 'Adding…' : 'Add'}
               </Button>
-              <Button variant="outline" onClick={() => { setAddingCategory(false); setCatName('') }}>Cancel</Button>
+              <Button variant="outline" onClick={() => { setAddingCategory(false); setCatName(''); setCatDescription('') }}>Cancel</Button>
             </div>
-            {formError && <p className="mt-2 text-sm text-red-600">{formError}</p>}
+            <div className="mt-3 max-w-lg">
+              <DescriptionField id="new-category-description" value={catDescription} onChange={setCatDescription} />
+            </div>
+            {formError && <p role="alert" className="mt-2 text-sm text-danger-fg">{formError}</p>}
           </div>
         )}
 
         {isLoading ? (
           <div className="flex justify-center py-12"><Spinner /></div>
         ) : categories.length === 0 ? (
-          <div className="rounded-lg border border-dashed bg-white px-6 py-12 text-center">
-            <p className="text-sm text-gray-500">No categories yet. Add one to get started.</p>
+          <div className="rounded-lg border border-dashed bg-card px-6 py-12 text-center">
+            <p className="text-sm text-fg-faint">No categories yet. Add one to get started.</p>
           </div>
         ) : (
-          <div className="rounded-lg border bg-white overflow-hidden">
+          <div className="rounded-lg border bg-card overflow-x-auto">
             <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleCategoryDragEnd}>
               <SortableContext items={sorted.map((c) => c.id)} strategy={verticalListSortingStrategy}>
                 {sorted.map((cat) => (

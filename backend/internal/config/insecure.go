@@ -42,6 +42,20 @@ func InsecureSecret(secret string) bool {
 	return false
 }
 
+// IsExampleSecret reports whether a secret is exactly one of the values this
+// project publishes (ignoring case and surrounding space). Narrower than
+// InsecureSecret on purpose: this decides that a value is thrown away, so it
+// must not match a real secret that merely contains the word "example".
+func IsExampleSecret(secret string) bool {
+	s := strings.ToLower(strings.TrimSpace(secret))
+	for _, example := range exampleSecrets {
+		if s == strings.ToLower(example) {
+			return true
+		}
+	}
+	return false
+}
+
 // InsecureSecrets names the configured secrets that are examples or
 // placeholders. Empty when everything is set properly.
 //
@@ -52,7 +66,12 @@ func (c *Config) InsecureSecrets() []string {
 	if InsecureSecret(c.SessionSecret) {
 		names = append(names, "SESSION_SECRET")
 	}
-	if InsecureSecret(c.JWTSecret) {
+	// JWT_SECRET: an exact published example is discarded at startup
+	// (cmd/server resolveJWTSecret), and a value under 32 bytes is replaced by
+	// a generated key, so neither is the key in use. What is left is a long
+	// placeholder that is not an exact example: it wins over the generated key,
+	// so it must be flagged.
+	if len(c.JWTSecret) >= 32 && !IsExampleSecret(c.JWTSecret) && InsecureSecret(c.JWTSecret) {
 		names = append(names, "JWT_SECRET")
 	}
 	return names

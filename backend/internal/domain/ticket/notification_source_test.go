@@ -38,7 +38,7 @@ func TestCreate_AnnouncesTheStoredTicketNotTheRequestedOne(t *testing.T) {
 		return tk
 	}
 
-	_, err := h.svc.Create(context.Background(), ticket.CreateInput{
+	_, err := h.svc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		Subject:    "Printer broken",
 		GuestEmail: &requested,
 		GuestName:  "Ada",
@@ -63,7 +63,7 @@ func TestCreate_ReadFailureAfterCommitSendsNoEmail(t *testing.T) {
 
 	h.store.errGetByID = errNotFound
 
-	tk, err := h.svc.Create(context.Background(), ticket.CreateInput{
+	tk, err := h.svc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		Subject:    "Printer broken",
 		GuestEmail: &guest,
 		GuestName:  "Ada",
@@ -86,7 +86,7 @@ func TestAddReply_AnnouncesTheStoredTrackingNumber(t *testing.T) {
 		return got
 	}
 
-	_, err := h.svc.AddReply(context.Background(), tk.ID, "a reply", false, true,
+	_, err := h.svc.AddReply(context.Background(), tk.ID, "a reply", ticket.TextFormatPlain, false, true,
 		"reporter@example.com", ticket.Actor{UserID: &staff, Role: user.RoleStaff}, 0, h.newStatus.ID)
 	require.NoError(t, err)
 
@@ -113,11 +113,12 @@ func TestCreate_RefusesAGuestAddressThatIsNotOne(t *testing.T) {
 		{"not an address at all", "not-an-address"},
 		{"header injection attempt", "victim@example.com\r\nBcc: attacker@evil.test"},
 		{"two addresses", "a@example.com, b@example.com"},
+		{"quoted local part that could never be mailed (#389)", `"john doe"@example.com`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarness(t)
 			email := tc.email
-			_, err := h.svc.Create(context.Background(), ticket.CreateInput{
+			_, err := h.svc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 				Subject:    "Printer broken",
 				GuestEmail: &email,
 				GuestName:  "Ada",
@@ -132,7 +133,7 @@ func TestCreate_RefusesAGuestAddressThatIsNotOne(t *testing.T) {
 func TestCreate_StoresTheNormalisedGuestAddress(t *testing.T) {
 	h := newHarness(t)
 	email := "  Ada@Example.COM  "
-	tk, err := h.svc.Create(context.Background(), ticket.CreateInput{
+	tk, err := h.svc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		Subject:    "Printer broken",
 		GuestEmail: &email,
 		GuestName:  "Ada",

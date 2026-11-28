@@ -1,0 +1,1385 @@
+// Captures every screenshot under screenshots/ for the 1.3.0 site.
+//
+//   node frontend/scripts/screenshots/capture.mjs --phase pre-setup
+//   node frontend/scripts/screenshots/capture.mjs --phase main [--only 05,12]
+//   node frontend/scripts/screenshots/capture.mjs --phase extras [--only 31,33m]
+//
+// --phase pre-setup runs against the empty instance, before seed.mjs (shots 15,
+// 15m). --phase main needs $SHOTS_OUT/seed.json written by seed.mjs. --phase
+// extras needs the same file after `seed.mjs --extras` has added to it, and runs
+// last because its data and settings changes would show in the older shots.
+//
+// The order of a full run (scripts/screenshots.sh):
+//   1. capture pre-setup      the empty instance: 15, 15m
+//   2. seed.mjs               users, groups, ten tickets
+//   3. capture main           01 to 28 except 02, then 08, 09, 14, 19, 23, 25
+//   4. seed.mjs --extras      a phone-call ticket, custom fields, a retired
+//                             category; and the history of two months: SLA
+//                             tracking and policies, about seventy tickets, a
+//                             reopened one, a breached and an at-risk one,
+//                             Alex in IT Support, Available ticked for staff
+//   5. backdate.sql           moves that history back in time (SQL, screenshot
+//                             database only). Everything before this step
+//                             was captured on an instance with no history
+//   6. capture extras         02 (the dashboard needs the history), 29 to 41,
+//                             42 to 52 (the ticket list, Reports, the
+//                             mobile dashboard and the settings pages that
+//                             need it), 53 to 55 (followers and category
+//                             descriptions, which seed.mjs --extras adds) and,
+//                             last, 57, 58 and 56 (SAML: "Require SAML" is on
+//                             for 57 and 58, so no staff or user can sign in
+//                             with a password until 56 turns it off)
+// Shot 02 is in phase extras for that reason: its counts, health card and
+// trend exist only after steps 4 and 5. No shot of 01 to 28 changes because of
+// them, except that 02 is no longer a main shot. Output is
+// $SHOTS_OUT/png/*.png (default ${TMPDIR:-/tmp}/ghd-shots), plus
+// $SHOTS_OUT/manifest.txt listing exactly the PNG files this invocation wrote, one
+// name per line (overwritten by each invocation). Env: SHOTS_BASE_URL (pre-setup only; main reads seed.json),
+// SHOTS_CHROMIUM.
+//
+// Line kinds printed at the end, one per shot:
+//   OK    file  WxH  KB       written, pixel size shown
+//   SKIP  file  -  reason    not captured because the seed lacks the data (or an
+//                            optional shot failed); the reason is printed
+//   FAIL  file  -  reason    a required shot or its data check failed
+// Exit code is non-zero if any FAIL line was printed.
+//
+// Known app issue, filed separately (not worked around here): ticket descriptions
+// and subjects use `break-all`, so words split mid-word in shots 05, 12 and 24.
+//
+// Design: scratchpad design-shots.md sections 2 and 4.4. Shot order matters:
+// the passkey shot (22) registers a credential that revokes Sam's sessions, so
+// it always runs last.
+
+import fs from 'node:fs'
+import path from 'node:path'
+import { assertLight, pinLight } from './lightPin.mjs'
+
+const DESK = { width: 1440, height: 900 }
+const MOBILE = { width: 390, height: 844 }
+// A phone whose screen is long enough for two ticket cards and the end of the second.
+const TALL_PHONE = { width: 390, height: 900 }
+const TALL_DASHBOARD_PHONE = { width: 390, height: 1243 }
+const PAD = 16
+const PASSWORD_FALLBACK = 'Screenshots-2026!'
+const RILEY_PASSWORD = 'Riley-Screenshot-2026!'
+const DEFAULT_CHROMIUM = '/opt/pw-browsers/chromium-1194/chrome-linux/chrome'
+const DATA_WAIT = 25000
+
+const OUT = process.env.SHOTS_OUT || path.join(process.env.TMPDIR || '/tmp', 'ghd-shots')
+const PNG_DIR = path.join(OUT, 'png')
+const SEED_FILE = path.join(OUT, 'seed.json')
+
+const args = process.argv.slice(2)
+
+// ── Shot table ────────────────────────────────────────────────────────────────
+//
+// Each shot: file, phase, role (seed user key or null), path (string or fn of
+// seed), vp (viewport), mobile (bool), requires (seed.features flag, optional),
+// optional (bool), passkey (bool), before(ctx, seed) (optional: set up state
+// through the API, after sign-in and before the page opens), css (optional: a
+// style sheet added just before the capture), prepare(page, ctx, seed), target:
+//   'viewport' | {tall: cap, exact?: bool} | {element: fn, padTop?, padBottom?}
+//   | {union: fn} | {cutBetween: fn}  (crop height set to a gap between two cards)
+// expect: [w, h] in device pixels, checked after capture (a mismatch is a failure).
+
+const ticketPath = (k) => (s) => `/tickets/${s.tickets[k].id}`
+// Tickets filed by `seed.mjs --extras`.
+const extraTicketPath = (k) => (s) => `/tickets/${s.extras.tickets[k].id}`
+
+// The quarantined-attachment row for the EICAR archive (shots 12, 13).
+const quarantinedRow = (page) => page.locator('div.border-red-300').filter({ hasText: 'invoice-2026-0417.txt.zip' })
+
+function cardOf(page, title) {
+  // Card is <div class="rounded-lg ..."> wrapping a CardHeader whose h3 is the title.
+  return page
+    .getByRole('heading', { name: title, exact: true })
+    .locator('xpath=ancestor::div[contains(concat(" ", normalize-space(@class), " "), " rounded-lg ")][1]')
+}
+
+function sectionOf(page, title) {
+  // Settings Section: <div><h2>title</h2><div class="rounded-lg border">…</div></div>
+  // Level 2 only: the page's own h1 can carry the same words (the Privacy page's
+  // h1 "Privacy" and its Privacy section), which would make the locator match twice.
+  return page.getByRole('heading', { level: 2, name: title, exact: true }).locator('xpath=..')
+}
+
+// Data waits throw on timeout: a missing row is a FAIL, never a silent capture.
+async function waitVisible(locator, timeout = 15000) {
+  await locator.first().waitFor({ state: 'visible', timeout })
+}
+
+async function waitActivity(page) {
+  await cardOf(page, 'Activity').locator('li').first().waitFor({ timeout: DATA_WAIT })
+}
+
+async function waitCirclKnown(page) {
+  // CIRCL is the provider the reviewed shots depend on (design 3.2): it must say "known".
+  await quarantinedRow(page).getByText(/CIRCL: known file/).first().waitFor({ timeout: DATA_WAIT })
+}
+
+const noticeBar = (page) => page.getByRole('region', { name: 'Server notices' })
+
+// JSON from the API with the session of the shot's own sign-in. A data check
+// that reads what the page reads, so a seed that lacks the data fails the shot.
+async function apiGet(ctx, url) {
+  const r = await ctx.request.get(url)
+  if (!r.ok()) throw new Error(`GET ${url}: HTTP ${r.status()}`)
+  return r.json()
+}
+
+// YYYY-MM-DD, n days before now (UTC, which is the zone every shot runs in).
+const daysAgo = (n) => new Date(Date.now() - n * 86400000).toISOString().slice(0, 10)
+
+// Answers every reply search of the page with one more header, then reloads so
+// the page asks again. The header is the one the server sends when it could not
+// search the replies (shots 44 and 45); the body is the server's own.
+async function withReplyHeader(page, name, value) {
+  await page.route(/\/api\/v1\/tickets\?/, async (route) => {
+    const req = route.request()
+    if (req.method() !== 'GET' || !req.url().includes('search_replies')) return route.continue()
+    const res = await route.fetch()
+    await route.fulfill({ response: res, headers: { ...res.headers(), [name]: value } })
+  })
+  await page.reload({ waitUntil: 'domcontentloaded' })
+  await settle(page)
+}
+
+// Desktop shows a row's archive, restore and delete buttons only under the
+// pointer. A still image has no pointer, and the touch layout shows them all, so
+// the desktop shot is made to show them the same way.
+const ARCHIVE_BUTTONS_SHOWN = 'button[class*="group-hover:opacity-100"]{opacity:1!important}'
+
+// HTML for the "Ticket received" mail. Content templates may use only the
+// tracking number and the ticket link.
+const TEMPLATE_HTML = `<div style="font-family:Arial,Helvetica,sans-serif;max-width:560px;margin:0 auto;padding:24px;border:1px solid #e4e4e7">
+<h2 style="margin:0 0 12px;color:#1d4ed8">We have your request</h2>
+<p>Thanks for getting in touch. Your tracking number is <strong>{{.TrackingNumber}}</strong>.</p>
+<p><a href="{{.TicketURL}}" style="display:inline-block;padding:10px 16px;background:#1d4ed8;color:#ffffff;text-decoration:none;border-radius:4px">Open your ticket</a></p>
+<p style="color:#71717a;font-size:12px">Keep this number if you need to ask about the request.</p>
+</div>`
+
+// An OAuth client acts as a service user. One in no group sees no ticket while
+// ticket scope is on, which the server notice bar reports. Skipped when it
+// already exists, so the two notice shots can share it.
+async function ensureBlindOAuthClient(ctx) {
+  const name = 'Reporting export'
+  const list = await ctx.request.get('/api/v1/admin/oauth-clients')
+  if (!list.ok()) throw new Error(`oauth clients: HTTP ${list.status()}`)
+  if ((await list.json()).some((c) => c.name === name)) return
+  const r = await ctx.request.post('/api/v1/admin/oauth-clients', { data: { name, scopes: ['tickets:read'] } })
+  if (!r.ok()) throw new Error(`create oauth client: HTTP ${r.status()}`)
+}
+
+// ── SAML (shots 56, 57, 58) ───────────────────────────────────────────────────
+//
+// The identity provider's metadata is pasted XML, from idp-metadata.xml: the
+// server needs no network for it, and the certificate and key of this side are
+// made by the server on the first save, which is what shot 56 shows. The file's
+// leading comment is for whoever maintains it; a file from a real identity
+// provider has none, so it is dropped.
+const IDP_METADATA = fs
+  .readFileSync(new URL('./idp-metadata.xml', import.meta.url), 'utf8')
+  .replace(/<!--[\s\S]*?-->\s*/g, '')
+
+async function sendJSON(ctx, method, url, data) {
+  const r = await ctx.request.fetch(url, { method, data })
+  if (!r.ok()) throw new Error(`${method} ${url}: HTTP ${r.status()} ${(await r.text()).slice(0, 200)}`)
+}
+
+// Every SAML setting empty and the switch off: nothing configured, nothing
+// loaded, no certificate stored. The switch goes first, so the save that clears
+// SAML is never one that would leave "Require SAML" on with nothing behind it.
+async function clearSAML(ctx) {
+  await sendJSON(ctx, 'PATCH', '/api/v1/admin/settings', { saml_enabled: false })
+  await sendJSON(ctx, 'PUT', '/api/v1/admin/saml', { metadata_url: '', metadata_xml: '', cert_pem: '', key_pem: '' })
+}
+
+// The "Reporting export" client made for 38 and 39 would put a second problem in
+// the notice bar of 57. Gone when it is not there.
+async function removeBlindOAuthClient(ctx) {
+  const list = await ctx.request.get('/api/v1/admin/oauth-clients')
+  if (!list.ok()) throw new Error(`oauth clients: HTTP ${list.status()}`)
+  for (const c of (await list.json()).filter((c) => c.name === 'Reporting export')) {
+    await sendJSON(ctx, 'DELETE', `/api/v1/admin/oauth-clients/${c.id}`)
+  }
+}
+
+// "Require SAML for staff and users" on, SAML not configured: the server reports
+// saml_required_not_loaded with reason "incomplete". Administrators keep password
+// sign-in, so the shot's own sign-in (and the next shot's) still works. From here
+// until 56 nothing may sign in as staff or a user: that is a 403 saml_required.
+async function requireSAMLWithoutSAML(ctx) {
+  await clearSAML(ctx)
+  await sendJSON(ctx, 'PATCH', '/api/v1/admin/settings', { saml_enabled: true })
+}
+
+const SHOTS = [
+  // ── Refreshed (same names) ──
+  {
+    file: '01-login.png', phase: 'main', path: '/login', vp: DESK,
+    async prepare() {},
+  },
+  {
+    file: '03-ticket-list.png', phase: 'main', role: 'admin', path: '/tickets?view=search', vp: DESK,
+    async prepare(page) {
+      // Admin defaults to Assigned to Me, which is empty for Alex. Since #676
+      // the old "all" scope button is the Search view, which lists every
+      // ticket the viewer can see.
+      await waitVisible(page.getByText('GHD-2026-000001', { exact: true }))
+    },
+  },
+  {
+    file: '04-new-ticket.png', phase: 'main', role: 'jordan', path: '/tickets/new', vp: DESK,
+    async prepare(page) {
+      await page.locator('#category').selectOption({ label: 'Hardware' })
+      await page.locator('#type').selectOption({ label: 'Laptop' })
+      await waitVisible(page.locator('#item'))
+    },
+  },
+  {
+    // break-all app issue applies (see header).
+    file: '05-ticket-detail.png', phase: 'main', role: 'jordan', path: ticketPath('T1'), vp: DESK,
+    async prepare(page) {
+      await waitActivity(page)
+    },
+  },
+  {
+    file: '06-admin-categories.png', phase: 'main', role: 'admin', path: '/admin/categories', vp: DESK,
+    async prepare(page) {
+      // The name is an inline editor (clicking it edits). The chevron is the
+      // second button in the row, after the drag handle.
+      const row = page.locator('div.group').filter({ hasText: 'Hardware' }).first()
+      await row.locator('button').nth(1).click()
+      await waitVisible(page.getByText('Printer', { exact: true }))
+    },
+  },
+  {
+    file: '07-admin-users.png', phase: 'main', role: 'admin', path: '/admin/users', vp: DESK,
+    async prepare(page) {
+      await waitVisible(page.getByText('drew.patel@example.com'))
+    },
+  },
+  {
+    file: '08-admin-settings.png', phase: 'main', role: 'admin', path: '/admin/settings/general', vp: DESK,
+    async prepare(page) {
+      await waitVisible(page.getByRole('heading', { name: 'Tickets', exact: true }))
+    },
+  },
+  {
+    // Staff land on Assigned to Me, which holds one ticket for Jordan. The Search
+    // view lists every ticket Jordan can see, which is the list this shot is for.
+    file: '09-staff-ticket-list.png', phase: 'main', role: 'jordan', path: '/tickets?view=search', vp: DESK,
+    async prepare(page) {
+      await waitVisible(page.getByText('GHD-2026-000001', { exact: true }))
+    },
+  },
+  {
+    file: '10-canned-responses-admin.png', phase: 'main', role: 'admin', path: '/admin/canned-responses', vp: DESK,
+    async prepare(page) {
+      await waitVisible(page.getByText('VPN troubleshooting steps', { exact: true }))
+    },
+  },
+  {
+    file: '11-canned-response-picker.png', phase: 'main', role: 'jordan', path: ticketPath('T1'), vp: DESK,
+    async prepare(page) {
+      await cardOf(page, 'Add work log entry').evaluate((el) => el.scrollIntoView({ block: 'center' }))
+      await page.getByRole('button', { name: 'Insert canned response' }).click()
+      await waitVisible(page.getByPlaceholder('Filter by name…'))
+    },
+  },
+  {
+    // break-all app issue applies (see header). Crop ends in the gap between the
+    // Attachments card and the next card, so no sliver of the next card shows.
+    file: '12-quarantined-attachment.png', phase: 'main', role: 'jordan', path: ticketPath('T3'), vp: DESK,
+    target: {
+      cutBetween: (page) => [
+        cardOf(page, 'Attachments'),
+        cardOf(page, 'Attachments').locator('xpath=following-sibling::*[1]'),
+      ],
+    },
+    async prepare(page, _ctx, seed) {
+      await waitVisible(page.getByRole('alert').filter({ hasText: 'identified as malicious' }))
+      if (seed?.features?.reputation) await waitCirclKnown(page)
+    },
+  },
+  {
+    file: '13-attachment-reputation.png', phase: 'main', role: 'jordan', path: ticketPath('T3'), vp: DESK,
+    requires: 'reputation',
+    // padTop 0: the 16 px pad would catch the Copy button of the row above.
+    target: { element: (page) => quarantinedRow(page), padTop: 0 },
+    async prepare(page) {
+      await page.getByRole('button', { name: /^Show all 2 services/ }).click({ timeout: DATA_WAIT })
+      await waitCirclKnown(page)
+    },
+  },
+  {
+    // Full width (sidebar and tab bar included), cap 2600 CSS px: Uploads,
+    // Malware scanning and the top of Reputation lookup (admin-guide.html:791).
+    file: '14-admin-settings-attachments.png', phase: 'main', role: 'admin', path: '/admin/settings/attachments', vp: DESK,
+    target: { tall: 2600, exact: true },
+    async prepare(page) {
+      await waitVisible(page.getByRole('heading', { name: 'Reputation lookup', exact: true }))
+    },
+  },
+
+  // ── New for 1.3.0 ──
+  {
+    file: '15-setup.png', phase: 'pre-setup', path: '/setup', vp: DESK, optional: false,
+    async prepare(page) {
+      await page.locator('#display-name').fill('Alex Rivera')
+      await page.locator('#email').fill('alex.rivera@example.com')
+      await page.locator('#category').fill('Hardware')
+    },
+  },
+  {
+    file: '15-setup-mobile.png', phase: 'pre-setup', path: '/setup', vp: MOBILE, mobile: true, optional: true,
+    async prepare(page) {
+      await page.locator('#display-name').fill('Alex Rivera')
+      await page.locator('#email').fill('alex.rivera@example.com')
+      await page.locator('#category').fill('Hardware')
+    },
+  },
+  {
+    file: '16-admin-audit-log.png', phase: 'main', role: 'admin', path: '/admin/audit', vp: DESK,
+    async prepare(page) {
+      await waitVisible(page.getByText('Password reset by admin', { exact: true }))
+    },
+  },
+  {
+    file: '17-ticket-activity-feed.png', phase: 'main', role: 'jordan', path: ticketPath('T1'), vp: DESK,
+    target: { element: (page) => cardOf(page, 'Activity') },
+    async prepare(page) {
+      await waitActivity(page)
+    },
+  },
+  {
+    file: '18-admin-webhooks.png', phase: 'main', role: 'admin', path: '/admin/webhooks', vp: DESK,
+    requires: 'webhookDelivered',
+    // All three hooks (Slack, Teams and the disabled Jira one, whose "No
+    // deliveries yet" sits at the bottom). 1500 cut the third one off; the cap is
+    // only a limit, the shot is as tall as the page.
+    target: { tall: 3000 },
+    async prepare(page, _ctx, seed) {
+      await waitVisible(page.getByText(/Failing|Delivered/).first(), DATA_WAIT)
+      // With SHOTS_WEBHOOK_OK_URL both enabled hooks (Slack and Teams) must show Delivered.
+      if (seed?.features?.webhookOk) await waitVisible(page.getByText(/^Delivered/).nth(1), DATA_WAIT)
+      await waitVisible(page.getByText('No deliveries yet').first(), DATA_WAIT)
+    },
+  },
+  {
+    file: '19-admin-settings-privacy.png', phase: 'main', role: 'admin', path: '/admin/settings/privacy', vp: DESK,
+    target: {
+      union: (page) => [
+        sectionOf(page, 'Ticket visibility'), sectionOf(page, 'Available queue'), sectionOf(page, 'Audit log'), sectionOf(page, 'Privacy'),
+      ],
+    },
+    async prepare(page) {
+      await waitVisible(page.getByRole('heading', { name: 'Privacy', exact: true }))
+    },
+  },
+  {
+    file: '20-signup.png', phase: 'main', path: '/signup', vp: DESK,
+    async prepare(page) {
+      await page.locator('#email').fill('riley.chen@example.com')
+    },
+  },
+  {
+    file: '21-verify-email.png', phase: 'main', path: (s) => `/verify-email?token=${s.signupToken}`, vp: DESK,
+    async prepare(page) {
+      await page.locator('#display_name').fill('Riley Chen')
+      await page.locator('#password').fill(RILEY_PASSWORD)
+      await page.locator('#confirm').fill(RILEY_PASSWORD)
+    },
+  },
+  {
+    file: '21-verify-email-mobile.png', phase: 'main', path: (s) => `/verify-email?token=${s.signupToken}`, vp: MOBILE,
+    mobile: true, optional: true,
+    async prepare(page) {
+      await page.locator('#display_name').fill('Riley Chen')
+      await page.locator('#password').fill(RILEY_PASSWORD)
+      await page.locator('#confirm').fill(RILEY_PASSWORD)
+    },
+  },
+  {
+    file: '22-account-passkeys.png', phase: 'main', role: 'sam', path: '/account', vp: DESK,
+    passkey: true,
+    target: { tall: 4000 },
+    async prepare(page, ctx) {
+      // A CDP virtual authenticator answers the browser's WebAuthn prompt.
+      const cdp = await ctx.newCDPSession(page)
+      await cdp.send('WebAuthn.enable')
+      await cdp.send('WebAuthn.addVirtualAuthenticator', {
+        options: {
+          protocol: 'ctap2', transport: 'internal', hasResidentKey: true,
+          hasUserVerification: true, isUserVerified: true, automaticPresenceSimulation: true,
+        },
+      })
+      await page.getByLabel('Name this key').fill('Work laptop')
+      await page.getByRole('button', { name: 'Add a passkey' }).click()
+      await waitVisible(page.getByText('Work laptop', { exact: true }))
+      await waitVisible(page.getByText('This device only').first())
+    },
+  },
+  {
+    // The Search view, as 09: Assigned to Me holds one ticket for Jordan.
+    file: '23-mobile-ticket-list.png', phase: 'main', role: 'jordan', path: '/tickets?view=search', vp: MOBILE, mobile: true,
+    async prepare(page) {
+      // The card list is md:hidden; the desktop table with the same text is in the DOM too.
+      await waitVisible(page.locator('ul.md\\:hidden').getByText('GHD-2026-000001', { exact: true }))
+    },
+  },
+  {
+    // break-all app issue applies (see header).
+    file: '24-mobile-ticket-detail.png', phase: 'main', role: 'jordan', path: ticketPath('T1'), vp: MOBILE, mobile: true,
+    async prepare(page) {
+      await waitActivity(page)
+    },
+  },
+  {
+    file: '25-mobile-nav-drawer.png', phase: 'main', role: 'jordan', path: '/dashboard', vp: MOBILE, mobile: true,
+    async prepare(page) {
+      await page.getByRole('button', { name: 'Open navigation menu' }).click()
+      await waitVisible(page.getByRole('dialog'))
+      await page.waitForTimeout(300)
+    },
+  },
+  {
+    file: '26-mobile-new-ticket.png', phase: 'main', role: 'morgan', path: '/tickets/new', vp: MOBILE, mobile: true,
+    async prepare(page) {
+      await page.locator('#category').selectOption({ label: 'Hardware' })
+    },
+  },
+  {
+    file: '27-closed-ticket-requester.png', phase: 'main', role: 'taylor', path: ticketPath('T9'), vp: DESK,
+    async prepare(page) {
+      await waitVisible(page.getByText('Create follow-up').first())
+    },
+  },
+  {
+    file: '28-guest-submit.png', phase: 'main', path: '/submit', vp: DESK, optional: true,
+    async prepare(page) {
+      await page.locator('#name').fill('Pat Lee')
+      await page.locator('#email').fill('pat.lee@example.com')
+      await page.locator('#subject').fill('Cannot join the visitor Wi-Fi')
+    },
+  },
+
+  // ── Extras: the 1.3.0 screens added after the first set (phase "extras") ──
+  // ── The dashboard, Reports and the ticket views (phase "extras": they need the
+  // history seed.mjs --extras filed and backdate.sql moved). They come first in
+  // this phase: 37 turns the upgrade wizard back on and 38 adds an OAuth client,
+  // whose notice would sit on every admin page after it. Nothing here saves a
+  // setting. ──
+  {
+    // The administrator's dashboard on an instance that has run for two months. The
+    // health card has its one amber item (SLA tracking on, alerts off), the queue
+    // strip has counts in every cell, and Needs attention lists a breached, an
+    // at-risk, two unassigned and a reopened ticket. The checks read the API the
+    // page reads, so a missing piece of the history fails here and not in the image.
+    file: '02-dashboard.png', phase: 'extras', role: 'admin', path: '/dashboard', vp: DESK,
+    target: { tall: 2400 },
+    async prepare(page, ctx) {
+      const dash = await apiGet(ctx, '/api/v1/dashboard?tz=UTC')
+      const q = Object.fromEntries(dash.queues.map((c) => [c.key, c.count]))
+      console.log(`02 queue: ${JSON.stringify(q)}; attention: ${dash.attention.map((a) => `${a.reason}:${a.ticket.tracking_number}`).join(' ')}`)
+      for (const k of ['assigned_to_me', 'my_groups', 'sla_breached', 'sla_at_risk', 'awaiting_my_reply']) {
+        if (!(q[k] > 0)) throw new Error(`dashboard: Your queue cell ${k} is ${q[k]}; the history seed should make it more than 0`)
+      }
+      const reasons = new Set(dash.attention.map((a) => a.reason))
+      for (const r of ['breached', 'at_risk', 'unassigned', 'reopened']) {
+        if (!reasons.has(r)) throw new Error(`dashboard: Needs attention has no ${r} row (rows: ${dash.attention.map((a) => `${a.reason} ${a.ticket.subject}`).join('; ')})`)
+      }
+      const busy = dash.volume.days.filter((d) => d.created > 0).length
+      if (busy < 15) throw new Error(`dashboard: the 30-day trend has tickets created on only ${busy} days`)
+
+      const health = page.getByRole('region', { name: 'Health' })
+      await waitVisible(health.getByText('SLA tracking is on, but breach and at-risk alerts are off.'))
+      const items = await health.locator('li').count()
+      if (items !== 1) throw new Error(`dashboard: the health card has ${items} items, expected the one amber item`)
+      await waitVisible(page.getByRole('heading', { name: 'Needs attention', exact: true }))
+      await waitVisible(page.getByText('Reopened', { exact: false }))
+      if (await page.getByText('Nothing needs attention').count()) throw new Error('dashboard: Needs attention is empty on the page')
+      await waitVisible(page.getByRole('heading', { name: 'By Client', exact: true }))
+      await waitVisible(page.getByTestId('queue-count'))
+    },
+  },
+  {
+    // Reports for the last 30 days against the 30 before. Every card has figures
+    // and a comparison, and every chart has bars.
+    file: '48-reports.png', phase: 'extras', role: 'admin', path: '/reports', vp: DESK,
+    target: { tall: 2600 },
+    async prepare(page, ctx) {
+      const k = await apiGet(ctx, '/api/v1/reports/kpi?tz=UTC')
+      const { current, previous, change } = k.measures
+      if (!(current.created > 10 && previous.created > 5)) throw new Error(`reports: created ${current.created} now and ${previous.created} before`)
+      if (!(current.resolved > 5 && current.time_to_resolve.count > 5)) throw new Error('reports: too few resolved tickets in the period')
+      if (!(current.first_response.count > 5 && previous.first_response.count > 3)) throw new Error('reports: too few first responses to compare')
+      if (!(current.sla.tracked > 5 && previous.sla.tracked > 3)) throw new Error('reports: too few SLA-tracked tickets to compare')
+      if (!(current.reopen.reopened > 0)) throw new Error('reports: no ticket reopened in the period (reopen rate would be 0)')
+      for (const m of ['created', 'resolved', 'time_to_resolve_median', 'first_response_median', 'sla_met_rate', 'reopen_rate']) {
+        if (!['change', 'from_zero'].includes(change[m].state)) throw new Error(`reports: ${m} compares as ${change[m].state}`)
+      }
+      if (k.volume.days.filter((d) => d.created > 0).length < 15) throw new Error('reports: the volume chart has fewer than 15 busy days')
+      for (const b of k.backlog.buckets) if (!(b.count > 0)) throw new Error(`reports: backlog bucket ${b.key} is empty`)
+      if (k.workload.by_assignee.length < 3 || k.workload.by_group.length < 2) throw new Error('reports: the workload card has too few rows')
+
+      await waitVisible(page.getByRole('heading', { name: 'Reports', exact: true }))
+      await waitVisible(page.getByText('All categories · All priorities · All groups'))
+      for (const t of ['Time to resolve', 'First response', 'SLA attainment', 'Reopen rate', 'Volume', 'Backlog aging', 'Workload']) {
+        await waitVisible(page.getByRole('heading', { name: t, exact: true }))
+      }
+      await waitVisible(page.getByRole('button', { name: 'Download CSV' }))
+      await waitVisible(page.getByRole('button', { name: 'Download image' }))
+    },
+  },
+  {
+    // My Group's Tickets: held by nobody, by Jordan and by a teammate.
+    // Crop ends in the gap between the 13th and 14th rows, so no row is cut
+    // through. The size depends on the row heights, so there is no expect check.
+    file: '49-ticket-views-groups.png', phase: 'extras', role: 'jordan', path: '/tickets?view=groups', vp: DESK,
+    target: { cutBetween: (page) => [page.locator('tbody tr').nth(12), page.locator('tbody tr').nth(13)] },
+    async prepare(page, ctx) {
+      const me = await apiGet(ctx, '/api/v1/me')
+      const list = await apiGet(ctx, '/api/v1/tickets?scope=my_groups&limit=100')
+      const held = new Set(list.map((t) => (t.assignee_user_id === null || t.assignee_user_id === undefined ? 'nobody' : t.assignee_user_id === me.id ? 'me' : 'other')))
+      for (const h of ['nobody', 'me', 'other']) if (!held.has(h)) throw new Error(`views: no group ticket is held by ${h}`)
+      if (list.length < 4) throw new Error(`views: only ${list.length} group tickets`)
+
+      await waitVisible(page.getByRole('heading', { name: "My Group's Tickets", level: 1 }))
+      for (const name of ['Assigned to Me', "My Group's Tickets", 'Search', 'Available', 'Reports']) {
+        await waitVisible(page.getByRole('link', { name, exact: true }))
+      }
+      for (const name of ['All', 'Group queue', 'Assigned to me', 'Assigned to others']) {
+        await waitVisible(page.getByRole('button', { name, exact: true }))
+      }
+      await waitVisible(page.locator('tbody tr'))
+      if ((await page.locator('tbody tr').count()) < 14) throw new Error('views: fewer than fourteen rows on the page')
+    },
+  },
+  {
+    // The File size section with 50 typed and not saved, so the note about the
+    // virus scanner shows (scanning is required in the seed).
+    file: '50-system-file-size.png', phase: 'extras', role: 'admin', path: '/admin/settings/attachments', vp: DESK,
+    target: { element: (page) => sectionOf(page, 'File size') },
+    async prepare(page) {
+      await page.getByLabel('Largest file anyone may attach').fill('50')
+      const section = sectionOf(page, 'File size')
+      await waitVisible(section.getByText(/Your virus scanner must accept files this large/))
+      await waitVisible(section.getByText('Applies to every upload: staff, requesters and guests.', { exact: false }))
+      const line = (await section.getByTestId('guest-limit-line').innerText()).trim()
+      if (line !== 'Guests: up to 5 MB.') throw new Error(`file size: the guest line reads "${line}"`)
+    },
+  },
+  {
+    // The dashboard of a staff member on a phone: the queue strip as two columns,
+    // the first status cards and the start of Needs attention. At 844 px the queue
+    // and the five status cards fill the screen and the list is below it, so the
+    // viewport is 1243 px tall: the list is in the shot, and nothing else changes.
+    file: '51-mobile-dashboard.png', phase: 'extras', role: 'jordan', path: '/dashboard', vp: TALL_DASHBOARD_PHONE, mobile: true,
+    async prepare(page, ctx) {
+      const dash = await apiGet(ctx, '/api/v1/dashboard?tz=UTC')
+      console.log(`51 queue: ${JSON.stringify(Object.fromEntries(dash.queues.map((c) => [c.key, c.count])))}`)
+      const risky = await apiGet(ctx, '/api/v1/tickets?scope=assigned_to_me&sla=at_risk&limit=20')
+      console.log(`51 at risk: ${risky.map((t) => t.tracking_number + ' ' + t.subject).join('; ')}`)
+      if (dash.queues.length !== 5) throw new Error(`mobile dashboard: ${dash.queues.length} queue cells, expected 5`)
+      if (!(dash.attention.length >= 3)) throw new Error('mobile dashboard: Needs attention has fewer than 3 rows')
+      await waitVisible(page.getByRole('heading', { name: 'Your queue', exact: true }))
+      await waitVisible(page.getByRole('heading', { name: 'Needs attention', exact: true }))
+      await waitVisible(page.getByTestId('queue-count'))
+      if ((await page.getByTestId('queue-count').count()) !== 5) throw new Error('mobile dashboard: the page does not show five queue cells')
+    },
+  },
+  {
+    // Email -> Notifications: the tab bar, the four overrides and the SLA alerts switch.
+    file: '52-system-email-notifications.png', phase: 'extras', role: 'admin', path: '/admin/settings/email', vp: DESK,
+    target: {
+      union: (page) => [
+        page.getByRole('navigation', { name: 'Email sections' }),
+        sectionOf(page, 'Staff email about tickets'),
+        sectionOf(page, 'SLA alerts'),
+      ],
+    },
+    async prepare(page) {
+      const staff = sectionOf(page, 'Staff email about tickets')
+      await waitVisible(staff)
+      if ((await staff.getByRole('combobox').count()) !== 4) throw new Error('email: the staff email section has no four drop-downs')
+      await waitVisible(page.getByRole('link', { name: 'Notifications', exact: true }))
+      await waitVisible(page.getByRole('link', { name: 'Templates', exact: true }))
+      await waitVisible(sectionOf(page, 'SLA alerts').getByText(/Tell staff by email/))
+    },
+  },
+
+  // ── The ticket list of #667, retaken against #676: the Search view, with the
+  // filters, the reply match and the two notices. The same search state as the
+  // pre-#676 shots, on this seed's tickets. ──
+  {
+    // Four filters on (status, priority, category and type, created), the panel
+    // open, the chips under it and the list sorted by Updated.
+    file: '42-ticket-list-filters-and-sort.png', phase: 'extras', role: 'jordan', path: '/tickets?view=search', vp: DESK,
+    target: { tall: 2200 },
+    async prepare(page) {
+      await waitVisible(page.locator('tbody tr'))
+      await page.getByRole('button', { name: /^Filters/ }).click()
+      for (const l of ['In Progress', 'Pending', 'High']) await page.getByLabel(l, { exact: true }).check()
+      await page.getByLabel('Category', { exact: true }).selectOption({ label: 'Hardware' })
+      await page.getByLabel('Type', { exact: true }).selectOption({ label: 'Printer' })
+      await page.getByLabel('Created from').fill(daysAgo(45))
+      await page.getByLabel('Created to').fill(daysAgo(0))
+      await waitVisible(page.getByText('Printer on the 3rd floor jams on tray 2'), DATA_WAIT)
+      // The Search view lists newest created first; the shot is sorted by Updated.
+      const updated = page.locator('th').getByRole('button', { name: /^Updated/ })
+      await updated.click()
+      if (await page.getByText('Sorted by Updated, oldest first.').count()) await updated.click()
+      await waitVisible(page.getByText('Sorted by Updated, newest first.'))
+      const rows = await page.locator('tbody tr').count()
+      if (rows < 4) throw new Error(`filters: ${rows} rows match the four filters, expected 4 or more`)
+      // Every row is what the filters say; the chips name the four filters.
+      for (const chip of [/^Status: In Progress, Pending/, /^Priority: High/, /^Category: Hardware/, /^Created: /]) {
+        await waitVisible(page.getByText(chip))
+      }
+    },
+  },
+  {
+    // The word "fuser" is in a public reply on one ticket and in an internal
+    // note on another, and in nothing else.
+    file: '43-ticket-list-reply-match.png', phase: 'extras', role: 'jordan', path: '/tickets?view=search&q=fuser', vp: DESK,
+    async prepare(page) {
+      await waitVisible(page.getByText(/Public reply/), DATA_WAIT)
+      await waitVisible(page.getByText(/Internal note/), DATA_WAIT)
+      const rows = await page.locator('tbody tr').count()
+      if (rows !== 2) throw new Error(`reply match: ${rows} tickets match "fuser", expected 2`)
+      if ((await page.locator('tbody mark').count()) < 2) throw new Error('reply match: the matched words are not highlighted')
+    },
+  },
+  {
+    // The notice when the five-second limit ran out. The server cannot be made to
+    // run out of time for a seed this small, so the answer to the one list request
+    // is the real one with the header the server sends in that case
+    // (X-Replies-Searched: false). The notice is drawn from that header and nothing else.
+    file: '44-ticket-list-replies-not-searched.png', phase: 'extras', role: 'jordan', path: '/tickets?view=search&q=printer', vp: DESK,
+    async prepare(page) {
+      await withReplyHeader(page, 'X-Replies-Searched', 'false')
+      await waitVisible(page.getByText("Replies weren't fully searched", { exact: false }), DATA_WAIT)
+      await waitVisible(page.locator('tbody tr'))
+    },
+  },
+  {
+    // The notice while the reply index is still being built after an upgrade.
+    // The index of this instance was built at its first start, so, as for 44, the
+    // answer carries the header the server sends while it is not ready
+    // (X-Reply-Index: building).
+    file: '45-ticket-list-reply-index-preparing.png', phase: 'extras', role: 'jordan', path: '/tickets?view=search&q=printer', vp: DESK,
+    async prepare(page) {
+      await withReplyHeader(page, 'X-Reply-Index', 'building')
+      await waitVisible(page.getByText('Reply search is still being prepared', { exact: false }), DATA_WAIT)
+      await waitVisible(page.locator('tbody tr'))
+    },
+  },
+  {
+    // The Filters dialog on a phone with the same four filters ticked. Nothing is
+    // applied: the dialog edits a draft until Show results.
+    file: '46-mobile-ticket-filters.png', phase: 'extras', role: 'jordan', path: '/tickets?view=search', vp: MOBILE, mobile: true,
+    async prepare(page) {
+      await waitVisible(page.locator('ul.md\\:hidden').getByText('GHD-2026-000001', { exact: true }))
+      await page.getByRole('button', { name: /^Filters/ }).click()
+      const dialog = page.getByRole('dialog')
+      await waitVisible(dialog.getByRole('button', { name: 'Show results' }))
+      for (const l of ['In Progress', 'Pending', 'High']) await dialog.getByLabel(l, { exact: true }).check()
+      await dialog.getByLabel('Category', { exact: true }).selectOption({ label: 'Hardware' })
+      await dialog.getByLabel('Type', { exact: true }).selectOption({ label: 'Printer' })
+      await dialog.getByLabel('Created from').fill(daysAgo(45))
+      await dialog.getByLabel('Created to').fill(daysAgo(0))
+      await waitVisible(dialog.getByRole('button', { name: 'Clear all' }))
+    },
+  },
+  {
+    // A search for "fuser" on a phone: two cards, each with the line that shows
+    // where the words were.
+    file: '47-mobile-ticket-reply-match.png', phase: 'extras', role: 'jordan', path: '/tickets?view=search&q=fuser', vp: TALL_PHONE, mobile: true,
+    async prepare(page) {
+      const cards = page.locator('ul.md\\:hidden')
+      await waitVisible(cards.getByText(/Public reply/), DATA_WAIT)
+      await waitVisible(cards.getByText(/Internal note/), DATA_WAIT)
+      const n = await cards.locator('li').count()
+      if (n !== 2) throw new Error(`mobile reply match: ${n} cards, expected 2`)
+    },
+  },
+
+  {
+    // Typed, not pasted: the editor turns the Markdown marks into formatting as
+    // they are typed. The card is cropped to the composer.
+    file: '29-reply-markdown-editor.png', phase: 'extras', role: 'jordan', path: extraTicketPath('T11'), vp: DESK,
+    target: { element: (page) => cardOf(page, 'Add work log entry') },
+    async prepare(page) {
+      await waitActivity(page)
+      const editor = page.getByRole('textbox', { name: 'Work log entry' })
+      await cardOf(page, 'Add work log entry').evaluate((el) => el.scrollIntoView({ block: 'center' }))
+      await editor.click()
+      await page.keyboard.type('Checked the laptop on site and **cleared the cached sign-in**. ')
+      await page.keyboard.type('The box has not come back after an hour:')
+      await page.keyboard.press('Enter')
+      await page.keyboard.type('- Cleared the cached credentials')
+      await page.keyboard.press('Enter')
+      await page.keyboard.type('Updated `Office` to the current build')
+      await page.keyboard.press('Enter')
+      await page.keyboard.press('Enter')
+      await page.keyboard.type('Casey will confirm on Friday.')
+      await waitVisible(editor.locator('strong'))
+      await waitVisible(editor.locator('li'))
+    },
+  },
+  {
+    // The description was filed as plain text, so it keeps its marks and offers
+    // "Show formatted"; the reply is Markdown and offers "Plain text".
+    file: '30-ticket-show-formatted.png', phase: 'extras', role: 'jordan', path: extraTicketPath('T11'), vp: DESK,
+    target: {
+      union: (page) => [
+        cardOf(page, 'Description'),
+        page.locator('div.rounded-lg.border').filter({ hasText: 'Two things to try' }),
+      ],
+    },
+    async prepare(page) {
+      await waitVisible(page.getByRole('button', { name: 'Show formatted' }))
+      await waitVisible(page.locator('div[data-md-body] strong'), DATA_WAIT)
+    },
+  },
+  {
+    // The email template editor with HTML open and the preview of it (the
+    // preview is a sandboxed frame). Nothing is saved. The plain-text part of the
+    // preview prints the ticket link built from the server's BASE_URL, which is
+    // http://localhost:<port> here and cannot be changed (passkeys need it to be
+    // the browser's own origin). Before the capture the page text is changed to
+    // https://help.example.com. That is the editor's own <pre>, not the sandboxed
+    // frame, which has no script and shows the link only as a button's href, never
+    // as text. The shot throws if "localhost" is still on the page.
+    file: '31-email-template-html.png', phase: 'extras', role: 'admin', path: '/admin/settings/email/templates?t=ticket_created', vp: DESK,
+    target: { element: (page) => page.getByRole('form', { name: /^Edit / }) },
+    async prepare(page) {
+      await page.getByLabel('HTML', { exact: true }).fill(TEMPLATE_HTML)
+      await waitVisible(page.locator('iframe[title="HTML preview"]'), DATA_WAIT)
+      await page.locator('iframe[title="HTML preview"]').scrollIntoViewIfNeeded()
+      await page.waitForTimeout(500)
+      await page.locator('pre').evaluateAll((pres) => {
+        for (const pre of pres) pre.textContent = pre.textContent.replace(/http:\/\/localhost:\d+/g, 'https://help.example.com')
+      })
+      const left = await page.evaluate(() => document.body.innerText.includes('localhost'))
+      if (left) throw new Error('"localhost" is still visible in the template preview')
+    },
+  },
+  {
+    // A draft the server refuses: {{.Description}} is not a variable a template
+    // may use (ticket text stays out of mail by design). The editor checks every
+    // change, shows the error under the field and keeps Save off.
+    file: '32-email-template-refused.png', phase: 'extras', role: 'admin', path: '/admin/settings/email/templates?t=ticket_created', vp: DESK,
+    target: { element: (page) => page.getByRole('form', { name: /^Edit / }) },
+    async prepare(page) {
+      await page.getByLabel('HTML', { exact: true }).fill(TEMPLATE_HTML.replace('</div>', '<p>{{.Description}}</p>\n</div>'))
+      await waitVisible(page.locator('[id$="-html-error"]'), DATA_WAIT)
+    },
+  },
+  {
+    // A select field opened: its options (two held by tickets, so no Delete),
+    // Show retired on, how many tickets hold a value, and where it appears.
+    file: '41-admin-custom-fields.png', phase: 'extras', role: 'admin', path: '/admin/custom-fields', vp: DESK,
+    target: { tall: 2400 },
+    async prepare(page) {
+      const row = page.getByRole('group', { name: 'Condition on arrival', exact: true })
+      await row.getByRole('button', { expanded: false }).first().click()
+      await waitVisible(page.getByText(/tickets have a value for this field/))
+      await row.getByLabel('Show retired').check()
+      await waitVisible(row.getByText('Refurbished'))
+    },
+  },
+  {
+    // The forced style also shows the rename pencils, which the touch layout
+    // shows too (it has no hover for any of them).
+    file: '33-admin-categories-archive.png', phase: 'extras', role: 'admin', path: '/admin/categories', vp: DESK,
+    css: ARCHIVE_BUTTONS_SHOWN,
+    async prepare(page) {
+      await waitVisible(page.getByText('Archived', { exact: true }))
+    },
+  },
+  {
+    file: '33-admin-categories-archive-mobile.png', phase: 'extras', role: 'admin', path: '/admin/categories', vp: MOBILE,
+    mobile: true, optional: true,
+    async prepare(page) {
+      await waitVisible(page.getByText('Archived', { exact: true }))
+      // Each row is tall on a phone, so the archived one is below the fold.
+      await page.evaluate(() => {
+        const m = document.querySelector('main')
+        m.scrollTop = m.scrollHeight
+      })
+    },
+  },
+  {
+    // Staff filing for a requester: "Another user", found by search, and the
+    // "How did this reach you?" choice that appears once a requester is picked.
+    file: '34-staff-new-ticket-on-behalf.png', phase: 'extras', role: 'jordan', path: '/tickets/new', vp: DESK,
+    target: { tall: 1700 },
+    async prepare(page) {
+      await page.getByLabel('Another user').check()
+      await page.getByLabel('Search users').fill('casey')
+      await page.getByRole('button', { name: /Casey Nguyen/ }).click()
+      await page.getByLabel('Phone call').check()
+      await page.locator('#subject').fill('Shared drive is slow to open')
+      await page.getByRole('textbox', { name: 'Description' }).click()
+      await page.keyboard.type('Casey called: the finance share takes about a minute to open since this morning.')
+      await page.locator('#category').selectOption({ label: 'Software' })
+      await page.locator('#type').selectOption({ label: 'Office suite' })
+    },
+  },
+  {
+    // The "via phone" line in the ticket header, with the requester under the title.
+    file: '35-ticket-via-phone.png', phase: 'extras', role: 'jordan', path: extraTicketPath('T11'), vp: DESK,
+    target: {
+      element: (page) =>
+        page.getByTestId('source-channel-line').locator('xpath=ancestor::div[contains(concat(" ", normalize-space(@class), " "), " space-y-1 ")][1]'),
+    },
+    async prepare(page) {
+      await waitVisible(page.getByTestId('source-channel-line').filter({ hasText: 'via phone' }))
+    },
+  },
+  {
+    // The key is made through the form, so the banner is the real one. The
+    // token is a throwaway (this instance is dropped at the end of the run), but
+    // it is still masked before the capture: the page keeps `GHD_` and the first
+    // 6 hex characters and replaces the rest with x's. Same length, so the layout
+    // is the real one; the shot throws if the length changes.
+    file: '36-account-api-keys.png', phase: 'extras', role: 'jordan', path: '/account', vp: DESK,
+    target: { element: (page) => page.locator('section').filter({ has: page.getByRole('heading', { name: 'API keys', exact: true }) }) },
+    async prepare(page) {
+      await page.getByPlaceholder('Key name (e.g. my script)').fill('Nightly ticket export')
+      await page.getByLabel('tickets:read', { exact: true }).check()
+      await page.getByRole('button', { name: 'Create key' }).click()
+      await waitVisible(page.getByText('API key created', { exact: false }))
+      const lengths = await page.locator('code').filter({ hasText: /^GHD_[0-9a-f]+$/ }).evaluate((el) => {
+        const before = el.textContent
+        const keep = 'GHD_'.length + 6
+        el.textContent = before.slice(0, keep) + 'x'.repeat(before.length - keep)
+        return [before.length, el.textContent.length]
+      })
+      if (lengths[0] !== lengths[1]) throw new Error(`token mask changed the length: ${lengths.join(' -> ')}`)
+    },
+  },
+  {
+    // Jordan follows T7 and has added Alex (seed.mjs --extras). The picker offers
+    // Sam, who sees T7 as a member of IT Support, the group it is assigned to.
+    file: '53-ticket-followers.png', phase: 'extras', role: 'jordan', path: ticketPath('T7'), vp: DESK,
+    target: { element: (page) => cardOf(page, 'Followers') },
+    async prepare(page) {
+      const card = cardOf(page, 'Followers')
+      await waitVisible(card.getByText('Alex Rivera', { exact: true }), DATA_WAIT)
+      await waitVisible(card.getByText('Jordan Blake', { exact: true }))
+      await waitVisible(card.getByText('(you)'))
+      await waitVisible(card.getByRole('button', { name: 'Remove Alex Rivera as a follower' }))
+      await waitVisible(card.getByRole('button', { name: 'Unfollow', exact: true }))
+      await waitVisible(card.getByLabel('Person to add as follower'))
+      await card.locator('option', { hasText: 'Sam Okafor' }).first().waitFor({ state: 'attached', timeout: DATA_WAIT })
+      await waitVisible(card.getByRole('button', { name: 'Add follower' }))
+    },
+  },
+  {
+    // The card on a phone: the remove button and the picker are 44 px targets.
+    // Not an element crop (that grows the window to desktop width): the card is
+    // scrolled to the top of the screen instead.
+    file: '53-ticket-followers-mobile.png', phase: 'extras', role: 'jordan', path: ticketPath('T7'), vp: MOBILE, mobile: true, optional: true,
+    async prepare(page) {
+      const card = cardOf(page, 'Followers')
+      await waitVisible(card.getByText('Alex Rivera', { exact: true }), DATA_WAIT)
+      await waitVisible(card.getByRole('button', { name: 'Unfollow', exact: true }))
+      await card.locator('option', { hasText: 'Sam Okafor' }).first().waitFor({ state: 'attached', timeout: DATA_WAIT })
+      await card.evaluate((el) => el.scrollIntoView({ block: 'start' }))
+    },
+  },
+  {
+    // Hardware > Laptop > Screen: the item has no description, the type has one,
+    // so the type's text is what shows (the most specific one there is).
+    file: '54-new-ticket-cti-description.png', phase: 'extras', role: 'jordan', path: '/tickets/new', vp: DESK,
+    target: {
+      union: (page) => [
+        page.locator('#category').locator('xpath=ancestor::div[contains(concat(" ", normalize-space(@class), " "), " grid ")][1]'),
+        page.locator('#cti-description'),
+      ],
+    },
+    async prepare(page) {
+      await page.locator('#category').selectOption({ label: 'Hardware' })
+      await page.locator('#type').selectOption({ label: 'Laptop' })
+      await waitVisible(page.locator('#item'))
+      await page.locator('#item').selectOption({ label: 'Screen' })
+      await waitVisible(page.locator('#cti-description').getByText(/^A company laptop that is damaged/))
+    },
+  },
+  {
+    // Laptop expanded on Categories: the type's Description box with its hint, the
+    // counter and Save. The row above it names the type; Save is off (nothing typed).
+    file: '55-admin-category-description.png', phase: 'extras', role: 'admin', path: '/admin/categories', vp: DESK,
+    // No pad above (16 px would catch the bottom of the Add group pill of the row
+    // above) and a short one below (the next heading is 16 px under Save).
+    target: {
+      padTop: 0, padBottom: 8,
+      union: (page) => [
+        page.locator('div[data-archived]').filter({ hasText: 'Laptop' }).first(),
+        page.locator('textarea[id^="description-type-"]').locator('xpath=ancestor::form[1]'),
+      ],
+    },
+    async prepare(page) {
+      const hardware = page.locator('div.group').filter({ hasText: 'Hardware' }).first()
+      await hardware.locator('button').nth(1).click()
+      const laptop = page.locator('div[data-archived]').filter({ hasText: 'Laptop' }).first()
+      await laptop.getByRole('button', { name: 'Expand' }).click()
+      const box = page.locator('textarea[id^="description-type-"]')
+      await waitVisible(box)
+      const text = await box.inputValue()
+      if (!text.startsWith('A company laptop that is damaged')) throw new Error(`the Laptop description box holds "${text.slice(0, 40)}"`)
+      await waitVisible(page.getByText(`${[...text].length} / 500`, { exact: true }))
+      await waitVisible(page.getByRole('button', { name: 'Save description' }).first())
+    },
+  },
+  {
+    // The wizard shows for an install whose "seen" flag is off, which is what an
+    // upgraded install has; setup sets it on a fresh one. Turned off here through
+    // the settings API so no other shot is redirected to it.
+    file: '37-after-upgrade-wizard.png', phase: 'extras', role: 'admin', path: '/after-upgrade', vp: DESK,
+    target: { element: (page) => cardOf(page, 'After upgrading to 1.3.0') },
+    async before(ctx) {
+      const r = await ctx.request.patch('/api/v1/admin/settings', { data: { post_upgrade_130_seen: false } })
+      if (!r.ok()) throw new Error(`settings: HTTP ${r.status()}`)
+    },
+    async prepare(page) {
+      await waitVisible(page.getByRole('heading', { name: 'Weekly check for new releases' }))
+    },
+  },
+  {
+    // The only thing that puts a notice on this instance is an OAuth client whose
+    // service user is in no group, with ticket scope on (#420). Made in `before`
+    // so the pages above are captured without it.
+    file: '38-server-notice-collapsed.png', phase: 'extras', role: 'admin', path: '/tickets', vp: DESK,
+    before: ensureBlindOAuthClient,
+    target: { element: (page) => noticeBar(page), padBottom: 90 },
+    async prepare(page) {
+      await waitVisible(noticeBar(page).getByText('An OAuth client sees no tickets'), DATA_WAIT)
+    },
+  },
+  {
+    file: '39-server-notice-expanded.png', phase: 'extras', role: 'admin', path: '/tickets', vp: DESK,
+    before: ensureBlindOAuthClient,
+    target: { element: (page) => noticeBar(page), padBottom: 90 },
+    async prepare(page) {
+      await noticeBar(page).getByRole('button', { name: 'Details' }).click()
+      await waitVisible(noticeBar(page).getByRole('button', { name: /^Hide / }), DATA_WAIT)
+    },
+  },
+  {
+    // The link a guest was mailed, opened. The file goes up through the page's
+    // own control and is scanned like any other.
+    file: '40-guest-ticket-attach.png', phase: 'extras', path: (s) => s.extras.guestPath, vp: DESK,
+    async prepare(page) {
+      await waitVisible(page.getByRole('button', { name: 'Add files' }), DATA_WAIT)
+      await page.locator('input[type="file"]').setInputFiles({
+        name: 'visitor-wifi-prompt.txt',
+        mimeType: 'text/plain',
+        buffer: Buffer.from('The visitor Wi-Fi asks for an access code.\n'),
+      })
+      await waitVisible(page.getByText(/Attached: visitor-wifi-prompt\.txt/), DATA_WAIT)
+    },
+  },
+
+  // ── Last: these turn "Require SAML for staff and users" on, after which nobody
+  // below staff signs in with a password (403 saml_required), and 56 turns it off
+  // again. Keep 57 and 58 at the end, and 56 after them. ──
+  {
+    // The switch is on and SAML is not configured, so the server reports "SAML is
+    // required but is not working" (reason: incomplete).
+    file: '57-server-notice-saml.png', phase: 'extras', role: 'admin', path: '/tickets', vp: DESK,
+    before: async (ctx) => {
+      await removeBlindOAuthClient(ctx)
+      await requireSAMLWithoutSAML(ctx)
+    },
+    target: { element: (page) => noticeBar(page), padBottom: 90 },
+    async prepare(page) {
+      const bar = noticeBar(page)
+      await waitVisible(bar.getByText('Staff and users cannot sign in: SAML is required but is not working'), DATA_WAIT)
+      if (/server problems/.test(await bar.innerText())) throw new Error('SAML notice: the bar lists more than one problem')
+      await bar.getByRole('button', { name: 'Details' }).click()
+      await waitVisible(bar.getByRole('link', { name: 'Open System → Authentication → SAML' }), DATA_WAIT)
+      await waitVisible(bar.getByText("the identity provider's metadata, the certificate or the private key is missing."))
+    },
+  },
+  {
+    // The same state on the dashboard's health card: the amber SLA item and the
+    // red SAML one.
+    file: '58-dashboard-health-saml.png', phase: 'extras', role: 'admin', path: '/dashboard', vp: DESK,
+    before: async (ctx) => {
+      // 37 turned the after-upgrade wizard back on, and an administrator is sent
+      // to it from the dashboard: the wizard is "seen" again, as it is once clicked through.
+      await sendJSON(ctx, 'PATCH', '/api/v1/admin/settings', { post_upgrade_130_seen: true })
+      await requireSAMLWithoutSAML(ctx)
+    },
+    target: { element: (page) => page.getByRole('region', { name: 'Health' }) },
+    async prepare(page) {
+      const health = page.getByRole('region', { name: 'Health' })
+      await waitVisible(health.getByText('SAML is required for staff and users but is not working', { exact: false }), DATA_WAIT)
+      await waitVisible(health.getByText('SLA tracking is on, but breach and at-risk alerts are off.'))
+      const items = await health.locator('li').count()
+      if (items !== 2) throw new Error(`dashboard: the health card has ${items} items, expected the amber SLA item and the red SAML one`)
+    },
+  },
+  {
+    // The last shot: it loads SAML, which clears the problem of 57 and 58, and
+    // turns the switch off, so the instance ends as a working one. The service
+    // provider's certificate does not exist before the save: the server makes it
+    // there, which is what "Generated automatically" and its expiry show.
+    file: '56-system-authentication-saml.png', phase: 'extras', role: 'admin', path: '/admin/settings/authentication', vp: DESK,
+    before: async (ctx) => {
+      await clearSAML(ctx)
+      await sendJSON(ctx, 'PUT', '/api/v1/admin/saml', { metadata_xml: IDP_METADATA, metadata_url: '' })
+    },
+    target: { element: (page) => sectionOf(page, 'SAML') },
+    async prepare(page, ctx) {
+      const saml = await apiGet(ctx, '/api/v1/admin/saml')
+      if (!(saml.configured && saml.live && saml.cert_generated && saml.cert_not_after)) {
+        throw new Error(`SAML is not loaded with a generated certificate: ${JSON.stringify({ ...saml, cert_pem: '', metadata_xml: '' })}`)
+      }
+      const section = sectionOf(page, 'SAML')
+      await waitVisible(section.getByText('Generated automatically'), DATA_WAIT)
+      await waitVisible(section.getByText(/Expires /))
+      await waitVisible(section.getByRole('link', { name: 'Download certificate' }))
+      await waitVisible(section.getByRole('button', { name: 'Replace…' }))
+      await waitVisible(section.getByRole('button', { name: 'Regenerate' }))
+      await waitVisible(section.getByRole('button', { name: 'Save SAML config' }))
+      await waitVisible(section.getByLabel('IdP metadata XML'))
+      if (!(await section.getByRole('radio', { name: 'XML' }).isChecked())) throw new Error('SAML: the XML source is not chosen')
+      // This instance answers on localhost; the page prints what the server was
+      // told its address is. Shown as an example host, as the throwaway token of
+      // shot 36 is masked: only the text of the two copy lines changes.
+      await page.evaluate(() => {
+        for (const el of document.querySelectorAll('code')) {
+          if (el.textContent.startsWith(location.origin)) el.textContent = el.textContent.replace(location.origin, 'https://help.example.com')
+        }
+      })
+      await waitVisible(section.getByText('https://help.example.com/api/v1/auth/saml/metadata'))
+    },
+  },
+]
+
+// Why a shot whose seed data flag is false is skipped. Printed on the SKIP line.
+const SKIP_REASON = {
+  reputation: 'seed.features.reputation is false (SHOTS_REPUTATION=0), so no provider lookups',
+  webhookDelivered: 'seed.features.webhookDelivered is false: not every enabled hook has a recorded delivery, or SHOTS_WEBHOOK_OK_URL did not answer both hooks with 2xx',
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+function shotPrefix(file) {
+  return file.slice(0, file.indexOf('-'))
+}
+
+// The id a shot is selected by with --only: its number, plus "m" for the
+// mobile variants that carry a "-mobile" suffix (15m, 21m). Also the --list output.
+function shotId(shot) {
+  const stem = shot.file.replace(/\.png$/, '')
+  return stem.endsWith('-mobile') ? `${shotPrefix(shot.file)}m` : shotPrefix(shot.file)
+}
+
+const SHOT_IDS = [...new Set(SHOTS.map(shotId))]
+const KNOWN_ONLY = new Set([...SHOT_IDS, ...SHOTS.flatMap((x) => [x.file, x.file.replace(/\.png$/, '')])])
+
+function selected(shot) {
+  if (!only) return true
+  return only.has(shotId(shot)) || only.has(shot.file) || only.has(shot.file.replace(/\.png$/, ''))
+}
+
+// Desktop 2880x1800 and mobile 780x1688 unless the shot is tall or an element crop.
+// A tall shot with `exact` has a fixed height, so its size is known in advance.
+function expectedSize(shot) {
+  const t = shot.target
+  if (t?.cutBetween || t?.union || t?.element) return null
+  if (t?.exact) return [DESK.width * 2, t.tall * 2]
+  if (t?.tall) return null
+  if (shot.vp.width === MOBILE.width) return [MOBILE.width * 2, shot.vp.height * 2]
+  return [DESK.width * 2, DESK.height * 2]
+}
+
+function pngSize(buf) {
+  // IHDR width and height, big-endian, at byte 16.
+  return { w: buf.readUInt32BE(16), h: buf.readUInt32BE(20) }
+}
+
+async function settle(page, { keepFocus = false } = {}) {
+  // networkidle may never settle on a page that polls; the data waits below
+  // are what decide whether a shot is valid, so this one is best-effort.
+  await page.waitForLoadState('networkidle').catch(() => {})
+  await page.locator('.animate-spin').first().waitFor({ state: 'detached', timeout: 8000 }).catch(() => {})
+  await page.getByText('Loading…', { exact: true }).first().waitFor({ state: 'detached', timeout: 8000 }).catch(() => {})
+  await page.evaluate(() => document.fonts.ready)
+  await page.addStyleTag({
+    content:
+      '*,*::before,*::after{transition:none!important;animation:none!important;caret-color:transparent!important}' +
+      '::-webkit-scrollbar{width:0;height:0}',
+  })
+  if (!keepFocus) await page.evaluate(() => document.activeElement?.blur?.())
+  await page.mouse.move(0, 0)
+}
+
+async function login(ctx, email) {
+  const r = await ctx.request.post('/api/v1/auth/local/login', { data: { email, password: PASSWORD } })
+  if (!r.ok()) throw new Error(`login ${email}: HTTP ${r.status()}`)
+  const body = await r.json()
+  if (body.mfa_needed || body.passkey_needed || body.mfa_enrollment_needed) {
+    throw new Error(`login ${email}: unexpected second step ${JSON.stringify(body)}`)
+  }
+}
+
+async function newContext(browser, shot) {
+  const opts = {
+    baseURL: BASE,
+    viewport: shot.vp,
+    deviceScaleFactor: 2,
+    colorScheme: 'light',
+    locale: 'en-US',
+    timezoneId: 'UTC',
+    reducedMotion: 'reduce',
+  }
+  if (shot.mobile) Object.assign(opts, { isMobile: true, hasTouch: true })
+  const ctx = await browser.newContext(opts)
+  // Light whatever the account or the browser says (#709): see lightPin.mjs.
+  await pinLight(ctx)
+  return ctx
+}
+
+// Grow the viewport to the content height of <main>, which is the scroller
+// (the document never scrolls; see design section 4.4).
+async function fitTall(page, cap, exact) {
+  const h = await page.evaluate(() => {
+    const m = document.querySelector('main')
+    // The wizard and the guest page have no <main>: the document is the page.
+    if (!m) return 900
+    return 900 + (m.scrollHeight - m.clientHeight)
+  })
+  const height = exact ? cap : Math.min(h, cap)
+  await page.setViewportSize({ width: DESK.width, height })
+  await settle(page)
+}
+
+// Scroll <main> so the locator's top edge sits PAD below main's top edge. This is
+// what keeps element clips from starting flush (and clamping to 0), which made
+// heights depend on scroll timing. It is a no-op when the element already sits
+// there or cannot move further up.
+async function alignTop(locator, pad) {
+  await locator.evaluate((el, p) => {
+    const main = document.querySelector('main')
+    if (!main) return
+    const m = main.getBoundingClientRect()
+    const e = el.getBoundingClientRect()
+    main.scrollTop += e.top - (m.top + p)
+  }, pad)
+}
+
+// Clip to the union of locators, plus PAD, clamped to the viewport. Loops until the
+// layout is stable: the viewport grows when the element is taller than the window,
+// and growing it moves <main>'s scroll, so the boxes are re-measured each pass.
+async function elementClip(page, locators, { top: padTop = PAD, bottom: padBottom = PAD } = {}) {
+  for (let pass = 0; pass < 6; pass++) {
+    await alignTop(locators[0], padTop)
+    await settle(page, { keepFocus: true })
+    const boxes = []
+    for (const l of locators) {
+      const b = await l.boundingBox()
+      if (!b) throw new Error('element not visible for clip')
+      boxes.push(b)
+    }
+    const left = Math.min(...boxes.map((b) => b.x))
+    const top = Math.min(...boxes.map((b) => b.y))
+    const right = Math.max(...boxes.map((b) => b.x + b.width))
+    const bottom = Math.max(...boxes.map((b) => b.y + b.height))
+    const vp = page.viewportSize()
+    const needH = Math.ceil(bottom + padBottom)
+    if (needH > vp.height) {
+      await page.setViewportSize({ width: vp.width, height: needH })
+      continue
+    }
+    const x = Math.max(0, Math.floor(left - PAD))
+    const y = Math.max(0, Math.floor(top - padTop))
+    const x2 = Math.min(vp.width, Math.ceil(right + PAD))
+    const y2 = Math.min(vp.height, Math.ceil(bottom + padBottom))
+    return { x, y, width: x2 - x, height: y2 - y }
+  }
+  throw new Error('elementClip: layout did not settle in 6 passes')
+}
+
+async function captureShot(browser, shot, s) {
+  const ctx = await newContext(browser, shot)
+  try {
+    if (shot.role) await login(ctx, s.users[shot.role])
+    if (shot.before) await shot.before(ctx, s)
+    const page = await ctx.newPage()
+    const p = typeof shot.path === 'function' ? shot.path(s) : shot.path
+    await page.goto(p, { waitUntil: 'domcontentloaded' })
+    await settle(page)
+    try {
+      await shot.prepare(page, ctx, s)
+    } catch (err) {
+      // What the page looked like when the check failed, for whoever reads the failure.
+      const dbg = path.join(OUT, 'debug')
+      fs.mkdirSync(dbg, { recursive: true })
+      await page.screenshot({ path: path.join(dbg, shot.file), fullPage: true }).catch(() => {})
+      throw err
+    }
+    if (shot.css) await page.addStyleTag({ content: shot.css })
+    await settle(page, { keepFocus: false })
+    // The website's pictures are light. The backstop for an account that says dark.
+    await assertLight(page, shot.file)
+
+    const t = shot.target ?? 'viewport'
+    const screenshotOpts = { animations: 'disabled', caret: 'hide', scale: 'device' }
+    if (t === 'viewport') {
+      // as is
+    } else if (t.tall) {
+      await fitTall(page, t.tall, t.exact === true)
+      await settle(page)
+    } else if (t.element) {
+      await fitTall(page, 4000, false)
+      screenshotOpts.clip = await elementClip(page, [t.element(page)], { top: t.padTop ?? PAD, bottom: t.padBottom ?? PAD })
+    } else if (t.union) {
+      // Grow the window to the whole page first, so no part of the union sits
+      // behind <main>'s own scroll.
+      await fitTall(page, 4000, false)
+      screenshotOpts.clip = await elementClip(page, t.union(page), { top: t.padTop ?? PAD, bottom: t.padBottom ?? PAD })
+    } else if (t.cutBetween) {
+      // Crop height at the midpoint of the gap between two cards. Card positions
+      // do not depend on the viewport height, so measuring at 900 px is valid.
+      const [above, below] = t.cutBetween(page)
+      const a = await above.boundingBox()
+      const b = await below.boundingBox()
+      if (!a || !b) throw new Error('cutBetween: card not visible')
+      // <main> ends above the footer, so the window must be taller than the cut
+      // by the footer's height; otherwise the bottom of <main> sits behind it.
+      const footer = await page.evaluate(() => window.innerHeight - document.querySelector('main').getBoundingClientRect().bottom)
+      const h = Math.floor((a.y + a.height + b.y) / 2 + footer)
+      await page.setViewportSize({ width: DESK.width, height: h })
+      await settle(page)
+    }
+    screenshotOpts.path = path.join(PNG_DIR, shot.file)
+    const buf = await page.screenshot(screenshotOpts)
+    return buf
+  } finally {
+    await ctx.close()
+  }
+}
+
+// ── --list: every id --only accepts. No browser, no seed, no env needed. ──────
+
+if (args.includes('--list')) {
+  for (const id of SHOT_IDS) console.log(id)
+  process.exit(0)
+}
+
+// ── CLI ───────────────────────────────────────────────────────────────────────
+
+function argValue(name) {
+  const i = args.indexOf(name)
+  return i >= 0 ? args[i + 1] : undefined
+}
+const phase = argValue('--phase')
+if (phase !== 'pre-setup' && phase !== 'main' && phase !== 'extras') {
+  console.error('usage: capture.mjs --phase pre-setup|main|extras [--only 05,12]')
+  process.exit(2)
+}
+const onlyArg = argValue('--only')
+const only = onlyArg ? new Set(onlyArg.split(',').map((s) => s.trim()).filter(Boolean)) : null
+if (only) {
+  const unknown = [...only].filter((id) => !KNOWN_ONLY.has(id))
+  if (unknown.length) {
+    console.error(`capture: unknown --only id(s): ${unknown.join(', ')} (run --list for the valid ids)`)
+    process.exit(2)
+  }
+}
+
+let seed = null
+if (phase === 'main' || phase === 'extras') {
+  if (!fs.existsSync(SEED_FILE)) {
+    console.error(`capture: ${SEED_FILE} not found; run seed.mjs first (seed.mjs --extras for --phase extras)`)
+    process.exit(2)
+  }
+  seed = JSON.parse(fs.readFileSync(SEED_FILE, 'utf8'))
+  if (phase === 'extras' && !seed.extras) {
+    console.error('capture: seed.json has no "extras" key; run seed.mjs --extras first')
+    process.exit(2)
+  }
+}
+const BASE = process.env.SHOTS_BASE_URL || seed?.baseURL || 'http://localhost:18080'
+const PASSWORD = seed?.password || process.env.SHOTS_PASSWORD || PASSWORD_FALLBACK
+
+// ── Runner ────────────────────────────────────────────────────────────────────
+
+fs.mkdirSync(PNG_DIR, { recursive: true })
+
+const chromiumPath =
+  process.env.SHOTS_CHROMIUM || (fs.existsSync(DEFAULT_CHROMIUM) ? DEFAULT_CHROMIUM : undefined)
+
+const { chromium } = await import('@playwright/test')
+const browser = await chromium.launch({
+  executablePath: chromiumPath,
+  env: { ...process.env },
+})
+
+// Passkey shot last: its registration revokes Sam's sessions (design 3.6, section 7.3).
+const queue = SHOTS.filter((x) => x.phase === phase && selected(x)).sort((a, b) => Number(!!a.passkey) - Number(!!b.passkey))
+
+let failed = 0
+const rows = []
+const written = []
+try {
+  for (const shot of queue) {
+    if (shot.requires && !seed?.features?.[shot.requires]) {
+      rows.push({ kind: 'SKIP', file: shot.file, detail: SKIP_REASON[shot.requires] ?? `requires ${shot.requires}` })
+      continue
+    }
+    try {
+      const buf = await captureShot(browser, shot, seed)
+      const { w, h } = pngSize(buf)
+      const expect = expectedSize(shot)
+      if (expect && (expect[0] !== w || expect[1] !== h)) {
+        failed++
+        rows.push({ kind: 'FAIL', file: shot.file, detail: `size ${w}x${h}, expected ${expect.join('x')}` })
+        continue
+      }
+      fs.writeFileSync(path.join(PNG_DIR, shot.file), buf)
+      written.push(shot.file)
+      rows.push({ kind: 'OK', file: shot.file, size: `${w}x${h}`, kb: Math.round(buf.length / 1024) })
+    } catch (err) {
+      const reason = String(err.message).split('\n')[0]
+      if (shot.optional) {
+        rows.push({ kind: 'SKIP', file: shot.file, detail: `optional, failed: ${reason}` })
+      } else {
+        failed++
+        rows.push({ kind: 'FAIL', file: shot.file, detail: reason })
+      }
+    }
+  }
+} finally {
+  await browser.close()
+}
+
+// One line per shot, pixel size included.
+for (const r of rows) {
+  if (r.kind === 'OK') {
+    console.log(`OK    ${r.file.padEnd(34)} ${r.size.padEnd(10)} ${r.kb} KB`)
+  } else {
+    console.log(`${r.kind.padEnd(5)} ${r.file.padEnd(34)} -          ${r.detail}`)
+  }
+}
+
+// manifest.txt: exactly the PNG files this invocation wrote, one name per line.
+// Each invocation overwrites it. A full run is pre-setup then main, so the
+// orchestrator must keep the pre-setup list (copy it before main runs) and
+// concatenate the two.
+const manifestPath = path.join(OUT, 'manifest.txt')
+fs.writeFileSync(manifestPath, written.map((f) => `${f}\n`).join(''))
+console.log(`manifest: ${written.length} file(s) written by this invocation, listed in ${manifestPath}`)
+
+if (failed > 0) {
+  console.error(`capture: ${failed} shot(s) failed`)
+  process.exit(1)
+}

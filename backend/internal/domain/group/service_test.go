@@ -40,10 +40,6 @@ func (f *fakeGroupStore) Update(_ context.Context, g group.Group) error {
 	f.groups[g.ID] = g
 	return nil
 }
-func (f *fakeGroupStore) Delete(_ context.Context, id uuid.UUID) error {
-	delete(f.groups, id)
-	return nil
-}
 func (f *fakeGroupStore) List(_ context.Context) ([]group.Group, error) {
 	out := make([]group.Group, 0, len(f.groups))
 	for _, g := range f.groups {
@@ -66,6 +62,9 @@ func (f *fakeGroupStore) RemoveMember(_ context.Context, groupID, userID uuid.UU
 	return nil
 }
 func (f *fakeGroupStore) ListMembers(_ context.Context, groupID uuid.UUID) ([]uuid.UUID, error) {
+	return f.members[groupID], nil
+}
+func (f *fakeGroupStore) ListMailableMembers(_ context.Context, groupID uuid.UUID) ([]uuid.UUID, error) {
 	return f.members[groupID], nil
 }
 func (f *fakeGroupStore) ListGroupsForUser(_ context.Context, userID uuid.UUID) ([]group.Group, error) {

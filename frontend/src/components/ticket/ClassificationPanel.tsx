@@ -6,7 +6,28 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import { Select } from '@/components/ui/select'
 import { Label } from '@/components/ui/label'
+import { CtiDescription } from '@/components/ticket/CtiDescription'
 import type { Category, TicketType, TicketItem } from '@/api/types'
+
+// options renders one tier's <option>s: every row, so staff still SEE archived
+// ones, but an archived row is labelled "(archived)" and disabled. The exception
+// is the row this ticket already carries: it stays enabled, so the ticket can
+// keep where it is.
+//
+// Two questions were being answered by one filter. "What may staff classify NEW
+// work under" is active only (the server refuses anything else, #421). "May
+// this ticket keep the classification it already has" is a different question,
+// and the answer has to be yes: otherwise a ticket filed under a category that
+// was retired afterwards could be moved OUT of it but never left where it was,
+// and editing its Type alone would quietly strip its Category. A level that is
+// unchanged is not re-checked by the server.
+function options<T extends { id: string; name: string; active: boolean }>(rows: T[], current?: string | null) {
+  return rows.map((r) => (
+    <option key={r.id} value={r.id} disabled={!r.active && r.id !== current}>
+      {r.active ? r.name : `${r.name} (archived)`}
+    </option>
+  ))
+}
 
 export interface ClassificationPanelProps {
   ticketId: string
@@ -14,6 +35,10 @@ export interface ClassificationPanelProps {
   typeId?: string | null
   itemId?: string | null
   canEdit: boolean
+  // Resolved or Closed: classification only happens to open tickets, and the
+  // server answers 409 ticket_closed. Read-only, with the reason, rather than an
+  // Edit that can only fail.
+  locked?: boolean
 }
 
 /**
@@ -30,7 +55,7 @@ export interface ClassificationPanelProps {
  * and a Type invalidates the Item — and that cascade is only coherent if one
  * component owns all three.
  */
-export function ClassificationPanel({ ticketId, categoryId, typeId, itemId, canEdit }: ClassificationPanelProps) {
+export function ClassificationPanel({ ticketId, categoryId, typeId, itemId, canEdit, locked = false }: ClassificationPanelProps) {
   const qc = useQueryClient()
 
   const [editing, setEditing] = useState(false)
@@ -57,7 +82,10 @@ export function ClassificationPanel({ ticketId, categoryId, typeId, itemId, canE
   const { data: items = [] } = useQuery<TicketItem[]>({
     queryKey: ['public-items', activeCategory, activeType],
     queryFn: () => listPublicItems(activeCategory, activeType),
-    enabled: !!activeType,
+    // Only where there is a use for the list: to name the item the ticket has, or
+    // to pick one. A requester's ticket carries no item_id while Items is not
+    // shown to them (#711), and they cannot edit, so the answer would be empty.
+    enabled: !!activeType && (canEdit || !!itemId),
   })
 
   const mutation = useMutation({
@@ -90,7 +118,12 @@ export function ClassificationPanel({ ticketId, categoryId, typeId, itemId, canE
   const categorySelectId = `cti-category-${ticketId}`
   const typeSelectId = `cti-type-${ticketId}`
   const itemSelectId = `cti-item-${ticketId}`
+  const descriptionId = `cti-description-${ticketId}`
 
+  // These resolve against the lists above, which for staff now include
+  // archived rows. Before, a ticket filed under a category that had since
+  // been retired showed "—" in the sidebar: the id was real, the row was
+  // simply missing from an active-only list.
   const categoryName = categories.find((c) => c.id === categoryId)?.name
   const typeName = types.find((t) => t.id === typeId)?.name
   const itemName = items.find((i) => i.id === itemId)?.name
@@ -99,11 +132,14 @@ export function ClassificationPanel({ ticketId, categoryId, typeId, itemId, canE
     <Card>
       <CardHeader className="pb-2">
         <div className="flex items-center justify-between">
-          <CardTitle className="text-xs font-semibold uppercase tracking-wider text-gray-400">
+          <CardTitle className="text-xs font-semibold uppercase tracking-wider text-fg-faint">
             Classification
           </CardTitle>
-          {canEdit && !editing && (
-            <button className="text-xs text-blue-600 hover:underline" onClick={startEdit}>
+          {canEdit && !locked && !editing && (
+            <button
+              className="min-h-6 rounded px-2 py-1 text-xs text-link hover:underline"
+              onClick={startEdit}
+            >
               Edit
             </button>
           )}
@@ -112,53 +148,61 @@ export function ClassificationPanel({ ticketId, categoryId, typeId, itemId, canE
       <CardContent className="space-y-2 text-sm">
         {editing ? (
           <div className="space-y-2">
-            <div className="space-y-0.5">
-              <Label htmlFor={categorySelectId} className="text-xs text-gray-500">Category</Label>
-              <Select
-                id={categorySelectId}
-                className="h-7 text-xs w-full"
-                value={draftCategory}
-                onChange={(e) => { setDraftCategory(e.target.value); setDraftType(''); setDraftItem('') }}
-              >
-                <option value="">— select —</option>
-                {categories.filter((c) => c.active).map((c) => (
-                  <option key={c.id} value={c.id}>{c.name}</option>
-                ))}
-              </Select>
+            {/* The selectors and their description are one child, so an empty description adds no gap. */}
+            <div>
+              <div className="space-y-2">
+                <div className="space-y-0.5">
+                  <Label htmlFor={categorySelectId} className="text-xs text-fg-faint">Category</Label>
+                  <Select
+                    id={categorySelectId}
+                    aria-describedby={descriptionId}
+                    className="h-7 text-xs w-full"
+                    value={draftCategory}
+                    onChange={(e) => { setDraftCategory(e.target.value); setDraftType(''); setDraftItem('') }}
+                  >
+                    <option value="">— select —</option>
+                    {options(categories, categoryId)}
+                  </Select>
+                </div>
+                {types.length > 0 && (
+                  <div className="space-y-0.5">
+                    <Label htmlFor={typeSelectId} className="text-xs text-fg-faint">Type</Label>
+                    <Select
+                      id={typeSelectId}
+                      aria-describedby={descriptionId}
+                      className="h-7 text-xs w-full"
+                      value={draftType}
+                      onChange={(e) => { setDraftType(e.target.value); setDraftItem('') }}
+                    >
+                      <option value="">— none —</option>
+                      {options(types, typeId)}
+                    </Select>
+                  </div>
+                )}
+                {items.length > 0 && (
+                  <div className="space-y-0.5">
+                    <Label htmlFor={itemSelectId} className="text-xs text-fg-faint">Item</Label>
+                    <Select
+                      id={itemSelectId}
+                      aria-describedby={descriptionId}
+                      className="h-7 text-xs w-full"
+                      value={draftItem}
+                      onChange={(e) => setDraftItem(e.target.value)}
+                    >
+                      <option value="">— none —</option>
+                      {options(items, itemId)}
+                    </Select>
+                  </div>
+                )}
+              </div>
+              <CtiDescription
+                id={descriptionId}
+                category={categories.find((c) => c.id === draftCategory)}
+                type={types.find((t) => t.id === draftType)}
+                item={items.find((i) => i.id === draftItem)}
+              />
             </div>
-            {types.length > 0 && (
-              <div className="space-y-0.5">
-                <Label htmlFor={typeSelectId} className="text-xs text-gray-500">Type</Label>
-                <Select
-                  id={typeSelectId}
-                  className="h-7 text-xs w-full"
-                  value={draftType}
-                  onChange={(e) => { setDraftType(e.target.value); setDraftItem('') }}
-                >
-                  <option value="">— none —</option>
-                  {types.filter((t) => t.active).map((t) => (
-                    <option key={t.id} value={t.id}>{t.name}</option>
-                  ))}
-                </Select>
-              </div>
-            )}
-            {items.length > 0 && (
-              <div className="space-y-0.5">
-                <Label htmlFor={itemSelectId} className="text-xs text-gray-500">Item</Label>
-                <Select
-                  id={itemSelectId}
-                  className="h-7 text-xs w-full"
-                  value={draftItem}
-                  onChange={(e) => setDraftItem(e.target.value)}
-                >
-                  <option value="">— none —</option>
-                  {items.filter((i) => i.active).map((i) => (
-                    <option key={i.id} value={i.id}>{i.name}</option>
-                  ))}
-                </Select>
-              </div>
-            )}
-            {error && <p className="text-xs text-red-600">{error}</p>}
+            {error && <p role="alert" className="text-xs text-danger-fg">{error}</p>}
             <div className="flex gap-2 pt-1">
               <Button
                 size="sm"
@@ -180,20 +224,25 @@ export function ClassificationPanel({ ticketId, categoryId, typeId, itemId, canE
           </div>
         ) : (
           <>
-            <div className="flex justify-between">
-              <span className="text-gray-500">Category</span>
-              <span className="text-right text-xs font-medium">{categoryName ?? '—'}</span>
+            {canEdit && locked && (
+              <p className="text-xs text-fg-faint">
+                Classification is locked on a Resolved or Closed ticket.
+              </p>
+            )}
+            <div className="flex justify-between gap-2">
+              <span className="text-fg-faint">Category</span>
+              <span className="min-w-0 text-right text-xs font-medium wrap-anywhere">{categoryName ?? '—'}</span>
             </div>
             {typeId && (
-              <div className="flex justify-between">
-                <span className="text-gray-500">Type</span>
-                <span className="text-right text-xs">{typeName ?? '—'}</span>
+              <div className="flex justify-between gap-2">
+                <span className="text-fg-faint">Type</span>
+                <span className="min-w-0 text-right text-xs wrap-anywhere">{typeName ?? '—'}</span>
               </div>
             )}
             {itemId && (
-              <div className="flex justify-between">
-                <span className="text-gray-500">Item</span>
-                <span className="text-right text-xs">{itemName ?? '—'}</span>
+              <div className="flex justify-between gap-2">
+                <span className="text-fg-faint">Item</span>
+                <span className="min-w-0 text-right text-xs wrap-anywhere">{itemName ?? '—'}</span>
               </div>
             )}
           </>

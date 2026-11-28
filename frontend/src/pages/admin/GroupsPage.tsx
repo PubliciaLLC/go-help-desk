@@ -43,14 +43,14 @@ function GroupNameEditor({ group, onSaved }: { group: Group; onSaved: () => void
 
   if (!editing) {
     return (
-      <div className="flex items-center gap-2">
-        <div>
-          <div className="font-medium text-gray-900">{group.name}</div>
-          {group.description && <div className="text-xs text-gray-500">{group.description}</div>}
+      <div className="flex min-w-0 items-center gap-2">
+        <div className="min-w-0 wrap-anywhere">
+          <div className="font-medium text-fg">{group.name}</div>
+          {group.description && <div className="text-xs text-fg-faint">{group.description}</div>}
         </div>
         <button
           onClick={() => setEditing(true)}
-          className="text-gray-400 hover:text-gray-600 ml-1"
+          className="shrink-0 text-fg-faint hover:text-fg-muted ml-1"
           title="Edit group"
         >
           <PencilIcon className="h-3.5 w-3.5" />
@@ -60,7 +60,7 @@ function GroupNameEditor({ group, onSaved }: { group: Group; onSaved: () => void
   }
 
   return (
-    <div className="space-y-1">
+    <div className="min-w-0 space-y-1">
       <Input
         value={name}
         onChange={(e) => setName(e.target.value)}
@@ -73,19 +73,19 @@ function GroupNameEditor({ group, onSaved }: { group: Group; onSaved: () => void
         className="h-7 text-xs"
         placeholder="Description (optional)"
       />
-      {error && <p className="text-xs text-red-600">{error}</p>}
+      {error && <p role="alert" className="text-xs text-danger-fg">{error}</p>}
       <div className="flex gap-1">
         <button
           onClick={() => mutation.mutate()}
           disabled={mutation.isPending}
-          className="text-green-600 hover:text-green-700"
+          className="text-success-fg hover:text-success-fg-strong"
           title="Save"
         >
           <CheckIcon className="h-4 w-4" />
         </button>
         <button
           onClick={() => { setEditing(false); setName(group.name); setDesc(group.description) }}
-          className="text-gray-400 hover:text-gray-600"
+          className="text-fg-faint hover:text-fg-muted"
           title="Cancel"
         >
           <XIcon className="h-4 w-4" />
@@ -129,19 +129,19 @@ function MembersPanel({ group, allUsers }: { group: Group; allUsers: User[] }) {
   return (
     <div className="space-y-3">
       {members.length === 0 ? (
-        <p className="text-xs text-gray-400">No members yet.</p>
+        <p className="text-xs text-fg-faint">No members yet.</p>
       ) : (
         <ul className="space-y-1">
           {members.map((m) => (
-            <li key={m.id} className="flex items-center justify-between text-sm">
-              <span>
+            <li key={m.id} className="flex items-center justify-between gap-2 text-sm">
+              <span className="min-w-0 wrap-anywhere">
                 {m.display_name}
-                <span className="ml-1 text-xs text-gray-400">{m.email}</span>
+                <span className="ml-1 text-xs text-fg-faint">{m.email}</span>
               </span>
               <button
                 onClick={() => removeMutation.mutate(m.id)}
                 disabled={removeMutation.isPending}
-                className="text-gray-400 hover:text-red-500"
+                className="shrink-0 text-fg-faint hover:text-danger-fg"
                 title="Remove member"
               >
                 <XIcon className="h-3.5 w-3.5" />
@@ -154,7 +154,7 @@ function MembersPanel({ group, allUsers }: { group: Group; allUsers: User[] }) {
       {eligible.length > 0 && (
         <div className="flex gap-2">
           <Select
-            className="h-8 text-xs flex-1"
+            className="h-8 min-w-0 text-xs flex-1"
             value={selectedUserId}
             onChange={(e) => setSelectedUserId(e.target.value)}
           >
@@ -175,7 +175,7 @@ function MembersPanel({ group, allUsers }: { group: Group; allUsers: User[] }) {
           </Button>
         </div>
       )}
-      {error && <p className="text-xs text-red-600">{error}</p>}
+      {error && <p role="alert" className="text-xs text-danger-fg">{error}</p>}
     </div>
   )
 }
@@ -193,14 +193,14 @@ function GroupRow({ group, allUsers, onDelete }: { group: Group; allUsers: User[
           <div className="flex items-center gap-2 shrink-0">
             <button
               onClick={() => setExpanded((v) => !v)}
-              className="flex items-center gap-1 text-xs text-blue-600 hover:text-blue-800"
+              className="flex items-center gap-1 text-xs text-link hover:text-info-fg-strong"
             >
               <UsersIcon className="h-3.5 w-3.5" />
               Members
             </button>
             <button
               onClick={onDelete}
-              className="text-gray-400 hover:text-red-500"
+              className="text-fg-faint hover:text-danger-fg"
               title="Delete group"
             >
               <Trash2Icon className="h-4 w-4" />
@@ -259,10 +259,10 @@ export function GroupsPage() {
     <Layout>
       <div className="space-y-6">
         <div className="flex items-center justify-between">
-          <h1 className="text-2xl font-bold text-gray-900">Groups</h1>
+          <h1 className="text-2xl font-bold text-fg">Groups</h1>
         </div>
 
-        <p className="text-sm text-gray-500">
+        <p className="text-sm text-fg-faint">
           Groups are named pools of staff members. Tickets can be assigned to a group; any member
           can view and act on those tickets.
         </p>
@@ -273,8 +273,8 @@ export function GroupsPage() {
             <CardTitle className="text-sm">New group</CardTitle>
           </CardHeader>
           <CardContent className="space-y-3">
-            <div className="flex gap-3">
-              <div className="flex-1 space-y-1">
+            <div className="flex flex-col gap-3 sm:flex-row">
+              <div className="min-w-0 flex-1 space-y-1">
                 <Label className="text-xs">Name</Label>
                 <Input
                   placeholder="e.g. Tier 1 Support"
@@ -282,7 +282,7 @@ export function GroupsPage() {
                   onChange={(e) => setNewName(e.target.value)}
                 />
               </div>
-              <div className="flex-1 space-y-1">
+              <div className="min-w-0 flex-1 space-y-1">
                 <Label className="text-xs">Description (optional)</Label>
                 <Input
                   placeholder="e.g. First-line help desk staff"
@@ -291,7 +291,7 @@ export function GroupsPage() {
                 />
               </div>
             </div>
-            {formError && <p className="text-sm text-red-600">{formError}</p>}
+            {formError && <p role="alert" className="text-sm text-danger-fg">{formError}</p>}
             <Button
               onClick={() => createMutation.mutate()}
               disabled={!newName.trim() || createMutation.isPending}
@@ -305,9 +305,9 @@ export function GroupsPage() {
 
         {/* Group list */}
         {isLoading ? (
-          <p className="text-sm text-gray-500">Loading…</p>
+          <p className="text-sm text-fg-faint">Loading…</p>
         ) : groups.length === 0 ? (
-          <p className="text-sm text-gray-500">No groups yet.</p>
+          <p className="text-sm text-fg-faint">No groups yet.</p>
         ) : (
           <div className="space-y-3">
             {groups.map((g) => (
@@ -323,7 +323,8 @@ export function GroupsPage() {
       </div>
       <ConfirmDialog
         open={pendingDelete !== null}
-        onOpenChange={(open) => { if (!open) setPendingDelete(null) }}
+        onOpenChange={(open) => { if (!open) { setPendingDelete(null); deleteMutation.reset() } }}
+        error={deleteMutation.isError ? extractError(deleteMutation.error) : undefined}
         title={`Delete group "${pendingDelete?.name ?? ''}"?`}
         description="Members will be unassigned and tickets currently routed to this group will need to be reassigned."
         confirmLabel="Delete group"

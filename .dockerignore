@@ -17,6 +17,7 @@
 # Installed and built artifacts: the container builds its own.
 **/node_modules
 frontend/dist
+frontend/dist-e2e-*
 backend/internal/ui/dist
 
 # Local tooling, worktrees and drafts. .claude alone is ~200 MB here.

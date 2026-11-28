@@ -83,13 +83,13 @@ export function TagInput({ ticketId, readonly = false }: TagInputProps) {
         {ticketTags.map((t: Tag) => (
           <span
             key={t.id}
-            className="inline-flex items-center gap-1 rounded-full bg-blue-100 px-2.5 py-0.5 text-xs font-medium text-blue-800"
+            className="inline-flex max-w-full items-center gap-1 rounded-full bg-selected-strong px-2.5 py-0.5 text-xs font-medium text-info-fg-strong"
           >
-            {t.name}
+            <span className="min-w-0 wrap-anywhere">{t.name}</span>
             {!readonly && (
               <button
                 onClick={() => removeMutation.mutate(t.id)}
-                className="ml-0.5 rounded-full hover:bg-blue-200 p-0.5"
+                className="ml-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full hover:bg-primary/20"
                 aria-label={`Remove tag ${t.name}`}
               >
                 <XIcon className="h-3 w-3" />
@@ -98,7 +98,7 @@ export function TagInput({ ticketId, readonly = false }: TagInputProps) {
           </span>
         ))}
         {ticketTags.length === 0 && readonly && (
-          <span className="text-xs text-gray-400">No tags</span>
+          <span className="text-xs text-fg-faint">No tags</span>
         )}
       </div>
 
@@ -116,16 +116,16 @@ export function TagInput({ ticketId, readonly = false }: TagInputProps) {
             onFocus={() => setOpen(true)}
             onKeyDown={handleKeyDown}
             placeholder="Add tag…"
-            className="h-8 w-full rounded-md border border-gray-200 bg-white px-3 text-xs text-gray-800 placeholder-gray-400 focus:border-blue-400 focus:outline-none focus:ring-1 focus:ring-blue-400"
+            className="h-8 w-full rounded-md border border-border bg-background px-3 text-xs text-fg placeholder:text-fg-faint focus:border-ring focus:outline-none focus:ring-1 focus:ring-ring"
           />
 
           {/* Dropdown */}
           {open && filtered.length > 0 && (
-            <ul className="absolute z-10 mt-1 w-full rounded-md border bg-white py-1 shadow-lg text-xs">
+            <ul className="absolute z-10 mt-1 w-full rounded-md border bg-card py-1 shadow-lg text-xs">
               {filtered.map((s) => (
                 <li
                   key={s.id}
-                  className="cursor-pointer px-3 py-1.5 hover:bg-blue-50 text-gray-700"
+                  className="cursor-pointer px-3 py-1.5 hover:bg-selected text-fg-soft"
                   onMouseDown={(e) => {
                     e.preventDefault()
                     submit(s.name)
@@ -139,14 +139,14 @@ export function TagInput({ ticketId, readonly = false }: TagInputProps) {
 
           {/* "Press Enter to create" hint */}
           {open && input.trim() && filtered.length === 0 && (
-            <div className="absolute z-10 mt-1 w-full rounded-md border bg-white px-3 py-2 shadow-lg text-xs text-gray-500">
+            <div className="absolute z-10 mt-1 w-full rounded-md border bg-card px-3 py-2 shadow-lg text-xs text-fg-faint">
               Press Enter to create &ldquo;{input.trim().toLowerCase()}&rdquo;
             </div>
           )}
         </div>
       )}
 
-      {error && <p className="text-xs text-red-600">{error}</p>}
+      {error && <p role="alert" className="text-xs text-danger-fg">{error}</p>}
     </div>
   )
 }

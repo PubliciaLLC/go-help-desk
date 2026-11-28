@@ -32,7 +32,7 @@ export function GuestTrackPage() {
   }
 
   return (
-    <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4">
+    <div className="min-h-screen bg-canvas flex items-center justify-center p-4">
       <div className="max-w-md w-full">
         <Card>
           <CardHeader>
@@ -40,18 +40,18 @@ export function GuestTrackPage() {
           </CardHeader>
           <CardContent>
             {sent ? (
-              <div className="space-y-3 text-sm text-gray-700">
+              <div className="space-y-3 text-sm text-fg-soft">
                 <p>
                   If those details match an open ticket, we have emailed a new
                   link to that address.
                 </p>
-                <p className="text-gray-500">
+                <p className="text-fg-faint">
                   Any link you were sent before this one has stopped working.
                 </p>
               </div>
             ) : (
               <form onSubmit={submit} className="space-y-4">
-                <p className="text-sm text-gray-600">
+                <p className="text-sm text-fg-muted">
                   Enter your tracking number and the email address you used, and
                   we will send you a fresh link.
                 </p>

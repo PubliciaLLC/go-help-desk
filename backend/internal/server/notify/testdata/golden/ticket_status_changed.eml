@@ -1,0 +1,13 @@
+From: <helpdesk@example.com>
+To: <to@example.com>
+Subject: There is an update on [GHD-2026-000042]
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: quoted-printable
+
+There is an update on your ticket.
+
+Ticket: GHD-2026-000042
+
+See where it stands:
+https://help.example.com/g#guest-token-abc

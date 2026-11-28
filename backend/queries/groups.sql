@@ -7,7 +7,7 @@ SELECT * FROM groups WHERE id = $1;
 -- name: UpdateGroup :exec
 UPDATE groups SET name = $2, description = $3 WHERE id = $1;
 
--- name: DeleteGroup :exec
+-- name: DeleteGroup :execrows
 DELETE FROM groups WHERE id = $1;
 
 -- name: ListGroups :many
@@ -16,11 +16,27 @@ SELECT * FROM groups ORDER BY name;
 -- name: AddGroupMember :exec
 INSERT INTO group_members (group_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING;
 
--- name: RemoveGroupMember :exec
+-- name: RemoveGroupMember :execrows
 DELETE FROM group_members WHERE group_id = $1 AND user_id = $2;
 
 -- name: ListGroupMembers :many
 SELECT user_id FROM group_members WHERE group_id = $1;
+
+-- name: ListMailableGroupMembers :many
+-- The members of a group that staff email can go to (#441): active staff and
+-- administrators, never a service account (#490), a disabled or deleted
+-- account, or somebody moved to a requester role. The mail path checks each
+-- person again in Go (User.CanReceiveStaffMail); this keeps them from being
+-- offered as candidates in the first place.
+SELECT gm.user_id
+FROM group_members gm
+JOIN users u ON u.id = gm.user_id
+WHERE gm.group_id = $1
+  AND u.deleted_at IS NULL
+  AND NOT u.disabled
+  AND NOT u.service_account
+  AND u.role IN ('staff', 'admin')
+ORDER BY gm.user_id;
 
 -- name: ListGroupsForUser :many
 SELECT g.* FROM groups g
@@ -32,7 +48,7 @@ ORDER BY g.name;
 INSERT INTO group_scopes (group_id, category_id, type_id) VALUES ($1, $2, $3)
 ON CONFLICT DO NOTHING;
 
--- name: RemoveGroupScope :exec
+-- name: RemoveGroupScope :execrows
 DELETE FROM group_scopes
 WHERE group_id = $1 AND category_id = $2
 AND (type_id = $3 OR (type_id IS NULL AND $3::uuid IS NULL));

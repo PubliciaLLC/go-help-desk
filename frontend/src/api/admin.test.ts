@@ -1,6 +1,12 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest'
 import { api } from './client'
-import { saveSAMLConfig, uploadLogo, addGroupScope, createSLAPolicy, updateSLAPolicy } from './admin'
+import { AxiosError, AxiosHeaders } from 'axios'
+import {
+  saveSAMLConfig, uploadLogo, addGroupScope, createSLAPolicy, updateSLAPolicy,
+  deleteGroup, deleteOAuthClient, deleteAPIKey, deleteCategory, deleteType, deleteItem,
+  deleteCategoryAssignment, deleteTypeAssignment, deleteItemAssignment, removeGroupScope, updateSettings,
+  emailTemplateProblems, getEmailTemplate, previewEmailTemplate, revertEmailTemplate, saveEmailTemplate, testEmailTemplate,
+} from './admin'
 
 // admin.ts is 557 lines and almost all of it is one-line wrappers, which are
 // deliberately not tested — see the note in tickets.test.ts. Covered here is
@@ -10,6 +16,18 @@ import { saveSAMLConfig, uploadLogo, addGroupScope, createSLAPolicy, updateSLAPo
 
 beforeEach(() => {
   vi.restoreAllMocks()
+})
+
+describe('updateSettings', () => {
+  // PATCH /admin/settings answers 204 with no body, or 200 {"warning"} (#420).
+  it('hands back the warning when there is one, and nothing when the body is empty', async () => {
+    const patch = vi.spyOn(api, 'patch')
+    patch.mockResolvedValueOnce({ data: { warning: 'JIRA sync will see no tickets.' } })
+    expect(await updateSettings({ ticket_scope_enforced: true })).toEqual({ warning: 'JIRA sync will see no tickets.' })
+
+    patch.mockResolvedValueOnce({ data: undefined })
+    expect((await updateSettings({ site_name: 'x' })).warning).toBeUndefined()
+  })
 })
 
 describe('saveSAMLConfig', () => {
@@ -99,5 +117,98 @@ describe('payloads where absent and empty differ', () => {
 
     const [, body] = post.mock.calls[0]
     expect('priority' in (body as object)).toBe(false)
+  })
+})
+
+// Deleting something that is already gone answers 404 not_found (#418). That
+// is the outcome the caller asked for, so these resolve; every other failure,
+// including the router's plain-text 404 for a route that does not exist, still
+// rejects so the page can say what went wrong.
+describe('deletes treat a not_found 404 as already gone', () => {
+  function failure(status: number, data: unknown) {
+    const headers = new AxiosHeaders()
+    return new AxiosError('Request failed', 'ERR_BAD_REQUEST', { headers } as never, null, {
+      status, statusText: 'x', headers, config: { headers } as never, data,
+    } as never)
+  }
+  const envelope = (code: string) => ({ error: { code, message: 'm' } })
+
+  const calls: Record<string, { url: string; call: () => Promise<void> }> = {
+    deleteGroup: { url: '/admin/groups/g', call: () => deleteGroup('g') },
+    deleteOAuthClient: { url: '/admin/oauth-clients/o', call: () => deleteOAuthClient('o') },
+    deleteAPIKey: { url: '/admin/api-keys/k', call: () => deleteAPIKey('k') },
+    deleteCategory: { url: '/admin/categories/c', call: () => deleteCategory('c') },
+    deleteType: { url: '/admin/categories/c/types/t', call: () => deleteType('c', 't') },
+    deleteItem: { url: '/admin/categories/c/types/t/items/i', call: () => deleteItem('c', 't', 'i') },
+    deleteCategoryAssignment: { url: '/admin/categories/c/fields/a', call: () => deleteCategoryAssignment('c', 'a') },
+    deleteTypeAssignment: { url: '/admin/categories/c/types/t/fields/a', call: () => deleteTypeAssignment('c', 't', 'a') },
+    deleteItemAssignment: { url: '/admin/categories/c/types/t/items/i/fields/a', call: () => deleteItemAssignment('c', 't', 'i', 'a') },
+    removeGroupScope: { url: '/admin/groups/g/scopes', call: () => removeGroupScope('g', { category_id: 'c' }) },
+  }
+
+  for (const [name, { url, call }] of Object.entries(calls)) {
+    it(`${name}: resolves on 404 not_found, rejects on anything else`, async () => {
+      const del = vi.spyOn(api, 'delete')
+
+      del.mockRejectedValueOnce(failure(404, envelope('not_found')))
+      await expect(call()).resolves.toBeUndefined()
+      expect(del.mock.calls[0][0]).toBe(url)
+
+      // The router's answer for a path that is not a route: plain text, no envelope.
+      del.mockRejectedValueOnce(failure(404, '404 page not found\n'))
+      await expect(call()).rejects.toMatchObject({ response: { status: 404 } })
+
+      // A 404 that is not the not_found code is not "already gone" either.
+      del.mockRejectedValueOnce(failure(404, envelope('something_else')))
+      await expect(call()).rejects.toMatchObject({ response: { status: 404 } })
+
+      del.mockRejectedValueOnce(failure(409, envelope('category_in_use')))
+      await expect(call()).rejects.toMatchObject({ response: { status: 409 } })
+
+      del.mockRejectedValueOnce(failure(500, envelope('internal_error')))
+      await expect(call()).rejects.toMatchObject({ response: { status: 500 } })
+    })
+  }
+})
+
+// #158: a template's name is a path segment, and the reserved header and footer
+// start with an underscore. The wrappers send exactly what the server routes on.
+describe('email template calls', () => {
+  it('address one template by name, escaped, with the verbs the API routes', async () => {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const ok = { data: {} } as any
+    const get = vi.spyOn(api, 'get').mockResolvedValue(ok)
+    const put = vi.spyOn(api, 'put').mockResolvedValue(ok)
+    const post = vi.spyOn(api, 'post').mockResolvedValue(ok)
+    const del = vi.spyOn(api, 'delete').mockResolvedValue(ok)
+    const draft = { subject: 's', body: 'b' }
+
+    await getEmailTemplate('_header')
+    await saveEmailTemplate('ticket_created', draft)
+    await previewEmailTemplate('ticket_created', draft)
+    await testEmailTemplate('ticket_created', draft)
+    await revertEmailTemplate('a/b')
+
+    expect(get).toHaveBeenCalledWith('/admin/email-templates/_header')
+    expect(put).toHaveBeenCalledWith('/admin/email-templates/ticket_created', draft)
+    expect(post).toHaveBeenCalledWith('/admin/email-templates/ticket_created/preview', draft)
+    expect(post).toHaveBeenCalledWith('/admin/email-templates/ticket_created/test', draft)
+    expect(del).toHaveBeenCalledWith('/admin/email-templates/a%2Fb')
+  })
+})
+
+describe('emailTemplateProblems', () => {
+  const refusal = (data: unknown) => ({ response: { data } })
+
+  it('reads the per-field problems out of a 400 invalid_template', () => {
+    const errors = [{ field: 'body', line: 2, col: 5, message: 'no' }]
+    expect(emailTemplateProblems(refusal({ error: { code: 'invalid_template', errors } }))).toEqual(errors)
+  })
+
+  it('is empty for any other error, so a network failure is not shown as a template problem', () => {
+    expect(emailTemplateProblems(refusal({ error: { code: 'internal_error', errors: [{ field: 'body' }] } }))).toEqual([])
+    expect(emailTemplateProblems(new Error('network'))).toEqual([])
+    expect(emailTemplateProblems(refusal({ error: { code: 'invalid_template' } }))).toEqual([])
+    expect(emailTemplateProblems(undefined)).toEqual([])
   })
 })

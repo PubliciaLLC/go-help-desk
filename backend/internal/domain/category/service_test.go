@@ -40,7 +40,7 @@ func (f *fakeCategoryStore) UpdateCategory(_ context.Context, c category.Categor
 	f.cats[c.ID] = c
 	return nil
 }
-func (f *fakeCategoryStore) DeleteCategory(_ context.Context, id uuid.UUID) error {
+func (f *fakeCategoryStore) DeleteCategory(_ context.Context, id uuid.UUID, _ *uuid.UUID) error {
 	delete(f.cats, id)
 	return nil
 }
@@ -66,7 +66,7 @@ func (f *fakeCategoryStore) UpdateType(_ context.Context, t category.Type) error
 	f.types[t.ID] = t
 	return nil
 }
-func (f *fakeCategoryStore) DeleteType(_ context.Context, id uuid.UUID) error {
+func (f *fakeCategoryStore) DeleteType(_ context.Context, id uuid.UUID, _ *uuid.UUID) error {
 	delete(f.types, id)
 	return nil
 }
@@ -94,9 +94,36 @@ func (f *fakeCategoryStore) UpdateItem(_ context.Context, i category.Item) error
 	f.items[i.ID] = i
 	return nil
 }
-func (f *fakeCategoryStore) DeleteItem(_ context.Context, id uuid.UUID) error {
+func (f *fakeCategoryStore) DeleteItem(_ context.Context, id uuid.UUID, _ *uuid.UUID) error {
 	delete(f.items, id)
 	return nil
+}
+func (f *fakeCategoryStore) CategoryNames(_ context.Context, ids []uuid.UUID) (map[uuid.UUID]string, error) {
+	out := map[uuid.UUID]string{}
+	for _, id := range ids {
+		if c, ok := f.cats[id]; ok {
+			out[id] = c.Name
+		}
+	}
+	return out, nil
+}
+func (f *fakeCategoryStore) TypeNames(_ context.Context, ids []uuid.UUID) (map[uuid.UUID]string, error) {
+	out := map[uuid.UUID]string{}
+	for _, id := range ids {
+		if t, ok := f.types[id]; ok {
+			out[id] = t.Name
+		}
+	}
+	return out, nil
+}
+func (f *fakeCategoryStore) ItemNames(_ context.Context, ids []uuid.UUID) (map[uuid.UUID]string, error) {
+	out := map[uuid.UUID]string{}
+	for _, id := range ids {
+		if i, ok := f.items[id]; ok {
+			out[id] = i.Name
+		}
+	}
+	return out, nil
 }
 func (f *fakeCategoryStore) ListItems(_ context.Context, typeID uuid.UUID, _ bool) ([]category.Item, error) {
 	var out []category.Item

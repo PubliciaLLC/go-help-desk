@@ -7,6 +7,7 @@ package dbgen
 
 import (
 	"context"
+	"database/sql"
 
 	uuid "github.com/google/uuid"
 )
@@ -44,16 +45,30 @@ func (q *Queries) DeleteSessionsForUser(ctx context.Context, userID uuid.NullUUI
 	return err
 }
 
+const deleteStaleSAMLHandovers = `-- name: DeleteStaleSAMLHandovers :exec
+DELETE FROM spent_saml_handovers WHERE spent_at < clock_timestamp() - interval '1 day'
+`
+
+// A row only has to outlive the cookie it records. The cookie lives 5 minutes
+// (auth.SAMLHandoverMaxAge). A day leaves a wide margin for clock differences
+// between the replica that minted the cookie (whose clock sets its expiry) and
+// this database (whose clock sets spent_at).
+func (q *Queries) DeleteStaleSAMLHandovers(ctx context.Context) error {
+	_, err := q.db.ExecContext(ctx, deleteStaleSAMLHandovers)
+	return err
+}
+
 const getSession = `-- name: GetSession :one
-SELECT s.id, s.user_id, s.data, s.expires_at, s.created_at, s.updated_at FROM sessions s
+SELECT s.id, s.user_id, s.data, s.expires_at, s.created_at, s.updated_at, u.role AS user_role FROM sessions s
 LEFT JOIN users u ON u.id = s.user_id
 WHERE s.id = $1
   AND s.expires_at > clock_timestamp()
-  AND (s.user_id IS NULL OR (u.disabled = FALSE AND u.deleted_at IS NULL))
+  AND (s.user_id IS NULL OR (u.disabled = FALSE AND u.deleted_at IS NULL AND u.service_account = FALSE))
 `
 
 type GetSessionRow struct {
-	Session Session `json:"session"`
+	Session  Session        `json:"session"`
+	UserRole sql.NullString `json:"user_role"`
 }
 
 // Only unexpired rows: an expired session must behave exactly like a missing
@@ -67,9 +82,29 @@ type GetSessionRow struct {
 // load. This costs no extra round trip, since the session lookup already
 // queries the database on every authenticated request.
 //
+// A service user (an OAuth client's identity, #420) never signs in, so no
+// session for one loads either. Nothing writes such a session; this keeps the
+// guarantee from depending on that.
+//
 // LEFT JOIN, and user_id IS NULL passes: the OIDC flow writes state (nonce,
 // PKCE verifier) into a session before anybody has authenticated, and an inner
 // join would drop those and break the login it is protecting.
+// The role comes back with it, and it is the one in the database rather than
+// the one in the cookie.
+//
+// The session payload carries a role, written when the session was minted.
+// That made the cookie the authority on what somebody may do, and it went
+// stale exactly when it mattered: demoting an administrator revokes their
+// sessions, but a request already in flight — a password change, which the
+// account holder can time and which spends 50-odd milliseconds hashing —
+// finished afterwards and minted a NEW session carrying the role it had read
+// on the way in. The demotion was in the database and the attacker was an
+// administrator again. Measured: the demotion landed 52ms into a 93ms
+// request, and the re-issued cookie read /admin/users afterwards.
+//
+// Disabling and deleting were never vulnerable to this, because the join
+// below already drops those rows on every request. Role was the one piece of
+// authority left being carried rather than looked up.
 func (q *Queries) GetSession(ctx context.Context, id string) (GetSessionRow, error) {
 	row := q.db.QueryRowContext(ctx, getSession, id)
 	var i GetSessionRow
@@ -80,8 +115,25 @@ func (q *Queries) GetSession(ctx context.Context, id string) (GetSessionRow, err
 		&i.Session.ExpiresAt,
 		&i.Session.CreatedAt,
 		&i.Session.UpdatedAt,
+		&i.UserRole,
 	)
 	return i, err
+}
+
+const spendSAMLHandover = `-- name: SpendSAMLHandover :execrows
+INSERT INTO spent_saml_handovers (token_hash) VALUES ($1)
+ON CONFLICT (token_hash) DO NOTHING
+`
+
+// One row affected: this is the cookie's first use. Zero: it was spent before.
+// ON CONFLICT rather than SELECT-then-INSERT, so that two concurrent requests
+// carrying the same cookie cannot both see "not spent" (#337).
+func (q *Queries) SpendSAMLHandover(ctx context.Context, tokenHash []byte) (int64, error) {
+	result, err := q.db.ExecContext(ctx, spendSAMLHandover, tokenHash)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const upsertSession = `-- name: UpsertSession :exec

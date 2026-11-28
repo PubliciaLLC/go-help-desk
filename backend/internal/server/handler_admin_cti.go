@@ -1,16 +1,103 @@
 package server
 
 import (
+	"context"
+	"fmt"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/category"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/customfield"
 )
 
 // Admin category/type/item management — the three-level CTI taxonomy.
 //
 // Split out of handler_admin.go, which had grown to 1,332 lines across twelve
 // unrelated resources. Moved verbatim: no handler logic changed.
+
+// ── The path chain ───────────────────────────────────────────────────────────
+
+// ctiPath is the category > type > item chain a URL names. Routes used to read
+// only the deepest id, so /categories/X/types/Y acted on Y whatever X was, and
+// an assignment could be created for an id that names nothing (#419).
+type ctiPath struct {
+	category uuid.UUID
+	typ      *uuid.UUID // nil above type level
+	item     *uuid.UUID // nil above item level
+}
+
+// scope is the level the path ends at, which is where a field assignment
+// attaches.
+func (p ctiPath) scope() (customfield.ScopeType, uuid.UUID) {
+	switch {
+	case p.item != nil:
+		return customfield.ItemScope, *p.item
+	case p.typ != nil:
+		return customfield.TypeScope, *p.typ
+	}
+	return customfield.CategoryScope, p.category
+}
+
+// resolveCTIPath reads whichever of {id}, {typeId} and {itemId} the route has,
+// answers 400 for one that is not a UUID, and 404 unless every id exists and
+// hangs off the one before it. It writes the response when it returns false.
+func (s *Server) resolveCTIPath(w http.ResponseWriter, r *http.Request) (ctiPath, bool) {
+	var p ctiPath
+	var err error
+	if p.category, err = uuid.Parse(chi.URLParam(r, "id")); err != nil {
+		Error(w, http.StatusBadRequest, "bad_request", "invalid category ID")
+		return ctiPath{}, false
+	}
+	if raw := chi.URLParam(r, "typeId"); raw != "" {
+		id, err := uuid.Parse(raw)
+		if err != nil {
+			Error(w, http.StatusBadRequest, "bad_request", "invalid type ID")
+			return ctiPath{}, false
+		}
+		p.typ = &id
+	}
+	if raw := chi.URLParam(r, "itemId"); raw != "" {
+		id, err := uuid.Parse(raw)
+		if err != nil {
+			Error(w, http.StatusBadRequest, "bad_request", "invalid item ID")
+			return ctiPath{}, false
+		}
+		p.item = &id
+	}
+	if err := s.verifyCTIPath(r.Context(), p); err != nil {
+		handleError(w, err)
+		return ctiPath{}, false
+	}
+	return p, true
+}
+
+func (s *Server) verifyCTIPath(ctx context.Context, p ctiPath) error {
+	if _, err := s.categories.GetCategory(ctx, p.category); err != nil {
+		return err
+	}
+	if p.typ == nil {
+		return nil
+	}
+	tp, err := s.categories.GetType(ctx, *p.typ)
+	if err != nil {
+		return err
+	}
+	if tp.CategoryID != p.category {
+		return fmt.Errorf("type %s is not in category %s: %w", tp.ID, p.category, category.ErrNotFound)
+	}
+	if p.item == nil {
+		return nil
+	}
+	it, err := s.categories.GetItem(ctx, *p.item)
+	if err != nil {
+		return err
+	}
+	if it.TypeID != tp.ID {
+		return fmt.Errorf("item %s is not in type %s: %w", it.ID, tp.ID, category.ErrNotFound)
+	}
+	return nil
+}
 
 // ── Categories ───────────────────────────────────────────────────────────────
 
@@ -25,14 +112,15 @@ func (s *Server) handleListCategories(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleCreateCategory(w http.ResponseWriter, r *http.Request) {
 	var body struct {
-		Name      string `json:"name"`
-		SortOrder int    `json:"sort_order"`
+		Name        string `json:"name"`
+		Description string `json:"description"`
+		SortOrder   int    `json:"sort_order"`
 	}
 	if err := DecodeJSON(r, &body); err != nil {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
 		return
 	}
-	c, err := s.categories.CreateCategory(r.Context(), body.Name, body.SortOrder)
+	c, err := s.categories.CreateCategoryWithDescription(r.Context(), body.Name, body.Description, body.SortOrder)
 	if err != nil {
 		handleError(w, err)
 		return
@@ -66,9 +154,10 @@ func (s *Server) handleUpdateCategory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Name      *string `json:"name"`
-		SortOrder *int    `json:"sort_order"`
-		Active    *bool   `json:"active"`
+		Name        *string `json:"name"`
+		Description *string `json:"description"`
+		SortOrder   *int    `json:"sort_order"`
+		Active      *bool   `json:"active"`
 	}
 	if err := DecodeJSON(r, &body); err != nil {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
@@ -76,6 +165,9 @@ func (s *Server) handleUpdateCategory(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.Name != nil {
 		existing.Name = *body.Name
+	}
+	if body.Description != nil {
+		existing.Description = *body.Description
 	}
 	if body.SortOrder != nil {
 		existing.SortOrder = *body.SortOrder
@@ -87,7 +179,13 @@ func (s *Server) handleUpdateCategory(w http.ResponseWriter, r *http.Request) {
 		handleError(w, err)
 		return
 	}
-	JSON(w, http.StatusOK, existing)
+	// The saved row, not the edited copy: the name and description are trimmed on the way in.
+	saved, err := s.categories.GetCategory(r.Context(), existing.ID)
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+	JSON(w, http.StatusOK, saved)
 }
 
 func (s *Server) handleDeleteCategory(w http.ResponseWriter, r *http.Request) {
@@ -96,7 +194,7 @@ func (s *Server) handleDeleteCategory(w http.ResponseWriter, r *http.Request) {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid ID")
 		return
 	}
-	if err := s.categories.DeleteCategory(r.Context(), id); err != nil {
+	if err := s.categories.DeleteCategory(r.Context(), id, actorIDOf(r)); err != nil {
 		handleError(w, err)
 		return
 	}
@@ -124,14 +222,15 @@ func (s *Server) handleCreateType(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var body struct {
-		Name      string `json:"name"`
-		SortOrder int    `json:"sort_order"`
+		Name        string `json:"name"`
+		Description string `json:"description"`
+		SortOrder   int    `json:"sort_order"`
 	}
 	if err := DecodeJSON(r, &body); err != nil {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
 		return
 	}
-	tp, err := s.categories.CreateType(r.Context(), catID, body.Name, body.SortOrder)
+	tp, err := s.categories.CreateTypeWithDescription(r.Context(), catID, body.Name, body.Description, body.SortOrder)
 	if err != nil {
 		handleError(w, err)
 		return
@@ -140,20 +239,20 @@ func (s *Server) handleCreateType(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleUpdateType(w http.ResponseWriter, r *http.Request) {
-	typeID, err := uuid.Parse(chi.URLParam(r, "typeId"))
-	if err != nil {
-		Error(w, http.StatusBadRequest, "bad_request", "invalid type ID")
+	p, ok := s.resolveCTIPath(w, r)
+	if !ok {
 		return
 	}
-	existing, err := s.categories.GetType(r.Context(), typeID)
+	existing, err := s.categories.GetType(r.Context(), *p.typ)
 	if err != nil {
 		handleError(w, err)
 		return
 	}
 	var body struct {
-		Name      *string `json:"name"`
-		SortOrder *int    `json:"sort_order"`
-		Active    *bool   `json:"active"`
+		Name        *string `json:"name"`
+		Description *string `json:"description"`
+		SortOrder   *int    `json:"sort_order"`
+		Active      *bool   `json:"active"`
 	}
 	if err := DecodeJSON(r, &body); err != nil {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
@@ -161,6 +260,9 @@ func (s *Server) handleUpdateType(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.Name != nil {
 		existing.Name = *body.Name
+	}
+	if body.Description != nil {
+		existing.Description = *body.Description
 	}
 	if body.SortOrder != nil {
 		existing.SortOrder = *body.SortOrder
@@ -172,16 +274,21 @@ func (s *Server) handleUpdateType(w http.ResponseWriter, r *http.Request) {
 		handleError(w, err)
 		return
 	}
-	JSON(w, http.StatusOK, existing)
+	// The saved row, not the edited copy: the name and description are trimmed on the way in.
+	saved, err := s.categories.GetType(r.Context(), existing.ID)
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+	JSON(w, http.StatusOK, saved)
 }
 
 func (s *Server) handleDeleteType(w http.ResponseWriter, r *http.Request) {
-	id, err := uuid.Parse(chi.URLParam(r, "typeId"))
-	if err != nil {
-		Error(w, http.StatusBadRequest, "bad_request", "invalid type ID")
+	p, ok := s.resolveCTIPath(w, r)
+	if !ok {
 		return
 	}
-	if err := s.categories.DeleteType(r.Context(), id); err != nil {
+	if err := s.categories.DeleteType(r.Context(), *p.typ, actorIDOf(r)); err != nil {
 		handleError(w, err)
 		return
 	}
@@ -189,12 +296,11 @@ func (s *Server) handleDeleteType(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleListItems(w http.ResponseWriter, r *http.Request) {
-	typeID, err := uuid.Parse(chi.URLParam(r, "typeId"))
-	if err != nil {
-		Error(w, http.StatusBadRequest, "bad_request", "invalid type ID")
+	p, ok := s.resolveCTIPath(w, r)
+	if !ok {
 		return
 	}
-	items, err := s.categories.ListItems(r.Context(), typeID, false)
+	items, err := s.categories.ListItems(r.Context(), *p.typ, false)
 	if err != nil {
 		handleError(w, err)
 		return
@@ -203,20 +309,20 @@ func (s *Server) handleListItems(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleCreateItem(w http.ResponseWriter, r *http.Request) {
-	typeID, err := uuid.Parse(chi.URLParam(r, "typeId"))
-	if err != nil {
-		Error(w, http.StatusBadRequest, "bad_request", "invalid type ID")
+	p, ok := s.resolveCTIPath(w, r)
+	if !ok {
 		return
 	}
 	var body struct {
-		Name      string `json:"name"`
-		SortOrder int    `json:"sort_order"`
+		Name        string `json:"name"`
+		Description string `json:"description"`
+		SortOrder   int    `json:"sort_order"`
 	}
 	if err := DecodeJSON(r, &body); err != nil {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
 		return
 	}
-	it, err := s.categories.CreateItem(r.Context(), typeID, body.Name, body.SortOrder)
+	it, err := s.categories.CreateItemWithDescription(r.Context(), *p.typ, body.Name, body.Description, body.SortOrder)
 	if err != nil {
 		handleError(w, err)
 		return
@@ -225,20 +331,20 @@ func (s *Server) handleCreateItem(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
-	itemID, err := uuid.Parse(chi.URLParam(r, "itemId"))
-	if err != nil {
-		Error(w, http.StatusBadRequest, "bad_request", "invalid item ID")
+	p, ok := s.resolveCTIPath(w, r)
+	if !ok {
 		return
 	}
-	existing, err := s.categories.GetItem(r.Context(), itemID)
+	existing, err := s.categories.GetItem(r.Context(), *p.item)
 	if err != nil {
 		handleError(w, err)
 		return
 	}
 	var body struct {
-		Name      *string `json:"name"`
-		SortOrder *int    `json:"sort_order"`
-		Active    *bool   `json:"active"`
+		Name        *string `json:"name"`
+		Description *string `json:"description"`
+		SortOrder   *int    `json:"sort_order"`
+		Active      *bool   `json:"active"`
 	}
 	if err := DecodeJSON(r, &body); err != nil {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
@@ -246,6 +352,9 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 	}
 	if body.Name != nil {
 		existing.Name = *body.Name
+	}
+	if body.Description != nil {
+		existing.Description = *body.Description
 	}
 	if body.SortOrder != nil {
 		existing.SortOrder = *body.SortOrder
@@ -257,16 +366,21 @@ func (s *Server) handleUpdateItem(w http.ResponseWriter, r *http.Request) {
 		handleError(w, err)
 		return
 	}
-	JSON(w, http.StatusOK, existing)
+	// The saved row, not the edited copy: the name and description are trimmed on the way in.
+	saved, err := s.categories.GetItem(r.Context(), existing.ID)
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+	JSON(w, http.StatusOK, saved)
 }
 
 func (s *Server) handleDeleteItem(w http.ResponseWriter, r *http.Request) {
-	id, err := uuid.Parse(chi.URLParam(r, "itemId"))
-	if err != nil {
-		Error(w, http.StatusBadRequest, "bad_request", "invalid item ID")
+	p, ok := s.resolveCTIPath(w, r)
+	if !ok {
 		return
 	}
-	if err := s.categories.DeleteItem(r.Context(), id); err != nil {
+	if err := s.categories.DeleteItem(r.Context(), *p.item, actorIDOf(r)); err != nil {
 		handleError(w, err)
 		return
 	}

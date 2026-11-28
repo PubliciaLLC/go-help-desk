@@ -12,6 +12,7 @@ import (
 	"github.com/publiciallc/go-help-desk/backend/internal/database/auditstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/txrunner"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/audit"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 	"github.com/publiciallc/go-help-desk/backend/internal/testutil"
 )
@@ -50,13 +51,13 @@ func visible(t *testing.T, db *testutil.DB, entityID uuid.UUID) int {
 }
 
 func TestInTx_CommitsWhenTheCallerSucceeds(t *testing.T) {
-	db, closeDB := testutil.NewDB(t)
+	db, closeDB := testutil.NewIsolatedDB(t)
 	defer closeDB()
 
-	r := txrunner.New(db.SQL)
+	r := txrunner.New(db.SQL, nil, nil)
 	entityID := uuid.New()
 
-	err := r.InTx(context.Background(), func(_ ticket.Store, au audit.Store) error {
+	err := r.InTx(context.Background(), func(_ ticket.Store, au audit.Store, _ *notification.Changes) error {
 		return au.Create(context.Background(), entry(entityID, "committed"))
 	})
 	require.NoError(t, err)
@@ -66,13 +67,13 @@ func TestInTx_CommitsWhenTheCallerSucceeds(t *testing.T) {
 
 // TestInTx_RollsBackWhenTheCallerFails is the case the whole change exists for.
 func TestInTx_RollsBackWhenTheCallerFails(t *testing.T) {
-	db, closeDB := testutil.NewDB(t)
+	db, closeDB := testutil.NewIsolatedDB(t)
 	defer closeDB()
 
-	r := txrunner.New(db.SQL)
+	r := txrunner.New(db.SQL, nil, nil)
 	entityID := uuid.New()
 
-	err := r.InTx(context.Background(), func(_ ticket.Store, au audit.Store) error {
+	err := r.InTx(context.Background(), func(_ ticket.Store, au audit.Store, _ *notification.Changes) error {
 		// Write first, then fail — the write must not survive.
 		if err := au.Create(context.Background(), entry(entityID, "should-vanish")); err != nil {
 			return err
@@ -87,13 +88,13 @@ func TestInTx_RollsBackWhenTheCallerFails(t *testing.T) {
 // TestInTx_RollsBackEveryWrite covers the multi-write case, which is the shape
 // the ticket service actually uses: several rows, one of them failing.
 func TestInTx_RollsBackEveryWrite(t *testing.T) {
-	db, closeDB := testutil.NewDB(t)
+	db, closeDB := testutil.NewIsolatedDB(t)
 	defer closeDB()
 
-	r := txrunner.New(db.SQL)
+	r := txrunner.New(db.SQL, nil, nil)
 	entityID := uuid.New()
 
-	err := r.InTx(context.Background(), func(_ ticket.Store, au audit.Store) error {
+	err := r.InTx(context.Background(), func(_ ticket.Store, au audit.Store, _ *notification.Changes) error {
 		for _, action := range []string{"first", "second", "third"} {
 			if err := au.Create(context.Background(), entry(entityID, action)); err != nil {
 				return err
@@ -111,18 +112,18 @@ func TestInTx_RollsBackEveryWrite(t *testing.T) {
 // earlier committed transaction with it — the runner must begin a fresh
 // transaction per call rather than reusing one.
 func TestInTx_IsolatesSuccessFromFailure(t *testing.T) {
-	db, closeDB := testutil.NewDB(t)
+	db, closeDB := testutil.NewIsolatedDB(t)
 	defer closeDB()
 
-	r := txrunner.New(db.SQL)
+	r := txrunner.New(db.SQL, nil, nil)
 	kept := uuid.New()
 	discarded := uuid.New()
 
-	require.NoError(t, r.InTx(context.Background(), func(_ ticket.Store, au audit.Store) error {
+	require.NoError(t, r.InTx(context.Background(), func(_ ticket.Store, au audit.Store, _ *notification.Changes) error {
 		return au.Create(context.Background(), entry(kept, "kept"))
 	}))
 
-	require.Error(t, r.InTx(context.Background(), func(_ ticket.Store, au audit.Store) error {
+	require.Error(t, r.InTx(context.Background(), func(_ ticket.Store, au audit.Store, _ *notification.Changes) error {
 		if err := au.Create(context.Background(), entry(discarded, "discarded")); err != nil {
 			return err
 		}
@@ -140,9 +141,9 @@ func TestInTx_PassesBothStores(t *testing.T) {
 	db, closeDB := testutil.NewDB(t)
 	defer closeDB()
 
-	r := txrunner.New(db.SQL)
+	r := txrunner.New(db.SQL, nil, nil)
 
-	require.NoError(t, r.InTx(context.Background(), func(st ticket.Store, au audit.Store) error {
+	require.NoError(t, r.InTx(context.Background(), func(st ticket.Store, au audit.Store, _ *notification.Changes) error {
 		require.NotNil(t, st, "the ticket store must be bound to the transaction")
 		require.NotNil(t, au, "the audit store must be bound to the transaction")
 		return nil

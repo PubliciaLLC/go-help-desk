@@ -77,11 +77,25 @@ func (s *Store) Search(ctx context.Context, likePattern string) ([]tag.Tag, erro
 }
 
 func (s *Store) SoftDelete(ctx context.Context, id uuid.UUID) error {
-	return s.q.SoftDeleteTag(ctx, id)
+	n, err := s.q.SoftDeleteTag(ctx, id)
+	if err != nil {
+		return fmt.Errorf("deleting tag %s: %w", id, err)
+	}
+	if n == 0 {
+		return fmt.Errorf("tag %s: %w", id, tag.ErrNotFound)
+	}
+	return nil
 }
 
 func (s *Store) Restore(ctx context.Context, id uuid.UUID) error {
-	return s.q.RestoreTag(ctx, id)
+	n, err := s.q.RestoreTag(ctx, id)
+	if err != nil {
+		return fmt.Errorf("restoring tag %s: %w", id, err)
+	}
+	if n == 0 {
+		return fmt.Errorf("tag %s: %w", id, tag.ErrNotFound)
+	}
+	return nil
 }
 
 func (s *Store) ListForTicket(ctx context.Context, ticketID uuid.UUID) ([]tag.Tag, error) {

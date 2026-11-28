@@ -9,6 +9,15 @@
 #   ./scripts/test-db.sh url          print the DSN
 #   ./scripts/test-db.sh psql         open a shell on it
 #
+# Several at once: set GHD_TEST_INSTANCE to a short name (letters, digits,
+# dashes) and each name gets its own database on its own free port, e.g.
+#   GHD_TEST_INSTANCE=pr368 ./scripts/test-db.sh once
+# Without it there is one shared database, ghd-test on 5433, and two runs at
+# once tear each other's database down: `once` ends with `down -v`, which
+# removes it under whatever else is still using it. Worktrees and parallel
+# agents should always name an instance. GHD_TEST_PORT pins an instance's port
+# (refused without an instance: it would recreate the shared database).
+#
 # Nothing is left running. If the colima VM was not up when the script started
 # it, `down` and `once` stop it again — so no VM idles on the machine between
 # test runs. A colima you started yourself is left strictly alone.
@@ -25,11 +34,64 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 compose_file="$repo_root/docker/docker-compose.test.yml"
 
-# The database is published on 127.0.0.1:5433 — not 5432, which the dev stack
-# may hold. Pointing the suite at the development database would migrate it.
-export TEST_DATABASE_URL="postgres://helpdesk:helpdesk@127.0.0.1:5433/helpdesk_test?sslmode=disable"
-
 die() { printf '%s\n' "$*" >&2; exit 1; }
+
+is_port() { [[ "$1" =~ ^[0-9]{1,5}$ ]] && [ "$((10#$1))" -ge 1 ] && [ "$((10#$1))" -le 65535 ]; }
+
+usage() {
+  # The header comment, up to the first line that is not one.
+  awk 'NR>2 && /^#/ {sub(/^# ?/, ""); print; next} NR>2 {exit}' "${BASH_SOURCE[0]}"
+  exit 1
+}
+
+# Before the environment is checked: asking for help must not fail on the very
+# settings the help explains. A new command goes in this list as well as in the
+# dispatch at the bottom.
+case "${1:-}" in
+  up|down|test|once|url|psql) ;;
+  *) usage ;;
+esac
+
+instance="${GHD_TEST_INSTANCE:-}"
+port_pinned="${GHD_TEST_PORT:-}"
+if [ -n "$instance" ]; then
+  [[ "$instance" =~ ^[a-z0-9][a-z0-9-]{0,40}$ ]] || die \
+    "GHD_TEST_INSTANCE must be lowercase letters, digits and dashes: got '$instance'"
+  project="ghd-test-$instance"
+  # The port is remembered per instance, written by `up` once the database
+  # answers, so `url`, `test`, `psql` and `down` run separately all find it.
+  port_file="${TMPDIR:-/tmp}/ghd-test-db-$instance.port"
+  if [ -n "${GHD_TEST_PORT:-}" ]; then
+    : # pinned; `up` records it
+  elif [ -f "$port_file" ] && is_port "$(cat "$port_file")"; then
+    GHD_TEST_PORT="$(cat "$port_file")"
+  else
+    case "${1:-}" in
+      up|test|once)
+        GHD_TEST_PORT="$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')" \
+          || die "could not pick a free port (needs python3); set GHD_TEST_PORT" ;;
+      down) ;; # nothing recorded: down the project anyway, on any port
+      *) die "no test database is recorded for instance '$instance'; start one with up, test or once" ;;
+    esac
+  fi
+else
+  # Without an instance the project is the shared ghd-test. A different port
+  # would make compose recreate that shared container — wiping its database
+  # under whoever is using it, the collision instances exist to prevent.
+  [ -z "${GHD_TEST_PORT:-}" ] || die \
+    "GHD_TEST_PORT needs GHD_TEST_INSTANCE: on the shared ghd-test database it would recreate it under anyone using it"
+  project="ghd-test"
+  port_file=""
+fi
+
+# The database is published on 127.0.0.1:5433 by default — not 5432, which the
+# dev stack may hold. Pointing the suite at the development database would
+# migrate it.
+GHD_TEST_PORT="${GHD_TEST_PORT:-5433}"
+is_port "$GHD_TEST_PORT" || die "GHD_TEST_PORT must be a port number: got '$GHD_TEST_PORT'"
+export GHD_TEST_PORT="$((10#$GHD_TEST_PORT))"
+[ "$GHD_TEST_PORT" -ne 5432 ] || die "GHD_TEST_PORT=5432 is the dev stack's port; pick another"
+export TEST_DATABASE_URL="postgres://helpdesk:helpdesk@127.0.0.1:$GHD_TEST_PORT/helpdesk_test?sslmode=disable"
 
 # Records that this script — not the developer — started the colima VM, so
 # teardown knows whether stopping it would interrupt someone else's work.
@@ -37,9 +99,9 @@ colima_marker="${TMPDIR:-/tmp}/ghd-test-db-started-colima"
 
 compose() {
   if docker compose version >/dev/null 2>&1; then
-    docker compose -f "$compose_file" "$@"
+    docker compose -p "$project" -f "$compose_file" "$@"
   elif command -v docker-compose >/dev/null 2>&1; then
-    docker-compose -f "$compose_file" "$@"
+    docker-compose -p "$project" -f "$compose_file" "$@"
   else
     die "docker compose not found. Install a container runtime — see CONTRIBUTING.md."
   fi
@@ -82,6 +144,12 @@ Start your container runtime, or: brew install colima"
 # who had colima up for other work keeps it.
 stop_colima_if_ours() {
   [ -f "$colima_marker" ] || return 0
+  # Another instance still running needs the VM. Whichever run ends last
+  # stops it.
+  if docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^ghd-test'; then
+    printf 'leaving colima up: another test database is still running\n'
+    return 0
+  fi
   rm -f "$colima_marker"
   if command -v colima >/dev/null 2>&1; then
     printf 'stopping colima (this script started it)\n'
@@ -104,10 +172,50 @@ wait_ready() {
 $(compose logs --tail 30 testdb 2>&1)"
 }
 
+# reaches_this_db checks the host port answers like Postgres. Under colima the
+# port is bound inside the VM, and the forward to the host fails silently if a
+# host program already holds it — `up` would report ready, and the suite would
+# talk to that program. Postgres answers an SSLRequest with one byte, S or N.
+# Any Postgres answers that way, so another one on the port (say a Homebrew
+# install) passes here and fails loudly at the suite's first connection
+# instead, unless it happens to have a helpdesk role and a helpdesk_test
+# database. `docker port` cannot tell the two apart: it reports the mapping
+# compose asked for, not whether the forward to the host works.
+reaches_this_db() {
+  python3 - "$GHD_TEST_PORT" <<'PY' 2>/dev/null
+import socket, struct, sys
+s = socket.create_connection(("127.0.0.1", int(sys.argv[1])), timeout=3)
+s.sendall(struct.pack("!ii", 8, 80877103))
+sys.exit(0 if s.recv(1) in (b"S", b"N") else 1)
+PY
+}
+
 cmd_up() {
   require_runtime
   compose up -d --wait 2>/dev/null || compose up -d
   wait_ready
+  # wait_ready asks pg_isready inside the container. Under colima the forward
+  # to the host comes up a moment after that says ready, so a single probe can
+  # fail on a port nobody holds. A real squatter fails every try.
+  local tries=0
+  until reaches_this_db; do
+    tries=$((tries + 1))
+    [ "$tries" -lt 10 ] || break
+    sleep 1
+  done
+  if [ "$tries" -ge 10 ]; then
+    # Only an unpinned instance gets a new port from down-then-up; anywhere
+    # else, the same port and the same squatter come back.
+    local next="Free port $GHD_TEST_PORT, or set GHD_TEST_INSTANCE to get a free port of its own."
+    if [ -n "$port_pinned" ]; then
+      next="Free port $GHD_TEST_PORT, or pin another with GHD_TEST_PORT."
+    elif [ -n "$instance" ]; then
+      next="Run \`down\` for this instance and start it again; a new port is picked."
+    fi
+    die "127.0.0.1:$GHD_TEST_PORT does not reach this test database; another program may hold the port.
+$next"
+  fi
+  [ -z "$port_file" ] || printf '%s\n' "$GHD_TEST_PORT" > "$port_file"
   printf 'TEST_DATABASE_URL=%s\n' "$TEST_DATABASE_URL"
 }
 
@@ -121,6 +229,7 @@ cmd_down() {
   else
     printf 'no docker daemon; nothing to tear down\n'
   fi
+  [ -z "$port_file" ] || rm -f "$port_file"
   stop_colima_if_ours
 }
 
@@ -150,9 +259,5 @@ case "${1:-}" in
   psql)
     require_runtime
     compose exec testdb psql -U helpdesk -d helpdesk_test
-    ;;
-  *)
-    sed -n '3,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
-    exit 1
     ;;
 esac

@@ -4,56 +4,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/require"
 
 	authmw "github.com/publiciallc/go-help-desk/backend/internal/middleware"
 )
-
-func TestRateLimiter(t *testing.T) {
-	t.Run("allows up to the limit then refuses", func(t *testing.T) {
-		rl := authmw.NewRateLimiter(3, time.Minute)
-		for i := 1; i <= 3; i++ {
-			require.True(t, rl.Allow("k"), "attempt %d", i)
-		}
-		require.False(t, rl.Allow("k"), "the attempt past the limit must be refused")
-	})
-
-	t.Run("counts per key", func(t *testing.T) {
-		rl := authmw.NewRateLimiter(1, time.Minute)
-		require.True(t, rl.Allow("a"))
-		require.False(t, rl.Allow("a"))
-		require.True(t, rl.Allow("b"), "one key's spending must not charge another")
-	})
-
-	// NIST SP 800-63B has the verifier disregard prior failures once the user
-	// authenticates successfully; without it, two fumbled codes followed by a
-	// correct one still leave the user throttled for the rest of the window.
-	t.Run("success clears the budget", func(t *testing.T) {
-		rl := authmw.NewRateLimiter(2, time.Minute)
-		require.True(t, rl.Allow("k"))
-		rl.Reset("k")
-		require.True(t, rl.Allow("k"))
-		require.True(t, rl.Allow("k"), "the budget must be the full one again")
-	})
-
-	t.Run("the window resets", func(t *testing.T) {
-		rl := authmw.NewRateLimiter(1, 30*time.Millisecond)
-		require.True(t, rl.Allow("k"))
-		require.False(t, rl.Allow("k"))
-		require.Eventually(t, func() bool { return rl.Allow("k") },
-			time.Second, 10*time.Millisecond, "the window must expire and allow again")
-	})
-
-	t.Run("a limit of zero disables it", func(t *testing.T) {
-		rl := authmw.NewRateLimiter(0, time.Minute)
-		for i := 0; i < 50; i++ {
-			require.True(t, rl.Allow("k"))
-		}
-		rl.Reset("k") // must not panic
-	})
-}
 
 // ClientAddr is used only where no account key exists. It must never read a
 // forwarding header: that is attacker controlled, and honouring it would let

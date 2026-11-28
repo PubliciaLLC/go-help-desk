@@ -73,7 +73,7 @@ func TestTicketScope_HidesOutOfScopeTicket(t *testing.T) {
 	enableScope(t, h)
 
 	got := h.do(t, http.MethodGet, "/api/v1/tickets/"+created.ID, nil)
-	require.Equal(t, http.StatusForbidden, got.StatusCode,
+	require.Equal(t, http.StatusNotFound, got.StatusCode,
 		"a staff member with no group covering this ticket must not read it")
 
 	// The admin still can.
@@ -102,7 +102,7 @@ func TestTicketScope_CategoryScopeGrantsAccess(t *testing.T) {
 	enableScope(t, h)
 
 	// Out of scope to begin with.
-	require.Equal(t, http.StatusForbidden,
+	require.Equal(t, http.StatusNotFound,
 		h.do(t, http.MethodGet, "/api/v1/tickets/"+created.ID, nil).StatusCode)
 
 	// Put the staff user in a group scoped to that category.
@@ -134,7 +134,7 @@ func TestTicketScope_AssignmentGrantsAccessOutsideScope(t *testing.T) {
 	decodeJSON(t, resp, &created)
 
 	enableScope(t, h)
-	require.Equal(t, http.StatusForbidden,
+	require.Equal(t, http.StatusNotFound,
 		h.do(t, http.MethodGet, "/api/v1/tickets/"+created.ID, nil).StatusCode)
 
 	// Assign it to them; no group, no scope.
@@ -203,7 +203,7 @@ func TestTicketScope_ReportingUserUnaffected(t *testing.T) {
 			enableScope(t, h)
 		}
 		got := h.doAsUser(t, http.MethodGet, "/api/v1/tickets/"+created.ID, nil)
-		require.Equal(t, http.StatusForbidden, got.StatusCode,
+		require.Equal(t, http.StatusNotFound, got.StatusCode,
 			"a reporting user never sees another's ticket (enforced=%v)", enforced)
 	}
 }
@@ -216,8 +216,8 @@ var _ = uuid.Nil
 // listing omits it — but ?assignee_group_id= refused only RoleUser and then ran
 // an unscoped query. Group ids are handed to every staff member by GET /groups,
 // so naming a group you do not belong to returned its tickets. An OAuth client
-// acts as staff and belongs to no group at all, which made it every ticket
-// assigned to any group.
+// acts as staff and, until an administrator gives its service user a group,
+// belongs to none, which made it every ticket assigned to any group.
 func TestTicketScope_GroupFilterRespectsScope(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
@@ -244,7 +244,7 @@ func TestTicketScope_GroupFilterRespectsScope(t *testing.T) {
 
 	// The boundary that already worked, as the control.
 	got := h.do(t, http.MethodGet, "/api/v1/tickets/"+created.ID, nil)
-	require.Equal(t, http.StatusForbidden, got.StatusCode,
+	require.Equal(t, http.StatusNotFound, got.StatusCode,
 		"precondition: the ticket is out of scope by id")
 
 	// The same ticket, asked for by group.

@@ -1,12 +1,20 @@
 package admin
 
-import "context"
+import (
+	"context"
+	"slices"
+
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/audit"
+)
 
 // Well-known setting keys. The settings table uses JSONB values so any
 // JSON-serialisable type can be stored.
 const (
 	KeySAMLEnabled     = "saml_enabled"
 	KeySAMLMetadataURL = "saml_metadata_url"
+	// KeySAMLMetadataXML holds the IdP's metadata XML as pasted, the
+	// alternative to the URL (#461). Public data, so not a secret setting.
+	KeySAMLMetadataXML = "saml_metadata_xml"
 	KeySAMLCertPEM     = "saml_cert_pem"
 	KeySAMLKeyPEM      = "saml_key_pem"
 
@@ -16,15 +24,211 @@ const (
 	KeyOIDCClientSecret       = "oidc_client_secret"
 	KeyOIDCRedirectURL        = "oidc_redirect_url"
 	KeyGuestSubmissionEnabled = "guest_submission_enabled"
-	KeySLAEnabled             = "sla_enabled"
-	KeyMFAEnabled             = "mfa_enabled"
-	KeyMFAEnforcedRoles       = "mfa_enforced_roles"
-	KeyReopenWindowDays       = "reopen_window_days"
-	KeyReopenTargetStatusName = "reopen_target_status_name"
-	KeyAttachmentScanPolicy   = "attachment_scan_policy" // off | required | permissive
-	KeyAttachmentScanAddress  = "attachment_scan_address"
-	KeySiteName               = "site_name"
-	KeySiteLogoURL            = "site_logo_url"
+	// Whether a guest may attach files from the web page, and how big each may
+	// be in MB (#445). Both widen what anonymous people can do, so both are
+	// session-only (AuthCriticalKeys). The first only takes effect while
+	// guest submission is on; see Service.GuestAttachmentsEnabled.
+	KeyGuestAttachmentsEnabled = "guest_attachments_enabled" // bool, default off
+	KeyGuestAttachmentMaxMB    = "guest_attachment_max_mb"   // int, 1 to 100, default 5
+	// The largest file any uploader may attach, in MB (#673): the instance-wide
+	// per-file limit that used to be a constant. 1 to 100, default 25. Unset,
+	// unreadable or out of range reads as the default; see
+	// Service.AttachmentMaxMB. It is session-only (AuthCriticalKeys) for the
+	// reason attachment_allowed_types is: a leaked API key must not be able to
+	// raise the limit and then upload with it. No migration: an install that
+	// never sets it reads 25, which is what it always was.
+	KeyAttachmentMaxMB = "attachment_max_mb" // int, 1 to 100, default 25
+	// How many files guests may attach to one ticket, and how many uploads one
+	// guest link may make per hour (#445). Small by default and for the same
+	// reason as the other two: they bound what anonymous people can put on disk
+	// and send through the scanner.
+	KeyGuestAttachmentMaxPerTicket   = "guest_attachment_max_per_ticket"   // int, 1 to 50, default 5
+	KeyGuestAttachmentUploadsPerHour = "guest_attachment_uploads_per_hour" // int, 1 to 30, default 3
+	KeySLAEnabled                    = "sla_enabled"
+	KeyMFAEnabled                    = "mfa_enabled"
+	KeyMFAEnforcedRoles              = "mfa_enforced_roles"
+	KeyReopenWindowDays              = "reopen_window_days"
+	KeyReopenTargetStatusName        = "reopen_target_status_name"
+	KeyAttachmentScanPolicy          = "attachment_scan_policy" // off | required | permissive
+	KeyAttachmentScanAddress         = "attachment_scan_address"
+	KeySiteName                      = "site_name"
+	KeySiteLogoURL                   = "site_logo_url"
+	// What a phone prints under the icon on its home screen (#708): up to
+	// SiteShortNameMaxRunes characters. Empty or unset means the site name.
+	// Not session-only: it is branding, as KeySiteName is.
+	KeySiteShortName = "site_short_name" // string
+
+	// Whether a Closed ticket can be force-reopened at all and, if so, by whom:
+	// off | admin | staff_admin (#349). Closed is terminal by default; this is
+	// the escape hatch an operator opts into. Requesters never can, whatever it
+	// says. The values and the rule are ticket.ReopenPolicy* and
+	// ticket.CanForceReopen; this package only stores the choice.
+	KeyClosedReopenPolicy = "closed_reopen_policy"
+
+	// Where an audit view shows a requester (a student, a patient, a
+	// customer) as "Requester" instead of by name (#362): admin_log (the
+	// admin-wide log only), ticket_log (each ticket's Activity feed only) or
+	// everywhere, the default. Staff and admin actors are always named.
+	KeyAuditMaskRequesterNames = "audit_mask_requester_names"
+
+	// What this instance accepts as an attachment: a JSON array of lowercase
+	// extensions with the leading dot, e.g. [".pdf", ".png"]. An empty array
+	// is a legitimate choice and means no attachments at all, not "unset".
+	KeyAttachmentAllowedTypes = "attachment_allowed_types" // []string
+
+	// What happens to an upload the scanner calls infected: refuse it, or
+	// accept it wrapped and loudly labelled. Default refuse — an ordinary help
+	// desk should not start storing malware because nobody said otherwise.
+	KeyAttachmentInfectedHandling = "attachment_infected_handling" // refuse | quarantine
+
+	// What happens to an upload whose content contradicts the extension it
+	// arrived under, when the type it turned out to be is not one this
+	// instance accepts: refuse it, or accept it wrapped and loudly renamed.
+	//
+	// Default refuse, which is what every release before this one did — a
+	// 415. Relaxing a security control in an upgrade nobody opted into is the
+	// wrong default for a behaviour only some deployments want. The wrap
+	// exists for the IT or security team whose tickets are *about* suspicious
+	// files, where refusing the attachment refuses the ticket's whole point.
+	//
+	// Deliberately the same shape, the same words and the same default as
+	// KeyAttachmentInfectedHandling above, because it is the same decision
+	// about a different question: does this instance store a file it has
+	// reason to distrust, or turn it away? The two stay independent — "the
+	// scanner named this" and "the content is not what the name says" are not
+	// the same claim, and an operator may reasonably keep one and refuse the
+	// other.
+	KeyAttachmentMismatchHandling = "attachment_mismatch_handling" // refuse | wrap
+
+	// An administrator's override of each per-user staff-email switch (#441):
+	// user (leave it to each person, the default) | on | off, for everyone.
+	// The switches themselves are columns on users; see
+	// notification.StaffOverrides for how an override applies.
+	KeyStaffEmailAssignedOverride = "staff_email_assigned_override"
+	KeyStaffEmailActivityOverride = "staff_email_activity_override"
+	KeyStaffEmailGroupOverride    = "staff_email_group_override"
+	// The fourth switch, SLA alerts (#670), with the same values and reader.
+	KeyStaffEmailSLAOverride = "staff_email_sla_override"
+
+	// Whether the SLA sweep announces what it stamps: sla.breached and
+	// sla.at_risk, mail and webhooks alike (#670). Off, the sweep still stamps
+	// and raises nothing.
+	KeySLAAlertsEnabled = "sla_alerts_enabled"
+
+	// Deprecated: replaced by the per-provider settings below, and read by
+	// nothing.
+	//
+	// These named VirusTotal because it was the only service considered. There
+	// are now four, each with its own toggle and its own key, so a key called
+	// "attachment_vt_api_key" holding a MetaDefender key would be a lie in the
+	// settings table.
+	//
+	// Note this pair was superseded twice: first by
+	// KeyAttachmentReputationProvider and KeyAttachmentReputationAPIKey, which
+	// are themselves now deprecated a few lines below. Pointing a reader at a
+	// replacement that is also dead is worse than pointing at nothing, so this
+	// names the live settings instead.
+	//
+	// Kept declared for one release rather than deleted outright. An instance
+	// that set either still has the row, and a constant that no longer exists
+	// makes that row unexplainable to the next person who finds it. They are
+	// removed, with a migration that deletes the rows, in the release after
+	// this one.
+	//
+	// Nothing reads them. An operator who set a VirusTotal key before this
+	// change has to paste it into the new field, which is stated in the
+	// release notes; silently copying a secret from one key to another is not
+	// something to do on somebody's behalf.
+	KeyAttachmentVTLookup = "attachment_vt_lookup"  // Deprecated: unused.
+	KeyAttachmentVTAPIKey = "attachment_vt_api_key" // Deprecated: unused.
+
+	// Deprecated: replaced by the seven per-provider settings below, and read
+	// by nothing.
+	//
+	// One selected provider could not express the thing operators actually
+	// wanted — two services answering different questions about the same file
+	// — and the single key it went with destroyed the key you had already
+	// pasted every time you switched. Worse, it carried a state that could not
+	// be refused: a commercial provider selected with no key was "configured"
+	// and silently did nothing.
+	//
+	// Kept declared for one release rather than deleted outright, exactly as
+	// the attachment_vt_* pair above is. An instance that set either still has
+	// the row, and a constant that no longer exists makes that row
+	// unexplainable to the next person who finds it. They are removed, with a
+	// migration that deletes the rows, in the release after this one.
+	//
+	// Nothing reads them. An operator who configured a provider and a key
+	// before this change has to re-enter that key against the provider they
+	// want, which is stated in the release notes; silently copying a secret
+	// from one key to another is not something to do on somebody's behalf.
+	KeyAttachmentReputationProvider = "attachment_reputation_provider" // Deprecated: unused.
+	KeyAttachmentReputationAPIKey   = "attachment_reputation_api_key"  // Deprecated: unused.
+
+	// Whether this instance asks each reputation service about a quarantined
+	// attachment's SHA-256, and the key it asks with.
+	//
+	// Four independent toggles rather than one selected provider, because the
+	// four answer different questions and neither subsumes another: VirusTotal
+	// counts engines, CIRCL says whether a catalogue has the file on record. A
+	// sample one calls "detected" and another calls "known" is telling staff
+	// something either alone would hide. Every enabled provider is queried and
+	// every answer is stored; the row shows the worst of them and expands to
+	// all.
+	//
+	// All four off is how the lookup is off, and it is a supported
+	// configuration rather than a broken one: it means this instance judges
+	// attachments by its own scanner alone, which is a complete answer and the
+	// legitimate choice of an operator who cannot send customer file hashes
+	// anywhere.
+	//
+	// ENABLING A PROVIDER REQUIRES ITS KEY. The settings endpoint refuses the
+	// write with invalid_reputation_config, naming the provider that lacks
+	// one. That is the same rule as everywhere else in that handler — a
+	// setting accepted and then ignored is worse than a refusal — and it
+	// disposes of the old "enabled but silently doing nothing" state by making
+	// it unreachable.
+	//
+	// The keys are write-only over the API: see secretSettingKeys in
+	// handler_admin_settings.go. They are never logged, never wrapped into an
+	// error and never returned to a client. There are three of them now, which
+	// is three times the number of places that rule can be broken.
+	//
+	// All seven are session-gated: see AuthCriticalKeys. The toggles decide
+	// where customers' file hashes go and the keys decide whether they go
+	// anywhere, and neither is a decision a leaked API key may make.
+	KeyAttachmentReputationVirusTotalEnabled   = "attachment_reputation_virustotal_enabled"   // bool
+	KeyAttachmentReputationVirusTotalKey       = "attachment_reputation_virustotal_key"       // write-only
+	KeyAttachmentReputationMetaDefenderEnabled = "attachment_reputation_metadefender_enabled" // bool
+	KeyAttachmentReputationMetaDefenderKey     = "attachment_reputation_metadefender_key"     // write-only
+	KeyAttachmentReputationPolySwarmEnabled    = "attachment_reputation_polyswarm_enabled"    // bool
+	KeyAttachmentReputationPolySwarmKey        = "attachment_reputation_polyswarm_key"        // write-only
+
+	// CIRCL has no key setting at all, and the absence is the decision.
+	//
+	// hashlookup authenticates nobody, so there is no key an operator could
+	// supply. An empty box beside the other three is a box somebody feels
+	// obliged to fill, and then goes looking for a fault when the feature
+	// works without it.
+	KeyAttachmentReputationCIRCLEnabled = "attachment_reputation_circl_enabled" // bool
+
+	// How often a stored verdict is re-checked: weekly, biweekly (the
+	// default), monthly, quarterly or never.
+	//
+	// A verdict decays, which is the whole reason this exists. New signatures
+	// catch old malware, and a sample nobody had submitted when we asked is
+	// precisely the one that gets submitted a week later — so a quarantined
+	// attachment could sit on a ticket reading "0 of 78 engines" indefinitely
+	// while the real answer changed months ago.
+	//
+	// It governs only the automatic re-check, and only for a non-detected
+	// verdict: a detection never expires, and staff can always ask again by
+	// hand. "never" turns the automatic half off and nothing else.
+	//
+	// An unrecognised value falls back to biweekly, and the settings endpoint
+	// refuses the write outright with invalid_reputation_refresh — same rule,
+	// and the same reason, as the scan policy.
+	KeyAttachmentReputationRefresh = "attachment_reputation_refresh" // weekly | biweekly | monthly | quarterly | never
 
 	// Registration settings.
 	KeyAllowedEmailDomains     = "allowed_email_domains"     // []string — empty = unrestricted for SAML JIT
@@ -42,16 +246,319 @@ const (
 	// upgrade would hide tickets people are working on.
 	KeyTicketScopeEnforced = "ticket_scope_enforced" // bool
 
+	// Which levels of the Category > Type > Item tree a caller who is not staff
+	// may see (#711). All three are off by default, upgraded installs included,
+	// and an absent row reads false, so no migration seeds them. Session-only
+	// (AuthCriticalKeys): turning one on publishes names to every registered
+	// user or to the anonymous internet.
+	//
+	// The three are stored as written; what a caller actually sees is decided
+	// in one place, catalogue.VisibleLevels (the guest levels need guest
+	// submission, and Items needs Types).
+	KeyUsersShowItems  = "users_show_items"  // bool: registered requesters see the Item
+	KeyGuestsShowTypes = "guests_show_types" // bool: guests see the Type
+	KeyGuestsShowItems = "guests_show_items" // bool: guests see the Item (needs Types)
+
+	// JSON array of role names that may open the Available view (tickets with
+	// no assignee group and no assignee user), beside administrators, who
+	// always may. Absent means admins only. Accepted values are admin and
+	// staff; see Service.AvailableQueueAllowed. #676.
+	KeyAvailableQueueRoles = "available_queue_roles"
+
 	// Auto-assign settings. Group takes priority over users; if neither is set, tickets stay unassigned.
 	KeyAutoAssignGroupID = "auto_assign_group_id" // string UUID — assign new tickets to this group
 	KeyAutoAssignUserIDs = "auto_assign_user_ids" // []string UUIDs — round-robin among these users
+
+	// Whether staff may see the field-level before/after diff on an audit
+	// entry, in the per-ticket Activity feed and the admin-wide audit view
+	// alike. Off by default, same reasoning as KeyTicketScopeEnforced: every
+	// release before this showed staff only the action/actor/timestamp
+	// (#325), and turning a wider disclosure on silently during an upgrade is
+	// not this setting's call to make. Admins are unaffected — this only
+	// narrows what staff sees, never what an admin sees — and reporters never
+	// see the diff regardless of this setting; #129 carved that out
+	// separately as a fact about the reporter's own visibility, not staff's.
+	KeyStaffCanViewTicketChangeHistory = "staff_can_view_ticket_change_history" // bool
+
+	// Whether staff may see the "followed" and "unfollowed" entries (#441).
+	// Administrators always do, and a requester never does. Off by default for
+	// the reason the setting above is: following is new, and what it records
+	// about a colleague is not something to start showing during an upgrade.
+	// Staff always see the current list of followers on the ticket; this is
+	// only about the history of who followed and unfollowed when.
+	KeyStaffCanViewFollowAudit = "staff_can_view_follow_audit" // bool
+
+	// Whether staff may create their own API keys (#450). Administrators always
+	// can, and a requester never can: this is the one switch, with no per-user
+	// permission beside it. Off by default, because a key is a long-lived
+	// bearer credential that acts as its owner, and a release that quietly
+	// let every staff member mint one would be changing who holds such
+	// credentials without anyone deciding it. It governs creating a key only;
+	// see Service.StaffCanCreateAPIKeys.
+	KeyStaffCanCreateAPIKeys = "staff_can_create_api_keys" // bool
+
+	// The longest a new API key may live, in whole years (#450): 1 to 5, or
+	// APIKeyNoLimit (-1) for "Never". The admin slider has those six stops.
+	// 0 is refused rather than meaning either thing. Unset reads as APIKeyMaxLifetimeDefault. It is checked when a key
+	// is created and never when one is used, so lowering it does not break a key
+	// that already exists; those are marked in the key lists instead.
+	KeyAPIKeyMaxLifetimeYears = "api_key_max_lifetime_years" // int
+
+	// How many days an audit entry is kept before the retention sweep hard-
+	// deletes it. Unset, zero or negative means forever — see
+	// admin.Service.AuditRetentionDays for why the fallback points that way.
+	KeyAuditRetentionDays = "audit_retention_days" // int
+
+	// How many days an account may stay on a password hash made below the
+	// current bcrypt cost before sign-in is refused and the person must reset
+	// their password (#453). Counted from KeyPasswordRehashStartedAt.
+	// Settings → Authentication → Passwords; default PasswordRehashGraceDefault.
+	KeyPasswordRehashGraceDays = "password_rehash_grace_days" // int
+
+	// When 1.3.0 first ran against this database (an RFC 3339 string); the N
+	// days above are counted from it. Migration 000044 writes it, once, and
+	// nothing else does: PATCH /admin/settings refuses it as read-only and the
+	// settings dump leaves it out, so the clock cannot be restarted from the API.
+	//
+	// A settings row rather than instance_secrets: that table holds secrets (its
+	// name column is a CHECK allowlist and its value must be at least 32 bytes),
+	// and a date is neither. Listed in KnownKeys because the migration seeds it
+	// (see TestUpdateSettings_EveryMigrationSeededKeyIsKnown).
+	KeyPasswordRehashStartedAt = "password_rehash_started_at"
+
+	// Whether this instance may ask GitHub once a week for the latest release
+	// (#170). Off unless an administrator chooses it, upgraded installs
+	// included: it is a request to a third party that an upgrade must not
+	// start on anyone's behalf. Asked at setup and, on an upgraded install, by
+	// the post-upgrade wizard. Unset reads as off.
+	KeyUpdateCheckEnabled = "update_check_enabled" // bool
+
+	// The last update check: {"checked_at": RFC 3339, "latest": "1.4.0"}.
+	// Written only by the checker. PATCH /admin/settings refuses it and the
+	// settings dump leaves it out (see IsServerKeptKey); the admin notice
+	// reads it through GET /admin/security-warnings. It is a settings row so
+	// that a restart does not forget when the last check was and ask again.
+	KeyUpdateCheckResult = "update_check_result"
+
+	// Set once the 1.3.0 setup question or the post-upgrade wizard has been
+	// answered or skipped, so neither shows again. Setup writes it true on a
+	// fresh install; an install that upgraded to 1.3.0 never ran that setup, so
+	// the key being absent is exactly "this install has not been asked".
+	KeyPostUpgrade130Seen = "post_upgrade_130_seen" // bool
 )
+
+// IsServerKeptKey reports whether the server writes key itself: it is a known
+// setting row that PATCH /admin/settings refuses and the settings dump omits,
+// because the page sends the dump back on save.
+func IsServerKeptKey(key string) bool {
+	return key == KeyPasswordRehashStartedAt || key == KeyUpdateCheckResult
+}
+
+// Values of api_key_max_lifetime_years.
+const (
+	APIKeyMaxLifetimeDefault = 2
+	APIKeyMaxLifetimeMax     = 5
+	// APIKeyNoLimit is the "Never" stop: keys may be made without an expiry.
+	APIKeyNoLimit = -1
+)
+
+// ValidAPIKeyMaxLifetime reports whether v is one of the slider's six stops.
+func ValidAPIKeyMaxLifetime(v int) bool {
+	return v == APIKeyNoLimit || (v >= 1 && v <= APIKeyMaxLifetimeMax)
+}
+
+// A guest's per-file maximum in MB (#445): the slider runs from Min to Max.
+// The instance-wide attachment maximum (attachment_max_mb, #673) caps it
+// wherever that is lower; the slider's range is the administrator's intent,
+// not a promise the server can keep.
+const (
+	GuestAttachmentMaxMBDefault = 5
+	GuestAttachmentMaxMBMin     = 1
+	GuestAttachmentMaxMBMax     = 100
+)
+
+// The instance-wide per-file maximum in MB (#673): 1 to 100, 25 by default.
+// 100 is the stock clamd StreamMaxLength and MaxFileSize (ClamAV 0.105 and
+// later), and what the limit costs grows with it; 1 is the floor because an
+// empty attachment_allowed_types already means "no attachments".
+const (
+	AttachmentMaxMBDefault = 25
+	AttachmentMaxMBMin     = 1
+	AttachmentMaxMBMax     = 100
+)
+
+// ValidAttachmentMaxMB reports whether v is in the instance-wide limit's range.
+func ValidAttachmentMaxMB(v int) bool {
+	return v >= AttachmentMaxMBMin && v <= AttachmentMaxMBMax
+}
+
+// The per-ticket cap and the hourly rate for guest uploads (#445).
+const (
+	GuestAttachmentMaxPerTicketDefault = 5
+	GuestAttachmentMaxPerTicketMin     = 1
+	GuestAttachmentMaxPerTicketMax     = 50
+
+	GuestAttachmentUploadsPerHourDefault = 3
+	GuestAttachmentUploadsPerHourMin     = 1
+	GuestAttachmentUploadsPerHourMax     = 30
+)
+
+// ValidGuestAttachmentMaxPerTicket reports whether v is in the cap's range.
+func ValidGuestAttachmentMaxPerTicket(v int) bool {
+	return v >= GuestAttachmentMaxPerTicketMin && v <= GuestAttachmentMaxPerTicketMax
+}
+
+// ValidGuestAttachmentUploadsPerHour reports whether v is in the rate's range.
+func ValidGuestAttachmentUploadsPerHour(v int) bool {
+	return v >= GuestAttachmentUploadsPerHourMin && v <= GuestAttachmentUploadsPerHourMax
+}
+
+// ValidGuestAttachmentMaxMB reports whether v is on the slider.
+func ValidGuestAttachmentMaxMB(v int) bool {
+	return v >= GuestAttachmentMaxMBMin && v <= GuestAttachmentMaxMBMax
+}
+
+// The N in "after N days" for password_rehash_grace_days.
+const (
+	PasswordRehashGraceDefault = 30
+	PasswordRehashGraceMin     = 1
+	PasswordRehashGraceMax     = 365
+)
+
+// AuditRetentionForever is what AuditRetentionDays returns when the audit log
+// is kept indefinitely, which is the default and what every release before
+// #129 did by having nothing prune at all. Named rather than a bare 0 so the
+// sweep's "is pruning on" test reads as a question about retention instead of
+// a comparison against a magic number.
+const AuditRetentionForever = 0
+
+// AuditRetentionMaxDays bounds audit_retention_days, because an unbounded one
+// deletes the entire log.
+//
+// The sweep computes its cutoff with time.Time.AddDate(0, 0, -days). For a
+// large enough days that wraps, and a wrapped cutoff is frequently in the
+// FUTURE — max int64 produces tomorrow — so "keep for 25 quintillion days"
+// becomes "delete everything, including today". An admin typing a very large
+// number to mean "effectively forever" gets the exact opposite, and the
+// setting still reads back as the huge number afterwards.
+//
+// A century is past any real retention policy and nowhere near the wrap, and
+// an operator who genuinely wants forever has 0, which is already the
+// default. Checked at the handler AND re-checked in AuditRetentionDays: the
+// sweep should not trust a row it did not validate, since a value can reach
+// the table by a route the handler never saw.
+//
+// 36525, not 36500. A Gregorian century averages 36524.25 days — 146097 per
+// 400 years — so 100 x 365 is roughly 24 days short of one, and this comment
+// would have claimed a century while the number bought 99.93 years. The
+// difference buys nobody anything; getting it right costs nothing and stops
+// the comment being the kind of statement that is almost true. 36525 covers
+// any hundred-year span, leap days included.
+const AuditRetentionMaxDays = 36525
+
+// The two values KeyAttachmentInfectedHandling takes.
+//
+// Spelled out as constants rather than compared against literals because the
+// difference between them is whether this instance stores malware, and a typo
+// in a string comparison there fails silently in the permissive direction.
+const (
+	InfectedHandlingRefuse     = "refuse"
+	InfectedHandlingQuarantine = "quarantine"
+)
+
+// ValidInfectedHandling reports whether v is a value the setting accepts.
+//
+// Used by the settings endpoint to refuse a write, not by the reader: the
+// reader falls back to "refuse", so an unrecognised value is safe but
+// baffling. Refusing it at save time says what is wrong instead. Same shape,
+// and the same reasoning, as antivirus.ValidPolicy.
+func ValidInfectedHandling(v string) bool {
+	return v == InfectedHandlingRefuse || v == InfectedHandlingQuarantine
+}
+
+// The two values KeyAttachmentMismatchHandling takes.
+//
+// Constants rather than literals for the same reason as the infected-handling
+// pair: the difference between them is whether this instance stores a file it
+// has decided it cannot identify, and a typo in a string comparison there
+// fails silently in the permissive direction.
+const (
+	MismatchHandlingRefuse = "refuse"
+	MismatchHandlingWrap   = "wrap"
+)
+
+// ValidMismatchHandling reports whether v is a value the setting accepts.
+//
+// Used by the settings endpoint to refuse a write, not by the reader: the
+// reader falls back to "refuse", so an unrecognised value is safe but
+// baffling — an operator who typed "zip", saw a 204 and expected their
+// triage instance to start accepting mislabelled files has been told nothing.
+// Same shape, and the same reasoning, as ValidInfectedHandling.
+func ValidMismatchHandling(v string) bool {
+	return v == MismatchHandlingRefuse || v == MismatchHandlingWrap
+}
+
+// KeyPasskeyRequiredRoles lists the roles whose members must finish every
+// sign-in with a passkey (#616c): a JSON array of role names, seeded []. Its own
+// list; nothing writes mfa_enforced_roles on its behalf. That a listed role is
+// thereby MFA-enforced is computed when read (Service.MFARequiredFor).
+const KeyPasskeyRequiredRoles = "passkey_required_roles"
 
 // Store is the persistence interface for the key/value settings table.
 type Store interface {
 	Get(ctx context.Context, key string) ([]byte, error) // returns raw JSON value
 	Set(ctx context.Context, key string, value []byte) error
 	List(ctx context.Context) (map[string][]byte, error)
+}
+
+// SPPairStore is what a Store implements to write the SAML service-provider
+// certificate and key together with the audit entry that records it, in one
+// transaction (see Service.SetSAMLSPPair). A separate interface because only the
+// database store can; the settings fakes need not.
+type SPPairStore interface {
+	SetSAMLSPPair(ctx context.Context, certPEM, keyPEM string, ifAbsent bool, e audit.Entry) (written bool, err error)
+}
+
+// KnownKeys is every setting PATCH /admin/settings accepts: each Key constant
+// above. A key outside it is refused rather than stored (#421), because a typo
+// such as "mfa_enabld" used to answer 204 and leave a row nothing reads while
+// the real setting stayed as it was. A test requires this list and the
+// constants to agree, so adding a constant without listing it fails the build.
+func KnownKeys() []string {
+	return []string{
+		KeySAMLEnabled, KeySAMLMetadataURL, KeySAMLMetadataXML, KeySAMLCertPEM, KeySAMLKeyPEM,
+		KeyOIDCEnabled, KeyOIDCIssuerURL, KeyOIDCClientID, KeyOIDCClientSecret, KeyOIDCRedirectURL,
+		KeyGuestSubmissionEnabled, KeyGuestAttachmentsEnabled, KeyGuestAttachmentMaxMB,
+		KeyGuestAttachmentMaxPerTicket, KeyGuestAttachmentUploadsPerHour,
+		KeyAttachmentMaxMB,
+		KeySLAEnabled, KeySLAAlertsEnabled, KeyMFAEnabled, KeyMFAEnforcedRoles, KeyPasskeyRequiredRoles,
+		KeyReopenWindowDays, KeyReopenTargetStatusName,
+		KeyAttachmentScanPolicy, KeyAttachmentScanAddress,
+		KeySiteName, KeySiteLogoURL, KeySiteShortName,
+		KeyClosedReopenPolicy, KeyAuditMaskRequesterNames,
+		KeyAttachmentAllowedTypes, KeyAttachmentInfectedHandling, KeyAttachmentMismatchHandling,
+		KeyAttachmentVTLookup, KeyAttachmentVTAPIKey,
+		KeyAttachmentReputationProvider, KeyAttachmentReputationAPIKey,
+		KeyAttachmentReputationVirusTotalEnabled, KeyAttachmentReputationVirusTotalKey,
+		KeyAttachmentReputationMetaDefenderEnabled, KeyAttachmentReputationMetaDefenderKey,
+		KeyAttachmentReputationPolySwarmEnabled, KeyAttachmentReputationPolySwarmKey,
+		KeyAttachmentReputationCIRCLEnabled, KeyAttachmentReputationRefresh,
+		KeyAllowedEmailDomains, KeySelfSignupEnabled, KeyOpenRegistrationEnabled,
+		KeyTicketPrefix, KeyTicketScopeEnforced, KeyAvailableQueueRoles,
+		KeyUsersShowItems, KeyGuestsShowTypes, KeyGuestsShowItems,
+		KeyAutoAssignGroupID, KeyAutoAssignUserIDs,
+		KeyStaffCanViewTicketChangeHistory, KeyAuditRetentionDays, KeyStaffCanViewFollowAudit,
+		KeyStaffCanCreateAPIKeys, KeyAPIKeyMaxLifetimeYears,
+		KeyStaffEmailAssignedOverride, KeyStaffEmailActivityOverride, KeyStaffEmailGroupOverride,
+		KeyStaffEmailSLAOverride,
+		KeyPasswordRehashGraceDays, KeyPasswordRehashStartedAt,
+		KeyUpdateCheckEnabled, KeyUpdateCheckResult, KeyPostUpgrade130Seen,
+	}
+}
+
+// IsKnownKey reports whether key is one KnownKeys lists.
+func IsKnownKey(key string) bool {
+	return slices.Contains(KnownKeys(), key)
 }
 
 // AuthCriticalKeys are the settings that decide who may authenticate and how.
@@ -63,11 +570,34 @@ type Store interface {
 // identity provider the caller controls, or opening registration.
 func AuthCriticalKeys() []string {
 	return []string{
-		KeySAMLEnabled, KeySAMLMetadataURL, KeySAMLCertPEM, KeySAMLKeyPEM,
+		KeySAMLEnabled, KeySAMLMetadataURL, KeySAMLMetadataXML, KeySAMLCertPEM, KeySAMLKeyPEM,
 		KeyOIDCEnabled, KeyOIDCIssuerURL, KeyOIDCClientID, KeyOIDCClientSecret,
 		KeyOIDCRedirectURL,
-		KeyMFAEnabled, KeyMFAEnforcedRoles,
+		KeyMFAEnabled, KeyMFAEnforcedRoles, KeyPasskeyRequiredRoles,
 		KeyAllowedEmailDomains, KeySelfSignupEnabled, KeyOpenRegistrationEnabled,
+		// Who may force-reopen a closed ticket (#349). Widening it is a
+		// permission change, not configuration: a leaked API key must not be
+		// able to switch reopening on and then use it.
+		KeyClosedReopenPolicy,
+		// Loosening it shows requester names in the audit views (#362).
+		KeyAuditMaskRequesterNames,
+		// Whether anonymous people on the internet may file tickets — and,
+		// since the category catalogue stopped being anonymous, whether that
+		// catalogue is readable without a session at all (see
+		// requireSignedInOrGuestsEnabled in server.go). Every other setting
+		// of comparable weight is on this list; a leaked API key should not
+		// be able to open either exposure. See #177.
+		KeyGuestSubmissionEnabled,
+		// What those anonymous people may upload, and how much (#445). Opening
+		// it is the same kind of exposure as opening submission itself, so a
+		// leaked API key must not be able to do it and then use it.
+		KeyGuestAttachmentsEnabled, KeyGuestAttachmentMaxMB,
+		KeyGuestAttachmentMaxPerTicket, KeyGuestAttachmentUploadsPerHour,
+		// Which levels of the tree guests and registered users are shown
+		// (#711). The guest switches publish every active type and item name to
+		// anonymous visitors, and the user one widens what a requester may read
+		// and file under; a leaked API key must not be able to open any.
+		KeyUsersShowItems, KeyGuestsShowTypes, KeyGuestsShowItems,
 		// Where the virus scanner lives is a route to disabling scanning
 		// entirely: point it at a daemon that answers OK to everything and
 		// every upload passes. A leaked API key should not be able to do that,
@@ -76,5 +606,156 @@ func AuthCriticalKeys() []string {
 		// And the policy, since "off" reaches the same outcome by a shorter
 		// path.
 		KeyAttachmentScanPolicy,
+		// What the instance accepts at all. A leaked API key must not be able
+		// to widen the type list and then upload what it has just allowed.
+		KeyAttachmentAllowedTypes,
+		// The per-file limit (#673). Raising it lets through files the
+		// instance used to refuse, so it is the same kind of widening as the
+		// type list, and a leaked API key must not be able to do it and then
+		// upload with it.
+		KeyAttachmentMaxMB,
+		// Whether an infected upload is refused or stored. Same reasoning as
+		// the scan policy: it decides what this instance will hold.
+		KeyAttachmentInfectedHandling,
+		// How long the audit log is kept, and who may read the field-level
+		// diff inside it.
+		//
+		// Retention is on this list because shortening it is the one setting
+		// that destroys evidence rather than merely widening access. Set it
+		// to 1 and tomorrow's sweep removes everything older than a day,
+		// including every mfa_reset and password_reset_by_admin entry — so a
+		// leaked API key that performed a credential reset could erase the
+		// record of having done it. That is the same reasoning #306 used
+		// about ResetMFA itself ("the exact action an attacker would want
+		// unrecorded"), applied to the record instead of the act.
+		//
+		// The diff toggle is a disclosure-widening setting of the same family
+		// as the attachment type list: lower stakes, same rule.
+		KeyAuditRetentionDays,
+		KeyStaffCanViewTicketChangeHistory,
+		// And the same for the follow entries (#441): a disclosure-widening
+		// toggle of the same family.
+		KeyStaffCanViewFollowAudit,
+		// Who sees tickets and who is handed them (#450, Erik 2026-10-16).
+		// Switching scope enforcement off, or pointing auto-assign at an
+		// account a key controls, widens what that account sees or is given,
+		// so a leaked key must not do it.
+		KeyTicketScopeEnforced, KeyAvailableQueueRoles, KeyAutoAssignGroupID, KeyAutoAssignUserIDs,
+		// Who may mint an API key (#450). A key is a long-lived bearer
+		// credential that acts as its owner, so widening the set of people who
+		// can hold one is a permission change, not configuration: a leaked
+		// administrator key must not be able to switch this on and then use
+		// it. Same reasoning as closed_reopen_policy above.
+		KeyStaffCanCreateAPIKeys,
+		// How long a new API key may live (#450). Raising it, or choosing
+		// Never, widens how long a stolen key stays useful, so a leaked key
+		// must not be able to do it and then mint one.
+		KeyAPIKeyMaxLifetimeYears,
+		// How long an old password hash keeps working. Pushing it out is a
+		// way to keep a weak hash alive, so it is not a call for a leaked key.
+		KeyPasswordRehashGraceDays,
+		KeyPasswordRehashStartedAt,
+		// And whether a file whose content contradicts its name is refused or
+		// stored wrapped. Same reasoning again: it decides what this instance
+		// will hold, and a leaked API key must not be able to switch an
+		// instance into accepting files it had decided to turn away.
+		KeyAttachmentMismatchHandling,
+		// The deprecated VirusTotal pair. Nothing reads them, so gating them
+		// protects nothing — they stay listed because they are still
+		// writable, and a key that used to require a session should not
+		// quietly stop requiring one on the way to being deleted.
+		KeyAttachmentVTLookup,
+		KeyAttachmentVTAPIKey,
+		// The deprecated single-provider pair, for the same reason as the
+		// attachment_vt_* one: nothing reads them, they are still writable,
+		// and a key that used to require a session should not quietly stop
+		// requiring one on the way out.
+		KeyAttachmentReputationProvider,
+		KeyAttachmentReputationAPIKey,
+		// And all seven of the per-provider settings that replaced them. A
+		// toggle decides where customers' file hashes go; a key decides
+		// whether they go anywhere. Neither is a decision a leaked API key may
+		// make, and leaving one of the seven off this list is a way to turn a
+		// provider on without a session.
+		KeyAttachmentReputationVirusTotalEnabled,
+		KeyAttachmentReputationVirusTotalKey,
+		KeyAttachmentReputationMetaDefenderEnabled,
+		KeyAttachmentReputationMetaDefenderKey,
+		KeyAttachmentReputationPolySwarmEnabled,
+		KeyAttachmentReputationPolySwarmKey,
+		KeyAttachmentReputationCIRCLEnabled,
+		// And how often they go. Stretching the interval to "never" from a
+		// leaked API key is a quiet way to freeze every verdict on the
+		// instance at whatever it said the day the key was stolen.
+		KeyAttachmentReputationRefresh,
+		// Whether this instance contacts GitHub weekly (#170). Same family as
+		// the reputation toggles: a decision about what leaves the server, so a
+		// leaked API key must not be able to make it. The wizard and the
+		// Settings page are sessions, so nothing legitimate is blocked.
+		KeyUpdateCheckEnabled,
 	}
+}
+
+// The five values KeyAttachmentReputationRefresh takes.
+//
+// Constants rather than literals for the same reason as the infected-handling
+// pair: the reader, the validator and the interval table all have to agree on
+// the spelling, and a typo in any of them fails silently — as a verdict that
+// never refreshes, or an allowance that drains four times too fast.
+const (
+	ReputationRefreshWeekly    = "weekly"
+	ReputationRefreshBiweekly  = "biweekly"
+	ReputationRefreshMonthly   = "monthly"
+	ReputationRefreshQuarterly = "quarterly"
+	ReputationRefreshNever     = "never"
+)
+
+// ValidReputationRefresh reports whether v is a value the setting accepts.
+//
+// Used by the settings endpoint to refuse a write, not by the reader: the
+// reader falls back to biweekly, so an unrecognised value is safe but
+// baffling — an operator who typed "fortnightly", saw a 204 and expected their
+// quarterly instance to have stopped re-checking has been told nothing. Same
+// shape, and the same reasoning, as ValidInfectedHandling.
+func ValidReputationRefresh(v string) bool {
+	switch v {
+	case ReputationRefreshWeekly, ReputationRefreshBiweekly, ReputationRefreshMonthly,
+		ReputationRefreshQuarterly, ReputationRefreshNever:
+		return true
+	}
+	return false
+}
+
+// ReputationProviders is every provider the per-provider settings cover, in
+// the order the product presents them.
+//
+// The spellings are internal/reputation's ProviderVirusTotal,
+// ProviderMetaDefender, ProviderPolySwarm and ProviderCIRCL. They are not
+// referenced by name here because internal/domain may not import an
+// infrastructure package; a test pins that the two lists agree, which is the
+// only thing standing between a renamed constant and a setting nobody reads.
+func ReputationProviders() []string {
+	return []string{"virustotal", "metadefender", "polyswarm", "circl"}
+}
+
+// ReputationSettingKeys is the pair of setting names that govern one provider:
+// the toggle, and the key it looks up with.
+//
+// apiKeyKey is empty for a provider that authenticates nobody — CIRCL — and
+// that emptiness is the fact callers branch on rather than a special case they
+// hard-code. ok is false for a name this build does not cover, so an
+// unrecognised provider reads as nothing configured rather than as a lookup
+// against settings that do not exist.
+func ReputationSettingKeys(provider string) (enabledKey, apiKeyKey string, ok bool) {
+	switch provider {
+	case "virustotal":
+		return KeyAttachmentReputationVirusTotalEnabled, KeyAttachmentReputationVirusTotalKey, true
+	case "metadefender":
+		return KeyAttachmentReputationMetaDefenderEnabled, KeyAttachmentReputationMetaDefenderKey, true
+	case "polyswarm":
+		return KeyAttachmentReputationPolySwarmEnabled, KeyAttachmentReputationPolySwarmKey, true
+	case "circl":
+		return KeyAttachmentReputationCIRCLEnabled, "", true
+	}
+	return "", "", false
 }

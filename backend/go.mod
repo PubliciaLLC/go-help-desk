@@ -1,11 +1,13 @@
 module github.com/publiciallc/go-help-desk/backend
 
-go 1.26.1
+go 1.27.3
 
 require (
 	github.com/coreos/go-oidc/v3 v3.20.0
 	github.com/crewjam/saml v0.5.1
-	github.com/go-chi/chi/v5 v5.2.5
+	github.com/gabriel-vasile/mimetype v1.4.15
+	github.com/go-chi/chi/v5 v5.4.0
+	github.com/go-webauthn/webauthn v0.18.2
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/golang-migrate/migrate/v4 v4.19.1
 	github.com/google/uuid v1.6.0
@@ -18,18 +20,25 @@ require (
 	github.com/pquerna/otp v1.5.0
 	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e
 	github.com/sqlc-dev/pqtype v0.3.0
-	github.com/stretchr/testify v1.11.1
-	golang.org/x/crypto v0.52.0
+	github.com/stretchr/testify v1.12.1
+	github.com/yeka/zip v0.0.0-20231116150916-03d6312748a9
+	go.yaml.in/yaml/v3 v3.0.5
+	golang.org/x/crypto v0.58.0
 	golang.org/x/image v0.41.0
+	golang.org/x/net v0.61.0
 	golang.org/x/oauth2 v0.36.0
+	golang.org/x/sync v0.24.0
 )
 
 require (
 	github.com/beevik/etree v1.6.0 // indirect
 	github.com/boombuler/barcode v1.0.1-0.20190219062509-6c824513bacc // indirect
-	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
+	github.com/fxamacker/cbor/v2 v2.9.4 // indirect
 	github.com/go-jose/go-jose/v4 v4.1.4 // indirect
+	github.com/go-viper/mapstructure/v2 v2.5.0 // indirect
+	github.com/go-webauthn/x v0.3.1 // indirect
 	github.com/golang-jwt/jwt/v4 v4.5.2 // indirect
+	github.com/google/go-tpm v0.9.8 // indirect
 	github.com/google/jsonschema-go v0.4.2 // indirect
 	github.com/jackc/pgerrcode v0.0.0-20220416144525-469b46aa5efa // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect
@@ -37,11 +46,12 @@ require (
 	github.com/jackc/puddle/v2 v2.2.2 // indirect
 	github.com/jonboulle/clockwork v0.5.0 // indirect
 	github.com/mattermost/xml-roundtrip-validator v0.1.0 // indirect
-	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
+	github.com/philhofer/fwd v1.2.0 // indirect
 	github.com/russellhaering/goxmldsig v1.6.0 // indirect
 	github.com/spf13/cast v1.7.1 // indirect
+	github.com/tinylib/msgp v1.6.4 // indirect
+	github.com/x448/float16 v0.8.4 // indirect
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
-	golang.org/x/sync v0.20.0 // indirect
-	golang.org/x/text v0.37.0 // indirect
-	gopkg.in/yaml.v3 v3.0.1 // indirect
+	golang.org/x/sys v0.49.0 // indirect
+	golang.org/x/text v0.43.0 // indirect
 )

@@ -1,0 +1,15 @@
+From: <helpdesk@example.com>
+To: <to@example.com>
+Subject: Your link to [GHD-2026-000042]
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: quoted-printable
+
+Here is a new link to your ticket.
+
+Ticket: GHD-2026-000042
+
+Open it here:
+https://help.example.com/g#guest-token-abc
+
+Any link you were sent before this one no longer works.

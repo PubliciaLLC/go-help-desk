@@ -9,23 +9,63 @@ import (
 	"context"
 
 	uuid "github.com/google/uuid"
+	"github.com/lib/pq"
 )
 
+const countTicketsByCategory = `-- name: CountTicketsByCategory :one
+SELECT COUNT(*) FROM tickets WHERE category_id = $1
+`
+
+// tickets.category_id is ON DELETE RESTRICT. Counting first turns the raw
+// foreign-key 500 into a 409 that says how many tickets are in the way (#418).
+func (q *Queries) CountTicketsByCategory(ctx context.Context, categoryID uuid.UUID) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countTicketsByCategory, categoryID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countTicketsByItem = `-- name: CountTicketsByItem :one
+SELECT COUNT(*) FROM tickets WHERE item_id = $1
+`
+
+func (q *Queries) CountTicketsByItem(ctx context.Context, itemID uuid.NullUUID) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countTicketsByItem, itemID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countTicketsByType = `-- name: CountTicketsByType :one
+SELECT COUNT(*) FROM tickets WHERE type_id = $1
+`
+
+// A ticket that holds an item also holds that item's type, so this covers
+// the type's items too.
+func (q *Queries) CountTicketsByType(ctx context.Context, typeID uuid.NullUUID) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countTicketsByType, typeID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const createCategory = `-- name: CreateCategory :exec
-INSERT INTO categories (id, name, sort_order, active) VALUES ($1, $2, $3, $4)
+INSERT INTO categories (id, name, description, sort_order, active) VALUES ($1, $2, $3, $4, $5)
 `
 
 type CreateCategoryParams struct {
-	ID        uuid.UUID `json:"id"`
-	Name      string    `json:"name"`
-	SortOrder int32     `json:"sort_order"`
-	Active    bool      `json:"active"`
+	ID          uuid.UUID `json:"id"`
+	Name        string    `json:"name"`
+	Description string    `json:"description"`
+	SortOrder   int32     `json:"sort_order"`
+	Active      bool      `json:"active"`
 }
 
 func (q *Queries) CreateCategory(ctx context.Context, arg CreateCategoryParams) error {
 	_, err := q.db.ExecContext(ctx, createCategory,
 		arg.ID,
 		arg.Name,
+		arg.Description,
 		arg.SortOrder,
 		arg.Active,
 	)
@@ -33,15 +73,16 @@ func (q *Queries) CreateCategory(ctx context.Context, arg CreateCategoryParams) 
 }
 
 const createItem = `-- name: CreateItem :exec
-INSERT INTO items (id, type_id, name, sort_order, active) VALUES ($1, $2, $3, $4, $5)
+INSERT INTO items (id, type_id, name, description, sort_order, active) VALUES ($1, $2, $3, $4, $5, $6)
 `
 
 type CreateItemParams struct {
-	ID        uuid.UUID `json:"id"`
-	TypeID    uuid.UUID `json:"type_id"`
-	Name      string    `json:"name"`
-	SortOrder int32     `json:"sort_order"`
-	Active    bool      `json:"active"`
+	ID          uuid.UUID `json:"id"`
+	TypeID      uuid.UUID `json:"type_id"`
+	Name        string    `json:"name"`
+	Description string    `json:"description"`
+	SortOrder   int32     `json:"sort_order"`
+	Active      bool      `json:"active"`
 }
 
 func (q *Queries) CreateItem(ctx context.Context, arg CreateItemParams) error {
@@ -49,6 +90,7 @@ func (q *Queries) CreateItem(ctx context.Context, arg CreateItemParams) error {
 		arg.ID,
 		arg.TypeID,
 		arg.Name,
+		arg.Description,
 		arg.SortOrder,
 		arg.Active,
 	)
@@ -56,15 +98,16 @@ func (q *Queries) CreateItem(ctx context.Context, arg CreateItemParams) error {
 }
 
 const createType = `-- name: CreateType :exec
-INSERT INTO types (id, category_id, name, sort_order, active) VALUES ($1, $2, $3, $4, $5)
+INSERT INTO types (id, category_id, name, description, sort_order, active) VALUES ($1, $2, $3, $4, $5, $6)
 `
 
 type CreateTypeParams struct {
-	ID         uuid.UUID `json:"id"`
-	CategoryID uuid.UUID `json:"category_id"`
-	Name       string    `json:"name"`
-	SortOrder  int32     `json:"sort_order"`
-	Active     bool      `json:"active"`
+	ID          uuid.UUID `json:"id"`
+	CategoryID  uuid.UUID `json:"category_id"`
+	Name        string    `json:"name"`
+	Description string    `json:"description"`
+	SortOrder   int32     `json:"sort_order"`
+	Active      bool      `json:"active"`
 }
 
 func (q *Queries) CreateType(ctx context.Context, arg CreateTypeParams) error {
@@ -72,41 +115,154 @@ func (q *Queries) CreateType(ctx context.Context, arg CreateTypeParams) error {
 		arg.ID,
 		arg.CategoryID,
 		arg.Name,
+		arg.Description,
 		arg.SortOrder,
 		arg.Active,
 	)
 	return err
 }
 
-const deleteCategory = `-- name: DeleteCategory :exec
-DELETE FROM categories WHERE id = $1
+const deleteCategory = `-- name: DeleteCategory :execrows
+WITH gone AS (
+    DELETE FROM custom_field_assignments
+    WHERE (scope_type = 'category' AND scope_id = $1)
+       OR (scope_type = 'type' AND scope_id IN (SELECT t.id FROM types t WHERE t.category_id = $1))
+       OR (scope_type = 'item' AND scope_id IN (
+            SELECT i.id FROM items i JOIN types t ON t.id = i.type_id WHERE t.category_id = $1))
+    RETURNING id, field_def_id, scope_type, scope_id, sort_order, visible_on_new, required_on_new
+),
+audited AS (
+    INSERT INTO audit_log (id, actor_id, entity_type, entity_id, action, before, after, created_at)
+    SELECT gen_random_uuid(), $2::uuid, 'custom_field', g.field_def_id, 'custom_field_detached',
+           jsonb_build_object(
+               'field_name', d.name, 'assignment_id', g.id, 'scope_type', g.scope_type, 'scope_id', g.scope_id,
+               'scope_path', CASE g.scope_type
+                   WHEN 'category' THEN (SELECT c.name FROM categories c WHERE c.id = g.scope_id)
+                   WHEN 'type' THEN (SELECT c.name || ' › ' || t.name
+                                     FROM types t JOIN categories c ON c.id = t.category_id WHERE t.id = g.scope_id)
+                   ELSE (SELECT c.name || ' › ' || t.name || ' › ' || i.name
+                         FROM items i JOIN types t ON t.id = i.type_id JOIN categories c ON c.id = t.category_id
+                         WHERE i.id = g.scope_id)
+               END,
+               'visible_on_new', g.visible_on_new, 'required_on_new', g.required_on_new,
+               'sort_order', g.sort_order, 'node_deleted', true),
+           NULL, clock_timestamp()
+    FROM gone g JOIN custom_field_defs d ON d.id = g.field_def_id
+)
+DELETE FROM categories WHERE categories.id = $1
 `
 
-func (q *Queries) DeleteCategory(ctx context.Context, id uuid.UUID) error {
-	_, err := q.db.ExecContext(ctx, deleteCategory, id)
-	return err
+type DeleteCategoryParams struct {
+	ID      uuid.UUID     `json:"id"`
+	ActorID uuid.NullUUID `json:"actor_id"`
 }
 
-const deleteItem = `-- name: DeleteItem :exec
-DELETE FROM items WHERE id = $1
-`
-
-func (q *Queries) DeleteItem(ctx context.Context, id uuid.UUID) error {
-	_, err := q.db.ExecContext(ctx, deleteItem, id)
-	return err
+// Takes the custom-field assignments of the category, of its types and of
+// their items with it (#419). custom_field_assignments.scope_id has no foreign
+// key, so they were left pointing at nothing. One statement, so the assignments
+// and the node go together or not at all: if the delete is refused (a ticket
+// arrived meanwhile), the assignments stay.
+//
+// Each assignment taken is audited as custom_field_detached in the same statement
+// (#603), so the entries and the delete also go together or not at all. Names are
+// read from the statement's snapshot, which is how the entry can say where the
+// field was attached after the node is gone. sqlc.narg(actor_id) is the
+// administrator; NULL when there is none. The path text matches
+// GetAssignmentScopePath.
+func (q *Queries) DeleteCategory(ctx context.Context, arg DeleteCategoryParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteCategory, arg.ID, arg.ActorID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
-const deleteType = `-- name: DeleteType :exec
-DELETE FROM types WHERE id = $1
+const deleteItem = `-- name: DeleteItem :execrows
+WITH gone AS (
+    DELETE FROM custom_field_assignments
+    WHERE scope_type = 'item' AND scope_id = $1
+    RETURNING id, field_def_id, scope_type, scope_id, sort_order, visible_on_new, required_on_new
+),
+audited AS (
+    INSERT INTO audit_log (id, actor_id, entity_type, entity_id, action, before, after, created_at)
+    SELECT gen_random_uuid(), $2::uuid, 'custom_field', g.field_def_id, 'custom_field_detached',
+           jsonb_build_object(
+               'field_name', d.name, 'assignment_id', g.id, 'scope_type', g.scope_type, 'scope_id', g.scope_id,
+               'scope_path', CASE g.scope_type
+                   WHEN 'category' THEN (SELECT c.name FROM categories c WHERE c.id = g.scope_id)
+                   WHEN 'type' THEN (SELECT c.name || ' › ' || t.name
+                                     FROM types t JOIN categories c ON c.id = t.category_id WHERE t.id = g.scope_id)
+                   ELSE (SELECT c.name || ' › ' || t.name || ' › ' || i.name
+                         FROM items i JOIN types t ON t.id = i.type_id JOIN categories c ON c.id = t.category_id
+                         WHERE i.id = g.scope_id)
+               END,
+               'visible_on_new', g.visible_on_new, 'required_on_new', g.required_on_new,
+               'sort_order', g.sort_order, 'node_deleted', true),
+           NULL, clock_timestamp()
+    FROM gone g JOIN custom_field_defs d ON d.id = g.field_def_id
+)
+DELETE FROM items WHERE items.id = $1
 `
 
-func (q *Queries) DeleteType(ctx context.Context, id uuid.UUID) error {
-	_, err := q.db.ExecContext(ctx, deleteType, id)
-	return err
+type DeleteItemParams struct {
+	ID      uuid.UUID     `json:"id"`
+	ActorID uuid.NullUUID `json:"actor_id"`
+}
+
+// As DeleteCategory: the item's field assignments go in the same statement.
+func (q *Queries) DeleteItem(ctx context.Context, arg DeleteItemParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteItem, arg.ID, arg.ActorID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const deleteType = `-- name: DeleteType :execrows
+WITH gone AS (
+    DELETE FROM custom_field_assignments
+    WHERE (scope_type = 'type' AND scope_id = $1)
+       OR (scope_type = 'item' AND scope_id IN (SELECT i.id FROM items i WHERE i.type_id = $1))
+    RETURNING id, field_def_id, scope_type, scope_id, sort_order, visible_on_new, required_on_new
+),
+audited AS (
+    INSERT INTO audit_log (id, actor_id, entity_type, entity_id, action, before, after, created_at)
+    SELECT gen_random_uuid(), $2::uuid, 'custom_field', g.field_def_id, 'custom_field_detached',
+           jsonb_build_object(
+               'field_name', d.name, 'assignment_id', g.id, 'scope_type', g.scope_type, 'scope_id', g.scope_id,
+               'scope_path', CASE g.scope_type
+                   WHEN 'category' THEN (SELECT c.name FROM categories c WHERE c.id = g.scope_id)
+                   WHEN 'type' THEN (SELECT c.name || ' › ' || t.name
+                                     FROM types t JOIN categories c ON c.id = t.category_id WHERE t.id = g.scope_id)
+                   ELSE (SELECT c.name || ' › ' || t.name || ' › ' || i.name
+                         FROM items i JOIN types t ON t.id = i.type_id JOIN categories c ON c.id = t.category_id
+                         WHERE i.id = g.scope_id)
+               END,
+               'visible_on_new', g.visible_on_new, 'required_on_new', g.required_on_new,
+               'sort_order', g.sort_order, 'node_deleted', true),
+           NULL, clock_timestamp()
+    FROM gone g JOIN custom_field_defs d ON d.id = g.field_def_id
+)
+DELETE FROM types WHERE types.id = $1
+`
+
+type DeleteTypeParams struct {
+	ID      uuid.UUID     `json:"id"`
+	ActorID uuid.NullUUID `json:"actor_id"`
+}
+
+// As DeleteCategory: the type's own and its items' field assignments go in the
+// same statement.
+func (q *Queries) DeleteType(ctx context.Context, arg DeleteTypeParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteType, arg.ID, arg.ActorID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const getCategory = `-- name: GetCategory :one
-SELECT id, name, sort_order, active FROM categories WHERE id = $1
+SELECT id, name, sort_order, active, description FROM categories WHERE id = $1
 `
 
 func (q *Queries) GetCategory(ctx context.Context, id uuid.UUID) (Category, error) {
@@ -117,12 +273,47 @@ func (q *Queries) GetCategory(ctx context.Context, id uuid.UUID) (Category, erro
 		&i.Name,
 		&i.SortOrder,
 		&i.Active,
+		&i.Description,
 	)
 	return i, err
 }
 
+const getCategoryNamesByIDs = `-- name: GetCategoryNamesByIDs :many
+SELECT id, name FROM categories WHERE id = ANY($1::uuid[])
+`
+
+type GetCategoryNamesByIDsRow struct {
+	ID   uuid.UUID `json:"id"`
+	Name string    `json:"name"`
+}
+
+// The audit view's name lookup (1.3.0): one statement for every id on a page,
+// never one per id. An id with no row is simply absent from the result.
+func (q *Queries) GetCategoryNamesByIDs(ctx context.Context, ids []uuid.UUID) ([]GetCategoryNamesByIDsRow, error) {
+	rows, err := q.db.QueryContext(ctx, getCategoryNamesByIDs, pq.Array(ids))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []GetCategoryNamesByIDsRow
+	for rows.Next() {
+		var i GetCategoryNamesByIDsRow
+		if err := rows.Scan(&i.ID, &i.Name); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getItem = `-- name: GetItem :one
-SELECT id, type_id, name, sort_order, active FROM items WHERE id = $1
+SELECT id, type_id, name, sort_order, active, description FROM items WHERE id = $1
 `
 
 func (q *Queries) GetItem(ctx context.Context, id uuid.UUID) (Item, error) {
@@ -134,12 +325,45 @@ func (q *Queries) GetItem(ctx context.Context, id uuid.UUID) (Item, error) {
 		&i.Name,
 		&i.SortOrder,
 		&i.Active,
+		&i.Description,
 	)
 	return i, err
 }
 
+const getItemNamesByIDs = `-- name: GetItemNamesByIDs :many
+SELECT id, name FROM items WHERE id = ANY($1::uuid[])
+`
+
+type GetItemNamesByIDsRow struct {
+	ID   uuid.UUID `json:"id"`
+	Name string    `json:"name"`
+}
+
+func (q *Queries) GetItemNamesByIDs(ctx context.Context, ids []uuid.UUID) ([]GetItemNamesByIDsRow, error) {
+	rows, err := q.db.QueryContext(ctx, getItemNamesByIDs, pq.Array(ids))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []GetItemNamesByIDsRow
+	for rows.Next() {
+		var i GetItemNamesByIDsRow
+		if err := rows.Scan(&i.ID, &i.Name); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const getType = `-- name: GetType :one
-SELECT id, category_id, name, sort_order, active FROM types WHERE id = $1
+SELECT id, category_id, name, sort_order, active, description FROM types WHERE id = $1
 `
 
 func (q *Queries) GetType(ctx context.Context, id uuid.UUID) (Type, error) {
@@ -151,12 +375,45 @@ func (q *Queries) GetType(ctx context.Context, id uuid.UUID) (Type, error) {
 		&i.Name,
 		&i.SortOrder,
 		&i.Active,
+		&i.Description,
 	)
 	return i, err
 }
 
+const getTypeNamesByIDs = `-- name: GetTypeNamesByIDs :many
+SELECT id, name FROM types WHERE id = ANY($1::uuid[])
+`
+
+type GetTypeNamesByIDsRow struct {
+	ID   uuid.UUID `json:"id"`
+	Name string    `json:"name"`
+}
+
+func (q *Queries) GetTypeNamesByIDs(ctx context.Context, ids []uuid.UUID) ([]GetTypeNamesByIDsRow, error) {
+	rows, err := q.db.QueryContext(ctx, getTypeNamesByIDs, pq.Array(ids))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []GetTypeNamesByIDsRow
+	for rows.Next() {
+		var i GetTypeNamesByIDsRow
+		if err := rows.Scan(&i.ID, &i.Name); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listCategories = `-- name: ListCategories :many
-SELECT id, name, sort_order, active FROM categories
+SELECT id, name, sort_order, active, description FROM categories
 WHERE ($1::boolean = FALSE OR active = TRUE)
 ORDER BY sort_order, name
 `
@@ -175,6 +432,7 @@ func (q *Queries) ListCategories(ctx context.Context, dollar_1 bool) ([]Category
 			&i.Name,
 			&i.SortOrder,
 			&i.Active,
+			&i.Description,
 		); err != nil {
 			return nil, err
 		}
@@ -190,7 +448,7 @@ func (q *Queries) ListCategories(ctx context.Context, dollar_1 bool) ([]Category
 }
 
 const listItems = `-- name: ListItems :many
-SELECT id, type_id, name, sort_order, active FROM items
+SELECT id, type_id, name, sort_order, active, description FROM items
 WHERE type_id = $1 AND ($2::boolean = FALSE OR active = TRUE)
 ORDER BY sort_order, name
 `
@@ -215,6 +473,7 @@ func (q *Queries) ListItems(ctx context.Context, arg ListItemsParams) ([]Item, e
 			&i.Name,
 			&i.SortOrder,
 			&i.Active,
+			&i.Description,
 		); err != nil {
 			return nil, err
 		}
@@ -230,7 +489,7 @@ func (q *Queries) ListItems(ctx context.Context, arg ListItemsParams) ([]Item, e
 }
 
 const listTypes = `-- name: ListTypes :many
-SELECT id, category_id, name, sort_order, active FROM types
+SELECT id, category_id, name, sort_order, active, description FROM types
 WHERE category_id = $1 AND ($2::boolean = FALSE OR active = TRUE)
 ORDER BY sort_order, name
 `
@@ -255,6 +514,7 @@ func (q *Queries) ListTypes(ctx context.Context, arg ListTypesParams) ([]Type, e
 			&i.Name,
 			&i.SortOrder,
 			&i.Active,
+			&i.Description,
 		); err != nil {
 			return nil, err
 		}
@@ -270,20 +530,22 @@ func (q *Queries) ListTypes(ctx context.Context, arg ListTypesParams) ([]Type, e
 }
 
 const updateCategory = `-- name: UpdateCategory :exec
-UPDATE categories SET name = $2, sort_order = $3, active = $4 WHERE id = $1
+UPDATE categories SET name = $2, description = $3, sort_order = $4, active = $5 WHERE id = $1
 `
 
 type UpdateCategoryParams struct {
-	ID        uuid.UUID `json:"id"`
-	Name      string    `json:"name"`
-	SortOrder int32     `json:"sort_order"`
-	Active    bool      `json:"active"`
+	ID          uuid.UUID `json:"id"`
+	Name        string    `json:"name"`
+	Description string    `json:"description"`
+	SortOrder   int32     `json:"sort_order"`
+	Active      bool      `json:"active"`
 }
 
 func (q *Queries) UpdateCategory(ctx context.Context, arg UpdateCategoryParams) error {
 	_, err := q.db.ExecContext(ctx, updateCategory,
 		arg.ID,
 		arg.Name,
+		arg.Description,
 		arg.SortOrder,
 		arg.Active,
 	)
@@ -291,15 +553,16 @@ func (q *Queries) UpdateCategory(ctx context.Context, arg UpdateCategoryParams) 
 }
 
 const updateItem = `-- name: UpdateItem :exec
-UPDATE items SET type_id = $2, name = $3, sort_order = $4, active = $5 WHERE id = $1
+UPDATE items SET type_id = $2, name = $3, description = $4, sort_order = $5, active = $6 WHERE id = $1
 `
 
 type UpdateItemParams struct {
-	ID        uuid.UUID `json:"id"`
-	TypeID    uuid.UUID `json:"type_id"`
-	Name      string    `json:"name"`
-	SortOrder int32     `json:"sort_order"`
-	Active    bool      `json:"active"`
+	ID          uuid.UUID `json:"id"`
+	TypeID      uuid.UUID `json:"type_id"`
+	Name        string    `json:"name"`
+	Description string    `json:"description"`
+	SortOrder   int32     `json:"sort_order"`
+	Active      bool      `json:"active"`
 }
 
 func (q *Queries) UpdateItem(ctx context.Context, arg UpdateItemParams) error {
@@ -307,6 +570,7 @@ func (q *Queries) UpdateItem(ctx context.Context, arg UpdateItemParams) error {
 		arg.ID,
 		arg.TypeID,
 		arg.Name,
+		arg.Description,
 		arg.SortOrder,
 		arg.Active,
 	)
@@ -314,15 +578,16 @@ func (q *Queries) UpdateItem(ctx context.Context, arg UpdateItemParams) error {
 }
 
 const updateType = `-- name: UpdateType :exec
-UPDATE types SET category_id = $2, name = $3, sort_order = $4, active = $5 WHERE id = $1
+UPDATE types SET category_id = $2, name = $3, description = $4, sort_order = $5, active = $6 WHERE id = $1
 `
 
 type UpdateTypeParams struct {
-	ID         uuid.UUID `json:"id"`
-	CategoryID uuid.UUID `json:"category_id"`
-	Name       string    `json:"name"`
-	SortOrder  int32     `json:"sort_order"`
-	Active     bool      `json:"active"`
+	ID          uuid.UUID `json:"id"`
+	CategoryID  uuid.UUID `json:"category_id"`
+	Name        string    `json:"name"`
+	Description string    `json:"description"`
+	SortOrder   int32     `json:"sort_order"`
+	Active      bool      `json:"active"`
 }
 
 func (q *Queries) UpdateType(ctx context.Context, arg UpdateTypeParams) error {
@@ -330,6 +595,7 @@ func (q *Queries) UpdateType(ctx context.Context, arg UpdateTypeParams) error {
 		arg.ID,
 		arg.CategoryID,
 		arg.Name,
+		arg.Description,
 		arg.SortOrder,
 		arg.Active,
 	)

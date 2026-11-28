@@ -32,13 +32,13 @@ func NewDB(t *testing.T) (*DB, func()) {
 	}
 
 	ctx := context.Background()
-	if err := database.Migrate(ctx, database.MigrateURL(dsn)); err != nil {
-		t.Fatalf("migrate: %v", err)
-	}
-
 	pool, err := database.New(ctx, dsn)
 	if err != nil {
 		t.Fatalf("open db pool: %v", err)
+	}
+	if err := migrateAndVerify(ctx, pool, dsn, database.MigrationFiles()); err != nil {
+		pool.Close()
+		t.Fatalf("%v", err)
 	}
 
 	sqlDB := stdlib.OpenDBFromPool(pool)
@@ -55,9 +55,18 @@ func NewDB(t *testing.T) (*DB, func()) {
 // giving full isolation between tests without truncating tables.
 func TxQueries(t *testing.T, db *DB) (*dbgen.Queries, func()) {
 	t.Helper()
+	q, _, rollback := TxQueriesTx(t, db)
+	return q, rollback
+}
+
+// TxQueriesTx is TxQueries that also hands back the transaction itself, for a
+// test that has to run SQL the generated queries do not offer (a trigger that
+// forces an interleaving, say). Anything run on it rolls back with the rest.
+func TxQueriesTx(t *testing.T, db *DB) (*dbgen.Queries, *sql.Tx, func()) {
+	t.Helper()
 	tx, err := db.SQL.BeginTx(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("begin tx: %v", err)
 	}
-	return dbgen.New(tx), func() { _ = tx.Rollback() }
+	return dbgen.New(tx), tx, func() { _ = tx.Rollback() }
 }

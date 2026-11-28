@@ -2,12 +2,15 @@ package mcp
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/google/uuid"
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 	"github.com/stretchr/testify/require"
 
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/catalogue"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 	authmw "github.com/publiciallc/go-help-desk/backend/internal/middleware"
@@ -55,6 +58,13 @@ func TestWriteTools_RefuseReportingUsers(t *testing.T) {
 				"ticket_id": ticketID, "status_id": uuid.New().String(),
 			}))
 		}},
+		// #349: the way forward from a closed ticket is staff's, like the
+		// other writes.
+		{"create_follow_up", func(ctx context.Context) (*mcpgo.CallToolResult, error) {
+			return s.handleCreateFollowUp(ctx, callToolRequest("create_follow_up", map[string]any{
+				"ticket_id": ticketID,
+			}))
+		}},
 	}
 
 	for _, tc := range cases {
@@ -73,11 +83,21 @@ type recordingAuthorizer struct {
 	visibility ticket.Visibility
 	allow      bool
 	asked      int
+	available  bool // the answer to AvailableQueueAllowed
 }
 
 func (r *recordingAuthorizer) CanViewTicket(context.Context, *authmw.Actor, ticket.Ticket) (bool, error) {
 	r.asked++
 	return r.allow, nil
+}
+
+func (r *recordingAuthorizer) AvailableQueueAllowed(context.Context, *authmw.Actor) bool {
+	return r.available
+}
+
+// A requester's levels, the policy's answer with every setting off.
+func (r *recordingAuthorizer) VisibleLevels(context.Context, *authmw.Actor) catalogue.Levels {
+	return catalogue.Levels{Types: true}
 }
 
 func (r *recordingAuthorizer) TicketVisibility(context.Context, *authmw.Actor) (ticket.Visibility, error) {
@@ -87,7 +107,7 @@ func (r *recordingAuthorizer) TicketVisibility(context.Context, *authmw.Actor) (
 // A missing Authorizer must deny, not permit. This is the fail-closed guard on
 // the constructor: the original defect was a surface that served whoever asked.
 func TestNew_WithoutAuthorizer_DeniesByDefault(t *testing.T) {
-	s := New(nil, nil, nil, nil)
+	s := New(nil, nil, nil, nil, nil, nil)
 
 	require.False(t, s.visible(ctxAs(user.RoleAdmin), ticket.Ticket{}),
 		"no Authorizer must mean nothing is visible")
@@ -228,4 +248,41 @@ func TestNotFoundFor_MatchesStoreWording(t *testing.T) {
 	// produces this same string. Both must agree for the two cases to be
 	// indistinguishable; if either drifts, one of the two tests fails.
 	require.Equal(t, "not found: ticket "+id.String(), notFoundFor(id.String()))
+}
+
+// A ticket that does not exist must answer exactly as one the caller may not
+// see does. The hidden path already answered notFoundFor(id); a real miss went
+// through storeErr and said "get ticket failed", so get_ticket still told a
+// reporting user which tracking numbers are real. See #174.
+func TestTicketLookupErr_RealMissMatchesHidden(t *testing.T) {
+	id := uuid.New().String()
+	miss := fmt.Errorf("%w: ticket %s", ticket.ErrNotFound, id)
+
+	res, err := ticketLookupErr(context.Background(), "get ticket", id, miss)
+	require.NoError(t, err)
+	require.True(t, res.IsError)
+	require.Equal(t, notFoundFor(id), resultText(t, res))
+}
+
+func TestTicketLookupErr_OtherFailuresStayGeneric(t *testing.T) {
+	res, err := ticketLookupErr(context.Background(), "get ticket", "x", errors.New("connection reset by peer"))
+	require.NoError(t, err)
+	require.True(t, res.IsError)
+	require.Equal(t, "get ticket failed", resultText(t, res),
+		"an infrastructure failure must not be dressed up as a missing ticket or leak its detail")
+}
+
+// search_replies is the caller's choice; which replies may be searched is not.
+// IncludeInternal is not read from the arguments, so a caller cannot ask for
+// internal notes: the handler sets it from the role.
+func TestBuildListFilter_SearchRepliesIsAnArgumentIncludeInternalIsNot(t *testing.T) {
+	f, err := buildListFilter(map[string]any{"q": "printer", "search_replies": true, "include_internal": true},
+		ticket.VisibilityReporter, uuid.New())
+	require.NoError(t, err)
+	require.True(t, f.SearchReplies)
+	require.False(t, f.IncludeInternal)
+
+	f, err = buildListFilter(map[string]any{"q": "printer"}, ticket.VisibilityAll, uuid.New())
+	require.NoError(t, err)
+	require.False(t, f.SearchReplies, "replies are searched only when asked for")
 }

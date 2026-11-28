@@ -15,4 +15,8 @@ package version
 // v1.1.0 shipped reporting itself as 1.0.1 because this constant was not
 // bumped and the described override does not exist. A test pins the two
 // together so the next release cannot repeat it.
-var Version = "1.2.0"
+//
+// The 1.3.0 beta said "1.3.0-beta" so that an operator running it could tell
+// from /api/v1/site that it was not a release. Set to "1.3.0" in the change
+// that precedes the v1.3.0 tag, which is the point of keeping it in step.
+var Version = "1.3.0"

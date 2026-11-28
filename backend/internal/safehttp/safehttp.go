@@ -17,6 +17,7 @@ package safehttp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -24,11 +25,19 @@ import (
 	"time"
 )
 
+// ErrBlockedAddress is wrapped by every refusal to dial an internal address,
+// so callers can tell it apart from an ordinary network failure.
+var ErrBlockedAddress = errors.New("refusing to connect")
+
 // Client returns an HTTP client that refuses to connect to private, loopback,
 // link-local or otherwise internal addresses.
 func Client(timeout time.Duration) *http.Client {
 	return &http.Client{
 		Timeout: timeout,
+		// A redirect is the receiver saying "not here", not "accepted". Following
+		// it turns a POST into a bodyless GET whose 200 is then recorded as a
+		// delivery. Return the 3xx itself so it is recorded with its real code.
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 		Transport: &http.Transport{
 			DialContext:           guardedDial,
 			TLSHandshakeTimeout:   timeout,
@@ -92,24 +101,24 @@ func inExtraInternalRange(ip net.IP) bool {
 func checkIP(ip net.IP) error {
 	switch {
 	case ip.IsLoopback():
-		return fmt.Errorf("refusing to connect to loopback address %s", ip)
+		return fmt.Errorf("%w to loopback address %s", ErrBlockedAddress, ip)
 	case ip.IsPrivate():
-		return fmt.Errorf("refusing to connect to private address %s", ip)
+		return fmt.Errorf("%w to private address %s", ErrBlockedAddress, ip)
 	case ip.IsLinkLocalUnicast(), ip.IsLinkLocalMulticast():
 		// 169.254.169.254 is the cloud metadata endpoint on every major
 		// provider, and it hands out credentials to anyone who asks.
-		return fmt.Errorf("refusing to connect to link-local address %s", ip)
+		return fmt.Errorf("%w to link-local address %s", ErrBlockedAddress, ip)
 	case inExtraInternalRange(ip):
 		// net.IP.IsPrivate covers only RFC1918 and IPv6 ULA. The ranges below
 		// are not "private" by that definition but are just as internal in
 		// practice — 100.64.0.0/10 is carrier-grade NAT, and 100.100.100.200
 		// is the metadata endpoint on Alibaba and Tencent clouds, which the
 		// link-local check does not catch.
-		return fmt.Errorf("refusing to connect to internal address %s", ip)
+		return fmt.Errorf("%w to internal address %s", ErrBlockedAddress, ip)
 	case ip.IsUnspecified():
-		return fmt.Errorf("refusing to connect to unspecified address %s", ip)
+		return fmt.Errorf("%w to unspecified address %s", ErrBlockedAddress, ip)
 	case ip.IsMulticast(), ip.IsInterfaceLocalMulticast():
-		return fmt.Errorf("refusing to connect to multicast address %s", ip)
+		return fmt.Errorf("%w to multicast address %s", ErrBlockedAddress, ip)
 	}
 	// IPv6 unique-local (fc00::/7) is the v6 equivalent of a private range and
 	// IsPrivate covers it, but IPv4-mapped v6 addresses arrive as 16 bytes and
@@ -127,6 +136,20 @@ func checkIP(ip net.IP) error {
 // It is a convenience, not the boundary: the dialer is the boundary, because a
 // name that passes here can resolve somewhere else by the time it is used.
 func ValidateURL(raw string) error {
+	// Bounded here for callers that have no context of their own: the system
+	// resolver can otherwise hold the caller for as long as it likes.
+	ctx, cancel := context.WithTimeout(context.Background(), validateLookupTimeout)
+	defer cancel()
+	return ValidateURLContext(ctx, raw)
+}
+
+// validateLookupTimeout bounds the lookup ValidateURL makes for a caller that
+// supplies no context.
+const validateLookupTimeout = 10 * time.Second
+
+// ValidateURLContext is ValidateURL with the name lookup tied to ctx, so a
+// request that is cancelled or times out stops waiting on DNS.
+func ValidateURLContext(ctx context.Context, raw string) error {
 	u, err := url.Parse(raw)
 	if err != nil {
 		return fmt.Errorf("invalid URL: %w", err)
@@ -137,12 +160,12 @@ func ValidateURL(raw string) error {
 	if u.Hostname() == "" {
 		return fmt.Errorf("URL has no host")
 	}
-	ips, err := net.LookupIP(u.Hostname())
+	ips, err := net.DefaultResolver.LookupIPAddr(ctx, u.Hostname())
 	if err != nil {
 		return fmt.Errorf("resolving %q: %w", u.Hostname(), err)
 	}
 	for _, ip := range ips {
-		if err := checkIP(ip); err != nil {
+		if err := checkIP(ip.IP); err != nil {
 			return err
 		}
 	}

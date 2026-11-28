@@ -54,8 +54,8 @@ export function TagsPage() {
       <div className="space-y-6">
         <div className="flex items-start justify-between">
           <div>
-            <h1 className="text-2xl font-bold text-gray-900">Tags</h1>
-            <p className="mt-1 text-sm text-gray-500">
+            <h1 className="text-2xl font-bold text-fg">Tags</h1>
+            <p className="mt-1 text-sm text-fg-faint">
               Tags are created by staff when tagging tickets, or added here directly. Admins can deactivate
               inappropriate tags or restore previously deactivated ones.
             </p>
@@ -63,8 +63,8 @@ export function TagsPage() {
         </div>
 
         {/* Create tag form */}
-        <div className="rounded-lg border bg-white p-4">
-          <p className="mb-3 text-sm font-medium text-gray-700">Add tag</p>
+        <div className="rounded-lg border bg-card p-4">
+          <p className="mb-3 text-sm font-medium text-fg-soft">Add tag</p>
           <div className="flex items-center gap-3">
             <Input
               placeholder="Tag name (stored lowercase)"
@@ -83,15 +83,15 @@ export function TagsPage() {
               {createMutation.isPending ? 'Adding…' : 'Add'}
             </Button>
           </div>
-          {createError && <p className="mt-2 text-sm text-red-600">{createError}</p>}
+          {createError && <p role="alert" className="mt-2 text-sm text-danger-fg">{createError}</p>}
         </div>
 
         {isLoading ? (
           <div className="flex justify-center py-12"><Spinner /></div>
         ) : (
-          <div className="rounded-lg border bg-white overflow-hidden">
+          <div className="rounded-lg border bg-card overflow-x-auto">
             <table className="w-full text-sm">
-              <thead className="bg-gray-50 text-xs text-gray-500 uppercase">
+              <thead className="bg-subtle text-xs text-fg-faint uppercase">
                 <tr>
                   <th className="px-4 py-3 text-left">Name</th>
                   <th className="px-4 py-3 text-left">Status</th>
@@ -102,7 +102,7 @@ export function TagsPage() {
               <tbody className="divide-y">
                 {tags.map((t) => (
                   <tr key={t.id} className={isDeleted(t) ? 'opacity-50' : ''}>
-                    <td className="px-4 py-3 font-medium text-gray-900">{t.name}</td>
+                    <td className="px-4 py-3 font-medium text-fg wrap-anywhere">{t.name}</td>
                     <td className="px-4 py-3">
                       {isDeleted(t) ? (
                         <Badge variant="secondary">Deactivated</Badge>
@@ -110,7 +110,7 @@ export function TagsPage() {
                         <Badge variant="default">Active</Badge>
                       )}
                     </td>
-                    <td className="px-4 py-3 text-gray-500">
+                    <td className="px-4 py-3 text-fg-faint">
                       {new Date(t.created_at).toLocaleDateString()}
                     </td>
                     <td className="px-4 py-3 text-right">
@@ -118,7 +118,7 @@ export function TagsPage() {
                         <Button
                           size="sm"
                           variant="outline"
-                          className="text-green-700 border-green-300 hover:bg-green-50"
+                          className="text-success-fg border-success-border hover:bg-success-soft hover:text-success-fg-strong"
                           onClick={() => restoreMutation.mutate(t.id)}
                           disabled={restoreMutation.isPending}
                         >
@@ -128,7 +128,7 @@ export function TagsPage() {
                         <Button
                           size="sm"
                           variant="outline"
-                          className="text-red-600 border-red-200 hover:bg-red-50"
+                          className="text-danger-fg border-danger-border hover:bg-danger-soft hover:text-danger-fg-strong"
                           onClick={() => setPendingDelete(t)}
                           disabled={deleteMutation.isPending}
                         >
@@ -140,7 +140,7 @@ export function TagsPage() {
                 ))}
                 {tags.length === 0 && (
                   <tr>
-                    <td colSpan={4} className="px-4 py-8 text-center text-gray-400">
+                    <td colSpan={4} className="px-4 py-8 text-center text-fg-faint">
                       No tags yet.
                     </td>
                   </tr>

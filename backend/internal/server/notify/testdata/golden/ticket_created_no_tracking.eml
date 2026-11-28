@@ -1,0 +1,15 @@
+From: <helpdesk@example.com>
+To: <to@example.com>
+Subject: We have received your ticket
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: quoted-printable
+
+We have received your ticket.
+
+Ticket:=20
+
+View it here:
+https://help.example.com/tickets/11111111-2222-3333-4444-555555555555
+
+You will be notified when there is an update.

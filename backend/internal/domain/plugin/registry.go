@@ -74,7 +74,7 @@ func (r *registry) Enable(id string) error {
 	defer r.mu.Unlock()
 	p, ok := r.plugins[id]
 	if !ok {
-		return fmt.Errorf("plugin %q not found", id)
+		return fmt.Errorf("plugin %q: %w", id, ErrNotFound)
 	}
 	p.enabled = true
 	return nil
@@ -85,7 +85,7 @@ func (r *registry) Disable(id string) error {
 	defer r.mu.Unlock()
 	p, ok := r.plugins[id]
 	if !ok {
-		return fmt.Errorf("plugin %q not found", id)
+		return fmt.Errorf("plugin %q: %w", id, ErrNotFound)
 	}
 	p.enabled = false
 	return nil

@@ -1,3 +1,40 @@
+# BUILDPLATFORM is one of BuildKit's automatic build-time args, populated by
+# `docker buildx build` (which is how CI's multi-platform image is built — see
+# .github/workflows/ci.yml) so the two stages below run natively rather than
+# under emulation. It is NOT populated by the classic builder `docker compose
+# build` falls back to when the buildx CLI plugin is missing.
+#
+# Declared bare, with NO default — `ARG BUILDPLATFORM=...` would give it one,
+# and docker/buildx#510 documents that a default on one of these automatic
+# platform args makes buildx use the default INSTEAD OF the real value it
+# would otherwise inject, on every build, buildx included. That would
+# silently force every native cross-build back to amd64-under-emulation for
+# the one case this whole pin exists to keep fast.
+#
+# An earlier version of this file also gave `--platform=${BUILDPLATFORM:-...}`
+# an inline fallback at the point of use, specifically so a buildx-less host
+# would still produce SOME image rather than the parse error below. Measured
+# on the real hardware #297 was filed from (arm64, no buildx): that fallback
+# does not produce a working image, it produces a broken one that looks fine.
+# Forcing `linux/amd64` on an arm64 host under the classic builder means both
+# build stages run under real QEMU emulation rather than BuildKit's platform
+# bookkeeping — one observed failure mode was `go mod download` crashing
+# outright under emulation; the more dangerous one is that it can also
+# "succeed": TARGETARCH is never populated by the classic builder either, so
+# `GOARCH=${TARGETARCH}` falls through to the Go toolchain's own default,
+# which inside an amd64-emulated container is amd64 — and the self-check two
+# stages down asks `go env GOARCH` from that SAME emulated container, so it
+# also answers amd64 and the assertion passes. Stage 3 has no platform pin of
+# its own (by design, see its own comment) and is built for the host's REAL
+# architecture, arm64 — so the amd64 binary lands in an arm64 base image, and
+# the failure moves from a clear build-time error to `exec format error` at
+# `docker compose up`, on exactly the audience this file exists to help.
+# Buildx is now a stated prerequisite (see the README) instead: a bare
+# reference restores the original, honest `--platform=` parse error for a
+# buildx-less build, rather than trading it for one that fails later and less
+# clearly. Do not reintroduce a fallback here without re-reading this comment.
+ARG BUILDPLATFORM
+
 # ── Stage 1: Build frontend ───────────────────────────────────────────────────
 #
 # Pinned to BUILDPLATFORM: the output is static JS/CSS with no architecture of
@@ -19,7 +56,7 @@ RUN npm run build
 # compiler by default and the binary is CGO_ENABLED=0, so targeting another
 # architecture costs nothing — whereas emulating the whole toolchain under QEMU
 # turns a two-minute compile into fifteen or more.
-FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS gobuilder
+FROM --platform=$BUILDPLATFORM golang:1.27-alpine AS gobuilder
 
 WORKDIR /build
 
@@ -65,6 +102,15 @@ RUN set -eu; \
 # are emulated when cross-building, which is fine: they are seconds of work,
 # unlike the compilers above.
 FROM alpine:3.23.5
+
+# The source label is what lets GHCR link the published package to this
+# repository (#530). Without it a package that a workflow creates for the first
+# time is unlinked and private, and `docker pull` of the quick start fails with
+# "unauthorized" for everyone. It does not make an existing package public:
+# that is a setting on the package itself.
+LABEL org.opencontainers.image.source="https://github.com/PubliciaLLC/go-help-desk" \
+      org.opencontainers.image.description="Go Help Desk, a self-hosted help desk." \
+      org.opencontainers.image.licenses="AGPL-3.0-only"
 
 # ca-certificates only, and it is required: the server makes outbound HTTPS
 # calls to the identity provider for OIDC discovery and JWKS, and Alpine ships

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
 import type { AxiosError } from 'axios'
 import { api, extractError } from './client'
+import { DISMISS_PREFIX } from '@/lib/noticeDismissal'
 
 // The first tests in this codebase. client.ts is the deliberate starting point:
 // every API call in the app passes through it, it is 29 lines, and both pieces
@@ -93,6 +94,26 @@ describe('401 response interceptor', () => {
     return err
   }
 
+  // A session that expires leaves the tab open; the next sign-in there may be
+  // a different administrator, who must see the notices again.
+  it('clears hidden server notices on 401, before the redirect', async () => {
+    sessionStorage.setItem(DISMISS_PREFIX + 'passkeys|config|', '1')
+    stubLocation('/tickets')
+    await expect(rejectionHandler()(unauthorized())).rejects.toBeDefined()
+    expect(sessionStorage.getItem(DISMISS_PREFIX + 'passkeys|config|')).toBeNull()
+    expect(assigned).toBe('/login')
+  })
+
+  it('keeps hidden notices when a 401 only refuses a mistyped code', async () => {
+    sessionStorage.setItem(DISMISS_PREFIX + 'passkeys|config|', '1')
+    stubLocation('/account')
+    const err = unauthorized()
+    err.response!.data = { error: { code: 'invalid_mfa_code' } }
+    await expect(rejectionHandler()(err)).rejects.toBeDefined()
+    expect(sessionStorage.getItem(DISMISS_PREFIX + 'passkeys|config|')).toBe('1')
+    sessionStorage.clear()
+  })
+
   it('redirects to /login on 401', async () => {
     stubLocation('/tickets')
     await expect(rejectionHandler()(unauthorized())).rejects.toBeDefined()
@@ -123,6 +144,18 @@ describe('401 response interceptor', () => {
     err.response = { data: {}, status: 500, statusText: 'Server Error', headers: {}, config: {} as any }
 
     await expect(rejectionHandler()(err)).rejects.toBeDefined()
+    expect(assigned).toBeUndefined()
+  })
+
+  // A wrong second-factor code, or a key the server refused, is a 401 on a
+  // session that is still perfectly good. The account page asks for both while
+  // the person is signed in (#336); bouncing them to the login page for a
+  // mistyped digit throws away what they were doing.
+  it.each(['invalid_mfa_code', 'assertion_refused'])('does not redirect on %s', async (code) => {
+    stubLocation('/account')
+    const err = unauthorized()
+    err.response!.data = { error: { code, message: 'refused' } }
+    await expect(rejectionHandler()(err)).rejects.toBe(err)
     expect(assigned).toBeUndefined()
   })
 

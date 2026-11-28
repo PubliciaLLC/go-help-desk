@@ -7,27 +7,88 @@ package dbgen
 
 import (
 	"context"
+	"database/sql"
 	"time"
 
 	uuid "github.com/google/uuid"
+	"github.com/lib/pq"
 	"github.com/sqlc-dev/pqtype"
 )
 
+const anyCustomFieldValue = `-- name: AnyCustomFieldValue :one
+
+SELECT EXISTS (SELECT 1 FROM ticket_custom_field_values WHERE field_def_id = $1) AS held
+`
+
+// ── Usage ─────────────────────────────────────────────────────────────────────
+func (q *Queries) AnyCustomFieldValue(ctx context.Context, fieldDefID uuid.UUID) (bool, error) {
+	row := q.db.QueryRowContext(ctx, anyCustomFieldValue, fieldDefID)
+	var held bool
+	err := row.Scan(&held)
+	return held, err
+}
+
+const countCustomFieldValues = `-- name: CountCustomFieldValues :one
+SELECT count(*) FROM ticket_custom_field_values WHERE field_def_id = $1
+`
+
+func (q *Queries) CountCustomFieldValues(ctx context.Context, fieldDefID uuid.UUID) (int64, error) {
+	row := q.db.QueryRowContext(ctx, countCustomFieldValues, fieldDefID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
+const countCustomFieldValuesByValue = `-- name: CountCustomFieldValuesByValue :many
+SELECT value, count(*)::bigint AS tickets
+FROM ticket_custom_field_values WHERE field_def_id = $1
+GROUP BY value
+`
+
+type CountCustomFieldValuesByValueRow struct {
+	Value   string `json:"value"`
+	Tickets int64  `json:"tickets"`
+}
+
+func (q *Queries) CountCustomFieldValuesByValue(ctx context.Context, fieldDefID uuid.UUID) ([]CountCustomFieldValuesByValueRow, error) {
+	rows, err := q.db.QueryContext(ctx, countCustomFieldValuesByValue, fieldDefID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []CountCustomFieldValuesByValueRow
+	for rows.Next() {
+		var i CountCustomFieldValuesByValueRow
+		if err := rows.Scan(&i.Value, &i.Tickets); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const createCustomFieldAssignment = `-- name: CreateCustomFieldAssignment :one
 
-INSERT INTO custom_field_assignments (id, field_def_id, scope_type, scope_id, sort_order, visible_on_new, required_on_new)
-VALUES ($1, $2, $3, $4, $5, $6, $7)
-RETURNING id, field_def_id, scope_type, scope_id, sort_order, visible_on_new, required_on_new
+INSERT INTO custom_field_assignments (id, field_def_id, scope_type, scope_id, sort_order, visible_on_new, required_on_new, visible_to_guests)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+RETURNING id, field_def_id, scope_type, scope_id, sort_order, visible_on_new, required_on_new, visible_to_guests
 `
 
 type CreateCustomFieldAssignmentParams struct {
-	ID            uuid.UUID `json:"id"`
-	FieldDefID    uuid.UUID `json:"field_def_id"`
-	ScopeType     string    `json:"scope_type"`
-	ScopeID       uuid.UUID `json:"scope_id"`
-	SortOrder     int32     `json:"sort_order"`
-	VisibleOnNew  bool      `json:"visible_on_new"`
-	RequiredOnNew bool      `json:"required_on_new"`
+	ID              uuid.UUID `json:"id"`
+	FieldDefID      uuid.UUID `json:"field_def_id"`
+	ScopeType       string    `json:"scope_type"`
+	ScopeID         uuid.UUID `json:"scope_id"`
+	SortOrder       int32     `json:"sort_order"`
+	VisibleOnNew    bool      `json:"visible_on_new"`
+	RequiredOnNew   bool      `json:"required_on_new"`
+	VisibleToGuests bool      `json:"visible_to_guests"`
 }
 
 // ── Assignments ───────────────────────────────────────────────────────────────
@@ -40,6 +101,7 @@ func (q *Queries) CreateCustomFieldAssignment(ctx context.Context, arg CreateCus
 		arg.SortOrder,
 		arg.VisibleOnNew,
 		arg.RequiredOnNew,
+		arg.VisibleToGuests,
 	)
 	var i CustomFieldAssignment
 	err := row.Scan(
@@ -50,24 +112,27 @@ func (q *Queries) CreateCustomFieldAssignment(ctx context.Context, arg CreateCus
 		&i.SortOrder,
 		&i.VisibleOnNew,
 		&i.RequiredOnNew,
+		&i.VisibleToGuests,
 	)
 	return i, err
 }
 
 const createCustomFieldDef = `-- name: CreateCustomFieldDef :one
 
-INSERT INTO custom_field_defs (id, name, field_type, options, sort_order, active)
-VALUES ($1, $2, $3, $4, $5, $6)
-RETURNING id, name, field_type, options, sort_order, active, created_at
+INSERT INTO custom_field_defs (id, name, field_type, options, retired_options, sort_order, active, max_length)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+RETURNING id, name, field_type, options, sort_order, active, created_at, retired_options, max_length
 `
 
 type CreateCustomFieldDefParams struct {
-	ID        uuid.UUID             `json:"id"`
-	Name      string                `json:"name"`
-	FieldType string                `json:"field_type"`
-	Options   pqtype.NullRawMessage `json:"options"`
-	SortOrder int32                 `json:"sort_order"`
-	Active    bool                  `json:"active"`
+	ID             uuid.UUID             `json:"id"`
+	Name           string                `json:"name"`
+	FieldType      string                `json:"field_type"`
+	Options        pqtype.NullRawMessage `json:"options"`
+	RetiredOptions pqtype.NullRawMessage `json:"retired_options"`
+	SortOrder      int32                 `json:"sort_order"`
+	Active         bool                  `json:"active"`
+	MaxLength      sql.NullInt32         `json:"max_length"`
 }
 
 // ── Field definitions ─────────────────────────────────────────────────────────
@@ -77,8 +142,10 @@ func (q *Queries) CreateCustomFieldDef(ctx context.Context, arg CreateCustomFiel
 		arg.Name,
 		arg.FieldType,
 		arg.Options,
+		arg.RetiredOptions,
 		arg.SortOrder,
 		arg.Active,
+		arg.MaxLength,
 	)
 	var i CustomFieldDef
 	err := row.Scan(
@@ -89,17 +156,22 @@ func (q *Queries) CreateCustomFieldDef(ctx context.Context, arg CreateCustomFiel
 		&i.SortOrder,
 		&i.Active,
 		&i.CreatedAt,
+		&i.RetiredOptions,
+		&i.MaxLength,
 	)
 	return i, err
 }
 
-const deleteCustomFieldAssignment = `-- name: DeleteCustomFieldAssignment :exec
+const deleteCustomFieldAssignment = `-- name: DeleteCustomFieldAssignment :execrows
 DELETE FROM custom_field_assignments WHERE id = $1
 `
 
-func (q *Queries) DeleteCustomFieldAssignment(ctx context.Context, id uuid.UUID) error {
-	_, err := q.db.ExecContext(ctx, deleteCustomFieldAssignment, id)
-	return err
+func (q *Queries) DeleteCustomFieldAssignment(ctx context.Context, id uuid.UUID) (int64, error) {
+	result, err := q.db.ExecContext(ctx, deleteCustomFieldAssignment, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 const deleteCustomFieldValue = `-- name: DeleteCustomFieldValue :exec
@@ -117,8 +189,59 @@ func (q *Queries) DeleteCustomFieldValue(ctx context.Context, arg DeleteCustomFi
 	return err
 }
 
+const firstHeldCustomFieldValue = `-- name: FirstHeldCustomFieldValue :one
+SELECT value FROM ticket_custom_field_values
+WHERE field_def_id = $1
+  AND left(value, 255) = ANY(SELECT left(c, 255) FROM unnest($2::text[]) AS c)
+  AND value = ANY($2::text[])
+LIMIT 1
+`
+
+type FirstHeldCustomFieldValueParams struct {
+	FieldDefID uuid.UUID `json:"field_def_id"`
+	Candidates []string  `json:"candidates"`
+}
+
+// One value from the list that some ticket holds; no row when none does.
+// The prefix test is what idx_cfv_field_def holds (migration 000065: it indexes the
+// first 255 characters of the value, not the whole of a long one); the exact
+// test after it is the answer.
+func (q *Queries) FirstHeldCustomFieldValue(ctx context.Context, arg FirstHeldCustomFieldValueParams) (string, error) {
+	row := q.db.QueryRowContext(ctx, firstHeldCustomFieldValue, arg.FieldDefID, pq.Array(arg.Candidates))
+	var value string
+	err := row.Scan(&value)
+	return value, err
+}
+
+const getAssignmentScopePath = `-- name: GetAssignmentScopePath :one
+SELECT COALESCE(CASE $1::text
+    WHEN 'category' THEN (SELECT c.name FROM categories c WHERE c.id = $2::uuid)
+    WHEN 'type' THEN (SELECT c.name || ' › ' || t.name
+                      FROM types t JOIN categories c ON c.id = t.category_id WHERE t.id = $2::uuid)
+    WHEN 'item' THEN (SELECT c.name || ' › ' || t.name || ' › ' || i.name
+                      FROM items i JOIN types t ON t.id = i.type_id JOIN categories c ON c.id = t.category_id
+                      WHERE i.id = $2::uuid)
+END, '')::text AS path
+`
+
+type GetAssignmentScopePathParams struct {
+	ScopeType string    `json:"scope_type"`
+	ScopeID   uuid.UUID `json:"scope_id"`
+}
+
+// The path of a node as the audit log records it: "Hardware", "Hardware › Laptop",
+// "Hardware › Laptop › Dell". A snapshot, so an entry still reads correctly after
+// a rename or a delete. The node-delete statements in categories.sql build the
+// same text.
+func (q *Queries) GetAssignmentScopePath(ctx context.Context, arg GetAssignmentScopePathParams) (string, error) {
+	row := q.db.QueryRowContext(ctx, getAssignmentScopePath, arg.ScopeType, arg.ScopeID)
+	var path string
+	err := row.Scan(&path)
+	return path, err
+}
+
 const getCustomFieldAssignment = `-- name: GetCustomFieldAssignment :one
-SELECT id, field_def_id, scope_type, scope_id, sort_order, visible_on_new, required_on_new FROM custom_field_assignments WHERE id = $1
+SELECT id, field_def_id, scope_type, scope_id, sort_order, visible_on_new, required_on_new, visible_to_guests FROM custom_field_assignments WHERE id = $1
 `
 
 func (q *Queries) GetCustomFieldAssignment(ctx context.Context, id uuid.UUID) (CustomFieldAssignment, error) {
@@ -132,12 +255,34 @@ func (q *Queries) GetCustomFieldAssignment(ctx context.Context, id uuid.UUID) (C
 		&i.SortOrder,
 		&i.VisibleOnNew,
 		&i.RequiredOnNew,
+		&i.VisibleToGuests,
+	)
+	return i, err
+}
+
+const getCustomFieldAssignmentForUpdate = `-- name: GetCustomFieldAssignmentForUpdate :one
+SELECT id, field_def_id, scope_type, scope_id, sort_order, visible_on_new, required_on_new, visible_to_guests FROM custom_field_assignments WHERE id = $1 FOR UPDATE
+`
+
+// Locked, so the audit entry's "before" is the row this transaction then writes.
+func (q *Queries) GetCustomFieldAssignmentForUpdate(ctx context.Context, id uuid.UUID) (CustomFieldAssignment, error) {
+	row := q.db.QueryRowContext(ctx, getCustomFieldAssignmentForUpdate, id)
+	var i CustomFieldAssignment
+	err := row.Scan(
+		&i.ID,
+		&i.FieldDefID,
+		&i.ScopeType,
+		&i.ScopeID,
+		&i.SortOrder,
+		&i.VisibleOnNew,
+		&i.RequiredOnNew,
+		&i.VisibleToGuests,
 	)
 	return i, err
 }
 
 const getCustomFieldDef = `-- name: GetCustomFieldDef :one
-SELECT id, name, field_type, options, sort_order, active, created_at FROM custom_field_defs WHERE id = $1
+SELECT id, name, field_type, options, sort_order, active, created_at, retired_options, max_length FROM custom_field_defs WHERE id = $1
 `
 
 func (q *Queries) GetCustomFieldDef(ctx context.Context, id uuid.UUID) (CustomFieldDef, error) {
@@ -151,8 +296,134 @@ func (q *Queries) GetCustomFieldDef(ctx context.Context, id uuid.UUID) (CustomFi
 		&i.SortOrder,
 		&i.Active,
 		&i.CreatedAt,
+		&i.RetiredOptions,
+		&i.MaxLength,
 	)
 	return i, err
+}
+
+const getScopeChain = `-- name: GetScopeChain :one
+SELECT c.id AS category_id, t.id AS type_id, i.id AS item_id
+FROM (SELECT $1::text AS st, $2::uuid AS sid) s
+LEFT JOIN items i ON s.st = 'item' AND i.id = s.sid
+LEFT JOIN types t ON t.id = CASE s.st WHEN 'type' THEN s.sid WHEN 'item' THEN i.type_id END
+LEFT JOIN categories c ON c.id = CASE s.st WHEN 'category' THEN s.sid ELSE t.category_id END
+`
+
+type GetScopeChainParams struct {
+	ScopeType string    `json:"scope_type"`
+	ScopeID   uuid.UUID `json:"scope_id"`
+}
+
+type GetScopeChainRow struct {
+	CategoryID uuid.NullUUID `json:"category_id"`
+	TypeID     uuid.NullUUID `json:"type_id"`
+	ItemID     uuid.NullUUID `json:"item_id"`
+}
+
+// The category, type and item a node sits under, NULL below the node's own level
+// and everywhere for a node that does not exist. Read with ListAssignmentsForFieldDef
+// to find an attachment of the same field above or below a new one.
+func (q *Queries) GetScopeChain(ctx context.Context, arg GetScopeChainParams) (GetScopeChainRow, error) {
+	row := q.db.QueryRowContext(ctx, getScopeChain, arg.ScopeType, arg.ScopeID)
+	var i GetScopeChainRow
+	err := row.Scan(&i.CategoryID, &i.TypeID, &i.ItemID)
+	return i, err
+}
+
+const listAssignmentsForFieldDef = `-- name: ListAssignmentsForFieldDef :many
+SELECT
+    a.id,
+    a.field_def_id,
+    a.scope_type,
+    a.scope_id,
+    a.sort_order,
+    a.visible_on_new,
+    a.required_on_new,
+    a.visible_to_guests,
+    c.id     AS category_id,
+    c.name   AS category_name,
+    c.active AS category_active,
+    t.id     AS type_id,
+    t.name   AS type_name,
+    t.active AS type_active,
+    i.id     AS item_id,
+    i.name   AS item_name,
+    i.active AS item_active
+FROM custom_field_assignments a
+LEFT JOIN items i ON a.scope_type = 'item' AND i.id = a.scope_id
+LEFT JOIN types t ON t.id = CASE a.scope_type WHEN 'type' THEN a.scope_id WHEN 'item' THEN i.type_id END
+JOIN categories c ON c.id = CASE a.scope_type WHEN 'category' THEN a.scope_id ELSE t.category_id END
+WHERE a.field_def_id = $1
+ORDER BY c.sort_order, c.name, c.id,
+         t.sort_order NULLS FIRST, t.name NULLS FIRST, t.id NULLS FIRST,
+         i.sort_order NULLS FIRST, i.name NULLS FIRST, i.id NULLS FIRST
+`
+
+type ListAssignmentsForFieldDefRow struct {
+	ID              uuid.UUID      `json:"id"`
+	FieldDefID      uuid.UUID      `json:"field_def_id"`
+	ScopeType       string         `json:"scope_type"`
+	ScopeID         uuid.UUID      `json:"scope_id"`
+	SortOrder       int32          `json:"sort_order"`
+	VisibleOnNew    bool           `json:"visible_on_new"`
+	RequiredOnNew   bool           `json:"required_on_new"`
+	VisibleToGuests bool           `json:"visible_to_guests"`
+	CategoryID      uuid.UUID      `json:"category_id"`
+	CategoryName    string         `json:"category_name"`
+	CategoryActive  bool           `json:"category_active"`
+	TypeID          uuid.NullUUID  `json:"type_id"`
+	TypeName        sql.NullString `json:"type_name"`
+	TypeActive      sql.NullBool   `json:"type_active"`
+	ItemID          uuid.NullUUID  `json:"item_id"`
+	ItemName        sql.NullString `json:"item_name"`
+	ItemActive      sql.NullBool   `json:"item_active"`
+}
+
+// Where a field is attached, in tree order: category by number and name, and
+// under each the category's own attachment first, then each type's, each followed
+// by its items'. The category join is an inner join on purpose: an attachment
+// whose node is gone (scope_id has no foreign key) has no category and is not
+// returned. ListCustomFieldDefs counts places with the same joins.
+func (q *Queries) ListAssignmentsForFieldDef(ctx context.Context, fieldDefID uuid.UUID) ([]ListAssignmentsForFieldDefRow, error) {
+	rows, err := q.db.QueryContext(ctx, listAssignmentsForFieldDef, fieldDefID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []ListAssignmentsForFieldDefRow
+	for rows.Next() {
+		var i ListAssignmentsForFieldDefRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.FieldDefID,
+			&i.ScopeType,
+			&i.ScopeID,
+			&i.SortOrder,
+			&i.VisibleOnNew,
+			&i.RequiredOnNew,
+			&i.VisibleToGuests,
+			&i.CategoryID,
+			&i.CategoryName,
+			&i.CategoryActive,
+			&i.TypeID,
+			&i.TypeName,
+			&i.TypeActive,
+			&i.ItemID,
+			&i.ItemName,
+			&i.ItemActive,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const listAssignmentsForScope = `-- name: ListAssignmentsForScope :many
@@ -164,14 +435,18 @@ SELECT
     a.sort_order,
     a.visible_on_new,
     a.required_on_new,
+    a.visible_to_guests,
     d.name       AS field_name,
     d.field_type AS field_type,
     d.options    AS field_options,
+    d.retired_options AS field_retired_options,
+    d.max_length AS field_max_length,
+    d.sort_order AS field_sort_order,
     d.active     AS field_active
 FROM custom_field_assignments a
 JOIN custom_field_defs d ON a.field_def_id = d.id
 WHERE a.scope_type = $1 AND a.scope_id = $2
-ORDER BY a.sort_order
+ORDER BY d.sort_order, d.name
 `
 
 type ListAssignmentsForScopeParams struct {
@@ -180,17 +455,21 @@ type ListAssignmentsForScopeParams struct {
 }
 
 type ListAssignmentsForScopeRow struct {
-	ID            uuid.UUID             `json:"id"`
-	FieldDefID    uuid.UUID             `json:"field_def_id"`
-	ScopeType     string                `json:"scope_type"`
-	ScopeID       uuid.UUID             `json:"scope_id"`
-	SortOrder     int32                 `json:"sort_order"`
-	VisibleOnNew  bool                  `json:"visible_on_new"`
-	RequiredOnNew bool                  `json:"required_on_new"`
-	FieldName     string                `json:"field_name"`
-	FieldType     string                `json:"field_type"`
-	FieldOptions  pqtype.NullRawMessage `json:"field_options"`
-	FieldActive   bool                  `json:"field_active"`
+	ID                  uuid.UUID             `json:"id"`
+	FieldDefID          uuid.UUID             `json:"field_def_id"`
+	ScopeType           string                `json:"scope_type"`
+	ScopeID             uuid.UUID             `json:"scope_id"`
+	SortOrder           int32                 `json:"sort_order"`
+	VisibleOnNew        bool                  `json:"visible_on_new"`
+	RequiredOnNew       bool                  `json:"required_on_new"`
+	VisibleToGuests     bool                  `json:"visible_to_guests"`
+	FieldName           string                `json:"field_name"`
+	FieldType           string                `json:"field_type"`
+	FieldOptions        pqtype.NullRawMessage `json:"field_options"`
+	FieldRetiredOptions pqtype.NullRawMessage `json:"field_retired_options"`
+	FieldMaxLength      sql.NullInt32         `json:"field_max_length"`
+	FieldSortOrder      int32                 `json:"field_sort_order"`
+	FieldActive         bool                  `json:"field_active"`
 }
 
 func (q *Queries) ListAssignmentsForScope(ctx context.Context, arg ListAssignmentsForScopeParams) ([]ListAssignmentsForScopeRow, error) {
@@ -210,9 +489,13 @@ func (q *Queries) ListAssignmentsForScope(ctx context.Context, arg ListAssignmen
 			&i.SortOrder,
 			&i.VisibleOnNew,
 			&i.RequiredOnNew,
+			&i.VisibleToGuests,
 			&i.FieldName,
 			&i.FieldType,
 			&i.FieldOptions,
+			&i.FieldRetiredOptions,
+			&i.FieldMaxLength,
+			&i.FieldSortOrder,
 			&i.FieldActive,
 		); err != nil {
 			return nil, err
@@ -229,18 +512,46 @@ func (q *Queries) ListAssignmentsForScope(ctx context.Context, arg ListAssignmen
 }
 
 const listCustomFieldDefs = `-- name: ListCustomFieldDefs :many
-SELECT id, name, field_type, options, sort_order, active, created_at FROM custom_field_defs ORDER BY sort_order, name
+WITH placed AS (
+    SELECT a.field_def_id, count(*) AS places
+    FROM custom_field_assignments a
+    LEFT JOIN items i ON a.scope_type = 'item' AND i.id = a.scope_id
+    LEFT JOIN types t ON t.id = CASE a.scope_type WHEN 'type' THEN a.scope_id WHEN 'item' THEN i.type_id END
+    JOIN categories c ON c.id = CASE a.scope_type WHEN 'category' THEN a.scope_id ELSE t.category_id END
+    GROUP BY a.field_def_id
+)
+SELECT d.id, d.name, d.field_type, d.options, d.sort_order, d.active, d.created_at, d.retired_options, d.max_length, COALESCE(p.places, 0)::int AS place_count
+FROM custom_field_defs d
+LEFT JOIN placed p ON p.field_def_id = d.id
+ORDER BY d.sort_order, d.name
 `
 
-func (q *Queries) ListCustomFieldDefs(ctx context.Context) ([]CustomFieldDef, error) {
+type ListCustomFieldDefsRow struct {
+	ID             uuid.UUID             `json:"id"`
+	Name           string                `json:"name"`
+	FieldType      string                `json:"field_type"`
+	Options        pqtype.NullRawMessage `json:"options"`
+	SortOrder      int32                 `json:"sort_order"`
+	Active         bool                  `json:"active"`
+	CreatedAt      time.Time             `json:"created_at"`
+	RetiredOptions pqtype.NullRawMessage `json:"retired_options"`
+	MaxLength      sql.NullInt32         `json:"max_length"`
+	PlaceCount     int32                 `json:"place_count"`
+}
+
+// place_count is how many places the field is attached to, counted in this one
+// query so the admin list does not ask once per field. It counts exactly what
+// ListAssignmentsForFieldDef returns: an attachment whose category, type or item
+// is gone (scope_id has no foreign key) is not a place, so it is not counted.
+func (q *Queries) ListCustomFieldDefs(ctx context.Context) ([]ListCustomFieldDefsRow, error) {
 	rows, err := q.db.QueryContext(ctx, listCustomFieldDefs)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var items []CustomFieldDef
+	var items []ListCustomFieldDefsRow
 	for rows.Next() {
-		var i CustomFieldDef
+		var i ListCustomFieldDefsRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.Name,
@@ -249,6 +560,9 @@ func (q *Queries) ListCustomFieldDefs(ctx context.Context) ([]CustomFieldDef, er
 			&i.SortOrder,
 			&i.Active,
 			&i.CreatedAt,
+			&i.RetiredOptions,
+			&i.MaxLength,
+			&i.PlaceCount,
 		); err != nil {
 			return nil, err
 		}
@@ -270,6 +584,8 @@ SELECT
     d.name       AS field_name,
     d.field_type AS field_type,
     d.options    AS field_options,
+    d.retired_options AS field_retired_options,
+    d.max_length AS field_max_length,
     v.value,
     v.updated_at
 FROM ticket_custom_field_values v
@@ -279,13 +595,15 @@ ORDER BY d.sort_order, d.name
 `
 
 type ListCustomFieldValuesForTicketRow struct {
-	TicketID     uuid.UUID             `json:"ticket_id"`
-	FieldDefID   uuid.UUID             `json:"field_def_id"`
-	FieldName    string                `json:"field_name"`
-	FieldType    string                `json:"field_type"`
-	FieldOptions pqtype.NullRawMessage `json:"field_options"`
-	Value        string                `json:"value"`
-	UpdatedAt    time.Time             `json:"updated_at"`
+	TicketID            uuid.UUID             `json:"ticket_id"`
+	FieldDefID          uuid.UUID             `json:"field_def_id"`
+	FieldName           string                `json:"field_name"`
+	FieldType           string                `json:"field_type"`
+	FieldOptions        pqtype.NullRawMessage `json:"field_options"`
+	FieldRetiredOptions pqtype.NullRawMessage `json:"field_retired_options"`
+	FieldMaxLength      sql.NullInt32         `json:"field_max_length"`
+	Value               string                `json:"value"`
+	UpdatedAt           time.Time             `json:"updated_at"`
 }
 
 func (q *Queries) ListCustomFieldValuesForTicket(ctx context.Context, ticketID uuid.UUID) ([]ListCustomFieldValuesForTicketRow, error) {
@@ -303,6 +621,8 @@ func (q *Queries) ListCustomFieldValuesForTicket(ctx context.Context, ticketID u
 			&i.FieldName,
 			&i.FieldType,
 			&i.FieldOptions,
+			&i.FieldRetiredOptions,
+			&i.FieldMaxLength,
 			&i.Value,
 			&i.UpdatedAt,
 		); err != nil {
@@ -319,17 +639,141 @@ func (q *Queries) ListCustomFieldValuesForTicket(ctx context.Context, ticketID u
 	return items, nil
 }
 
+const lockAllCustomFieldDefsForUpdate = `-- name: LockAllCustomFieldDefsForUpdate :many
+SELECT id, name, field_type, options, sort_order, active, created_at, retired_options, max_length FROM custom_field_defs ORDER BY id FOR UPDATE
+`
+
+// Every definition, locked, in id order (the order LockCustomFieldDefsForShare
+// takes them in). Reordering rewrites all the numbers, so it holds them all.
+func (q *Queries) LockAllCustomFieldDefsForUpdate(ctx context.Context) ([]CustomFieldDef, error) {
+	rows, err := q.db.QueryContext(ctx, lockAllCustomFieldDefsForUpdate)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []CustomFieldDef
+	for rows.Next() {
+		var i CustomFieldDef
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.FieldType,
+			&i.Options,
+			&i.SortOrder,
+			&i.Active,
+			&i.CreatedAt,
+			&i.RetiredOptions,
+			&i.MaxLength,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const lockCustomFieldDefForUpdate = `-- name: LockCustomFieldDefForUpdate :one
+SELECT id, name, field_type, options, sort_order, active, created_at, retired_options, max_length FROM custom_field_defs WHERE id = $1 FOR UPDATE
+`
+
+// The exclusive side of the lock above. An admin change takes the definition
+// FOR UPDATE and so waits for every value write that holds it FOR SHARE, and
+// blocks every one that starts after, until it commits. What it checks (is the
+// option held, does any ticket have a value) is therefore still true when it
+// writes.
+func (q *Queries) LockCustomFieldDefForUpdate(ctx context.Context, id uuid.UUID) (CustomFieldDef, error) {
+	row := q.db.QueryRowContext(ctx, lockCustomFieldDefForUpdate, id)
+	var i CustomFieldDef
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.FieldType,
+		&i.Options,
+		&i.SortOrder,
+		&i.Active,
+		&i.CreatedAt,
+		&i.RetiredOptions,
+		&i.MaxLength,
+	)
+	return i, err
+}
+
+const lockCustomFieldDefsForShare = `-- name: LockCustomFieldDefsForShare :many
+SELECT id, name, field_type, options, sort_order, active, created_at, retired_options, max_length FROM custom_field_defs
+WHERE id = ANY($1::uuid[])
+ORDER BY id
+FOR SHARE
+`
+
+// Takes a shared row lock on each named definition, in id order, held until the
+// transaction ends. A value write holds it while it checks the definition, so a
+// change that takes the row FOR UPDATE (deactivate, retire an option) waits for
+// the write instead of landing between its check and its insert. Sorted so two
+// writers naming the same fields lock them in the same order and cannot deadlock.
+func (q *Queries) LockCustomFieldDefsForShare(ctx context.Context, ids []uuid.UUID) ([]CustomFieldDef, error) {
+	rows, err := q.db.QueryContext(ctx, lockCustomFieldDefsForShare, pq.Array(ids))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []CustomFieldDef
+	for rows.Next() {
+		var i CustomFieldDef
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.FieldType,
+			&i.Options,
+			&i.SortOrder,
+			&i.Active,
+			&i.CreatedAt,
+			&i.RetiredOptions,
+			&i.MaxLength,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const reorderCustomFieldDefs = `-- name: ReorderCustomFieldDefs :exec
+UPDATE custom_field_defs d SET sort_order = o.ord::int
+FROM unnest($1::uuid[]) WITH ORDINALITY AS o(id, ord)
+WHERE d.id = o.id AND d.sort_order <> o.ord::int
+`
+
+// Position n (from 1) becomes the field's number. Only rows whose number
+// changes are written.
+func (q *Queries) ReorderCustomFieldDefs(ctx context.Context, ids []uuid.UUID) error {
+	_, err := q.db.ExecContext(ctx, reorderCustomFieldDefs, pq.Array(ids))
+	return err
+}
+
 const updateCustomFieldAssignment = `-- name: UpdateCustomFieldAssignment :exec
 UPDATE custom_field_assignments
-SET sort_order = $2, visible_on_new = $3, required_on_new = $4
+SET sort_order = $2, visible_on_new = $3, required_on_new = $4, visible_to_guests = $5
 WHERE id = $1
 `
 
 type UpdateCustomFieldAssignmentParams struct {
-	ID            uuid.UUID `json:"id"`
-	SortOrder     int32     `json:"sort_order"`
-	VisibleOnNew  bool      `json:"visible_on_new"`
-	RequiredOnNew bool      `json:"required_on_new"`
+	ID              uuid.UUID `json:"id"`
+	SortOrder       int32     `json:"sort_order"`
+	VisibleOnNew    bool      `json:"visible_on_new"`
+	RequiredOnNew   bool      `json:"required_on_new"`
+	VisibleToGuests bool      `json:"visible_to_guests"`
 }
 
 func (q *Queries) UpdateCustomFieldAssignment(ctx context.Context, arg UpdateCustomFieldAssignmentParams) error {
@@ -338,23 +782,26 @@ func (q *Queries) UpdateCustomFieldAssignment(ctx context.Context, arg UpdateCus
 		arg.SortOrder,
 		arg.VisibleOnNew,
 		arg.RequiredOnNew,
+		arg.VisibleToGuests,
 	)
 	return err
 }
 
 const updateCustomFieldDef = `-- name: UpdateCustomFieldDef :exec
 UPDATE custom_field_defs
-SET name = $2, field_type = $3, options = $4, sort_order = $5, active = $6
+SET name = $2, field_type = $3, options = $4, retired_options = $5, sort_order = $6, active = $7, max_length = $8
 WHERE id = $1
 `
 
 type UpdateCustomFieldDefParams struct {
-	ID        uuid.UUID             `json:"id"`
-	Name      string                `json:"name"`
-	FieldType string                `json:"field_type"`
-	Options   pqtype.NullRawMessage `json:"options"`
-	SortOrder int32                 `json:"sort_order"`
-	Active    bool                  `json:"active"`
+	ID             uuid.UUID             `json:"id"`
+	Name           string                `json:"name"`
+	FieldType      string                `json:"field_type"`
+	Options        pqtype.NullRawMessage `json:"options"`
+	RetiredOptions pqtype.NullRawMessage `json:"retired_options"`
+	SortOrder      int32                 `json:"sort_order"`
+	Active         bool                  `json:"active"`
+	MaxLength      sql.NullInt32         `json:"max_length"`
 }
 
 func (q *Queries) UpdateCustomFieldDef(ctx context.Context, arg UpdateCustomFieldDefParams) error {
@@ -363,8 +810,10 @@ func (q *Queries) UpdateCustomFieldDef(ctx context.Context, arg UpdateCustomFiel
 		arg.Name,
 		arg.FieldType,
 		arg.Options,
+		arg.RetiredOptions,
 		arg.SortOrder,
 		arg.Active,
+		arg.MaxLength,
 	)
 	return err
 }

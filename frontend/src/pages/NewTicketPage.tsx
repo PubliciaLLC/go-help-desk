@@ -4,24 +4,43 @@ import { useQuery } from '@tanstack/react-query'
 import {
   createTicket,
   listPublicCategories,
+  listPublicItems,
   listPublicTypes,
   resolveFieldsForCTI,
   uploadAttachment,
 } from '@/api/tickets'
-import { listCategories, listTypes, listItems } from '@/api/admin'
 import { extractError } from '@/api/client'
+import { getMe } from '@/api/auth'
 import { useAuthStore } from '@/store/auth'
 import { Layout } from '@/components/Layout'
 import { AttachmentUpload, type UploadState } from '@/components/AttachmentUpload'
+import { RequesterPicker } from '@/components/ticket/RequesterPicker'
+import { CtiDescription } from '@/components/ticket/CtiDescription'
+import { ME, reporterFields, type Requester } from '@/components/ticket/requester'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
+import { TextLimit } from '@/components/TextLimit'
+import { isOverLimit } from '@/lib/textLimit'
+import { MarkdownEditor } from '@/components/editor/MarkdownEditor'
 import { Select } from '@/components/ui/select'
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card'
 import type { Assignment } from '@/api/types'
+import { overLimit } from '@/lib/fieldLimits'
 
 const PRIORITIES = ['critical', 'high', 'medium', 'low'] as const
+
+// The element the three selectors name in aria-describedby.
+const CTI_DESCRIPTION_ID = 'cti-description'
+
+// Staff and administrators are sent archived rows too, so they can recognise a
+// classification they know from older tickets. Nobody may newly pick one (the
+// server answers 400, #421), so they are listed but disabled, with the reason in
+// the label rather than leaving a greyed row unexplained.
+function optionLabel(row: { name: string; active: boolean }): string {
+  return row.active ? row.name : `${row.name} (archived)`
+}
 
 function CustomFieldInput({
   field,
@@ -45,6 +64,7 @@ function CustomFieldInput({
           onChange={(e) => onChange(e.target.value)}
           disabled={disabled}
           rows={3}
+          maxLength={def.effective_max_length}
         />
       )
     case 'number':
@@ -73,6 +93,7 @@ function CustomFieldInput({
           value={value}
           onChange={(e) => onChange(e.target.value)}
           disabled={disabled}
+          maxLength={def.effective_max_length}
         />
       )
   }
@@ -82,6 +103,13 @@ export function NewTicketPage() {
   const navigate = useNavigate()
   const { user } = useAuthStore()
   const isStaffOrAdmin = user?.role === 'staff' || user?.role === 'admin'
+  // The per-file limit is the instance's, which only /me carries (#673).
+  const { data: me } = useQuery({ queryKey: ['me'], queryFn: getMe, retry: false })
+  // Whether there is an Item selector (#711): always for staff and
+  // administrators, and for a requester while an administrator has turned on
+  // Show Items to registered users, which /me reports. Absent (an older server, or
+  // /me not yet answered) is off, the form a requester has always had.
+  const canChooseItem = isStaffOrAdmin || (me?.can_choose_item ?? user?.can_choose_item ?? false)
 
   const [subject, setSubject] = useState('')
   const [description, setDescription] = useState('')
@@ -92,48 +120,70 @@ export function NewTicketPage() {
   const [customFieldValues, setCustomFieldValues] = useState<Record<string, string>>({})
   const [files, setFiles] = useState<File[]>([])
   const [uploadStates, setUploadStates] = useState<Record<string, UploadState> | undefined>()
+  const [requester, setRequester] = useState<Requester>(ME)
+  // "phone" is only meaningful when filing for someone else (#130); it is
+  // kept while the requester changes and dropped at submit if that goes back
+  // to Me.
+  const [channel, setChannel] = useState<'web' | 'phone'>('web')
   const [error, setError] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [createdTicketId, setCreatedTicketId] = useState<string | null>(null)
 
-  // Staff/admin use the admin endpoints (all categories/types/items, active or inactive).
-  // Regular users use the public endpoints (active only, no items).
+  // One set of endpoints for everybody. They answer according to who is
+  // asking: active rows for a guest or a reporting user, the whole tree for
+  // staff and administrators, which is what DESIGN.md's role table says.
+  //
+  // This used to pick a different endpoint by role — /admin/categories for
+  // staff — and that route is wrapped in RequireRole(admin). Staff got 403,
+  // the query failed, `categories` fell back to [] and the picker was empty.
+  // A category is required, so a staff member could not file a ticket at
+  // all, and the same 403 emptied the type and item pickers behind it.
   const { data: categories = [] } = useQuery({
-    queryKey: isStaffOrAdmin ? ['admin-categories'] : ['public-categories'],
-    queryFn: isStaffOrAdmin ? listCategories : listPublicCategories,
+    queryKey: ['public-categories'],
+    queryFn: listPublicCategories,
   })
 
   const { data: types = [] } = useQuery({
-    queryKey: isStaffOrAdmin
-      ? ['admin-types', categoryId]
-      : ['public-types', categoryId],
-    queryFn: () =>
-      isStaffOrAdmin ? listTypes(categoryId) : listPublicTypes(categoryId),
+    queryKey: ['public-types', categoryId],
+    queryFn: () => listPublicTypes(categoryId),
     enabled: !!categoryId,
   })
 
+  // Items are asked for only where the form has an Item selector: staff and
+  // administrators, and requesters while the setting is on (#711). The endpoint
+  // would answer either way; there is just nothing to show it in.
   const { data: items = [] } = useQuery({
-    queryKey: ['admin-items', categoryId, typeId],
-    queryFn: () => listItems(categoryId, typeId),
-    enabled: isStaffOrAdmin && !!categoryId && !!typeId,
+    queryKey: ['public-items', categoryId, typeId],
+    queryFn: () => listPublicItems(categoryId, typeId),
+    enabled: canChooseItem && !!categoryId && !!typeId,
   })
 
   const { data: ctiFields = [] } = useQuery({
-    queryKey: ['ctiFields', categoryId, typeId, itemId],
+    queryKey: ['ctiFieldsResolved', categoryId, typeId, itemId],
     queryFn: () => resolveFieldsForCTI({
       category_id: categoryId,
       type_id: typeId || undefined,
-      item_id: (isStaffOrAdmin && itemId) ? itemId : undefined,
+      item_id: (canChooseItem && itemId) ? itemId : undefined,
     }),
     enabled: !!categoryId,
   })
-  const visibleFields = ctiFields.filter((f) => f.visible_on_new)
+  // The resolver keeps inactive fields (the ticket page needs them), but the
+  // server refuses every write to one, so the form must not offer it. This also
+  // keeps a required inactive field from blocking submit.
+  const visibleFields = ctiFields.filter((f) => f.visible_on_new && f.field_def?.active)
+
+  // The chosen rows, for the description beneath the chooser. Without an Item
+  // selector the itemId is always ''.
+  const chosenCategory = categories.find((c) => c.id === categoryId)
+  const chosenType = types.find((t) => t.id === typeId)
+  const chosenItem = items.find((i) => i.id === itemId)
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     setError('')
     if (!subject.trim()) { setError('Subject is required'); return }
     if (!categoryId) { setError('Category is required'); return }
+    if (isOverLimit(description)) { setError('The description is too long. Shorten it to send.'); return }
 
     // Validate required custom fields.
     for (const f of visibleFields) {
@@ -141,16 +191,32 @@ export function NewTicketPage() {
         setError(`${f.field_def?.name ?? 'A required field'} is required`)
         return
       }
+      // maxlength counts UTF-16 units and a paste can get past it; this is the
+      // exact check, and the server holds the same limit.
+      const tooLong = overLimit(f.field_def?.name ?? 'A field', customFieldValues[f.field_def_id] ?? '', f.field_def?.effective_max_length)
+      if (tooLong) {
+        setError(tooLong)
+        return
+      }
     }
+
+    // Only staff and administrators choose a requester; the server refuses it
+    // from anybody else, so a requester's form never sends one.
+    const who = isStaffOrAdmin ? reporterFields(requester) : { fields: {} }
+    if ('error' in who) { setError(who.error); return }
 
     setSubmitting(true)
     try {
       const t = await createTicket({
+        ...who.fields,
+        ...(isStaffOrAdmin && requester.mode !== 'me' && channel === 'phone'
+          ? { source_channel: 'phone' as const }
+          : {}),
         subject,
         description,
         category_id: categoryId,
         type_id: typeId || undefined,
-        item_id: isStaffOrAdmin ? (itemId || undefined) : undefined,
+        item_id: canChooseItem ? (itemId || undefined) : undefined,
         priority: isStaffOrAdmin ? priority : undefined,
         custom_fields: Object.keys(customFieldValues).length > 0 ? customFieldValues : undefined,
       })
@@ -199,7 +265,7 @@ export function NewTicketPage() {
   return (
     <Layout>
       <div className="max-w-2xl space-y-6">
-        <h1 className="text-2xl font-bold text-gray-900">New Ticket</h1>
+        <h1 className="text-2xl font-bold text-fg">New Ticket</h1>
 
         <Card>
           <CardHeader>
@@ -207,6 +273,37 @@ export function NewTicketPage() {
           </CardHeader>
           <CardContent>
             <form onSubmit={handleSubmit} className="space-y-5">
+              {isStaffOrAdmin && (
+                <RequesterPicker value={requester} onChange={setRequester} disabled={isUploading} />
+              )}
+              {isStaffOrAdmin && requester.mode !== 'me' && (
+                <fieldset className="space-y-2">
+                  <legend className="text-sm font-medium text-fg-soft">How did this reach you?</legend>
+                  <div className="flex flex-wrap items-center gap-x-6 gap-y-2 text-sm text-fg-soft">
+                    <label className="flex items-center gap-1.5">
+                      <input
+                        type="radio"
+                        name="source-channel"
+                        checked={channel === 'web'}
+                        onChange={() => setChannel('web')}
+                        disabled={isUploading}
+                      />
+                      Web
+                    </label>
+                    <label className="flex items-center gap-1.5">
+                      <input
+                        type="radio"
+                        name="source-channel"
+                        checked={channel === 'phone'}
+                        onChange={() => setChannel('phone')}
+                        disabled={isUploading}
+                      />
+                      Phone call
+                    </label>
+                  </div>
+                </fieldset>
+              )}
+
               <div className="space-y-1">
                 <Label htmlFor="subject">Subject *</Label>
                 <Input
@@ -220,73 +317,81 @@ export function NewTicketPage() {
               </div>
 
               <div className="space-y-1">
-                <Label htmlFor="description">Description</Label>
-                <Textarea
-                  id="description"
+                <Label id="description-label">Description</Label>
+                <MarkdownEditor
                   value={description}
-                  onChange={(e) => setDescription(e.target.value)}
+                  onChange={setDescription}
+                  labelId="description-label"
                   placeholder="Full details of the request or issue"
-                  rows={5}
                   disabled={isUploading}
                 />
+                <TextLimit value={description} />
               </div>
 
-              <div className={`grid gap-4 ${isStaffOrAdmin ? 'grid-cols-3' : 'grid-cols-2'}`}>
-                <div className="space-y-1">
-                  <Label htmlFor="category">Category *</Label>
-                  <Select
-                    id="category"
-                    value={categoryId}
-                    onChange={(e) => {
-                      setCategoryId(e.target.value)
-                      setTypeId('')
-                      setItemId('')
-                      setCustomFieldValues({})
-                    }}
-                    disabled={isUploading}
-                  >
-                    <option value="">Select…</option>
-                    {categories.map((c) => (
-                      <option key={c.id} value={c.id}>{c.name}</option>
-                    ))}
-                  </Select>
-                </div>
-
-                <div className="space-y-1">
-                  <Label htmlFor="type">Type</Label>
-                  <Select
-                    id="type"
-                    value={typeId}
-                    onChange={(e) => {
-                      setTypeId(e.target.value)
-                      setItemId('')
-                      setCustomFieldValues({})
-                    }}
-                    disabled={isUploading || !categoryId || types.length === 0}
-                  >
-                    <option value="">Select…</option>
-                    {types.map((t) => (
-                      <option key={t.id} value={t.id}>{t.name}</option>
-                    ))}
-                  </Select>
-                </div>
-
-                {isStaffOrAdmin && (
+              {/* The chooser and the text beneath it are one child of the form, so an
+                  empty description leaves no gap. */}
+              <div>
+                <div className={`grid grid-cols-1 gap-4 ${canChooseItem ? 'md:grid-cols-3' : 'md:grid-cols-2'}`}>
                   <div className="space-y-1">
-                    <Label htmlFor="item">Item</Label>
+                    <Label htmlFor="category">Category *</Label>
                     <Select
-                      id="item"
-                      value={itemId}
-                      onChange={(e) => { setItemId(e.target.value); setCustomFieldValues({}) }}
-                      disabled={isUploading || !typeId || items.length === 0}
+                      id="category"
+                      aria-describedby={CTI_DESCRIPTION_ID}
+                      value={categoryId}
+                      onChange={(e) => {
+                        setCategoryId(e.target.value)
+                        setTypeId('')
+                        setItemId('')
+                        setCustomFieldValues({})
+                      }}
+                      disabled={isUploading}
                     >
                       <option value="">Select…</option>
-                      {items.map((i) => (
-                        <option key={i.id} value={i.id}>{i.name}</option>
+                      {categories.map((c) => (
+                        <option key={c.id} value={c.id} disabled={!c.active}>{optionLabel(c)}</option>
                       ))}
                     </Select>
                   </div>
-                )}
+
+                  <div className="space-y-1">
+                    <Label htmlFor="type">Type</Label>
+                    <Select
+                      id="type"
+                      aria-describedby={CTI_DESCRIPTION_ID}
+                      value={typeId}
+                      onChange={(e) => {
+                        setTypeId(e.target.value)
+                        setItemId('')
+                        setCustomFieldValues({})
+                      }}
+                      disabled={isUploading || !categoryId || types.length === 0}
+                    >
+                      <option value="">Select…</option>
+                      {types.map((t) => (
+                        <option key={t.id} value={t.id} disabled={!t.active}>{optionLabel(t)}</option>
+                      ))}
+                    </Select>
+                  </div>
+
+                  {canChooseItem && (
+                    <div className="space-y-1">
+                      <Label htmlFor="item">Item</Label>
+                      <Select
+                        id="item"
+                        aria-describedby={CTI_DESCRIPTION_ID}
+                        value={itemId}
+                        onChange={(e) => { setItemId(e.target.value); setCustomFieldValues({}) }}
+                        disabled={isUploading || !typeId || items.length === 0}
+                      >
+                        <option value="">Select…</option>
+                        {items.map((i) => (
+                          <option key={i.id} value={i.id} disabled={!i.active}>{optionLabel(i)}</option>
+                        ))}
+                      </Select>
+                    </div>
+                  )}
+                </div>
+                <CtiDescription id={CTI_DESCRIPTION_ID} category={chosenCategory} type={chosenType} item={chosenItem} />
               </div>
 
               {isStaffOrAdmin && (
@@ -307,12 +412,12 @@ export function NewTicketPage() {
 
               {visibleFields.length > 0 && (
                 <div className="space-y-4">
-                  <div className="border-t border-gray-100" />
+                  <div className="border-t border-border" />
                   {visibleFields.map((f) => (
                     <div key={f.id} className="space-y-1">
                       <Label htmlFor={`cf-${f.id}`}>
                         {f.field_def?.name}
-                        {f.required_on_new && <span className="ml-0.5 text-red-500"> *</span>}
+                        {f.required_on_new && <span className="ml-0.5 text-danger-fg"> *</span>}
                       </Label>
                       <CustomFieldInput
                         field={f}
@@ -334,17 +439,18 @@ export function NewTicketPage() {
                   onChange={setFiles}
                   uploadStates={uploadStates}
                   disabled={isUploading}
+                  maxBytes={me?.attachment_max_bytes ?? user?.attachment_max_bytes}
                 />
               </div>
 
-              {error && <p className="text-sm text-red-600">{error}</p>}
+              {error && <p role="alert" className="text-sm text-danger-fg">{error}</p>}
 
               {uploadDone && createdTicketId && (
-                <div className="rounded-md bg-yellow-50 border border-yellow-200 p-3 text-sm space-y-1">
-                  <p className="text-yellow-800 font-medium">Some files failed to upload.</p>
+                <div className="rounded-md bg-warning-soft border border-warning-border p-3 text-sm space-y-1">
+                  <p className="text-warning-fg-strong font-medium">Some files failed to upload.</p>
                   <button
                     type="button"
-                    className="text-blue-600 underline hover:no-underline"
+                    className="text-link underline hover:no-underline"
                     onClick={() => navigate({ to: '/tickets/$id', params: { id: createdTicketId } })}
                   >
                     View ticket anyway
@@ -354,7 +460,7 @@ export function NewTicketPage() {
 
               {!uploadDone && (
                 <div className="flex gap-3">
-                  <Button type="submit" disabled={submitting || isUploading}>
+                  <Button type="submit" disabled={submitting || isUploading || isOverLimit(description)}>
                     {submitting
                       ? 'Submitting…'
                       : isUploading

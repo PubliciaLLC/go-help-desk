@@ -86,7 +86,6 @@ var ErrNotConfigured = errors.New("no scanner is configured")
 type Scanner struct {
 	addr        string
 	dialTimeout time.Duration
-	scanTimeout time.Duration
 }
 
 // New returns a Scanner for addr, which may be "tcp://host:port" or
@@ -98,11 +97,17 @@ func New(addr string) *Scanner {
 	return &Scanner{
 		addr:        addr,
 		dialTimeout: 5 * time.Second,
-		// Generous: a 25 MB file over INSTREAM on a busy daemon is not fast,
-		// and a timeout that fires on a healthy scanner would produce
-		// Unavailable, which under PolicyRequired refuses a legitimate upload.
-		scanTimeout: 60 * time.Second,
 	}
+}
+
+// scanTimeoutFor is how long a scan of n bytes may take: one minute for every
+// 25 MiB, never less. A timeout that fires on a healthy scanner produces
+// Unavailable, which under PolicyRequired refuses a legitimate upload, so the
+// deadline grows with the file. It is exact at whole MiB for the same reason
+// as the transfer deadline: multiply before divide, and no bytes-per-second
+// constant that would truncate.
+func scanTimeoutFor(n int) time.Duration {
+	return max(time.Minute, time.Duration(n)*time.Second/(25<<20)*60)
 }
 
 // Configured reports whether an address was supplied at all.
@@ -156,12 +161,12 @@ func (s *Scanner) Scan(ctx context.Context, data []byte) Result {
 	}
 	defer func() { _ = conn.Close() }()
 
-	if err := conn.SetDeadline(time.Now().Add(s.scanTimeout)); err != nil {
+	if err := conn.SetDeadline(time.Now().Add(scanTimeoutFor(len(data)))); err != nil {
 		return unavailable("setting deadline", err)
 	}
 	// The deadline bounds a hung daemon; this bounds a client that gave up.
-	// Without it a cancelled upload still holds a goroutine, its 25 MB, and a
-	// clamd worker for the full minute — and clamd has a small thread pool, so
+	// Without it a cancelled upload still holds a goroutine, its bytes (up to the
+	// attachment_max_mb limit), and a clamd worker for the whole scan timeout — and clamd has a small thread pool, so
 	// a handful of abandoned uploads can deny scanning to everyone else, which
 	// under PolicyRequired denies attachments to everyone else.
 	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })

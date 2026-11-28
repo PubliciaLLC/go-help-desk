@@ -1,0 +1,74 @@
+/* Rendered Markdown ([data-md-body]) and the editor's writing surface
+   (.md-editor). Moved out of index.css (#709); the editor surface reads the
+   theme tokens, and highlight.js has a light set (the default) and a dark set
+   under .dark. */
+
+/* #443: code highlighting. highlight.js token classes only; no theme
+   stylesheet is imported, so the colours here are all there is. Contrast is
+   at least 4.5:1 on the code box (the muted token: gray-100 in light, gray-800
+   in dark); src/test/theme-contrast.test.ts checks both sets. */
+[data-md-body] code .hljs-comment,
+[data-md-body] code .hljs-quote { color: #4b5563; font-style: italic; }
+[data-md-body] code .hljs-keyword,
+[data-md-body] code .hljs-selector-tag,
+[data-md-body] code .hljs-meta { color: #7c1d8f; }
+[data-md-body] code .hljs-string,
+[data-md-body] code .hljs-regexp,
+[data-md-body] code .hljs-addition { color: #0b6b2d; }
+[data-md-body] code .hljs-number,
+[data-md-body] code .hljs-literal,
+[data-md-body] code .hljs-symbol { color: #0b5cad; }
+[data-md-body] code .hljs-built_in,
+[data-md-body] code .hljs-type,
+[data-md-body] code .hljs-class { color: #8a4600; }
+[data-md-body] code .hljs-title,
+[data-md-body] code .hljs-section { color: #1d4ed8; font-weight: 600; }
+[data-md-body] code .hljs-variable,
+[data-md-body] code .hljs-attr,
+[data-md-body] code .hljs-attribute,
+[data-md-body] code .hljs-name { color: #9a1b1b; }
+[data-md-body] code .hljs-deletion { color: #9a1b1b; background: #fee2e2; }
+[data-md-body] code .hljs-addition { background: #dcfce7; }
+
+/* The dark set: every class the light set colours, lighter, on the dark code
+   box. The two diff backgrounds are tints of the text colour over the box. */
+.dark [data-md-body] code .hljs-comment,
+.dark [data-md-body] code .hljs-quote { color: #9ca3af; font-style: italic; }
+.dark [data-md-body] code .hljs-keyword,
+.dark [data-md-body] code .hljs-selector-tag,
+.dark [data-md-body] code .hljs-meta { color: #d8b4fe; }
+.dark [data-md-body] code .hljs-string,
+.dark [data-md-body] code .hljs-regexp,
+.dark [data-md-body] code .hljs-addition { color: #86efac; }
+.dark [data-md-body] code .hljs-number,
+.dark [data-md-body] code .hljs-literal,
+.dark [data-md-body] code .hljs-symbol { color: #93c5fd; }
+.dark [data-md-body] code .hljs-built_in,
+.dark [data-md-body] code .hljs-type,
+.dark [data-md-body] code .hljs-class { color: #fdba74; }
+.dark [data-md-body] code .hljs-title,
+.dark [data-md-body] code .hljs-section { color: #93c5fd; font-weight: 600; }
+.dark [data-md-body] code .hljs-variable,
+.dark [data-md-body] code .hljs-attr,
+.dark [data-md-body] code .hljs-attribute,
+.dark [data-md-body] code .hljs-name { color: #fca5a5; }
+.dark [data-md-body] code .hljs-deletion { color: #fca5a5; background: color-mix(in oklab, #ef4444 20%, transparent); }
+.dark [data-md-body] code .hljs-addition { background: color-mix(in oklab, #22c55e 20%, transparent); }
+
+/* #443: the Markdown editor's writing surface. Tailwind's reset removes list
+   markers and heading sizes, so the few structures the editor allows get them
+   back here. Headings are one small size, as in the renderer. */
+.md-editor .ProseMirror { min-height: 7rem; outline: none; white-space: pre-wrap; overflow-wrap: anywhere; }
+.md-editor .ProseMirror > * + * { margin-top: 0.5rem; }
+.md-editor .ProseMirror h1, .md-editor .ProseMirror h2, .md-editor .ProseMirror h3,
+.md-editor .ProseMirror h4, .md-editor .ProseMirror h5, .md-editor .ProseMirror h6 { font-size: 0.875rem; font-weight: 600; }
+.md-editor .ProseMirror ul { list-style: disc; padding-left: 1.25rem; }
+.md-editor .ProseMirror ol { list-style: decimal; padding-left: 1.25rem; }
+.md-editor .ProseMirror blockquote { border-left: 4px solid var(--border-strong); padding-left: 0.75rem; color: var(--fg-muted); }
+.md-editor .ProseMirror pre { max-width: 100%; overflow-x: auto; background: var(--muted); padding: 0.5rem; font-size: 0.75rem; position: relative; }
+.md-editor .ProseMirror pre[data-language]::before { content: attr(data-language); display: block; font-size: 0.65rem; text-transform: uppercase; color: var(--fg-faint); margin-bottom: 0.25rem; }
+.md-editor .ProseMirror code { font-family: ui-monospace, monospace; }
+.md-editor .ProseMirror a { color: var(--link); text-decoration: underline; }
+.md-editor .ProseMirror table { border-collapse: collapse; }
+.md-editor .ProseMirror th, .md-editor .ProseMirror td { border: 1px solid var(--border-strong); padding: 0.125rem 0.5rem; }
+.md-editor .md-image { color: var(--link); text-decoration: underline; }

@@ -30,7 +30,7 @@ func TestAuthCriticalKeys_CoversEveryAuthSetting(t *testing.T) {
 	require.NoError(t, err)
 
 	// Constant name prefixes that mean "this decides who may sign in".
-	authPrefixes := []string{"KeySAML", "KeyOIDC", "KeyMFA", "KeySelfSignup", "KeyOpenRegistration", "KeyAllowedEmailDomains"}
+	authPrefixes := []string{"KeySAML", "KeyOIDC", "KeyMFA", "KeyPasskey", "KeySelfSignup", "KeyOpenRegistration", "KeyAllowedEmailDomains"}
 
 	found := 0
 	for _, pkg := range pkgs {

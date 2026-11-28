@@ -2,11 +2,13 @@ package ticket
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/google/uuid"
 
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/audit"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
 )
 
 // Atomic runs a set of writes against stores bound to a single transaction,
@@ -20,8 +22,15 @@ import (
 //
 // fn receives both stores because atomicity has to span them. An audit entry
 // committed separately from the change it describes is not an audit trail.
+//
+// It receives the change's collector for the same reason (#506). What fn
+// raises into it is announced by the implementation as part of the same
+// commit: the production runner writes the outbox rows inside the transaction,
+// so a rollback announces nothing and a commit cannot lose its announcement. A
+// second, non-announcing way in was rejected; a producer would have had two
+// ways in, and one of them would not announce.
 type Atomic interface {
-	InTx(ctx context.Context, fn func(Store, audit.Store) error) error
+	InTx(ctx context.Context, fn func(Store, audit.Store, *notification.Changes) error) error
 }
 
 // Store is the persistence interface for tickets and their sub-resources.
@@ -40,14 +49,46 @@ type Store interface {
 	Update(ctx context.Context, t Ticket) error
 	UpdateCTI(ctx context.Context, id, categoryID uuid.UUID, typeID, itemID *uuid.UUID) error
 
-	// Listings
-	ListByReporter(ctx context.Context, userID uuid.UUID, limit, offset int) ([]Ticket, error)
-	ListByAssigneeUser(ctx context.Context, userID uuid.UUID, limit, offset int) ([]Ticket, error)
-	ListByAssigneeGroup(ctx context.Context, groupID uuid.UUID, limit, offset int) ([]Ticket, error)
-	ListByStatus(ctx context.Context, statusID uuid.UUID, limit, offset int) ([]Ticket, error)
-	ListAll(ctx context.Context, limit, offset int) ([]Ticket, error)
-	ListUnassigned(ctx context.Context, limit, offset int) ([]Ticket, error)
-	ListResolvedBefore(ctx context.Context, before time.Time, limit int) ([]Ticket, error)
+	// UnassignForUser clears the assignee on every OPEN ticket held by a
+	// user, and reports how many moved. Used when an account is deleted.
+	UnassignForUser(ctx context.Context, userID uuid.UUID) ([]uuid.UUID, error)
+	// UnassignForGroup clears the group on EVERY ticket held by it, open or
+	// not, and returns their ids. It locks the group row first, so a ticket
+	// cannot be assigned to the group between this and DeleteGroup; an unknown
+	// group wraps group.ErrNotFound.
+	UnassignForGroup(ctx context.Context, groupID uuid.UUID) ([]uuid.UUID, error)
+	// DeleteGroup removes the group row. It lives on this store so a group can
+	// be deleted in the same transaction as the audit entries for the tickets
+	// it held (see Service.DeleteGroup).
+	DeleteGroup(ctx context.Context, groupID uuid.UUID) error
+	// IsAssignableUser and IsAssignableGroup are asked inside the assignment
+	// transaction, so every caller gets the same answer and no caller has to
+	// remember to ask.
+	IsAssignableUser(ctx context.Context, userID uuid.UUID) (bool, error)
+	// UserExists checks a supplied reporter before a tracking number is
+	// taken, so an unknown one cannot leave a hole in the numbering.
+	UserExists(ctx context.Context, userID uuid.UUID) (bool, error)
+	// CategoryExists, for the same reason: the foreign key only speaks at
+	// the INSERT, after the tracking number has been taken.
+	CategoryExists(ctx context.Context, categoryID uuid.UUID) (bool, error)
+	// CTIIsCoherent checks the type belongs to the category and the item to
+	// the type — the pairings the foreign keys only enforce at the INSERT,
+	// which is after the tracking number has been taken.
+	CTIIsCoherent(ctx context.Context, categoryID uuid.UUID, typeID, itemID *uuid.UUID) (bool, error)
+	// PlacementNames reads the names behind a ticket state's classification and
+	// holder, for a chat message: one statement, "" for a level that is not set
+	// or whose row is gone.
+	PlacementNames(ctx context.Context, st notification.TicketState) (notification.Placement, error)
+	// ArchivedCTINode names the first archived level among the ids given
+	// ("category", "type" or "item"), or "" when none is; a nil id is not
+	// checked. It is how "nobody newly picks an archived node" is decided.
+	ArchivedCTINode(ctx context.Context, categoryID, typeID, itemID *uuid.UUID) (string, error)
+	IsAssignableGroup(ctx context.Context, groupID uuid.UUID) (bool, error)
+	// ListResolvedBefore lists tickets resolved before the given time.
+	// resolvedStatusID must be the Resolved status's id: without it, a row
+	// whose resolved_at predates the cutoff but whose status has since moved
+	// on (or never was Resolved) would be listed forever. See #191.
+	ListResolvedBefore(ctx context.Context, before time.Time, resolvedStatusID uuid.UUID, limit int) ([]Ticket, error)
 
 	// Guest access tokens.
 	//
@@ -60,26 +101,40 @@ type Store interface {
 	CreateGuestToken(ctx context.Context, id, ticketID uuid.UUID, hash string, expiresAt time.Time) error
 	TicketByGuestToken(ctx context.Context, hash string) (Ticket, error)
 	TouchGuestToken(ctx context.Context, hash string) error
+	// DeleteExpiredGuestTokens removes every token past its expiry and reports
+	// how many. Expired tokens already resolve to nothing; this only stops the
+	// table growing.
+	DeleteExpiredGuestTokens(ctx context.Context) (int64, error)
 	DeleteGuestTokensForTicket(ctx context.Context, ticketID uuid.UUID) error
 	TicketIDByTrackingAndGuestEmail(ctx context.Context, tn TrackingNumber, email string) (uuid.UUID, error)
 
-	// Search — ILIKE across tracking_number, subject, description
-	SearchByReporter(ctx context.Context, userID uuid.UUID, q string, limit, offset int) ([]Ticket, error)
-	SearchByAssigneeUser(ctx context.Context, userID uuid.UUID, q string, limit, offset int) ([]Ticket, error)
-	SearchByAssigneeGroup(ctx context.Context, groupID uuid.UUID, q string, limit, offset int) ([]Ticket, error)
-	SearchAll(ctx context.Context, q string, limit, offset int) ([]Ticket, error)
-	SearchUnassigned(ctx context.Context, q string, limit, offset int) ([]Ticket, error)
-
-	// Scope-aware listing. Returns the tickets a staff member may see under
-	// DESIGN.md's model — reported by them, assigned to them, assigned to one
-	// of their groups, or within a Category/Type their groups cover.
+	// ListFiltered is the one listing: every filter, the visibility rule (for
+	// staff, DESIGN.md's scope model: reported by them, assigned to them or one
+	// of their groups, or within a Category/Type their groups cover) and the sort.
 	//
-	// This has to be a query rather than a filter over another listing,
-	// because callers paginate: filtering a fetched page returns short pages
-	// and silently skips rows.
-	ListVisibleToStaff(ctx context.Context, userID uuid.UUID, limit, offset int) ([]Ticket, error)
-	SearchVisibleToStaff(ctx context.Context, userID uuid.UUID, q string, limit, offset int) ([]Ticket, error)
+	// It has to be a query rather than a filter over another listing, because
+	// callers paginate: filtering a fetched page returns short pages and
+	// silently skips rows.
 	ListFiltered(ctx context.Context, f Filter) ([]Ticket, error)
+	// ListFilteredWithMeta is ListFiltered plus what the query could not do
+	// about reply text. ListFiltered is the same call without it.
+	ListFilteredWithMeta(ctx context.Context, f Filter) (ListResult, error)
+	// CountFiltered is how many tickets ListFiltered would return for f, without
+	// a page: it ignores Sort, Limit and Offset and never searches replies. The
+	// visibility rule is the list's, by the same SQL (#675).
+	CountFiltered(ctx context.Context, f Filter) (int64, error)
+	// VolumeByDay is how many tickets were created and how many resolved on
+	// each of the 30 local days in tz ending with the one that contains now,
+	// oldest first, every day present. Only f's visibility and actor are read:
+	// it is the list's own visibility rule, by the same SQL (#675). A zone
+	// Postgres does not know is ErrUnknownTimeZone.
+	VolumeByDay(ctx context.Context, f Filter, tz string, now time.Time) ([]DayVolume, error)
+	// ReplyMatches reads, for the tickets of one page of a ListFiltered result,
+	// the reply each matched through: at most one per ticket, absent for a ticket
+	// that did not match through a reply. It takes the same Filter, so
+	// IncludeInternal governs both steps. Empty unless f.SearchReplies and the
+	// query has searchable words.
+	ReplyMatches(ctx context.Context, f Filter, ticketIDs []uuid.UUID) (map[uuid.UUID]ReplyMatch, error)
 
 	// Next sequence value for tracking-number generation
 	NextSeq(ctx context.Context) (int64, error)
@@ -92,16 +147,102 @@ type Store interface {
 	CreateAttachment(ctx context.Context, a Attachment) error
 	GetAttachmentByID(ctx context.Context, id uuid.UUID) (Attachment, error)
 	ListAttachments(ctx context.Context, ticketID uuid.UUID) ([]Attachment, error)
+	// QuarantinedTicketIDs returns the subset of ticketIDs that hold at least one
+	// attachment the scanner identified as malicious (virus_name is set).
+	QuarantinedTicketIDs(ctx context.Context, ticketIDs []uuid.UUID) ([]uuid.UUID, error)
+	// CountGuestAttachments counts only the files a guest uploaded (#445).
+	CountGuestAttachments(ctx context.Context, ticketID uuid.UUID) (int, error)
 	DeleteAttachment(ctx context.Context, id uuid.UUID) error
+	// AnyAttachmentExists reports whether the instance holds any attachment.
+	AnyAttachmentExists(ctx context.Context) (bool, error)
 
 	// Links
 	CreateLink(ctx context.Context, link TicketLink) error
-	DeleteLink(ctx context.Context, source, target uuid.UUID, lt LinkType) error
+	// DeleteLink reports whether there was a link to delete, so removing one
+	// that is not there is not announced as an unlink.
+	DeleteLink(ctx context.Context, source, target uuid.UUID, lt LinkType) (bool, error)
 	ListLinks(ctx context.Context, ticketID uuid.UUID) ([]TicketLink, error)
+
+	// Followers (#441). On Store because following is audited, and the audit
+	// entry must commit with the row it describes, which InTx hands out only
+	// through a Store.
+	//
+	// AddFollower and RemoveFollower report whether they changed anything, so
+	// a repeat is not audited twice.
+	AddFollower(ctx context.Context, ticketID, userID uuid.UUID) (bool, error)
+	RemoveFollower(ctx context.Context, ticketID, userID uuid.UUID) (bool, error)
+	ListFollowers(ctx context.Context, ticketID uuid.UUID) ([]Follower, error)
+	// ListMailableFollowerIDs: followers staff email can go to (active staff
+	// or admin, never a service account). Whether they can still see the
+	// ticket is the send-time check's question, not this one's.
+	ListMailableFollowerIDs(ctx context.Context, ticketID uuid.UUID) ([]uuid.UUID, error)
 
 	// Status history
 	CreateStatusHistoryEntry(ctx context.Context, e StatusHistoryEntry) error
 	ListStatusHistory(ctx context.Context, ticketID uuid.UUID) ([]StatusHistoryEntry, error)
+
+	// SLA re-match (#443b). A priority change re-matches the ticket's SLA in
+	// the ticket's own transaction, so its writes are reached through this
+	// Store: ticket.Atomic hands out only a Store and an audit.Store, and the
+	// sla package imports ticket, not the other way round. The sla package
+	// keeps everything about elapsed time and colour; these only say which row
+	// is current and where its clock starts.
+
+	// CurrentSLARecordForUpdate returns the ticket's current record, locked
+	// until the transaction ends. nil, nil means the ticket has none.
+	CurrentSLARecordForUpdate(ctx context.Context, ticketID uuid.UUID) (*SLARecordState, error)
+	// LatestSupersededSLARecord returns the record the ticket most recently
+	// stopped having (the newest superseded_at). nil, nil means it never had
+	// one. Read when a ticket with no current record gets one back, so the
+	// clock resumes where the last one ran instead of at the ticket's creation.
+	LatestSupersededSLARecord(ctx context.Context, ticketID uuid.UUID) (*SLARecordState, error)
+	// MatchSLAPolicy returns the policy that governs a ticket with this
+	// priority and category. nil, nil means none does.
+	MatchSLAPolicy(ctx context.Context, p Priority, categoryID uuid.UUID) (*uuid.UUID, error)
+	// SupersedeSLARecord marks a record as replaced, writing superseded_at and
+	// nothing else. Called before StartSLARecord: a ticket has one current
+	// record at most.
+	SupersedeSLARecord(ctx context.Context, id uuid.UUID, at time.Time) error
+	// StartSLARecord inserts the record a re-match starts.
+	StartSLARecord(ctx context.Context, r SLARecordStart) error
+
+	// StampSLACrossings is the SLA sweep's one write (#670): in one statement
+	// it locks the current record recordID (FOR UPDATE; superseded_at IS NULL)
+	// and sets each of the four stamp columns asked for in stamps, only where
+	// that column is still NULL and its target is still outstanding, and says
+	// which columns THIS statement set. Only a column it set may be announced;
+	// a column already set, a met target, or an at-risk stamp for a target that
+	// is breached (or breaches in this same statement) is left alone and
+	// reported false.
+	//
+	// A record that is not current (a re-match superseded it, or it never
+	// existed) is ErrSLARecordSuperseded and nothing is written.
+	//
+	// It lives on this Store, not the SLA store, because the sweep stamps and
+	// raises its event in one ticket.Atomic transaction, which hands out only a
+	// Store and an audit.Store.
+	StampSLACrossings(ctx context.Context, recordID uuid.UUID, stamps SLAStampRequest) (SLAStamped, error)
+}
+
+// ErrSLARecordSuperseded reports that a write addressed an SLA record that is
+// no longer the ticket's current one. sla.ErrRecordSuperseded is this same
+// error: the sla package cannot be imported here, and one condition should not
+// have two identities.
+var ErrSLARecordSuperseded = errors.New("SLA record is no longer current")
+
+// SLAStampRequest says which of a record's four stamp columns to set, and at
+// what instant. The caller decided each from its own reading of the record; the
+// statement still sets a column only while it is NULL and its target
+// outstanding.
+type SLAStampRequest struct {
+	At                                                                 time.Time
+	ResponseBreach, ResolutionBreach, ResponseAtRisk, ResolutionAtRisk bool
+}
+
+// SLAStamped says which stamp columns one StampSLACrossings statement newly
+// set: NULL before, set after.
+type SLAStamped struct {
+	ResponseBreach, ResolutionBreach, ResponseAtRisk, ResolutionAtRisk bool
 }
 
 // StatusStore manages ticket statuses. Method names use a "Status" suffix to

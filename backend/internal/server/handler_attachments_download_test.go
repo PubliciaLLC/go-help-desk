@@ -1,9 +1,12 @@
 package server_test
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"hash/crc32"
 	"io"
 	"mime"
 	"mime/multipart"
@@ -14,6 +17,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/admin"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 )
 
@@ -28,40 +32,100 @@ import (
 // says not to guess the type from the content, which is what would otherwise
 // undo the first.
 //
-// The uploads are a .txt whose content is HTML and a real PDF. The PDF is the
-// one that used to matter: it was served as application/pdf, which browsers
-// open in a viewer that runs JavaScript, so before the blob change a single
-// missing header meant a malicious PDF running on this origin — where the
-// staff sessions live. The .txt is here because it shows the upload check does
-// not look inside text files, which is the known gap #165 still carries.
+// Three uploads. A .txt whose content is HTML, the same HTML named .pdf, and
+// a real PDF. The real PDF is the one that used to matter: it was served as
+// application/pdf, which browsers open in a viewer that runs JavaScript, so
+// before the blob change a single missing header meant a malicious PDF running
+// on this origin — where the staff sessions live.
+//
+// The .txt is the case where the headers are the *only* defence, which is why
+// it is first. It is not wrapped: a file named notes.txt opens in a text
+// editor on the reader's machine whatever is inside it, so there is nothing
+// for a wrap to take away, and the release that wrapped it also refused
+// ordinary crash logs for the same reason. What is left is this server's own
+// promise, and these headers are all of it.
+//
+// The .pdf is the wrapped case, and it is here so that both protections are
+// asserted. Wrapping is what a person sees; the headers are what a browser
+// obeys. Neither is allowed to be the only one.
 func TestAttachmentDownload_IsAlwaysADownloadNeverARender(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
 	ctx := context.Background()
 
-	tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{
+	tk, err := h.ticketSvc.Create(ctx, ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		Subject: "Attachment", Description: "has one", CategoryID: h.catID,
 		ReporterUserID: &h.staffID,
 	})
 	require.NoError(t, err)
 
-	// A .txt whose content is HTML. magicOK does not check text content, so
-	// this is exactly what an attacker uploads — and it is only harmless
-	// because of the header asserted below.
-	const payload = `<html><script>alert(document.cookie)</script></html>`
-	assertDownloadsRatherThanRenders(t, h, tk.ID.String(), "notes.txt", []byte(payload))
+	// Storing a mismatch rather than refusing it is an operator setting, and
+	// it defaults to refusing. This test needs the file stored to have
+	// anything to download, so it is the instance that chose to store it.
+	require.NoError(t, h.adminSvc.SetString(ctx,
+		admin.KeyAttachmentMismatchHandling, admin.MismatchHandlingWrap))
 
-	// The case with an engine behind it. A minimal but structurally real PDF,
-	// because magicOK checks the %PDF prefix and a fake one would be refused
-	// before reaching the download path this is about.
+	// A .txt whose content is HTML: exactly what an attacker uploads, and the
+	// file this server hands back under its own name and its own bytes. A
+	// text-named file is neither wrapped nor refused for its content, so
+	// everything that stops this rendering is in the response headers below.
+	//
+	// Long and repetitive on purpose: the archive check below asserts the
+	// HTML does not sit in the clear, and that only holds once the payload is
+	// big enough to compress. Go 1.27's deflate stores a block uncompressed
+	// whenever compressing it would not make it smaller, which a payload this
+	// short never does — the original 52-byte payload sat in the archive
+	// verbatim, which failed this test under 1.27 and passed under 1.26
+	// (#332). The wrap's purpose is to take away the name, not to hide the
+	// bytes; this keeps the check meaningful on every toolchain.
+	payload := "<html><body>" +
+		strings.Repeat("<p>Your invoice is attached. Please review it today.</p>", 8) +
+		"<script>alert(document.cookie)</script></body></html>"
+	asText := assertDownloadsRatherThanRenders(t, h, tk.ID.String(), "notes.txt", "notes.txt", []byte(payload))
+	require.Equal(t, payload, string(asText),
+		"stored as it arrived, which is safe only because it is never rendered")
+
+	// The same HTML under a name that claims a binary format. That is a
+	// mismatch of a type this instance does not accept, so it is the one the
+	// setting governs and the one that gets wrapped.
+	wrapped := fmt.Sprintf("suspicious-%08x.zip", crc32.ChecksumIEEE([]byte(payload)))
+	got := assertDownloadsRatherThanRenders(t, h, tk.ID.String(), "invoice.pdf", wrapped, []byte(payload))
+
+	// What downloads is the archive, not the HTML. The payload must still be
+	// in there intact — wrapping is containment, not censorship; a help desk
+	// that quietly altered an attachment would be worse than one that refused
+	// it.
+	zr, err := zip.NewReader(bytes.NewReader(got), int64(len(got)))
+	require.NoError(t, err, "a wrapped attachment must download as a readable archive")
+	require.Len(t, zr.File, 1)
+	require.Equal(t, "invoice.pdf", zr.File[0].Name,
+		"the sample keeps the name it was uploaded under, inside the archive")
+	rc, err := zr.File[0].Open()
+	require.NoError(t, err)
+	defer rc.Close()
+	inner, err := io.ReadAll(rc)
+	require.NoError(t, err)
+	require.Equal(t, payload, string(inner))
+	require.NotContains(t, string(got), "<script",
+		"the payload must not sit in the clear in the stored archive")
+
+	// The case with an engine behind it. A minimal but structurally real PDF.
+	// It is not a mismatch, so it keeps its own name and is stored as it
+	// arrived — which is what makes the byte-for-byte assertion meaningful.
 	pdf := []byte("%PDF-1.7\n1 0 obj\n<< /Type /Catalog >>\nendobj\ntrailer\n<< /Root 1 0 R >>\n%%EOF\n")
-	assertDownloadsRatherThanRenders(t, h, tk.ID.String(), "report.pdf", pdf)
+	served := assertDownloadsRatherThanRenders(t, h, tk.ID.String(), "report.pdf", "report.pdf", pdf)
+	require.Equal(t, pdf, served,
+		"a file whose content matches its name is served verbatim, which is safe only because it is never rendered")
 }
 
 // assertDownloadsRatherThanRenders uploads a file and requires the download to
 // be inert: forced to disk, with the browser forbidden from second-guessing
 // the type, and byte-identical on the way back.
-func assertDownloadsRatherThanRenders(t *testing.T, h *harness, ticketID, name string, content []byte) {
+// storedAs is the filename the attachment is expected to carry once stored,
+// which is not the uploaded name for a file #165 wrapped. Returns the
+// downloaded bytes: what those should be differs between a wrapped file and
+// one stored as it arrived, so the caller asserts it.
+func assertDownloadsRatherThanRenders(t *testing.T, h *harness, ticketID, name, storedAs string, content []byte) []byte {
 	t.Helper()
 	body := &bytes.Buffer{}
 	mw := multipart.NewWriter(body)
@@ -79,7 +143,7 @@ func assertDownloadsRatherThanRenders(t *testing.T, h *harness, ticketID, name s
 	h.srv.ServeHTTP(rec, req)
 	require.Equal(t, http.StatusCreated, rec.Code, "upload: %s", rec.Body.String())
 
-	id := attachmentIDNamed(t, h, ticketID, name)
+	id := attachmentIDNamed(t, h, ticketID, storedAs)
 
 	res := h.do(t, http.MethodGet,
 		"/api/v1/tickets/"+ticketID+"/attachments/"+id, nil)
@@ -101,9 +165,9 @@ func assertDownloadsRatherThanRenders(t *testing.T, h *harness, ticketID, name s
 	require.Equal(t, "application/octet-stream", res.Header.Get("Content-Type"),
 		"no attachment may be served as a type a browser would render")
 
-	got, _ := io.ReadAll(res.Body)
-	require.Equal(t, content, got,
-		"the file is served verbatim, which is safe only because it is never rendered")
+	got, err := io.ReadAll(res.Body)
+	require.NoError(t, err)
+	return got
 }
 
 // attachmentIDNamed finds the attachment with this filename.
@@ -147,7 +211,7 @@ func TestAttachmentDownload_KeepsANonASCIIFilename(t *testing.T) {
 	h, cleanup := newHarness(t)
 	defer cleanup()
 
-	tk, err := h.ticketSvc.Create(context.Background(), ticket.CreateInput{
+	tk, err := h.ticketSvc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		Subject: "Filename", Description: "x", CategoryID: h.catID,
 		ReporterUserID: &h.staffID,
 	})
@@ -186,27 +250,54 @@ func TestAttachmentDownload_AHostileFilenameCannotEscapeTheHeader(t *testing.T) 
 	h, cleanup := newHarness(t)
 	defer cleanup()
 
-	tk, err := h.ticketSvc.Create(context.Background(), ticket.CreateInput{
+	tk, err := h.ticketSvc.Create(context.Background(), ticket.CreateInput{DescriptionFormat: ticket.TextFormatPlain, SourceChannel: ticket.ChannelWeb,
 		Subject: "Hostile", Description: "x", CategoryID: h.catID,
 		ReporterUserID: &h.staffID,
 	})
 	require.NoError(t, err)
 
-	// Everything in this name is here because it survives a real upload.
+	// A tab in the name is refused outright now, and that is the stronger
+	// answer.
 	//
-	// A quote, which closes the quoted string if it is escaped wrongly. A
+	// Tab was the one control character Go's MIME header parser let through,
+	// so it was the one that reached us; the header builder stripped it on
+	// the way out. Stripping is a repair, and a repair means the name on the
+	// ticket page, in a log line and inside a quarantine archive is still the
+	// one the uploader chose. The upload is now refused instead — along with
+	// every other C0 and C1 character and the bidi overrides, which is where
+	// the real trick lives: U+202E turns "invoice<RLO>txt.pdf" into
+	// "invoicefdp.txt" on screen.
+	{
+		const withTab = "a\tb.txt"
+		res := uploadNamed(t, h, tk.ID.String(), withTab, []byte("contents"))
+		body, _ := readAllBody(res)
+		res.Body.Close()
+		require.Equal(t, http.StatusBadRequest, res.StatusCode,
+			"a control character in a filename is refused, not repaired: %s", body)
+		require.Contains(t, body, "invalid_filename")
+	}
+	{
+		const bidi = "invoice\u202Etxt.pdf"
+		res := uploadNamed(t, h, tk.ID.String(), bidi, []byte("contents"))
+		res.Body.Close()
+		require.Equal(t, http.StatusBadRequest, res.StatusCode,
+			"a right-to-left override makes the name display as something else")
+	}
+
+	// What is left is a name that is genuinely accepted, and still hostile.
+	//
+	// A quote, which closes the quoted string if it is escaped wrongly. And a
 	// backslash path, which is what a Windows browser reads as a directory to
 	// save into — a forward-slash one would prove nothing, because Go's
 	// multipart reader runs filepath.Base over every uploaded filename and
 	// "../../etc/passwd.txt" is already "passwd.txt" before our code sees it,
-	// while filepath.Base on Linux leaves backslashes alone. And a tab, which
-	// is the one control character Go's MIME header parser lets through; it
-	// refuses the request outright for the rest, which is why the others are
-	// checked against contentDisposition directly instead.
-	const hostile = "a\"b\t..\\..\\windows\\system32\\evil.txt"
+	// while filepath.Base on Linux leaves backslashes alone.
+	const hostile = "a\"b..\\..\\windows\\system32\\evil.txt"
 	res := uploadNamed(t, h, tk.ID.String(), hostile, []byte("contents"))
+	body, _ := readAllBody(res)
 	res.Body.Close()
-	require.Equal(t, http.StatusCreated, res.StatusCode)
+	require.Equal(t, http.StatusCreated, res.StatusCode,
+		"nothing in this name is a control character, so it is stored: %s", body)
 
 	list := h.do(t, http.MethodGet, "/api/v1/tickets/"+tk.ID.String()+"/attachments", nil)
 	defer list.Body.Close()
@@ -237,5 +328,5 @@ func TestAttachmentDownload_AHostileFilenameCannotEscapeTheHeader(t *testing.T) 
 	require.Contains(t, params["filename"], "evil.txt",
 		"the name itself should still be recognisable")
 	require.NotContains(t, params["filename"], "\t",
-		"a tab reaches us through the upload and must not reach the header")
+		"no control character may reach the header, whatever got past the upload check")
 }

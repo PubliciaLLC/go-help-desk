@@ -1,13 +1,17 @@
 package server
 
 import (
+	"context"
 	"encoding/base64"
 	"errors"
+	"log/slog"
 	"net/http"
 
 	qrcode "github.com/skip2/go-qrcode"
 
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/auth"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/catalogue"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 	authmw "github.com/publiciallc/go-help-desk/backend/internal/middleware"
 )
@@ -15,29 +19,240 @@ import (
 // GET /api/v1/me
 func (s *Server) handleGetMe(w http.ResponseWriter, r *http.Request) {
 	a := authmw.GetActor(r)
+
+	// An OAuth client is not a person, and this route is deliberately open to
+	// machine credentials because an integration legitimately needs to know
+	// what it is acting as. It used to look up the nil user id and answer
+	// 404 "user 00000000-0000-0000-0000-000000000000", which is nonsense
+	// dressed as an error.
+	//
+	// What it can honestly say is what the credential is: its role and the
+	// scopes it holds, which is the part an integration checks.
+	//
+	// Keyed on the client id and not the user id: since #420 a client's actor
+	// does carry a user id (its service user's), and the shape this route
+	// answers for a client must not change just because of that.
+	if a.ClientID != "" {
+		JSON(w, http.StatusOK, map[string]any{
+			"machine": true,
+			"role":    a.Role,
+			"scopes":  a.Scopes,
+		})
+		return
+	}
+
 	u, err := s.users.GetByID(r.Context(), a.UserID)
 	if err != nil {
 		handleError(w, err)
 		return
 	}
-	JSON(w, http.StatusOK, u)
+	JSON(w, http.StatusOK, s.meView(r.Context(), u))
+}
+
+// meUser is the signed-in account as /me reports it: the user itself, plus for
+// staff and administrators what their email switches actually amount to.
+type meUser struct {
+	user.User
+	EmailNotifications *emailNotifications `json:"email_notifications,omitempty"`
+	// CanCreateAPIKeys is whether the Account page should offer to make a key
+	// (#450). Always present, so a client can tell false from an old server.
+	CanCreateAPIKeys bool `json:"can_create_api_keys"`
+	// APIKeyMaxLifetimeYears is the longest a new key may live: 1 to 5, or -1
+	// for no limit (#450). The create forms cap the expiry with it.
+	APIKeyMaxLifetimeYears int `json:"api_key_max_lifetime_years"`
+	// CanUseAvailableQueue is whether the Available view (scope=unassigned) is
+	// open to this person (#676): an administrator always, staff while the
+	// available_queue_roles setting lists them, a requester never. Always
+	// present, so a client can tell false from an old server.
+	CanUseAvailableQueue bool `json:"can_use_available_queue"`
+	// SLAEnabled is whether SLA tracking is on, for staff and administrators
+	// only: the ticket list offers the SLA filter and sort only while it is.
+	// Absent for a requester, who is never shown anything about SLA, and when
+	// the setting could not be read (a client must treat absent as unknown, not
+	// as off). Not on the public /site, which anyone can read.
+	SLAEnabled *bool `json:"sla_enabled,omitempty"`
+	// AttachmentMaxBytes is the instance-wide per-file limit in bytes, for
+	// every role, so the client can refuse an oversize file before sending it
+	// (#673). Not a guest's limit, which is lower and is on /site.
+	AttachmentMaxBytes int64 `json:"attachment_max_bytes"`
+	// CanChooseItem is whether the new-ticket page offers this person an Item
+	// selector (#711): always for staff and administrators, and for a requester
+	// whether Items is visible to them (users_show_items). Always present, so a client can tell
+	// false from an old server. Not on the public /site, which anyone can read.
+	CanChooseItem bool `json:"can_choose_item"`
+}
+
+// switchState is one email switch as it applies to this person: whether they
+// get that mail, and whether an administrator decided that for everyone (so
+// their own choice is not what applies).
+type switchState struct {
+	Enabled bool `json:"enabled"`
+	Forced  bool `json:"forced"`
+}
+
+type emailNotifications struct {
+	Assigned switchState `json:"assigned"`
+	Activity switchState `json:"activity"`
+	Group    switchState `json:"group"`
+	SLA      switchState `json:"sla"`
+}
+
+// meView adds the effective email state (#441). A requester is never sent
+// staff mail, so has none to report.
+func (s *Server) meView(ctx context.Context, u user.User) meUser {
+	v := meUser{
+		User:                   u,
+		APIKeyMaxLifetimeYears: s.adminSvc.APIKeyMaxLifetimeYears(ctx),
+		AttachmentMaxBytes:     s.attachmentMaxBytes(ctx),
+	}
+	v.CanChooseItem = s.levelsOf(ctx, catalogue.WhoOfRole(u.Role)).Items
+	v.CanCreateAPIKeys = u.Role == user.RoleAdmin || (u.Role == user.RoleStaff && s.adminSvc.StaffCanCreateAPIKeys(ctx))
+	v.CanUseAvailableQueue = s.adminSvc.AvailableQueueAllowed(ctx, string(u.Role))
+	if u.Role == user.RoleUser {
+		return v
+	}
+	if on, err := s.adminSvc.SLAEnabled(ctx); err != nil {
+		slog.WarnContext(ctx, "reading SLA enabled setting failed; omitting sla_enabled from /me", "error", err)
+	} else {
+		v.SLAEnabled = &on
+	}
+	ov := s.adminSvc.StaffEmailOverrides(ctx)
+	prefs := notification.StaffPrefs{Assigned: u.EmailNotifyAssigned, Activity: u.EmailNotifyActivity, Group: u.EmailNotifyGroup, SLA: u.EmailNotifySLA}
+	state := func(sw notification.StaffSwitch) switchState {
+		return switchState{Enabled: ov.Allows(sw, prefs), Forced: ov.Forced(sw)}
+	}
+	v.EmailNotifications = &emailNotifications{
+		Assigned: state(notification.SwitchAssigned),
+		Activity: state(notification.SwitchActivity),
+		Group:    state(notification.SwitchGroup),
+		SLA:      state(notification.SwitchSLA),
+	}
+	return v
+}
+
+// PATCH /api/v1/me/email-preferences
+//
+// The caller's own staff-email switches (#441, and SLA alerts, #670). Each is
+// optional; only the ones sent change. An administrator's override can still force a switch on or off
+// for everyone, whatever is saved here.
+func (s *Server) handleUpdateEmailPreferences(w http.ResponseWriter, r *http.Request) {
+	a := authmw.GetActor(r)
+	var body struct {
+		Assigned *bool `json:"email_notify_assigned"`
+		Activity *bool `json:"email_notify_activity"`
+		Group    *bool `json:"email_notify_group"`
+		SLA      *bool `json:"email_notify_sla"`
+	}
+	if err := DecodeJSON(r, &body); err != nil {
+		Error(w, http.StatusBadRequest, "bad_request", "the email switches must be true or false")
+		return
+	}
+	if err := s.users.SetEmailPreferences(r.Context(), a.UserID, user.EmailPreferencesPatch{
+		Assigned: body.Assigned, Activity: body.Activity, Group: body.Group, SLA: body.SLA,
+	}); err != nil {
+		handleError(w, err)
+		return
+	}
+	u, err := s.users.GetByID(r.Context(), a.UserID)
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+	JSON(w, http.StatusOK, s.meView(r.Context(), u))
+}
+
+// PATCH /api/v1/me/appearance
+//
+// The caller's own choice of how the web UI looks (#709): {"theme": "light" |
+// "dark" | "device"}. A missing, null, non-string or unknown value is
+// 400 invalid_theme. The answer is the /me view as saved. Not audited: it is a
+// display preference and changes nothing anyone else sees. Any role.
+func (s *Server) handleUpdateAppearance(w http.ResponseWriter, r *http.Request) {
+	a := authmw.GetActor(r)
+	var body struct {
+		Theme *string `json:"theme"`
+	}
+	if err := DecodeJSON(r, &body); err != nil || body.Theme == nil || !user.Theme(*body.Theme).Valid() {
+		Error(w, http.StatusBadRequest, "invalid_theme", user.ErrInvalidTheme.Error())
+		return
+	}
+	if err := s.users.SetTheme(r.Context(), a.UserID, user.Theme(*body.Theme)); err != nil {
+		handleError(w, err)
+		return
+	}
+	u, err := s.users.GetByID(r.Context(), a.UserID)
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+	JSON(w, http.StatusOK, s.meView(r.Context(), u))
 }
 
 // PATCH /api/v1/me/password
 func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 	a := authmw.GetActor(r)
 	var body struct {
+		CurrentPassword string `json:"current_password"`
+		NewPassword     string `json:"new_password"`
+		// Deprecated: the original name for NewPassword. Kept so an API
+		// consumer using it is not broken by the rename; it is only honoured
+		// when new_password is absent, and current_password is required
+		// either way.
 		Password string `json:"password"`
 	}
 	if err := DecodeJSON(r, &body); err != nil {
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
 		return
 	}
-	if len(body.Password) < 8 {
-		Error(w, http.StatusBadRequest, "bad_request", "password must be at least 8 characters")
+	next := body.NewPassword
+	if next == "" {
+		next = body.Password
+	}
+	if err := user.ValidatePassword(next); err != nil {
+		Error(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}
-	if err := s.users.SetPassword(r.Context(), a.UserID, body.Password); err != nil {
+
+	// The current password, checked.
+	//
+	// It was not asked for at all: a session cookie was the whole of it. So
+	// anyone who got hold of a session — a shared machine left unlocked, a
+	// stolen cookie — could set a new password, and the owner was locked out
+	// of their own account permanently, because the change also revokes every
+	// other session. The cost of asking is one field; the cost of not asking
+	// is that a borrowed session becomes a taken account.
+	//
+	// The frontend's API client has sent current_password since it was
+	// written. Nothing read it.
+	u, err := s.users.GetByID(r.Context(), a.UserID)
+	if err != nil {
+		handleError(w, err)
+		return
+	}
+	// Guessing the current password from a held session is throttled like
+	// guessing it at sign-in: per user, failures only, and an over-budget
+	// caller waits rather than being refused before the check, so the right
+	// password always works and nothing here can keep somebody out of their own
+	// account. See handleLocalLogin for the reasoning behind that ordering.
+	throttleKey := "change-password:" + a.UserID.String()
+	s.tarpitIfExceeded(r.Context(), throttleKey)
+	if _, err := s.users.VerifyPassword(r.Context(), u.Email, body.CurrentPassword); err != nil {
+		if !allowOrRefuse(r.Context(), w, s.loginLimiter, throttleKey) {
+			return
+		}
+		// 400, not 401 (#555): the session is good and a field in the body is
+		// wrong. The web client treats any 401 as an expired session and signs
+		// the person out, so a mistyped current password ended their session.
+		Error(w, http.StatusBadRequest, "invalid_current_password", "current password is incorrect")
+		return
+	}
+
+	// Read before the sessions are deleted below.
+	current, _ := s.sessions.Get(r, auth.SessionName)
+	prev, _ := current.Values[auth.SessionDataKey].(auth.SessionData)
+	owedPasskey, heldPasskey := prev.PasskeyOwed, prev.PasskeyHeld
+
+	if err := s.users.SetPassword(r.Context(), a.UserID, next); err != nil {
 		handleError(w, err)
 		return
 	}
@@ -45,15 +260,31 @@ func (s *Server) handleChangePassword(w http.ResponseWriter, r *http.Request) {
 	// Changing your password is how you evict someone who has your old one, so
 	// the other sessions must die — but signing yourself out of the tab you
 	// just used to do it is a bug, not security.
-	if err := s.sessions.DeleteForUser(r.Context(), a.UserID); err != nil {
+	// Detached: the new password is already written, so a client that hangs
+	// up here must not leave the sessions it was evicting alive.
+	if err := s.sessions.DeleteForUser(context.WithoutCancel(r.Context()), a.UserID); err != nil {
 		handleError(w, err)
 		return
 	}
-	if err := s.writeSession(w, r, auth.SessionData{
-		UserID:    a.UserID,
-		Role:      a.Role,
-		MFAPassed: a.MFAPassed,
-	}); err != nil {
+	sd := auth.SessionData{
+		UserID:         a.UserID,
+		Role:           a.Role,
+		MFAPassed:      a.MFAPassed,
+		FactorVerified: a.FactorVerified,
+		// Carried, or a session that owes a passkey could change its password
+		// and then pass MFA with a TOTP code (#616c).
+		PasskeyOwed: owedPasskey,
+		PasskeyHeld: heldPasskey,
+	}
+	// Only a session that owed the change can get here without having passed
+	// MFA (RequireMFAOrPasswordChange), and it still owes the enrolment or the
+	// key. It keeps the deadline its sign-in gave, as afterTOTP does (#452): a
+	// change that minted a fresh one would be a way to hold a pending session
+	// open indefinitely.
+	if !sd.MFAPassed {
+		sd.PendingUntil = prev.PendingUntil
+	}
+	if err := s.writeSession(w, r, sd); err != nil {
 		handleError(w, err)
 		return
 	}
@@ -67,8 +298,10 @@ func (s *Server) handleMFAEnrollStart(w http.ResponseWriter, r *http.Request) {
 	// This route sits outside RequireMFA so a user compelled to enrol can
 	// finish. That makes it reachable with a session that has NOT passed the
 	// MFA challenge, so re-enrolment of an already-protected account is only
-	// permitted once that challenge has been satisfied — otherwise a password
+	// permitted once this session has proved a factor — otherwise a password
 	// alone would be enough to replace the victim's authenticator.
+	// FactorVerified, not MFAPassed: a login that owed nothing has MFAPassed
+	// without having proved anything (#333).
 	//
 	// The secret is minted but NOT written to the user row. Writing it there
 	// overwrote the authenticator the user was still relying on, while
@@ -76,7 +309,22 @@ func (s *Server) handleMFAEnrollStart(w http.ResponseWriter, r *http.Request) {
 	// them out, and an administrator reset was the only way back. It is staged
 	// in the session and becomes the user's only once they prove possession by
 	// confirming a code from it.
-	secret, qrURL, err := s.users.GenerateMFASecret(r.Context(), a.UserID, s.cfg.BaseURL, a.MFAPassed)
+	// Asked through the shared guard, not GenerateMFASecret's own check.
+	//
+	// That check reads u.MFAEnabled, which is the TOTP column. It was a
+	// complete answer to "does this account already have a second factor"
+	// while TOTP was the only kind. Passkeys made it a partial one: an
+	// account protected by a passkey and no TOTP reads MFAEnabled false, so
+	// a session holding only the password could enrol its own authenticator
+	// here and walk through the very gate the passkey was protecting.
+	//
+	// The guard asks about both kinds. Adding a second sort of factor without
+	// widening every question that means "has a factor" is how one door gets
+	// locked and the one beside it does not.
+	if !s.requireFactorOrFirstEnrolment(w, r) {
+		return
+	}
+	secret, qrURL, err := s.users.GenerateMFASecret(r.Context(), a.UserID, s.cfg.BaseURL, a.FactorVerified)
 	if err != nil {
 		if errors.Is(err, user.ErrMFAAlreadyEnrolled) {
 			Error(w, http.StatusForbidden, "mfa_already_enrolled",
@@ -111,6 +359,17 @@ func (s *Server) handleMFAEnrollStart(w http.ResponseWriter, r *http.Request) {
 
 // POST /api/v1/me/mfa/enroll/confirm
 func (s *Server) handleMFAEnrollConfirm(w http.ResponseWriter, r *http.Request) {
+	// Re-checked here, not just at /mfa/enroll: that call staged a secret at
+	// a moment the account happened to be unprotected, and this one decides
+	// whether to adopt it. Without re-running the guard, an attacker who
+	// staged a secret while the account was still unprotected could confirm
+	// it later — even after the legitimate owner finished their own
+	// enrolment in the meantime — and silently overwrite it. See #327;
+	// register/finish has carried the equivalent re-check for passkeys
+	// since #307 item 3.
+	if !s.requireFactorOrFirstEnrolment(w, r) {
+		return
+	}
 	a := authmw.GetActor(r)
 	var body struct {
 		Code string `json:"code"`
@@ -119,8 +378,10 @@ func (s *Server) handleMFAEnrollConfirm(w http.ResponseWriter, r *http.Request) 
 		Error(w, http.StatusBadRequest, "bad_request", "invalid JSON")
 		return
 	}
-	// Same durable budget as verification: this also takes a six-digit code.
-	if err := s.users.CheckMFALock(r.Context(), a.UserID); err != nil {
+	// Same durable budget as verification, and spent the same way: before the
+	// code is checked, so concurrent attempts cannot all pass an unchanged
+	// count.
+	if err := s.users.ClaimMFAAttempt(r.Context(), a.UserID); err != nil {
 		if errors.Is(err, user.ErrMFALocked) {
 			tooManyAttempts(w, user.MFALockDuration)
 			return
@@ -131,12 +392,22 @@ func (s *Server) handleMFAEnrollConfirm(w http.ResponseWriter, r *http.Request) 
 	session, _ := s.sessions.Get(r, auth.SessionName)
 	sd, _ := session.Values[auth.SessionDataKey].(auth.SessionData)
 
-	if err := s.users.ConfirmMFAEnrollmentWith(r.Context(), a.UserID, sd.PendingMFASecret, body.Code); err != nil {
-		if lockErr := s.users.RecordMFAFailure(r.Context(), a.UserID); lockErr != nil && !errors.Is(lockErr, user.ErrMFALocked) {
-			handleError(w, lockErr)
+	if err := s.users.ConfirmMFAEnrollmentWith(r.Context(), a.UserID, sd.PendingMFASecret, body.Code, a.FactorVerified); err != nil {
+		// Another confirm enrolled this account between the guard above and
+		// the write (#338): the same refusal the guard gives, not a bad code.
+		if errors.Is(err, user.ErrMFAAlreadyEnrolled) {
+			Error(w, http.StatusForbidden, "mfa_required",
+				"this account already has a second factor. Verify with it before adding or removing one, "+
+					"or ask an administrator to reset it.")
 			return
 		}
-		Error(w, http.StatusBadRequest, "invalid_code", err.Error())
+		// What the person got wrong is a 400; a storage fault is the server's
+		// and used to land here too, telling them their code was bad (#421).
+		if errors.Is(err, user.ErrMFANotStarted) || errors.Is(err, user.ErrMFAInvalidCode) {
+			Error(w, http.StatusBadRequest, "invalid_code", err.Error())
+			return
+		}
+		handleError(w, err)
 		return
 	}
 	if err := s.users.ClearMFAFailures(r.Context(), a.UserID); err != nil {
@@ -145,11 +416,11 @@ func (s *Server) handleMFAEnrollConfirm(w http.ResponseWriter, r *http.Request) 
 	}
 	// Successful enrollment satisfies this login's MFA challenge — flip the
 	// session so forced-enrollment users aren't locked out until they log out.
-	if err := s.writeSession(w, r, auth.SessionData{
-		UserID:    a.UserID,
-		Role:      a.Role,
-		MFAPassed: true,
-	}); err != nil {
+	// Every other session ends: see writeSessionAfterNewFactor.
+	//
+	// Unless the sign-in owes a passkey (#616c): an authenticator proves a
+	// factor there, which lets a key be registered, but only the key passes.
+	if err := s.writeSessionAfterNewFactor(w, r, afterTOTP(sd, a)); err != nil {
 		handleError(w, err)
 		return
 	}

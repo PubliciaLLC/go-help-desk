@@ -12,20 +12,26 @@ type Store interface {
 	CreateCategory(ctx context.Context, c Category) error
 	GetCategory(ctx context.Context, id uuid.UUID) (Category, error)
 	UpdateCategory(ctx context.Context, c Category) error
-	DeleteCategory(ctx context.Context, id uuid.UUID) error
+	DeleteCategory(ctx context.Context, id uuid.UUID, actorID *uuid.UUID) error
 	ListCategories(ctx context.Context, activeOnly bool) ([]Category, error)
 
 	// Types
 	CreateType(ctx context.Context, t Type) error
 	GetType(ctx context.Context, id uuid.UUID) (Type, error)
 	UpdateType(ctx context.Context, t Type) error
-	DeleteType(ctx context.Context, id uuid.UUID) error
+	DeleteType(ctx context.Context, id uuid.UUID, actorID *uuid.UUID) error
 	ListTypes(ctx context.Context, categoryID uuid.UUID, activeOnly bool) ([]Type, error)
 
 	// Items
 	CreateItem(ctx context.Context, i Item) error
 	GetItem(ctx context.Context, id uuid.UUID) (Item, error)
 	UpdateItem(ctx context.Context, i Item) error
-	DeleteItem(ctx context.Context, id uuid.UUID) error
+	DeleteItem(ctx context.Context, id uuid.UUID, actorID *uuid.UUID) error
 	ListItems(ctx context.Context, typeID uuid.UUID, activeOnly bool) ([]Item, error)
+
+	// Names resolve many ids at once, one statement each, for a page that names
+	// many (the audit view). An id that no longer exists is absent from the map.
+	CategoryNames(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]string, error)
+	TypeNames(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]string, error)
+	ItemNames(ctx context.Context, ids []uuid.UUID) (map[uuid.UUID]string, error)
 }

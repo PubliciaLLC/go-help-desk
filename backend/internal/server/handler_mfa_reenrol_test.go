@@ -269,3 +269,86 @@ func TestMFA_ConfirmingCompletesTheRotation(t *testing.T) {
 	require.Equal(t, enroll["secret"], after.MFASecret, "confirming must adopt the new secret")
 	require.True(t, after.MFAEnabled)
 }
+
+// #327: a time-of-check/time-of-use hole. handleMFAEnrollConfirm never
+// re-ran requireFactorOrFirstEnrolment, so it only mattered whether the
+// account was unprotected when enrolment was STAGED, not when it was
+// CONFIRMED. An attacker who knows the password stages a secret while the
+// account is still unprotected, waits for the legitimate owner to enrol and
+// confirm their own, and then confirms with the stale staged secret —
+// silently overwriting the victim's.
+//
+// This is the attack from the issue, reproduced end to end: it must be
+// refused at the attacker's confirm, and the victim's secret must survive.
+func TestMFA_ConfirmCannotOverwriteAFactorAddedDuringEnrollment(t *testing.T) {
+	h, cleanup := newHarness(t)
+	defer cleanup()
+	ctx := context.Background()
+	require.NoError(t, h.adminSvc.SetBool(ctx, admin.KeyMFAEnabled, true))
+	require.NoError(t, h.adminSvc.SetRaw(ctx, admin.KeyMFAEnforcedRoles, []byte(`["staff","admin"]`)))
+
+	// The account has no factor yet, so logging in with just the password
+	// succeeds (mfa_enrollment_needed, not mfa_needed) for anyone who knows
+	// it — attacker included.
+	attacker := &session{h: h}
+	res, _ := attacker.send(t, http.MethodPost, "/api/v1/auth/local/login", map[string]any{
+		"email": "staff@test.local", "password": "password",
+	})
+	require.Equal(t, http.StatusOK, res.StatusCode)
+
+	// The attacker stages a secret of their own while the account is still
+	// unprotected — this step is legitimately allowed; nothing tells
+	// enrolment apart from the owner enrolling at this point.
+	res, body := attacker.send(t, http.MethodPost, "/api/v1/me/mfa/enroll", nil)
+	require.Equal(t, http.StatusOK, res.StatusCode, "body: %s", body)
+	var staged map[string]string
+	require.NoError(t, json.Unmarshal(body, &staged))
+
+	// The legitimate owner, in a separate session, enrols and confirms
+	// their own secret.
+	victim := &session{h: h}
+	victim.send(t, http.MethodPost, "/api/v1/auth/local/login", map[string]any{
+		"email": "staff@test.local", "password": "password",
+	})
+	res, body = victim.send(t, http.MethodPost, "/api/v1/me/mfa/enroll", nil)
+	require.Equal(t, http.StatusOK, res.StatusCode, "body: %s", body)
+	var victimEnroll map[string]string
+	require.NoError(t, json.Unmarshal(body, &victimEnroll))
+
+	victimCode, err := totp.GenerateCode(victimEnroll["secret"], time.Now())
+	require.NoError(t, err)
+	res, body = victim.send(t, http.MethodPost, "/api/v1/me/mfa/enroll/confirm",
+		map[string]any{"code": victimCode})
+	require.Equal(t, http.StatusNoContent, res.StatusCode, "body: %s", body)
+
+	// The attacker now confirms with the secret staged before the account
+	// had any factor. Without a re-check at confirm time, this silently
+	// adopts the attacker's secret and locks the victim out.
+	attackerCode, err := totp.GenerateCode(staged["secret"], time.Now())
+	require.NoError(t, err)
+	res, body = attacker.send(t, http.MethodPost, "/api/v1/me/mfa/enroll/confirm",
+		map[string]any{"code": attackerCode})
+	// 401, not 403: since #333 the victim's confirm ends every other session,
+	// so the attacker's is gone before the confirm-time re-check is reached.
+	// That re-check is pinned on its own by
+	// TestMFA_ConfirmReChecksEvenWhenTheSessionSurvives.
+	require.Equal(t, http.StatusUnauthorized, res.StatusCode,
+		"the attacker's session should have ended when the victim enrolled; got body %s", body)
+
+	// The victim's secret must still be the one in the database, and still
+	// work for signing in.
+	after, err := h.userSvc.GetByID(ctx, h.staffID)
+	require.NoError(t, err)
+	require.Equal(t, victimEnroll["secret"], after.MFASecret,
+		"the attacker's refused confirm must not have overwritten the victim's secret")
+
+	victim2 := &session{h: h}
+	victim2.send(t, http.MethodPost, "/api/v1/auth/local/login", map[string]any{
+		"email": "staff@test.local", "password": "password",
+	})
+	code, err := totp.GenerateCode(victimEnroll["secret"], time.Now())
+	require.NoError(t, err)
+	res, body = victim2.send(t, http.MethodPost, "/api/v1/auth/local/mfa/verify", map[string]any{"code": code})
+	require.Equal(t, http.StatusNoContent, res.StatusCode,
+		"the victim's own authenticator must keep working; body: %s", body)
+}

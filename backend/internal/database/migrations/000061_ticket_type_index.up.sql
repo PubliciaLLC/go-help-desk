@@ -1,0 +1,11 @@
+-- Index for the scoped ticket list, for a staff member whose group covers one
+-- type of a category (group_scopes.type_id set).
+--
+-- That arm of the visibility rule is "type_id is one of these". Without an index
+-- on type_id the planner can only walk tickets_created_at_idx and discard what
+-- does not match, which reads the whole table when the covered type is rare:
+-- measured at 1M tickets, 205k buffers and 0.8 s, and growing with the table.
+--
+-- Partial: most tickets have no type, and "type_id = x" never matches NULL.
+-- Index only; no column or row changes.
+CREATE INDEX IF NOT EXISTS tickets_type_id_idx ON tickets (type_id) WHERE type_id IS NOT NULL;

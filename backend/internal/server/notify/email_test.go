@@ -9,6 +9,7 @@ import (
 
 	"github.com/publiciallc/go-help-desk/backend/internal/config"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/user"
 )
 
 // TestSendRejectsHeaderInjection covers validateSendAddresses directly
@@ -196,4 +197,28 @@ func TestEventToEmail_WithoutATrackingNumberStillSends(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, "There is a new reply on your ticket", subject)
 	require.Equal(t, "reporter@example.com", to)
+}
+
+// #389: whatever user.ValidateEmail stores, the sender must be able to send to,
+// unchanged. A quoted local part used to pass validation, lose its quotes and
+// then fail here at send time, so its owner was never sent anything; one with a
+// leading space parsed again as a different mailbox.
+func TestValidateSendAddresses_AcceptsWhatValidateEmailStores(t *testing.T) {
+	for _, in := range []string{
+		"user@example.com",
+		`"john"@example.com`,
+		"o'brien@example.com",
+		"guest@[192.168.1.10]",
+		`"john doe"@example.com`,
+		`" a"@example.com`,
+		`"a@b"@example.com`,
+	} {
+		stored, err := user.ValidateEmail(in)
+		if err != nil {
+			continue // refused at intake, so never stored and never sent to
+		}
+		toAddr, _, err := validateSendAddresses(stored, "helpdesk@example.com")
+		require.NoError(t, err, "%q was stored as %q, which cannot be sent to", in, stored)
+		require.Equal(t, stored, toAddr.Address, "%q was stored as %q but would be sent elsewhere", in, stored)
+	}
 }

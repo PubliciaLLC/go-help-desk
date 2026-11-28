@@ -2,11 +2,13 @@ package testutil
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/publiciallc/go-help-desk/backend/internal/database/auditstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/database/ticketstore"
 	"github.com/publiciallc/go-help-desk/backend/internal/dbgen"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/audit"
+	"github.com/publiciallc/go-help-desk/backend/internal/domain/notification"
 	"github.com/publiciallc/go-help-desk/backend/internal/domain/ticket"
 )
 
@@ -28,16 +30,34 @@ import (
 //
 // Test-only. Production wiring uses database/txrunner.
 type JoiningTxRunner struct {
-	q *dbgen.Queries
+	q    *dbgen.Queries
+	sink notification.Dispatcher
 }
 
 // NewJoiningTxRunner returns a ticket.Atomic bound to an existing transaction's
-// Queries.
-func NewJoiningTxRunner(q *dbgen.Queries) *JoiningTxRunner {
-	return &JoiningTxRunner{q: q}
+// Queries. sink receives the events of every change whose function succeeded,
+// where the production runner writes them to the outbox in the transaction
+// (#506): the tests' own stand-in for that, so a test sees the announcement the
+// moment the request returns. Nil announces nowhere.
+func NewJoiningTxRunner(q *dbgen.Queries, sink notification.Dispatcher) *JoiningTxRunner {
+	return &JoiningTxRunner{q: q, sink: sink}
 }
 
 // InTx runs fn against the enclosing transaction.
-func (r *JoiningTxRunner) InTx(_ context.Context, fn func(ticket.Store, audit.Store) error) error {
-	return fn(ticketstore.New(r.q), auditstore.New(r.q))
+func (r *JoiningTxRunner) InTx(ctx context.Context, fn func(ticket.Store, audit.Store, *notification.Changes) error) error {
+	changes := &notification.Changes{}
+	if err := fn(ticketstore.New(r.q), auditstore.New(r.q), changes); err != nil {
+		return err
+	}
+	if r.sink != nil {
+		for _, ev := range changes.Events() {
+			// An error fails the change, as an outbox write that fails rolls
+			// back the production transaction. Dropping it let tests pass over
+			// announcements that never happened.
+			if err := r.sink.Dispatch(ctx, ev); err != nil {
+				return fmt.Errorf("announcing %s: %w", ev.Type, err)
+			}
+		}
+	}
+	return nil
 }

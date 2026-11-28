@@ -1,0 +1,13 @@
+From: <helpdesk@example.com>
+To: <to@example.com>
+Subject: We have reopened [GHD-2026-000042]
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: quoted-printable
+
+Your ticket has been reopened.
+
+Ticket: GHD-2026-000042
+
+Follow it here:
+https://help.example.com/g#guest-token-abc

@@ -1,9 +1,12 @@
 package server
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 
 	"github.com/google/uuid"
@@ -49,6 +52,13 @@ func (s *Server) handleOIDCLogin(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, req.URL, http.StatusFound)
 }
 
+// loginRefused sends a browser that came back from the identity provider to
+// the login page with one of our own fixed codes, never anything from the
+// request. The page turns the code into text; JSON here was shown raw (#401).
+func loginRefused(w http.ResponseWriter, r *http.Request, code string) {
+	http.Redirect(w, r, "/login?error="+url.QueryEscape(code), http.StatusSeeOther)
+}
+
 func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 
 	s.oidcMu.RLock()
@@ -72,39 +82,33 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 	sd, ok := session.Values[auth.SessionDataKey].(auth.SessionData)
 
 	if !ok {
-		Error(w,
-			http.StatusUnauthorized,
-			"invalid_session",
-			"OIDC session state missing")
+		loginRefused(w, r, "invalid_session")
 		return
 	}
 
 	// An absent state parameter can never equal the non-empty session state, so
 	// this one check covers a missing, stale and mismatched state alike.
 	if sd.OIDCState == "" || r.URL.Query().Get("state") != sd.OIDCState {
-		Error(w,
-			http.StatusUnauthorized,
-			"invalid_state",
-			"OIDC state validation failed")
+		loginRefused(w, r, "invalid_state")
 		return
 	}
 
 	// The state is now spent: one authorization request, one callback. fail
 	// drops it from the session before reporting the failure, so a state left
 	// behind by a failed callback cannot be completed later with another code.
-	fail := func(status int, code, message string) {
+	fail := func(code string) {
 		sd.OIDCState = ""
 		sd.OIDCNonce = ""
 		sd.OIDCCodeVerifier = ""
 		if err := s.writeSession(w, r, sd); err != nil {
 			slog.Error("clearing spent OIDC state", "error", err)
 		}
-		Error(w, status, code, message)
+		loginRefused(w, r, code)
 	}
 
 	failInternal := func(err error) {
 		slog.Error("OIDC callback failed", "error", err)
-		fail(http.StatusInternalServerError, "internal_error", "an internal error occurred")
+		fail("internal_error")
 	}
 
 	// The IdP reports a refusal (access_denied, consent_required, …) by
@@ -115,18 +119,14 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 		slog.Warn("OIDC provider returned an error",
 			"error", idpErr,
 			"description", r.URL.Query().Get("error_description"))
-		fail(http.StatusBadRequest,
-			"idp_error",
-			"the identity provider did not authorize the login")
+		fail("idp_error")
 		return
 	}
 
 	code := r.URL.Query().Get("code")
 
 	if code == "" {
-		fail(http.StatusBadRequest,
-			"missing_code",
-			"OIDC authorization code missing")
+		fail("missing_code")
 		return
 	}
 
@@ -144,9 +144,7 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 	rawIDToken, ok := token.Extra("id_token").(string)
 
 	if !ok {
-		fail(http.StatusUnauthorized,
-			"missing_id_token",
-			"OIDC provider did not return id_token")
+		fail("missing_id_token")
 		return
 	}
 
@@ -162,9 +160,7 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 		if errors.Is(err, auth.ErrNonceMismatch) {
 			slog.Warn("OIDC id token nonce mismatch")
 		}
-		fail(http.StatusUnauthorized,
-			"invalid_id_token",
-			"OIDC token validation failed")
+		fail("invalid_id_token")
 		return
 	}
 
@@ -175,7 +171,8 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	email := strings.ToLower(strings.TrimSpace(claims.Email))
+	// Not normalised here: ValidateEmail does that.
+	email := strings.TrimSpace(claims.Email)
 
 	// An unverified address proves nothing about who owns it, so it must not be
 	// used to adopt an existing account or to provision a new one. Dropping it
@@ -189,9 +186,7 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 	// The allowed-domain list applies to every federated login, as it does for
 	// SAML JIT provisioning.
 	if email != "" && !user.IsEmailDomainAllowed(email, s.adminSvc.AllowedEmailDomains(r.Context())) {
-		fail(http.StatusForbidden,
-			"domain_not_allowed",
-			"this email domain is not allowed")
+		fail("domain_not_allowed")
 		return
 	}
 
@@ -207,6 +202,35 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 		email,
 	)
 
+	// A blank subject binds to nothing. It is reported as the malformed token
+	// it is, before the Require SAML check below can mislabel it.
+	if strings.TrimSpace(claims.Subject) == "" {
+		fail("invalid_id_token")
+		return
+	}
+
+	// "Require SAML for staff and users" covers OIDC as it covers passwords.
+	// Decided before UpsertOIDCUser, which would provision a new account or
+	// bind this subject to an existing local one, for a sign-in that is then
+	// refused. Only a subject already bound to an administrator passes: a new
+	// account is a plain user, and an unknown subject is never adopted onto an
+	// administrator (canAdoptByEmail), so anything else could not get through.
+	// A disabled administrator passes this and is refused by the upsert.
+	samlOn := s.adminSvc.SAMLEnabled(r.Context())
+	if samlOn {
+		role := user.RoleUser
+		if known, err := s.users.GetByOIDCSubject(r.Context(), claims.Subject); err == nil {
+			role = known.Role
+		} else if !errors.Is(err, user.ErrNotFound) {
+			failInternal(err)
+			return
+		}
+		if !user.MaySignInWithoutSAML(role, samlOn) {
+			samlRequiredRefused(fail, claims.Subject, role)
+			return
+		}
+	}
+
 	u, err := s.users.UpsertOIDCUser(
 		r.Context(),
 		claims.Subject,
@@ -217,35 +241,64 @@ func (s *Server) handleOIDCCallback(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		switch {
 		case errors.Is(err, user.ErrUserDisabled):
-			fail(http.StatusForbidden, "account_disabled", "this account is disabled")
+			fail("account_disabled")
 		case errors.Is(err, user.ErrAccountLinkRefused):
-			fail(http.StatusForbidden, "account_link_refused",
-				"this identity may not be linked to the existing account for that email address")
+			fail("account_link_refused")
 		case errors.Is(err, user.ErrSubjectRequired):
-			fail(http.StatusUnauthorized, "invalid_id_token",
-				"the identity provider did not supply a subject claim")
+			fail("invalid_id_token")
 		case errors.Is(err, user.ErrEmailRequired):
-			fail(http.StatusForbidden, "email_not_verified",
-				"the identity provider did not supply a verified email address")
+			fail("email_not_verified")
+		case errors.Is(err, user.ErrValidation):
+			fail("invalid_email")
 		case errors.Is(err, user.ErrDomainNotAllowed):
-			fail(http.StatusForbidden, "domain_not_allowed", "this email domain is not allowed")
+			fail("domain_not_allowed")
+		case errors.Is(err, user.ErrEmailTaken):
+			// Somebody else here already holds the address the identity
+			// provider sends. That is an administrator's problem to resolve,
+			// not a fault, and it used to be reported as an internal error on
+			// every sign-in attempt.
+			fail("email_taken")
 		default:
 			failInternal(err)
 		}
 		return
 	}
 
-	sd.UserID = u.ID
-	sd.Role = u.Role
-	sd.MFAPassed = true
-	sd.OIDCState = ""
-	sd.OIDCNonce = ""
-	sd.OIDCCodeVerifier = ""
+	// The row that is about to be signed in, asked again. The check above read
+	// the role some statements ago; an administrator demoted in between would
+	// otherwise sign in once more as the staff account they now are. Cheap, and
+	// it makes the decision about the account that actually gets the session.
+	// (Not reachable by a test without a hook between the two statements; the
+	// demotion test covers the pre-check on the next sign-in.)
+	if !user.MaySignInWithoutSAML(u.Role, samlOn) {
+		samlRequiredRefused(fail, claims.Subject, u.Role)
+		return
+	}
 
-	if err := s.writeSession(w, r, sd); err != nil {
+	// Built fresh, as the SAML handler does. The session loaded above belongs
+	// to whatever this browser did before the redirect, and the login start
+	// keeps it on purpose; copying it forward would carry that sign-in's
+	// MustChangePassword, staged factor and pending-MFA deadline onto the
+	// identity the provider vouched for.
+	// Counts as MFA, except for a role that must use a passkey and was not
+	// given a passkey-grade assertion (#616c): see signInSSO.
+	to, err := s.signInSSO(w, r, u, claims.AssertedMFA(), claims.AssertedPasskey())
+	if err != nil {
 		handleError(w, err)
 		return
 	}
 
-	http.Redirect(w, r, "/", http.StatusSeeOther)
+	http.Redirect(w, r, to, http.StatusSeeOther)
+}
+
+// samlRequiredRefused turns away an OIDC sign-in that Require SAML does not
+// allow. It logs why, so an operator asked "why was I bounced?" can find the
+// line: the role and a short hash of the subject, never the email address. The
+// hash is enough to match against the identity provider's own sign-in log.
+func samlRequiredRefused(fail func(string), subject string, role user.Role) {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(subject)))
+	slog.Info("OIDC sign-in refused: SAML is required for this role",
+		"role", string(role),
+		"subject_sha256", hex.EncodeToString(sum[:6]))
+	fail("saml_required")
 }

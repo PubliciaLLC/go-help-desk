@@ -2,16 +2,28 @@
 
 ## Overview
 
-Open-source, self-hosted help desk system inspired by HESK, with SAML authentication, a plugin infrastructure, and a REST API. Built with a long-term roadmap toward SaaS (v4).
+Open-source, self-hosted help desk system inspired by HESK, with local, SAML and OIDC sign-in, TOTP and passkey MFA, guest and self-service submission, a REST API and an MCP interface. A plugin infrastructure is specified (v2) but does not work yet. Built with a long-term roadmap toward SaaS (v4).
 
 ## Versioning Roadmap
 
 | Version | Scope |
 |---------|-------|
-| **v1** | Core ticketing (with linked tickets, optional SLA tracking), local + SAML auth + MFA, plugin system (admin UI install), REST API, MCP interface, email + webhook notifications, Docker deployment |
-| **v2** | Custom fields, CTI-linked group management, canned responses, full-text search (Postgres FTS) |
-| **v3** | Reporting, knowledge base, custom admin-defined roles |
-| **v4** | Multi-tenancy / SaaS, plugin registry, ITSM ticket types (Incident/SR/Problem/Change), Impact × Urgency priority matrix, default ticket type per CTI |
+| **v1** | Core ticketing (KPI reports, linked tickets, follow-ups from Closed tickets, auto-assignment, optional SLA tracking with breach and at-risk alerts), local + SAML + OIDC auth, self-service signup, guest submission, MFA (TOTP or passkey), custom fields, CTI-linked group management, canned responses, full-text search (Postgres FTS), attachments with malware scanning and hash-reputation lookup, admin audit view with retention, REST API, MCP interface, email + webhook notifications delivered through a database outbox (with Slack/Teams/Discord/JIRA payload formats and per-hook ticket filters), Docker deployment |
+| **v1.4** | ITSM ticket types (Incident/SR/Problem/Change), Impact × Urgency priority matrix, default ticket type per CTI (#135); incident management (#408); monitoring events (#411); operational reporting beyond the 1.3 KPI reports: scheduled reports, channel and agent cuts (#131); asset reference (#415); continual improvement (#405); suppliers (#406); relationship management (#407) |
+| **v2** | Plugin system (1st/3rd-party, sandboxed, admin UI install); plugin runtime (#416); Snipe-IT reference plugin (#403) |
+| **v3** | Knowledge base, custom admin-defined roles |
+| **v4** | Multi-tenancy / SaaS, plugin registry |
+
+Custom fields, CTI-linked group management, canned responses and full-text
+search were built ahead of the original v2 schedule and are shipped; this table
+reflects that, not the order they were planned in. Plugins went the other way:
+the admin plugin routes exist (there is no admin page for them) but nothing
+registers a plugin, so the list is always empty and enable/disable fails for
+every id; install/uninstall return `501` and no event ever reaches a plugin
+(`plugin.Registry.Dispatch` is built and never called from the notification
+chain). 1.x has no working plugin system; it is a v2 feature. The part of the plugin pitch
+worth keeping in v1, chat/ITSM notifications, ships as payload formats on the
+webhook feature; see Notifications.
 
 ---
 
@@ -19,7 +31,7 @@ Open-source, self-hosted help desk system inspired by HESK, with SAML authentica
 
 | Layer | Choice | Rationale |
 |-------|--------|-----------|
-| Backend | **Go** | Single binary, small Docker image, strong concurrency, good plugin/WASM story |
+| Backend | **Go** | Single binary, small Docker image, strong concurrency, good WASM story for the planned v2 plugin system |
 | Frontend | **React (Vite SPA)** | Large ecosystem, good theming via CSS variables, Shadcn/ui component library |
 | Database | **PostgreSQL** | Row-level security for future multi-tenancy, JSONB for custom fields, native FTS, best managed hosting options |
 | Deployment | **Docker** (`docker-compose`) | Go app + Postgres. Upgrade path to Kubernetes for v4 |
@@ -38,6 +50,353 @@ Three-level hierarchy: **Category → Type → Item**
 - Item dropdown is disabled until a Type is chosen
 - Types and Items are optional downward — a Category may have no Types, a Type may have no Items
 
+**Setup creates the first Category, so "required" is always satisfiable.**
+Category is required on every ticket and categories, unlike statuses, are not
+seeded. `POST /setup` therefore takes an optional `category` name (the wizard
+pre-fills one; blank falls back to "General") alongside the administrator. The
+category is created **before** the administrator and only when none exists:
+setup answers 409 forever once a user exists, so a failure between the two
+steps must not leave an instance with an administrator and no category. That
+order leaves two failure modes, both retryable (nothing happened, or a category
+exists and no user does), and the existence check makes a retry reuse the
+category instead of stacking duplicates. See #323.
+
+**Descriptions (1.3.0).** Each category, type and item has an optional
+`description`: a short line of guidance that tells a person what belongs under
+it ("Laptops, desktops, docks and monitors. For phones see Mobile."). Nothing
+changes for an instance until an administrator writes one.
+
+- **The value.** Plain text, at most **500 characters**, counted as characters
+  (Unicode code points), not bytes. Trimmed on the way in; an empty or
+  whitespace-only value is stored as the empty string and means *none*. Newlines
+  are kept and shown as line breaks. It is **never** rendered as HTML or Markdown:
+  `<b>x</b>` is stored verbatim and shown as those literal characters (the UI
+  puts it in a React text node and breaks lines with CSS `white-space:
+  pre-line`). The column is `TEXT NOT NULL DEFAULT ''` on `categories`, `types`
+  and `items`, with `CHECK (char_length(description) <= 500)`, so a row cannot
+  hold more even if a handler is bypassed. `NOT NULL DEFAULT ''` rather than
+  nullable so "none" has one spelling and no reader needs two branches. Migration
+  `000069`; its down drops the three columns (and their checks with them).
+- **The limit is enforced twice.** `category.Service` rejects a longer value with
+  `category.ErrValidation`, which the handlers already answer as `400
+  bad_request` ("description is too long: 501 characters, the limit is 500"); the
+  CHECK is the backstop and is not expected to fire. The service trims.
+- **Most specific wins, with fallback.** What the chooser shows is one text: the
+  chosen **item's** description if it has one, otherwise the chosen **type's**,
+  otherwise the chosen **category's**; nothing if none of the chosen levels has
+  one. It follows every selector change, shows nothing before a category is
+  chosen, and a change of category clears the chosen type and item and so the
+  text with them. The rule is one pure function over the three chosen rows
+  (`mostSpecificDescription`, `frontend/src/lib/ctiDescription.ts`), so no
+  component repeats it.
+- **Where it shows: every place a person *chooses* a classification.**
+  1. **New ticket** (`/tickets/new`), for staff and administrators (including
+     when filing for another person) and for requesters. Requesters have a
+     category and a type selector, and an item selector only while **Show Items
+     to registered users** is on (see Which levels of the tree a caller sees);
+     staff and administrators always have all three. With the setting off a
+     requester sees at most the type's text.
+  2. **Guest form** (`/submit`): the category selector, then a type selector
+     only while **Show Types to guests** is on, then an item selector only while
+     **Show Items to guests** is on as well (see Which levels of the tree a
+     caller sees and Guest submission). With both off a guest sees the
+     category's text only.
+
+  **Who can read a description: every active one a caller may list.** The
+  catalogue routes (`GET /categories`, `/categories/{id}/types`, `.../items`)
+  are open to anyone while guest submission is on, and to any signed-in user
+  always, and they serve the description of **every active category, type and
+  item the caller may list**: the levels a caller sees are one policy, set out
+  under Which levels of the tree a caller sees (#711). A registered requester
+  lists categories and types always and items only while **Show Items to
+  registered users** is on; a guest lists categories always, types only while
+  **Show Types to guests** is on and items only while **Show Items to guests**
+  is on too (before #711 a guest or a requester could list every active type
+  and item by calling the routes). An **archived** entry is not served to anyone but staff and
+  administrators, and neither are the children of an archived parent (archiving
+  does not cascade, so the lists check the parent: a guest or requester gets an
+  empty list under an archived category or type; a failed lookup of the parent
+  is a `500`, not an unfiltered list). The visible effect: a requester's view of a
+  ticket whose category (or type) was archived later no longer shows its type and
+  item names (the category already showed a dash), and the filter chips of a
+  requester filtering by an archived category lose their type and item names the
+  same way (`useFilterLookups`); staff, administrators and the reclassify card
+  are unchanged. The admin form says all of
+  this. **Decision (kept, not filtered):** a description is served with the row
+  it belongs to, never held back from a list that serves the row: a type's or an
+  item's text is public exactly when its name is. The rule is one sentence, and
+  a second, per-caller shape of the same list would be a special case in every
+  handler that serves it, for text that is public by design. What is public is
+  decided by who may list the level (#711), not by the text.
+  3. **Reclassify** on the ticket page (the **Classification** card's Edit mode,
+     staff and administrators): the same three selectors, so the same text
+     beneath them. It is shown only while editing, not in the read-only display
+     of the ticket's current classification, where nobody is choosing.
+
+  Not included, because nobody chooses a classification there and the text
+  would only be noise: the ticket list filters, Reports, the webhook and SLA
+  policy editors, canned responses and custom-field placement (each picks a
+  *scope* to match, not a classification for a ticket), and the guest
+  follow-up form (it has no chooser: the follow-up inherits the original's).
+- **Accessibility and phones.** The text sits in one element beneath the
+  selectors, `id`-linked to them with `aria-describedby` on each selector and
+  announced by an `aria-live="polite"` container that is always in the page (so
+  a change is announced); the text itself is a child that exists only while
+  there is text, so an empty state has no box and no height, and the form does not
+  jump beyond the text itself. It wraps (`wrap-anywhere`) and is readable at 320
+  CSS pixels with no sideways scroll. **There is no hover tooltip and no `title`
+  attribute**: a native `<select>` cannot give an `<option>` a tooltip, and a
+  hover-only affordance does not exist on a phone, so the text beneath the
+  chooser is the mechanism.
+- **Admin.** **Admin → Categories** gets an optional **Description** on create
+  and edit for all three levels: a multi-line field with a live
+  "N / 500" counter that turns to an error at 501 and disables Save. The counter
+  and the limit both count the **trimmed** text (padding is neither counted nor
+  stored). It sits in the node's expanded panel (edit, beside **Groups** and
+  **Fields**) and under the name in the Add category / type / item forms
+  (create). The same hint is under the field at all three levels: "Shown beneath
+  the Category / Type / Item chooser on the new-ticket form, the guest form
+  (the category only, unless an administrator shows guests the Type and
+  Item) and the reclassify card on a ticket. Plain text, no
+  formatting; line breaks are kept. This text is public: while guest submission
+  is on, anyone can read the description of every active category (and of every
+  active type and item too, if guests are shown them), and any signed-in user
+  can read the categories and types at any time (the items only if registered
+  users are shown them). Do not put anything here you would not put on a
+  public web page." (`DESCRIPTION_HINT`,
+  `DescriptionField.tsx`.) The box follows the row when another administrator
+  changes it, unless something has been typed in it. What counts as padding:
+  Go's white space plus U+FEFF, on the server; the form strips the same set
+  (`trimDescription`), because a browser's `trim()` and Go's `TrimSpace`
+  disagree on U+FEFF and U+0085. Archiving, restoring and deleting are
+  unchanged, and an archived row keeps its description.
+- **API (additive).** `description` (string, `""` for none) is in the response of
+  every endpoint that returns a category, type or item: the admin CRUD under
+  `/admin/categories`, the catalogue the forms read (`GET /categories`,
+  `/categories/{id}/types`, `.../items`), and the MCP `list_categories` tree.
+  `POST` and `PATCH` on the admin routes accept an optional `description`; on
+  `PATCH` an absent key leaves the value alone and `""` clears it, like every
+  other field of that body. **Checked and left alone:** a ticket's payload
+  carries only `category_id`, `type_id` and `item_id`, no names and so no
+  descriptions, and the webhook and event payloads carry ids too, so nothing
+  there changes; the audit view resolves names only.
+- **Audit.** Creating, editing, archiving and deleting a category, type or item
+  is not audited today (the only entries the CTI routes write are the
+  `custom_field_detached` entries a delete takes with it, and a ticket's
+  `classified`). A description edit is the same kind of edit, so it is covered by
+  exactly what covers the others: nothing new is written. Adding a mechanism to
+  audit CTI edits is a separate decision, not part of this change.
+- **No import, export or copy.** There is no CTI import, export or clone
+  feature, so there is nothing to carry the field through.
+
+**Which levels of the tree a caller sees (1.3.0, #711).** Until now the picker
+was shaped by role: staff and administrators saw Category, Type and Item; a
+signed-in requester saw Category and Type on the form but could read every
+active item through the API; a guest saw the Category on the form but could read
+every active type and item through the API. Three independent switches decide
+what a caller who is not staff may see of the tree, **everywhere**: the forms,
+the API, MCP and the tickets a requester reads back. All three are **off by
+default, an upgraded install included**, so on an upgrade the Item disappears
+from what a requester reads and the guest lists close until an administrator
+turns them on. (The Type is not a switch for registered users: they always see
+it.)
+
+- **The three settings** (rows of the `settings` table, booleans, read with
+  `admin.Service.GetBool`, so an absent row reads `false`):
+
+  | Key | Label | Where |
+  |---|---|---|
+  | `users_show_items` | **Show Items to registered users** | Admin → System → General → Tickets, under the tracking number prefix |
+  | `guests_show_types` | **Show Types to guests** | Admin → System → Guest Access → Submissions, under **Guests may attach files** |
+  | `guests_show_items` | **Show Items to guests** | the same page, under **Show Types to guests** |
+
+  The labels are the toggles' labels and accessible names. Help text, verbatim.
+  Users: "Show signed-in requesters the Item under each Type: an Item selector on the new-ticket page and the Item on their tickets, with the same description and custom fields staff get. Off by default: requesters see Category and Type only, and neither the Item nor the values of fields only an Item supplies are sent to them (not on their tickets, not in lists or filters, not over MCP), and staff assign it afterwards." Guest Types: "Show guests a Type selector under Category on the
+  guest form, with the same descriptions. Off by default: guests choose a
+  Category only. It only takes effect while guest submission is on, and it makes
+  the names and descriptions of every active type public to anyone who can open
+  the form." Guest Items: "Show guests an Item selector under Type on the guest form. Needs guest submission on and Show Types to guests, and makes the names and descriptions of every active item public too. This is separate from Show Items to registered users: with this on and that off, a registered user can sign out and read the item list." The two guest switches are **dependent**, like
+  **Guests may attach files** is on guest submission: the toggle for Types is
+  unavailable while guest submission is off and the one for Items while Types is
+  off (the stored values are kept), and the **server computes the effective
+  values** and ignores an inconsistent stored combination (Items on, Types off
+  is Items off). They are independent of the registered-user switch.
+- **No migration.** An absent row reads `false`, which is the default wanted on
+  a fresh install and an upgraded one alike; no seed row is written, so there is
+  nothing to renumber and nothing for the upgrade to get wrong. A test pins that
+  a database migrated to head has none of the rows and that all three read
+  `false` there. All three are in `KnownKeys`.
+- **Settings API.** The keys are accepted by `PATCH /admin/settings` and
+  returned by `GET /admin/settings` once saved (absent before; the page reads
+  absent as `false`). A value that is not a JSON boolean is a `400`, null
+  included, and nothing is stored. All three are in `AuthCriticalKeys`:
+  **session only**, an API key or OAuth client sending one gets `403
+  session_required`, because turning one on publishes names to the anonymous
+  internet or to every registered user, and a leaked key must not be able to.
+  Changes are **not audited**, like the plain settings beside them (settings
+  writes go straight to the `settings` table).
+- **One policy, enforced from one place.** `catalogue.VisibleLevels(ctx,
+  settings, who)` (package `internal/domain/catalogue`) answers
+  `Levels{Types, Items}` for one of three callers and is the only place the
+  rule is written:
+
+  | Caller (`who`) | Types | Items |
+  |---|---|---|
+  | Staff and administrators | yes | yes |
+  | Registered requester | yes, always | `users_show_items` |
+  | Guest (no account) | guest submission on **and** `guests_show_types` | the Types condition **and** `guests_show_items` |
+
+  A role nobody recognises is a requester, and a caller that is not said at all
+  (a nil actor, the zero value `catalogue.Unknown`) sees nothing below the
+  category, in the REST handlers, `viewerJSON` and MCP alike. Levels are worked
+  out once per request and passed down. **A machine credential acts with its
+  owner's role**: an API key, an OAuth client (through its service account) and
+  a session get the levels of the person they stand for, and nothing else is
+  consulted. A session that has not finished MFA or owes a password change is
+  not staff here (as for the catalogue's archived rows) and is a requester.
+  Every surface calls the function and none restates the rule:
+  - **REST catalogue** (`GET /categories`, `/categories/{id}/types`,
+    `.../items`): a level the caller may not see answers `200 []`, exactly as a
+    category with no children does, so there is no refusal to learn from. The
+    category list is always served (to guests, while guest submission is on).
+  - **Tickets a requester reads** (every response that goes through
+    `ticket.FilterForViewer`: `GET /tickets`, `GET /tickets/{id}`, the dashboard
+    lists, the answers to create, follow-up, reply and the rest, and MCP
+    `get_ticket`, `list_tickets`, `create_follow_up` and the other tools that
+    return a ticket): when Items is not visible to the caller, **`item_id` is
+    removed** from the ticket object, so the Classification card and the filter
+    chips show Category and Type only. This is the strictest reading of "do not
+    let a registered user query down to the Item" and is a **decision that is
+    easy to relax**: it is one condition in `FilterForViewer`, and the requester's
+    allowed-key list (`requesterTicketKeys`) keeps `item_id` as a *conditional*
+    key (`requesterItemKeys`) which the classification test covers. A ticket that
+    has an Item (staff set it, or the requester chose it while the switch was on)
+    shows none to the requester once the switch is off, and shows it again when
+    the switch is turned back on. A requester's history and audit feed are
+    staff-only routes and carry nothing. The ticket's custom field *values* are
+    leveled too: a value on a field only the Item supplies is not read
+    (`GET /tickets/{id}/custom-fields` leaves it out) and not written
+    (`PUT` answers the `400` an unknown field gets, "is not a field on this
+    ticket", which also does not say which item the ticket carries), for a
+    caller who cannot see Items. The guest view of a ticket carries no
+    classification.
+  - **Filters**: `item_id` (and `type_id` where Types is not visible) is refused
+    to a caller who cannot see that level, with the refusal every other
+    unavailable filter has: `403 forbidden` ("item_id is not available to
+    this account"), the same over MCP. `Filter.AllowedForLevels` adds the check to
+    `AllowedFor`. No other search path reads an Item (free text does not match
+    item names), and there is no suggestion path by item.
+  - **Custom-field resolution** (`GET /tickets/fields`, MCP
+    `list_ticket_fields`): a level the caller may not see is not resolved, so an
+    `item_id` from a requester who cannot see Items is left out and the
+    answer is the category's and type's fields, with no item-level assignment
+    (an assignment carries the item's id).
+  - **MCP** `list_categories` returns only the levels the caller sees: a
+    requester gets Categories and Types and no `items` key content (empty)
+    unless Items is visible; staff get all. `get_ticket`, `list_tickets` and the
+    other ticket tools follow the REST ticket rule and the filter rule above.
+    `create_ticket` is staff only and takes any level. Every other tool was
+    checked: none returns or accepts a type or item name or id except the ones
+    named here.
+  - **Creating a ticket** (REST, guest form): a requester's or guest's `type_id`
+    and `item_id` are honoured only for a level they may see and are otherwise
+    dropped without a word, exactly as an item always was for a requester. What
+    is honoured is validated by the code staff go through
+    (`ticket.Service.Create`, below).
+  - **`GET /site`** (public) gains `guests_show_types` and `guests_show_items`,
+    the effective values (false while guest submission is off, items false while
+    types is). **`GET /me`** gains `can_choose_item`, always present: `true` for
+    staff and administrators, and for a requester `Levels.Items`. A client reads
+    these to decide what to draw; the server decides what is served.
+  - **Webhooks, Slack/Teams messages and email.** A webhook is an outbound
+    channel an administrator configures, and its payload (the `type_id` and
+    `item_id` on a ticket event, the names in a Slack or Teams new-ticket
+    message) is staff-facing and unchanged. No email template the system sends to
+    a requester or guest carries a type or item (nor a category): nothing
+    reaches them there. The reports and the admin audit are staff-only.
+  - **Descriptions** follow the level: a level a caller does not see is not
+    listed, so its description is not served; the chooser shows the most
+    specific description among the levels the form offers.
+- **Guests and registered users are separate settings, on purpose (owner
+  decision).** The consequence, stated plainly: with **Show Items to guests**
+  on and **Show Items to registered users** off, a registered user can sign out
+  and read the item list as a guest. The three switches are independent; only the
+  guest Items one depends on the guest Types one and on guest submission.
+- **No post-upgrade wizard step.** Rejected: a step offering the three switches
+  to an administrator of an upgraded install. The safe default is off and there is
+  nothing to choose until a deployment wants the levels shown; the upgrade notes
+  and the settings pages say where they are, as #676 decided for its setting.
+- **Creating a ticket, level not visible: exactly today.** `POST /tickets` from a
+  requester drops `item_id` with Items not visible (and checks `type_id` as it
+  always did); `POST /guest/tickets` ignores `type_id` and `item_id` as unknown
+  keys, a malformed value included.
+- **Creating a ticket, level visible.** The chain is validated **before** a
+  tracking number is spent, by `ticket.Service.Create` (`CTIIsCoherent`: the
+  type belongs to the category and the item to the type, an **item with no type
+  is refused**; `refuseArchivedPick`: an archived category, type or item is
+  refused), `400 bad_request`, for every caller ("type_id and item_id must belong
+  to the category and to each other", "type_id is not an active type",
+  "item_id is not an active item"; a test pins the words). A requester is also
+  held to an active category and type with the wording they always had. Type and
+  Item stay **optional**. An `item_id` without its `type_id` is the `400` above.
+  A guest's malformed id is the form's own `400`. Routing is by category and type
+  (items do not factor into scope), so a type a guest chooses routes the ticket
+  as it routes a requester's. An API key is its owner's role.
+- **Custom fields follow the selection.** For **requesters** the form's fields
+  are `GET /tickets/fields` resolved for the category, type **and item** they
+  can see, and `CheckCreation`/`SetCreationValues` resolve the same way, so a
+  field attached to the chosen item is offered, required where it says so, and
+  saved, as for staff. The values already on a ticket follow the same levels (see
+  Tickets a requester reads). A requester will not be allowed to edit values at
+  all once the viewer-layer hardening that builds on this lands; until then the
+  level rule above is what is enforced. For **guests** the fields offered stay **the category's
+  own, offered to guests** (`GuestFields`): a guest-visible attachment on a type
+  or an item is not possible (#627) and this change does not relax it.
+- **Follow-ups keep what was chosen.** A follow-up of a closed ticket (#349) is
+  filed under what its requester could choose, so it lands in the queue the
+  original did: an account holder's keeps the Type and, while Items is visible to
+  them, the Item; a guest's keeps the Type while Types is visible to guests and
+  the Item while Items is, and is routed on the kept type. With a level not
+  visible it is exactly as it was: an account holder's has the type and no item,
+  a guest's has neither and is routed on the category. **A level archived since
+  the original was filed is not refused: the follow-up keeps the deepest level
+  that is still active, silently** (item archived: the type is kept; type
+  archived: the category alone, and it is routed on the category), for requester
+  and guest alike. This changes the one refusal an account holder got before
+  (an archived type was a `400`). An archived *category* is still refused
+  (`400`, as for a direct submission). What is kept still passes the creation
+  rule a requester has (`requesterClassificationOpen`). Staff follow-ups are
+  unchanged (`ticket.Service.CreateRequesterFollowUpKeeping`, with the levels as
+  its `catalogue.Levels` argument; the older `CreateRequesterFollowUp` is
+  deprecated and kept for one release).
+- **Catalogue answers, in one table** (`200 []` is "nothing here" everywhere):
+
+  | Caller | Categories | Types | Items |
+  |---|---|---|---|
+  | Staff, administrators | all (archived too) | all | all |
+  | Registered requester | active | active | active only with `users_show_items`, else `[]` |
+  | Guest | active | active only with `guests_show_types`, else `[]` | active only with Types and `guests_show_items`, else `[]` |
+
+  The requester's own ticket page names the Type from this list, and no longer
+  the Item unless Items is visible to them: with it off the ticket carries no
+  `item_id` and shows none.
+- **The forms.** `/tickets/new`: Category, Type and, iff `can_choose_item`,
+  **Item**, with the cascade (a new category clears Type, Item and the custom
+  field values typed so far; a new Type clears Item and the values; the Item
+  select is disabled until a Type with items is chosen); `item_id` is sent only
+  when chosen and visible. `/submit`: Category, then, iff `guests_show_types`,
+  **Type**, then, iff `guests_show_items`, **Item**, with the same cascade; the
+  lists are fetched only once there is something to ask for; `type_id` and
+  `item_id` are sent only when chosen. While a list loads, or when it cannot be
+  loaded, the form says so under its selector instead of looking empty. A form
+  open while a setting is switched off still works: the server ignores what it
+  may not take.
+- **Screenshots and docs.** The new-ticket and guest-form screenshots show the
+  default and stay true; the General and Guest Access settings screenshots each
+  gain rows and are retaken at release. The upgrade notes (1.3.0) say that on an
+  upgrade requesters stop receiving `item_id` and guests stop reading the type
+  and item lists until the switches are turned on. The README line stays true.
+
 ### Tickets (v1)
 
 Core fields (all editions):
@@ -47,20 +406,31 @@ Core fields (all editions):
 - **Category** (required)
 - **Type** (optional, depends on Category having Types defined)
 - **Item** (optional, depends on Type having Items defined)
-- **Priority** (configurable levels, e.g. Critical / High / Medium / Low)
+- **Priority** (a fixed set of four: `critical`, `high`, `medium`, `low`; the set is not configurable). Set at creation; staff and admin can change it afterwards (`PATCH /tickets/{id}`), which re-matches the ticket's SLA policy for the new priority without restarting its clock. Refused on a Resolved or Closed ticket (see SLA Tracking → Re-matching when priority changes, #443). On the ticket page it is a select in the **Details** card, shown to staff and admin only (a reporting user sees the badge), and disabled with a one-line reason on a Resolved or Closed ticket; a refusal shows the server's message and leaves the old value
 - **Status** (customizable statuses per instance, see Ticket Lifecycle below)
-- **Assignee** (staff member or group)
+- **Assignee** (staff member or group). On the ticket page, staff and admin get an **Assign to me** button in the Assignee panel, offered only when the ticket has no assignee user (#444): it is hidden once the ticket is assigned to anyone, me included, on a Resolved or Closed ticket, and for a reporting user. **It keeps the ticket's group.** The server's assign sets the user and the group from the request, so a user-only `PATCH` would clear the group; the button sends `assignee_user_id` together with the ticket's own `assignee_group_id` (the key is omitted when there is no group). Picking a user from the list, by contrast, replaces the group, as before
 - **Attachments** (file uploads)
-- **Replies/thread** (staff and user messages)
+- **Replies/thread** (staff and user messages). **Append-only by design.** A reply cannot be edited or deleted, by anyone; a correction is a new reply. Decided on #468 (2026-10-13).
 - **Linked tickets** (related, parent/child, caused-by, duplicate-of — can link to any ticket including Closed)
-- **Tracking number** (quoted in notification email, and one half of a guest link re-request)
+- **Tracking number** (quoted in notification email, and one half of a guest link re-request). Shaped `PREFIX-YEAR-SEQUENCE`, e.g. `GHD-2026-000001`. The prefix is the `ticket_prefix` setting (**Admin → System → General → Tickets**): one to eight uppercase letters or digits, `GHD` by default, validated when saved (`400 invalid_ticket_prefix`) and applied only to tickets created afterwards, because issued numbers are already in customers' inboxes and replies and are never rewritten
 - **Resolution notes** (summary of what resolved the ticket, captured at resolution)
+- **Source channel** (`tickets.source_channel`, #130): how the ticket arrived, one of `web`, `api`, `mcp`, `guest`, `phone` (a CHECK constraint; `email` is reserved for inbound mail and is a migration away). **Derived by the server from the entry point, never asserted by a caller**, because a caller-chosen channel is a column no report can trust:
+
+  | Entry point | Channel |
+  | --- | --- |
+  | The web app's ticket form, or any REST call made in a browser session | `web` |
+  | REST with an API key or OAuth client (the credential's `Machine` flag, not the route) | `api` |
+  | MCP `create_ticket`, `create_follow_up` | `mcp` |
+  | The guest form, and a guest's follow-up | `guest` |
+  | Staff filing on someone's behalf from the web form, with "Phone call" picked | `phone` |
+
+  **`phone` is the one value a person chooses**, and only a member of staff in a browser session who also names a requester (`reporter_user_id` or `reporter_email`, #444); the default stays `web`. `POST /tickets` takes a `source_channel` member for that alone. **Every other use is refused with `400` and nothing is written** (refusal rather than ignoring, as for a requester's `reporter_*`): any value from an API key or OAuth client, any value but `phone` from a session, `phone` without a requester, and MCP `create_ticket` with a `source_channel` argument. The ticket service backs this up: `phone` without a filer is a validation error. **A follow-up records its own entry point**, not its original's: the person who clicks follow-up is the one opening this ticket, by whatever route (a follow-up of a phone ticket is `web`). **Existing tickets read `web`** (migration 000056), which invents history for those that came in by API or MCP; the 1.3.0 upgrade notes say so. The column has no default after the migration, so a new entry point that forgets to name its channel fails the NOT NULL check instead of being recorded as `web`. **Staff and administrators see it** (the ticket object, MCP `get_ticket`, and a small "via phone" line next to "Opened" on the ticket page); **requesters and guests never do**: it is on the requester never list, because it is operational and `phone` would tell them that staff filed it. A filter on the ticket list is not built.
 
 SLA fields (optional feature toggle, all editions):
 
 - **SLA target** (response time and resolution time targets, configurable per Priority and/or Category)
 
-ITSM fields (v4 SaaS only):
+ITSM fields (v1.4, #135; behind an admin setting, off by default, so an install that sorts work by Category alone sees no change):
 
 - **Ticket Type** (Incident, Service Request, Problem, Change Request)
 - **Impact** (High / Medium / Low — how broadly the issue affects the organization)
@@ -74,23 +444,29 @@ Three roles: **Admin**, **Staff**, **User**
 
 | Role | Capabilities |
 |------|-------------|
-| **Admin** | Full system access. Manage settings, users, groups, categories, plugins, tags. Can always log in with local auth even when SAML is enabled (failsafe). |
-| **Staff** | Create tickets. View/edit/assign tickets within their scope. Search tickets by tracking number, subject, or description keywords. Jump directly to any ticket by tracking number or UUID. Assign tickets to any staff member or group. Add and remove tags on tickets. |
-| **User** | Create tickets. View their own tickets. Update their own tickets unless status is Resolved. Reopen a Resolved ticket within a configurable window (admin setting: "Users can reopen tickets for X days after resolution"). |
+| **Admin** | Full system access. Manage settings, users, groups, categories, tags. (Plugins are not manageable in 1.x; the plugin system is planned for v2.) Can always log in with local auth even when SAML is enabled (failsafe). |
+| **Staff** | Create tickets. View/edit/assign tickets within their scope (see [Groups & Scope](#groups--scope)). Search tickets by tracking number, subject, or description keywords. Jump directly to any ticket by tracking number or UUID. Assign tickets to any staff member or group. Add and remove tags on tickets. |
+| **User** | Create tickets. View their own tickets. Reply to and attach files to their own tickets until they are Closed; a Closed ticket is read-only to them (see [Closed is terminal](#closed-is-terminal-and-read-only)). Reopen a Resolved ticket by replying within a configurable window (admin setting: "Users can reopen tickets for X days after resolution"); the ticket is flagged, raised one priority level the first time, and its SLA starts over (see the Ticket Lifecycle). |
+
+**Admin → Roles** is a read-mostly page: it shows the three roles with a one-line description each and, under each, the users who hold it, with a dropdown that changes a user's role (`PATCH /admin/users/{id}`, the same call the user page makes). It does not define permissions; the roles are fixed. The dropdown is disabled on administrator rows (demote an administrator from their user page) and it shows the first 200 accounts only: it calls `GET /admin/users` without `page`, which returns at most 200 (the paged mode below is what lifts that cap, and this page does not use it yet).
 
 **Custom admin-defined roles (v3):** admins will be able to define additional roles and grant a curated set of permissions (e.g., "Tier 1 Agent" with ticket read/reply but no assignment rights). The three built-in roles remain as defaults and cannot be removed. Permissions are stored as discrete capability flags rather than hardcoded in code, with the built-in roles expressed as preset bundles so existing behavior is preserved.
 
 ### User Management (Admin)
 
-Admins manage accounts from **Admin → Users**. The user list is clickable — clicking a user opens a detail page with:
+Admins manage accounts from **Admin → Users**. The list is paged, 50 to a page, with a search box (a substring of the name or email, ignoring case) and a role filter, and shows "Showing 1-50 of N" with Previous and Next. `GET /admin/users?page=N` is what asks for that: it also takes `per_page` (default 50, maximum 200), `q`, `role` and `service_account` (`true` = only service accounts, `false` = only people), answers a bare array, and puts the number of matches in `X-Total-Count`; a bad `page`, `per_page`, `role` or `service_account` is a 400. **Without `page` the endpoint is unchanged** — the newest 200 accounts, with `limit`, `offset`, `q`, `role` and `service_account` ignored, as before — so an existing client sees no difference, and the 200 cap lifts only for a client that asks for later pages. The list is clickable — clicking a user opens a detail page with:
 
 - **Profile** — edit display name, email address, and role. Changes take effect immediately.
-- **Account info** — member since date, login type (Local / SSO / Local + SSO), MFA enrollment status.
-- **MFA reset** — clears the TOTP secret so the user re-enrolls on next login. Only shown when the user has MFA enrolled.
+- **Account info** — member since date, login type (Local / SSO (SAML) / SSO (OIDC) / Local + SSO), MFA enrollment status. The login type is read off what the account holds: a password, a SAML subject, an OIDC subject. The API reports it as `auth_type`: `local`, `saml`, `oidc`, `both` (password and SAML), or a `+`-joined combination that includes `oidc` (`local+oidc`, `saml+oidc`, `local+saml+oidc`).
+- **MFA reset** — clears every second factor the user holds (the authenticator and all registered passkeys) and ends all of their sessions, so the user re-enrols on next login. Only shown when the user holds any second factor, and not on your own account (refused with `409 own_account`; see Passkeys, Losing a key).
+- **Passkeys** — the user's registered passkeys, each with **Remove**: one key goes and the user is signed out everywhere (`GET` and `DELETE /admin/users/{id}/passkeys[/{credId}]`, session only, audited). Not offered on your own account.
 - **Enable / Disable** — disabled accounts cannot log in. Tickets and history are preserved. Re-enable at any time.
-- **Password reset** — set a new password directly (shown only for accounts with a local password). No email link required for admin-initiated resets.
+- **Password reset** — set a new password directly (shown only for accounts with a local password). No email link required for admin-initiated resets. The account holder can also reset their own by email (Authentication → Forgot password, #451); the administrator's route is unchanged and is the way back when email is off.
 - **Groups** — view current group membership, add to groups, or remove from groups.
-- **Delete** — permanently removes the account. Tickets and replies the user created are preserved with a "removed user" attribution. Requires a second confirmation click. Prefer disabling instead when there is any chance the account may be needed again.
+- **One edit, one outcome.** A single save from the detail page can change several fields (disabled, MFA reset, role, name, email). Every field is validated, the account is confirmed to exist, and the two refusals the database would otherwise give mid-save (a change that would remove the last active administrator, and an email address another account holds) are checked, all before the first write, so a refused save changes nothing. The writes themselves stay guarded statements, so a request that loses a race with another administrator is still refused by them, possibly after earlier steps have been applied. A deleted account answers `404` to every edit and to a password reset, and the checks run in the same order for a session and an API key.
+- **Last administrator.** Disabling, deleting or demoting the last active administrator is refused (`400`): setup does not reopen, so an instance with none is orphaned for good. The count and the write are one statement that locks every active administrator row, so two parallel requests (even one administrator removing both another and themselves) cannot both pass. Removing an administrator's *ability to authenticate* is a different door the guard does not watch; see the identity provider guard and the end of Passkeys.
+- **Service users** — the account an OAuth client acts as is listed here with a "Service" badge (`service_account`, `auth_type: "service"`). Password, MFA and passkey actions on it are refused with `409 service_account` (the page hides them); renaming it, changing its role between staff and user, giving it groups and disabling it work as for anyone. See [OAuth Clients and Service Users](#oauth-clients-and-service-users).
+- **Delete** — marks the account deleted. It stops authenticating immediately, every session is revoked, and it drops out of the admin list; the row itself stays, because the tickets and replies that reference it do. Those keep the person's display name on them: a thread that renamed its participants after the fact would not be an accurate record of what happened. There is no hard delete and no anonymisation, so this is not the tool for a request to erase somebody's data. Requires a second confirmation click. Prefer disabling instead when there is any chance the account may be needed again. **A deleted account keeps its address** while nothing replaces it, because the unique constraint covers every row: signup, guest submission and OIDC treat that address as taken. Two things retire it, by one shared store function (`CreateReleasingDeleted`): the old row's address is renamed to `deleted-<its id>@invalid` (a reserved top-level domain: it cannot receive mail and cannot collide with a real address) and its SAML and OIDC subjects are cleared, in **the same transaction that creates the new account**, so the old row keeps its id and the tickets, replies and audit history that point at it. (1) **An administrator creating an account** (`POST /admin/users`, the New user form) over an address held only by a deleted account, of any kind, local or SAML-created: the form cannot restore a deleted account, and "deleted" means gone. (2) **A SAML sign-in** by the person whose deleted, SAML-created account holds the address (SAML → First sign-in provisioning and account matching, step 3); a deleted *local* account keeps blocking SAML when it holds the address in lower case. A legacy deleted local twin in other capitals (`M57@x` beside a deleted SAML-created `m57@x`) does not block and is never written: among deleted rows the exact lower-case row decides. An address held by a **live** account is still refused: `409 email_taken` on the form, with the message "an account with that email address already exists". Each release writes two audit entries, `email_released` on the old row and `replaced_deleted_user` on the new one (ids only, never an address or a subject; the actor is the administrator, or the person signing in). The statement that frees the address only touches rows that are deleted, and every new address is written lower-case, so two creates racing for one deleted address collide on the unique index and end with exactly one live account: the loser's release waits for the winner's commit, finds nothing to release, and is refused as taken (`409`, or for a sign-in, decided again and matched to the winner's account), never a `500`. **The residual race, stated plainly:** before it inserts, the transaction checks for a live row that holds the address in other capitals (`LiveUserHoldsEmail`), because the unique index would not refuse one. That check cannot see an uncommitted row, so a mixed-case live row inserted at the very same moment could slip past it; nothing writes a mixed-case address, so only legacy rows exist and they are already committed. Several deleted rows that differ only in case are all released by one create, and each gets its own audit entries. Not covered: a known SAML subject whose provider address changes to the case-variant of another live account's address is refreshed without this check (as before), as are signup, OIDC and the administrator's email edit, which still compare exactly. **What the retired row gives up:** its address, its SAML subject and its OIDC subject, and nothing else. The OIDC subject is unique across every row, deleted ones included (migration 000017), so a retired row that kept it would leave the new account unable ever to sign in with OIDC (adoption by address would hit the unique index and be refused for good) and a deleted row cannot be edited to free it. Every other column, and everything that points at the row, stays. The matching is **ignoring case** (`lower(email)`), because rows written before addresses were lower-cased (v1.2.0) can be mixed case and the unique index on `users.email` is case-sensitive: nothing in the schema stops `A@x` and `a@x` both existing. So the release also refuses to create beside a **live** row that holds the address in other capitals (`409`), inside the same transaction, and a sign-in prefers a live row over a deleted one when several match. **What this means for a person:** the retired address `deleted-<id>@invalid` is what that row shows from then on, so a search of the audit log or of tickets by the old address no longer finds the retired row's history; it is reached by its id. **To bring a deleted SAML user back, they sign in through SAML.** The New user form makes a *local* account, which a SAML sign-in then refuses (`email_taken`, step 5), and with `saml_enabled` on a non-administrator cannot use a password either, so an administrator who wants that person back should let them sign in rather than create the account by hand. Pinned by `TestAdminCreate_*`, `TestSAMLSignIn_*` and `TestUsersEmail_TwoRowsCannotHoldTheSameAddress`.
 
 ### Ticket Lifecycle
 
@@ -98,15 +474,414 @@ Admins manage accounts from **Admin → Users**. The user list is clickable — 
 New → In Progress → Pending (waiting on user/vendor) → Resolved → [reopen window] → Closed
                                                            ↑            |
                                                            └── Reopened ┘ (within window)
+
+Closed is terminal by default: nothing leaves it. The way forward is a new,
+linked follow-up ticket. An instance setting (closed_reopen_policy) can allow
+admins, or staff and admins, to force-reopen; requesters never can.
 ```
 
 - **Resolved**: ticket is answered/fixed. Starts the configurable reopen window.
-- **Reopen window**: admin setting — "Users can reopen tickets for X days after resolution." Users can add a reply to reopen during this window. Set to 0 to disable user-initiated reopening entirely.
-- **Reopen target status**: the status a ticket is moved to when it is reopened. Configured from **Admin → Settings → General → Ticket lifecycle → Reopen target status** (a picker limited to active, non-system statuses). Defaults to the first active custom status when unset.
-- **Closed**: automatic transition after the reopen window expires. No further user updates. Staff/admin can still reopen manually.
-- Statuses are customizable — admins can add intermediate statuses, but Resolved and Closed are system statuses with special behavior.
-- Custom statuses can be **deactivated** (hidden from new-ticket flows) and **reactivated**. They can only be **deleted** when zero tickets are in that status. System statuses can never be deactivated or deleted.
-- Every status transition is recorded in a **status history** timeline and displayed on the ticket detail page interleaved with replies, in chronological order. Events include: the old and new status names (with colors), who made the change (user display name or "System" for auto-close), and the timestamp. The initial status assignment at ticket creation is also recorded.
+- **Reopen window**: admin setting (`reopen_window_days`, shown as **Reopen window and auto-close**) — "Users can reopen tickets for X days after resolution." Requesters can add a reply to reopen during this window. **It is also when the ticket closes** (#349): the auto-close sweep closes a Resolved ticket once the window has passed, and a Closed ticket is read-only and a requester can never reopen it. **0 means no reopening, and the ticket is closed and read-only on the next sweep, about five minutes after it is resolved** — not "off". One window, for every kind of requester (guest and account holder alike).
+- **Reopen target status**: the status a ticket is moved to when it is reopened. Configured from **Admin → System → General → Ticket lifecycle → Reopen target status** (a picker limited to active, non-system statuses). Defaults to the status named "New" when unset, not to the first active custom status. It is stored by name, so it can be deactivated after it was picked. An inactive status is retired, so every reopen (forced reopen, a requester's reply on a Resolved ticket, a guest's reply) goes to New instead, administrators see a banner from `GET /admin/security-warnings` (`reopen_target`) asking for an active status, and the `PATCH /admin/statuses/{id}` that deactivates the target carries a `warning` in its response.
+- **Closed reopen policy**: admin setting (`closed_reopen_policy`, shown as **Reopening closed tickets** under Admin → System → General → Ticket lifecycle; session-gated like the other settings that widen who may do what). `off` (the default) | `admin` | `staff_admin`. **Closed is terminal by default; an instance setting can allow forced reopen by admins only, or by staff and admins; requesters never.** Unset, unreadable or unrecognised reads as `off`, never as a permissive value; an unrecognised value is refused (`400 invalid_closed_reopen_policy`) when saved. Read on every request, never cached, so a change applies to the very next request.
+- **A reopen** ([#464](https://github.com/PubliciaLLC/go-help-desk/issues/464)) is any move from Resolved or Closed back to an open status. Every way of doing it is the same reopen: a requester's reply on a Resolved ticket inside the window (an account holder, or a guest through their link); a status change by staff or an administrator (`PATCH /tickets/{id}` with `status_id`, and MCP `update_ticket_status`); and `POST /tickets/{id}/reopen`. Leaving Closed still needs `closed_reopen_policy` to allow the caller's role, and a refused request changes nothing. Resolved to Closed and Closed to Resolved are not reopens. A reopen does five things, in the same transaction as the status change (`ticket.Atomic`), so none of them happens without the others:
+  - **It flags the ticket.** `tickets.reopen_count` (migration `000047`) goes up by one and is never reset; the ticket JSON carries it as `reopen_count`, to staff and administrators only (omitted when 0). A requester never receives it; see *What a requester sees of a ticket* below. Staff and administrators see a **Reopened** badge on the ticket page and on the ticket's row in the queue (table and mobile cards) while the ticket is open, and it goes away when the ticket is Resolved or Closed again. A requester does not see it. Tickets reopened before the upgrade start at 0: reopens were only ever audit entries, which retention can prune, so there is nothing reliable to count from.
+  - **It raises the priority one level on the first reopen only** (low to medium to high to critical; critical stays critical). "First" is the count being 0 before this reopen, so a ticket that is resolved and reopened again is flagged again but not raised again. The change goes through the same primitive as a staff priority change (`changePriorityInTx`, reason `reopened`) and writes `priority_changed` with that reason if the priority moved (a critical ticket writes nothing). A `PATCH` that reopens a ticket and also sends a `priority` raises it first and then applies the priority sent, so the value sent wins.
+  - **It restarts both SLA clocks**, on every reopen and not only the first, at any priority: see *A reopen restarts both clocks* under SLA Policy Matching. Every reopen is also a **restart point** remembered on the ticket (`last_reopened_at` and the Pending total then, `paused_seconds_at_last_reopen`), including a reopen that lands on a priority with no SLA policy and so starts no record.
+  - **It writes `reopened`** to the audit log (and `priority_changed` and `sla_restarted` as above). A status change out of Resolved or Closed now writes `reopened` beside its `status_changed`; before, only the reply and `POST /reopen` did.
+  - **It emails staff and fires `ticket.reopened`**: see Notifications. A status change out of Resolved or Closed raises the `ticket.reopened` webhook event, which it did not before. The reopen and the status change are **one event** for the ticket (kinds `ticket.reopened` and `ticket.status_changed`, plus `ticket.priority_changed` on the first reopen, if the priority moved), written to the outbox in the same transaction; the mail and the webhook are sent a moment after the commit. See [Ticket Events: One Change, One Event](#ticket-events-one-change-one-event).
+- **Closed**: automatic transition after the reopen window expires, or an administrator closing the ticket. **Archived read-only, and terminal by default** — see [Closed is terminal](#closed-is-terminal-and-read-only) below. Unless the policy above lets their role, staff and admin cannot reopen it either; they open a linked follow-up.
+
+  **Auto-close scheduling.** This transition is driven by a periodic background
+  sweep, not computed on read: a ticket sitting in Resolved past its window
+  must actually flip to Closed even if nobody opens it again, because the
+  point of Closed is "no further user updates," and a status nobody re-derives
+  until the next page view can't enforce that. The sweep finds tickets whose
+  `resolved_at` plus the reopen-window setting (in days, as configured at the
+  time the sweep runs) has passed, and calls the same `Close` operation for
+  each — attributed to "System" in the status history, per the existing rule
+  above. It is safe to run repeatedly: a ticket that is already Closed no
+  longer matches the query, so a re-run or an overlapping run does nothing to
+  it. **A reopen window of 0 does not skip this transition** — it removes the
+  grace period, not the close itself, so a ticket resolved under a 0-day
+  window is eligible for auto-close on the very next sweep. The sweep interval
+  is an implementation detail rather than a user-facing setting; a few
+  minutes of slack between "the window elapsed" and "the ticket shows Closed"
+  is immaterial against a window denominated in days. The sweep runs every
+  five minutes from a goroutine started in `cmd/server/main.go`, alongside the
+  session-expiry sweep. Each tick reads the reopen-window setting afresh and
+  calls `ticket.Service.AutoClose`, which lists up to 500 candidates
+  (`ListResolvedBefore`) and closes each through the same code path as
+  `Close`. Under the row lock it re-checks that the ticket is still Resolved
+  and still past the cutoff, so a ticket reopened between the query and the
+  lock is left untouched: no write, no history row, no notification. Eligible
+  tickets beyond the 500 are picked up on the next tick, and a failure closing
+  one ticket is logged without stopping the rest. (Originally tracked as
+  [#184](https://github.com/PubliciaLLC/go-help-desk/issues/184).) Auto-close
+  **does not revoke the guest's link**: see below.
+#### Closed is terminal and read-only
+
+Decided in [#349](https://github.com/PubliciaLLC/go-help-desk/issues/349). A
+Closed ticket is an archive, **terminal by default**. An instance setting
+(`closed_reopen_policy`, above) can allow forced reopen by admins only, or by
+staff and admins; **requesters never can**, whatever it says, and the follow-up
+is available in every mode. The rule, for every route (REST and MCP) and every
+credential (session, API key, OAuth client acting as the same role). The Staff /
+Admin row is the default, `off`:
+
+| Who | On a Closed ticket |
+|-----|--------------------|
+| Guest (link holder) | **Read only.** Reply, upload and anything that could reopen are refused with the generic `404`, byte-identical to a bad link (below). The one write that accepts a closed ticket is `POST /guest/follow-up`: a new, linked ticket (below). |
+| Account holder (User role) | **Read only.** Reply, attachment upload, custom-field edit and linking are refused with `409 ticket_closed`; status change, assign, reclassify, resolve and close are refused with `403`, as for any state. They **can** open a follow-up of their own closed ticket (below). |
+| Staff, Admin | **Cannot reopen, by default.** A status change out of Closed, Resolve, Resolve-as-duplicate and `POST /tickets/{id}/reopen` are refused with `409 ticket_closed`, and the message says why: reopening closed tickets is disabled on this instance, or restricted to administrators. With `closed_reopen_policy` = `admin`, an administrator may use all four (staff still get the refusal); with `staff_admin`, staff and administrators may. They **can** always open a follow-up, and keep replying, internal notes, assignment, tags and linking (see below). Reclassification is refused (`409 ticket_closed`) on Resolved and Closed tickets alike. |
+| Resolved (any requester) | Unchanged: a requester's reply inside the reopen window reopens the ticket; outside it, `409 reopen_window_closed`. |
+
+**One rule, in the domain.** The service decides it, not each handler: the
+reply/upload lifecycle check (`lifecycleAllowsReply`) and the requester's other
+writes (`Service.CanRequesterWrite`) both ask one function (`closedRefusal`);
+guest writes resolve through `TicketForGuestWrite`. Every way out of Closed —
+`Reopen`, `UpdateStatus`, `Resolve`, `ResolveAsDuplicate`, so the reopen
+endpoint, the status route, resolve, duplicate-of with auto-resolve and MCP
+`update_ticket_status` — asks one predicate, `ticket.CanForceReopen(policy,
+role)`, through `Service.forceReopenGate`, **on the locked row**: the policy is
+read there (`closed_reopen_policy`, wired by the server, no cache), after the
+ticket's row lock is taken, so a setting flipped to `off` while a request was in
+flight is the one that applies. A requester is `false` in every mode and is
+refused earlier, by role, with the refusal a requester has always had (`403`),
+never told about the setting. The earlier incident (GHSA-2x4f-j4jv-m2cm) was two
+surfaces each deciding one rule on their own.
+
+**A forced reopen** targets the existing reopen target status (**Reopen target
+status**, falling back to New), through the shared timestamp rule, so the SLA
+pause is carried and a closed/resolved timestamp is cleared, with a
+status-history row and the ordinary reopen notification (a guest is sent a link,
+issued at send time as for any reopen). The guest's links are not touched by it
+(closing never revoked them), and the ticket is writable through them again as
+soon as it is not Closed. The audit entry says it was forced and under which
+policy: `reopened` for the endpoint, with `forced_reopen: true` and
+`closed_reopen_policy` in its "after" (the same two keys ride on the
+`status_changed` or `resolved` entry of the other doors). The ticket response
+carries `can_reopen` (true only for a Closed ticket and a viewer the policy
+allows) so the ticket page shows the Reopen button only to them; it is a
+courtesy, and the service decides again when the button is used.
+
+**Races: the rule holds against a close that wins.** A requester's reply or
+attachment is checked once up front, and the row is written later (for an
+upload, after the file has been read, scanned and stored). So the write
+re-decides on the **locked** ticket row, in the same transaction as the insert
+(`refuseRequesterOnClosed`, in `addReply` and `CreateAttachment`): a close that
+committed in between refuses the write (guest: the generic `404`; reporter:
+`409 ticket_closed`; for an upload the stored file is removed), and one that has
+not yet committed waits for the write. Staff are not locked or refused. Link
+adds already lock both rows. A reply that would have reopened a Resolved ticket
+and lost the race to a close is refused too, so a closed ticket never gains a
+reply from a requester. Pinned by deterministic interleaving tests in the domain
+suite.
+
+**What is refused with which status, and why.** A reporting user sees their own
+closed ticket, so a clear `409 ticket_closed` for *their own* ticket tells them
+nothing they cannot already read. It never becomes an existence oracle: a ticket
+the caller may not see answers the not-found refusal first (see Authorization),
+for replies, field edits and links alike. Writes that were already refused by
+role (status, assignment, reclassification, priority, resolve, close, tags) keep their
+`403`; the closed state does not change which refusal a role gets.
+
+**Staff and admin: the minimal reading.** Only *leaving* Closed is removed.
+Replying (including internal notes), assignment, tags,
+linking and attachments are unchanged on a closed ticket, because they do not
+change what state the ticket is in, and removing them is not what was decided.
+(A staff reply on a closed ticket still mails the guest a read-only link, below.)
+**Priority and classification are the exceptions:** neither can be changed on a
+Resolved or Closed ticket (`409 ticket_closed`, for every role). A finished
+ticket's priority and category are part of what its SLA was measured against
+(#443), and classification only happens to open tickets (Erik, 2026-11-10;
+before 1.3.0 staff could reclassify a Closed ticket). A `PATCH /tickets/{id}`
+that sends a priority, or a category, type or item, and would leave the ticket
+Resolved or Closed (or that touches one already there) is refused whole with
+that `409`: the status or assignment in the same request is not saved first. A
+request that moves the ticket out of Resolved to an open status and reclassifies
+it is allowed, and a `PATCH` that sends no classification field is unaffected.
+
+**One PATCH, one outcome (#468, #506).** `PATCH /tickets/{id}` can change a
+ticket's status, assignment, classification and priority in one request. It is
+one service call, `Update`, in **one transaction**, in that order (the priority
+last; a category changed in the same request is re-matched first and the priority
+then re-matches again, so the ticket ends on one current record under the policy
+for both). A refusal at any step leaves nothing saved and writes no audit
+entry, and the request announces one event (Ticket Events: One Change, One
+Event). The handler still decides every refusal it can before the transaction
+starts: an invalid priority value, a priority or assignment or reclassification
+from a role that may not make it, an invalid classification (`ValidateCTI`), a
+priority or a classification change on a ticket that would end up Resolved or
+Closed (`ValidatePriorityChange`, `ValidateReclassify`), an assignee that
+cannot be given a ticket (unknown, deleted, disabled or a reporting user), a
+group that does not exist. The handler makes no status check. `Update` itself
+checks that the status exists and that the role may move to it (`statusFor`)
+before it opens the transaction. Inside the transaction the steps check, on the
+locked row, what each can: the assignment re-checks the assignee and group; the
+priority step re-checks the role and the closed state; the classification step
+re-checks the closed state (a Resolved or Closed ticket refuses it, `ErrClosed`;
+the status step runs first, so a request that reopens the ticket and
+reclassifies it passes) but not the classification itself, which `ValidateCTI`
+before the transaction is the only check of; the status step checks the reopen
+policy and an inactive status, for the first time and only there
+(`updateStatusInTx`). The assignment and reclassification
+roles are not checked by the service: authorisation belongs to the caller, so
+the handler does it first, and a caller other than this handler (MCP, the
+scheduler) must do its own. A concurrent change between the early check and the
+transaction (an assignee disabled, the ticket closed) or a database failure
+makes the whole request fail and roll back, where before #506 the steps ahead of
+the failing one had already been saved. Over MCP `update_ticket_status` answers a move out of Closed with the closed
+refusal and names the follow-up instead.
+
+**Follow-up.** The way forward from a Closed ticket, in every `closed_reopen_policy`
+mode. It creates a **new** ticket from the closed one, through the same creation
+path as any ticket (`Service.create`): the same validation, tracking number,
+opening status history, audit entry (carrying `follow_up_of`), "created"
+notification and routing. Every door applies the auto-assignment rules, as for a new
+ticket (REST, the guest form and MCP alike).
+Three doors, one creation path:
+
+| Who | Route | Notes |
+|-----|-------|-------|
+| Staff, admin | `POST /api/v1/tickets/{id}/follow-up`; MCP `create_follow_up` | Any closed ticket they can see. Not limited. |
+| Account holder (and an API key or OAuth client acting as one) | `POST /api/v1/tickets/{id}/follow-up` | **Their own** closed ticket (a ticket they cannot see is not found; one they can see but did not report is `403`). |
+| Guest | `POST /api/v1/guest/follow-up` | The ticket their link names, only while it is Closed. |
+
+- **Copied for staff and admin:** subject, description, category / type / item,
+  priority, and the requester: the reporting user, or the guest's address, name
+  and phone. A guest is told, as for any new guest ticket, with a link to the new
+  ticket.
+- **Copied for a requester — only what a requester may set on a normal create.**
+  The principle: a requester's follow-up must not be a ticket they could not have
+  created directly. So: subject, description, category, the type for an account
+  holder (for a guest only while Types is shown to guests, #711), the item
+  only while Items is visible to the requester (#711), and who they are.
+  **Not** the item otherwise (requesters cannot pick one then), and **not the priority** — it is medium, as for any requester's
+  new ticket; a priority staff raised stays with the closed ticket. No assignee,
+  tags or SLA state either. The category (and the type) must still be active, as
+  for a normal create (`400` if an administrator has since archived it); an
+  archived type or item the original holds is not a refusal, the follow-up keeps
+  the deepest level still active (#711). The
+  request body is ignored: there is no field to set.
+- **Not copied, for anyone:** replies and internal notes, attachments, status
+  history, tags, the assignee, any SLA state. The new ticket
+  starts in New and runs its own SLA clock. Custom-field values are copied, by a
+  hook after the follow-up commits (see *Custom-field values are copied* below).
+- **Linked:** the closed ticket is the **parent** of the follow-up
+  (`parent_child`, source = closed ticket), written in the same transaction as
+  the ticket, so a follow-up never exists without its link. The existing link
+  types are reused; no new relation or table. The link row carries a
+  `follow_up` flag (migration 000064): only the link the follow-up action wrote
+  has it, and only such a link counts as a requester's one follow-up. A
+  `parent_child` link made by hand does not. Each `parent_child` link that
+  existed at the upgrade between two tickets of one requester (the same account
+  or the same guest address, which every real follow-up is) was marked, so
+  those still count; a link between different people's tickets was not. A
+  requester seeing the link on either ticket sees only their own tickets.
+- **The original is not written:** still Closed, same replies and history, and a
+  guest's links untouched.
+- **Only from a Closed ticket** (`409 ticket_not_closed` otherwise): an open
+  ticket needs no way forward, and allowing it would make this a general clone
+  that two live tickets can drift apart from.
+- A follow-up can itself be closed and followed up.
+
+**A requester's follow-up and abuse limits.** It must not be a way around the
+limits a normal ticket has, and the action must not become a stream of tickets:
+
+- **One per closed ticket for a requester** (`409 follow_up_exists`; for a guest
+  the generic `404`). A follow-up staff opened counts; staff are not limited. The
+  check is made before the transaction, and again on the locked original inside
+  it, and the tracking number is taken after that locked check, so two clicks
+  make one ticket and the one refused takes no number. To go on, follow up the
+  follow-up once it is closed.
+- **Account holders** are held to what a direct create is: there is no rate
+  limit on an account holder creating a ticket, so none is added; the cap above
+  is what bounds this door.
+- **Guests** are held to what `POST /guest/tickets` is: guest submission must be
+  on (otherwise the generic `404`) and the same per-address budget applies,
+  **shared with direct submissions**, not a second bucket (`429`).
+
+**The guest route and its refusals.** `POST /guest/follow-up` is a deliberate
+exception to "every guest write route refuses a closed ticket": it resolves the
+link through the **read** lookup (a closed ticket resolves) and then requires
+Closed itself. Every other outcome is the same generic `404`, byte-identical to a
+bad link's refusal on the other guest write routes: an open ticket, a bad or
+expired link, guest submission off, a follow-up already opened. The order is
+fixed so nothing is told in between: Closed first, then the submission switch,
+and only then the per-address budget, so a `429` is only ever seen by a holder of
+a good link to a closed ticket. The new ticket is a guest ticket for the same
+guest (address, name and phone from the original), and **its own link goes by the
+ordinary guest-ticket-created mail** — not in the response, which is the new
+tracking number and nothing else, as for a normal submission. The audit entry has
+no actor for a guest, as a normal guest ticket's has none; the identity is the new
+ticket's own guest columns, and `follow_up_of` says what it continues.
+
+**What the closed ticket tells the page (#625).** The single-ticket read of a
+Closed ticket carries `follow_up: {id, tracking_number}` when it already has one
+(the newest the follow-up action made from it; absent otherwise, and on a list),
+for every role, and the requester allowed list keeps it. The ticket page then
+shows the link and hides the follow-up button for a requester; staff keep the
+button, since they are not limited. Only a follow-up the viewer may open is
+named (the same view rule as the ticket itself; for a guest, a ticket of the
+same address): a flagged link to anyone else's ticket reads as no follow-up. The guest ticket response carries
+`has_follow_up`, a boolean and nothing else: the page says a follow-up exists
+and to look for the mail, and shows no link, because the guest's link to the new
+ticket goes by mail. A guest is told this once they hold a good link to a closed
+ticket, which the follow-up route's own answers already assumed. The page also
+shows staff and administrators the reply composer on a closed ticket, with "Replying
+does not reopen this ticket"; the API always allowed it.
+
+**Follow-up mail.** A follow-up's created event carries a typed `FollowUp` flag
+(round-tripped by the outbox codec), and its mail is the template
+`ticket_follow_up_created`, "We have opened a new ticket to follow up on your
+earlier one", with the new tracking number and the working link. It is its own
+editable template, so an operator's rewrite of "Ticket received" does not
+reach it. Email still never reads `Payload`.
+
+**A deleted reporter.** A staff follow-up of a ticket whose reporting account
+has been deleted answers `409 reporter_deleted` ("restore the account, or open a
+new ticket"), over MCP the same words. Deletion is soft, and the refusal is the
+existing check that a reporter is a live account, now with its own code; filing
+a ticket with no reporter and no guest address would mean dropping the
+reporter-or-guest rule for the path every ticket takes. A requester cannot meet
+it: they are the account.
+
+**Guest tokens** expire after thirty days, and an hourly sweep now deletes the
+expired rows (a closed ticket collects one per mail sent on it).
+
+**Known limits:**
+
+- **A lost double-submit can still leave a gap in the tracking numbers**, but
+  no longer by being refused: the number is taken inside the transaction, after
+  the locked check, so a request that loses the race for a requester's one
+  follow-up takes none. A number is still lost to a rollback after it is drawn
+  and to a retried transaction, which is what a sequence does.
+- **An archived category or type is a 400 on the guest route.** Every refusal
+  that would say something about a link or a ticket's state is the generic 404,
+  but a guest follow-up of a ticket whose category (or type) an administrator has
+  since archived answers `400` with the reason, as a direct submission does. The
+  caller already holds a good link to a closed ticket and knows the category it
+  was filed under, so nothing is revealed that they could not see.
+- **Custom-field values are copied** to a follow-up (#625 item 8, owner decision
+  D24). `ticket.Service` runs a hook the server wires (`SetFollowUpValueCopier`,
+  like `SetUserEmailLookup`) after the follow-up commits, for every door (REST,
+  guest link, MCP), and the hook calls `customfield.Service.CopyValues`. **Staff
+  and administrators** carry every value whose field resolves on the follow-up's
+  classification. **A requester** (an account holder or a guest) carries only the
+  fields the new-ticket form shows (`visible_on_new`), so what the form keeps
+  from a requester is not handed to their new ticket. A field the new
+  classification does not have is left behind (a guest's follow-up is filed
+  under the category alone, or the category and type while guests are shown
+  them, #711). Each value is written through the creation write
+  (`SetCreationValues`), so it is held to the field as it is now: a value the
+  field no longer accepts (a retired option, a limit lowered since, a
+  deactivated field) is left out, logged, and the rest are copied. **It is not
+  atomic with the follow-up:** the ticket is already committed when the copy
+  runs, so a failure is logged at the boundary and the follow-up stands without
+  its values, the same trade as the values of an ordinary new ticket, and it is
+  not retried. The copy runs on a context detached from the request, so a client
+  that hangs up does not decide whether the follow-up keeps its values.
+- **Custom-field edits are not atomic with a close.** A reporter's custom-field
+  edit (through the API; the ticket page offers Edit only to staff and admin) is
+  checked once (`CanRequesterWrite`) and then written in a single transaction of
+  its own through the custom-field service (`SetValues`), which is outside the
+  ticket transaction and does not look at the ticket's status. The request's
+  values are therefore written together or not at all, never in part. A close
+  landing after the check still leaves **all** the values in that request
+  written on a closed ticket. Replies, uploads and links, which carry the
+  thread, are atomic.
+
+- Statuses are customizable — admins can add intermediate statuses, but
+  New, Resolved and Closed are system statuses with special behavior. The
+  server finds them by name at startup and compares lifecycle rules by
+  name, so a system status's name is fixed: the admin API refuses to rename
+  one (403), just as it refuses to deactivate one. Color and sort order
+  remain editable.
+- Custom statuses can be **deactivated** (hidden from new-ticket flows) and
+  **reactivated**. Inactive means retired, for every role: the ticket status
+  picker does not list it, and the server refuses a move into it with
+  `409 status_inactive`, whoever asks (staff, administrators and API keys alike).
+  A ticket already in an inactive status stays there and can be moved out. The
+  reopen target status (see Ticket Lifecycle) is no exception: if it is deactivated,
+  reopened tickets go to New and administrators are warned. They can only be **deleted** when no ticket is in that
+  status and no status-history entry references it; otherwise deactivate
+  it. System statuses can never be renamed, deactivated or deleted.
+- Every status transition is recorded in a **status history** timeline and displayed on the ticket detail page interleaved with replies, in chronological order, **to staff and administrators**. A requester sees the ticket's current state and its conversation, not its history: `GET /tickets/{id}/history` and `/audit` answer them `403` (Erik, 2026-10-15), and the page shows them no timeline events. Events include: the old and new status names (with colors), who made the change (user display name or "System" for auto-close), and the timestamp. The initial status assignment at ticket creation is also recorded.
+
+### What a requester sees of a ticket
+
+(Erik, 2026-10-15; the list below was approved by Erik on 2026-10-15.) A requester sees the **current state** of their ticket and its conversation, not its history and not the staff's working data. This is an **allowed list**, applied to the response on its way out (`ticket.FilterForViewer` in `internal/domain/ticket/requester_view.go`), not a list of fields to remove: a field added to a ticket is hidden from requesters until it is added to the list on purpose. Staff and administrators get every response as built.
+
+A requester is any account that is not staff or an administrator, including a role the code does not recognise. Every response that carries a ticket goes through the filter: `GET`, list, `POST`, `PATCH` and the other ticket routes, the follow-up, and every MCP tool that returns a ticket (`get_ticket`, `list_tickets`, `create_ticket`, `assign_ticket`, `update_ticket_status`, `create_follow_up`). Inside each ticket object, whatever the shape (one ticket, a list, a ticket wrapped with extra fields), only these keys are kept:
+
+| Key | Why a requester gets it |
+| --- | --- |
+| `id`, `tracking_number`, `subject`, `description` | the ticket itself |
+| `status_id`, `priority` | its current state, both shown on the ticket page |
+| `category_id`, `type_id`, `item_id` | its classification, shown in the page's Classification panel |
+| `created_at`, `resolved_at` | when it was opened and when it was resolved (the page shows both) |
+| `assignee_user_id` | who holds it, as an id only; a requester has no route that turns the id into a name (the staff list and the user routes are staff-only), though a public reply by that person carries their name as it always has |
+| `resolution_notes` | sent to requesters before the list existed; their visibility is unchanged |
+
+The wrapper keys a response may add around a ticket are kept as they are: `sla` (already null for a requester), `can_reopen` (always false for a requester), `replies` (already without internal notes), `links` (ticket ids and a link type) and `follow_up` (#625: the id and tracking number of the follow-up already opened from a closed ticket, which is the requester's own new ticket). Any other wrapper key is dropped.
+
+**Never sent to a requester**: `assignee_group_id` (which team holds it), `reporter_user_id` (their own id; the page never reads it), `guest_email`, `guest_name` and `guest_phone`, `closed_at` and `updated_at` (history-like timestamps: when it was archived, when anything last touched it), `pending_since` and `sla_paused_seconds` (when and for how long the ticket waited: audit information, not state), and `reopen_count` (staff information), and `source_channel` (how it arrived: operational, and `phone` says staff filed it for them). The conversation, the audit feed and the status timeline are separate: the conversation stays (public replies only), the other two are staff-only routes.
+
+**Guests** (the `/guest` routes) are shown less: a strict subset of the same list, `tracking_number`, `subject`, `description` and `created_at`, plus the status's *name*, the replies and `has_follow_up` (#625, a boolean: whether a follow-up has been opened from a closed ticket, never which one). (A guest used to receive `updated_at`; it is gone, because a requester does not receive it and the guest list stays a subset.) The guest ticket response goes through `ticket.FilterForGuest`, so there is still one definition.
+
+**Tests.** `TestRequesterKeys_EveryTicketKeyIsClassified` fails when a ticket field is on neither the allowed list nor the never list. `TestRequesterResponses_*` walks the router and calls every route a requester can reach (the router's own list, so a new route is included) with an empty body, against a ticket with every field filled; only create and follow-up are also called with a real body that succeeds. `TestGuestResponses_*` does the same for the guest routes. Both fail if a never-listed key appears anywhere in a body, or a ticket-shaped object carries a key off the list. The MCP tools are not on the router: the test takes its list from `mcp.TicketTools`, and a tool that is not classified in `internal/mcp` fails that package's test. Emails are not JSON and carry only the tracking number and a link to the ticket.
+
+### Ticket Followers
+
+([#441](https://github.com/PubliciaLLC/go-help-desk/issues/441), part D of #464.)
+Staff and administrators can **follow** a ticket to hear about its activity without holding it, and (#695, 1.3.0) can **add another staff member or administrator as a follower**. A follower is emailed under the staff-email rules (Notifications below), and the ticket shows everyone who follows it.
+
+- **Who can follow: people only.** A staff member or administrator, signed in. An API key, an OAuth client and a service user cannot follow, unfollow, add a follower or remove one: a script acting for someone is not them (#490), and choosing who hears about a ticket is a person's act. The routes answer `403 session_required` to a machine credential, and `ticket.Service` independently refuses any account that is not an active, non-service staff or admin account (`Follow`, and the person being added by `AddFollower`; the person adding must be a person too), so a second caller (MCP, an importer) cannot get round the route. A requester cannot follow, cannot add or remove a follower, and has no route to the list. MCP has no follower tools and gets none.
+- **Adding and removing someone else (#695).** Staff and administrators can add **another staff member or administrator** as a follower of a ticket, and remove **any** follower, whoever added them. `PUT /api/v1/tickets/{id}/followers/{userId}` adds and `DELETE` removes; the person's own `PUT` and `DELETE /follow` stay. Adding is people only on both sides, and the person added must be (1) an **active staff or administrator account that is not a service account**, the rule `Follow` has always applied to the caller (`IsAssignableUser`), else `422 follower_not_eligible` (this also covers an unknown id, a deleted or disabled account, a service account, and a requester, so the answer does not tell a caller which); and (2) **able to see the ticket**, by the same rule every other surface uses (`CanViewTicket`, under `ticket_scope_enforced`, #391), else `422 follower_cannot_view_ticket`, so nobody can be put on a ticket they could not open. The domain cannot know scope, so (2) is checked in the handler, before the row is written. Adding is idempotent (`204`, nothing written, nothing audited the second time); removing someone who does not follow is `204` too. Naming yourself is the same as `PUT /follow`, with the audit entry `PUT /follow` writes. **The person added is not mailed or otherwise told** that they were added: they see themselves in the ticket's follower list, and hear about the ticket's later activity under the same rules as any follower, which are unchanged. **No migration**: who added a follower lives in the audit entry only, not on the `ticket_followers` row.
+- **A follower must be able to see the ticket** when following: the routes sit behind `requireTicketAccess` like everything under `/tickets/{id}`, so a ticket out of scope (#391) is a 404 for the caller, and a tracking number works as well as a UUID. For someone **else** being added, the same rule is applied to them (see the item above). At send time the person is checked again (`Server.StillEntitled`, `CanViewTicket`): mail for a ticket they can no longer see is skipped, and **the row is kept**, so following works again if their scope returns. A deleted or disabled account, a service account and a requester are never mailed (`ListMailableTicketFollowers`).
+- **API.** `PUT` and `DELETE /api/v1/tickets/{id}/follow` follow and unfollow for the caller; both are idempotent and answer 204. `PUT` and `DELETE /api/v1/tickets/{id}/followers/{userId}` add and remove someone else (#695): `204`; `422 follower_not_eligible` and `422 follower_cannot_view_ticket` on an add; `403 session_required` to a machine credential; `403 forbidden` to a requester; `404` for a ticket the caller cannot see. `GET /api/v1/tickets/{id}/followers` lists them, oldest first, for staff and administrators (a machine credential with `tickets:read` may read it); it returns each follower's `user_id`, `display_name` and `created_at` and, as before, nothing about who added them.
+- **Staff always see the current list of followers** on the ticket page, with a Follow / Unfollow button, a remove button on each follower, and a **Person to add as follower** picker with an **Add follower** button, listing the staff and administrators not yet following (the picker waits until the list of followers has loaded). On a touch screen the remove buttons, picker and button are 44 px; after an add focus returns to the picker, after a remove it goes to the next follower's remove button (or the picker), and each change is announced to a screen reader. A refusal of an add (the `422`s) is shown in the panel. The panel does not guess for other people: it changes only after the server agrees, because the server may refuse on scope. A requester never sees the panel. No setting hides it.
+- **Following is audited.** A follow and an unfollow each write a `followed` / `unfollowed` entry in the same transaction as the change (`ticket.Atomic`); repeating either writes nothing. The **actor is whoever acted**: for your own follow, the person following; for someone added or removed by another, the person who added or removed them. When someone else is the subject, the entry's "after" (for `followed`) or "before" (for `unfollowed`) carries `follower_user_id`, the person added or removed, an id shown by the audit view and resolved to a name like `assignee_user_id`; the feed shows "Added Bob as a follower by Jane" and "Removed Bob as a follower by Jane" (the actor is the "by"), on the ticket page and on the admin audit page. A self follow or unfollow keeps exactly the entry it always had (no `follower_user_id`), because there the actor is the person. Removing the old assignee's follow on reassignment is unchanged (below). The entries are visible to **administrators**. A staff member sees them only when the administrator turns on **`staff_can_view_follow_audit`** (off by default; a disclosure-widening toggle, so session-only like `staff_can_view_ticket_change_history`). A requester never sees them. The per-ticket feed leaves them out in the query (`audit.ActionFilter`); the admin-wide view is administrators only and shows them. The per-ticket feed also keeps them out of its 500-entry cap: they are fetched on their own, with a cap of their own, only for viewers who may see them, and merged by time, so toggling follow can never push a ticket's real history off its feed. A viewer who may see follow entries always gets their `before` and `after` (redacted like any diff), even without the change-history setting, so a removal on reassignment can say whose follow it was.
+- **Reassigning takes the old assignee's follow with it** (Erik, 2026-10-14: the assignee follows the ticket by being assigned, so a follow on top is dropped when they lose it). When a ticket is assigned away from someone, or unassigned, or its assignee's account is deleted (open tickets only, as account deletion only unassigns those), their follow row is removed in the same transaction (`dropAssigneeFollow`, from `Service.Assign` and `Service.UnassignForUser`, which every route reaches: PATCH, auto-assign, MCP `assign_ticket`, account deletion; there is no bulk assign). It writes an `unfollowed` entry with the reassigning actor as the actor, after the `assigned` / `unassigned` entry; its before and after carry `assignee_user_id` (whose follow went, and who holds it now), and the feed labels it "Follow removed on reassignment (name)". No follow row, no entry. The same person again changes nothing. Only the assignee loses a follow: moving the ticket between groups, with the assignee kept or not, leaves group members' follows alone. They click Follow again to keep the mail. A per-user preference for this is not built.
+- **Data.** `ticket_followers (ticket_id, user_id, created_at)`, primary key `(ticket_id, user_id)`, both columns cascading on a hard delete (users are soft-deleted, so the send-time check does the real work), migration `000046`.
+
+### Ticket Activity Feed
+
+`GET /api/v1/tickets/{id}/audit` (#129) answers "who changed this ticket, and when" from the audit log the domain layer already writes, without database access. Shown on the ticket detail page next to the status timeline. **Staff and administrators only** (Erik, 2026-10-15: requesters and guests see the current state of the ticket and its conversation, not its history or its audit trail): the route sits behind the same role gate as tags and followers, so a requester gets `403 forbidden` on a ticket they can see, and `404` on one they cannot, as for every route under `/tickets/{id}` (`requireTicketAccess` answers first). `GET /tickets/{id}/history` is gated the same way. Guests have neither route. Public replies stay visible to requesters; internal notes stay hidden.
+
+This route only *reads* the audit log; it does not change what the domain layer writes to it. What gets written is narrower than "every mutation": `created`, `status_changed`, `assigned`, `unassigned` (an assignment cleared, or a departing user's tickets returned to the queue, #326), `resolved`, `closed`, `followed` and `unfollowed` (Ticket Followers above; withheld from staff unless `staff_can_view_follow_audit` is on, and from requesters always), and `reopened` (every reopen: a requester's reply that reopens a Resolved ticket, a status change out of Resolved or Closed, and `POST /reopen`; a move out of Closed is a force-reopen allowed only by `closed_reopen_policy` (#349) and says so with `forced_reopen` and the policy in its "after"), `classified` (1.3.0: a change of category, type or item, by id, with the actor; a change of category also says what happened to the ticket's SLA, with the same `sla_outcome` and policy and record ids as `priority_changed`, see SLA Tracking → Re-matching when the category changes; the entry is written in the same transaction as the change, and a request that changes nothing writes none), `priority_changed` (#443: the "after" says why the priority changed, `manual` or `reopened`, what happened to the ticket's SLA, and the ids of the SLA policy and record in force before and after) and `sla_restarted` (#443, #464: written by a reopen that replaces an SLA record, with the id of the record it replaced and, when one starts, the new one; a reopen that starts a first clock on a ticket that had none replaced nothing and writes nothing; a staff priority change never writes it). A reply and an internal note are recorded too, as `reply_added` (a public reply) and `note_added` (an internal note). Each is written in the same transaction as the reply, by its author; a guest's has no actor. The entry carries only `reply_id` and `internal` in its "after" and never the text (`audit.Redact` allow-lists exactly those two keys). The feed shows it as a sentence such as "Erik Test added an internal note", a requester's name is masked like any other action's, and a reply by a deleted account reads "Deleted account". Replies and notes written before this existed are not backfilled. Reply and note entries are fetched on their own, with a cap of their own (like follows), so a long conversation cannot push a ticket's history off its feed. Custom-field edits on a ticket are not recorded. Those are gaps in what `ticket.Service` writes, not something this route introduces.
+
+(The paragraphs below about what a *reporting user* sees in this feed describe the code's response shaping, which a requester no longer reaches: the route is refused to them. They still apply to the staff and administrator views where they mention the diff.)
+
+That inherited gate is enough for the entry itself (status, priority, subject, assignee are already visible on the ticket to anyone who can view it), but not for the *actor* on `assigned`/`unassigned` entries specifically: assignment is staff/admin-only, and unlike every other action here, nothing else on the ticket discloses that actor's identity to a reporting user — the ticket's own `assignee_user_id` is a bare UUID, and `GET /api/v1/staff`, the only place that resolves one to a name, is itself staff/admin-gated. So the API withholds `actor_id`/`actor_name` on those two actions when the caller is a plain reporting user, the same way `ticket.VisibleReplies` withholds internal-note authorship from that same viewer. Every other action's actor is fine to show as-is, subject to requester-name masking below (see `StatusHistoryEntry.ChangedByName`, which already does, via `/history`).
+
+The field-level before/after diff is a second, independent gate on top of the feed itself: admin always sees it; staff only when `staff_can_view_ticket_change_history` (an admin setting, off by default) is on; a reporting user never sees it, regardless of that setting. What is shown is filtered by `audit.Redact`, an allow-list described under Admin-Wide Audit View below: the same rule applies to this feed. The feed itself is reached with `tickets:read` by a machine credential (it holds ticket entries only, never MFA or password resets); the admin-wide view needs `audit:read`.
+
+### Admin-Wide Audit View
+
+`GET /api/v1/admin/audit` (#129) answers the same question across every entity, not one ticket at a time. **Administrators only** (Erik, 2026-11-03: staff "can see the history on a ticket but not the whole audit log"). Staff and reporting users get `403` on every credential: a session, an API key, or an OAuth client, which acts as a staff-level service user. The route sits under the admin router, so the answer is the role's, not a scope's. What staff keep is the history of a ticket they can see, `GET /tickets/{id}/audit` and `/history`, with the rules above, unchanged. In the 1.3.0 betas this view was open to staff, narrowed to ticket entries in their ticket scope; that narrowing, and the SQL behind it, were removed with the access. A signed-in administrator needs no scope. An administrator's API key needs the **`audit:read`** scope, which an administrator grants on purpose ([#362](https://github.com/PubliciaLLC/go-help-desk/issues/362)). A key owned by staff cannot be given `audit:read` (`auth.ScopesForRole`), the same refusal any other administrator-only scope gets. `tickets:read` does not reach it, because for an admin's key the view covers every entity, MFA and password resets included.
+
+**The audit view is built not to display protected or sensitive data**: PII, and data under FERPA, HIPAA, SOX or PCI-DSS ([#362](https://github.com/PubliciaLLC/go-help-desk/issues/362)), with one configurable exception, requester names, where `audit_mask_requester_names` leaves them shown (Actor names, below). This governs what the view displays, not what its viewer can find out: an entry's ids still lead to the records they name, under those records' own access rules. The before/after diff in both this view and the per-ticket feed is an **allow-list** (`audit.Redact`). It shows ids, statuses, priorities, flags and counts (and, on a factor reset run from the command line, the operating-system user, host and `source: cli` it records; and, for OAuth clients and webhooks, a client's name and a webhook's host, see API keys under Authentication), and **leaves out** everything else: the ticket subject, which is free text, any nested value, and any field a writer adds later until it is allow-listed on purpose. Left out rather than shown as a placeholder, because the subject is written into both sides of every ticket entry, and a placeholder on both sides read as an edit that never happened. A key whose name looks like a secret (the deny-list of stems such as `password`, `secret`, `token`, `hash`, or a name ending in `key` or `pass`) is the exception: it shows as `[redacted]`, so a rotated secret still shows as a change.
+
+**Names in the diff** (#422). A diff holds ids, and an id says nothing to a reader (and a deleted status leaves one that names nothing). Each entry in both views therefore carries an optional `names` object beside `before` and `after`: it maps an id, exactly as it appears in the diff, to what it names **now**: `{"name": "In Progress"}`. The stored entry and the `before`/`after` values are unchanged, so the trail stays exact, and the response only gains a key. An id with no entry in `names` no longer resolves (a deleted status); the UI then shows the id, and otherwise shows the name with the id as its tooltip. A user id that cannot be found, an account that has been deleted whatever its role, is named `{"name": "Deleted account"}` (not `masked`: it is not the requester mask), so it tells nobody which role the account had and never carries the name. Only `status_id` (a status) and `assignee_user_id` (a user) are resolved, because they are the only id fields the allow-list lets through. Category, type, item and assignee-group ids are neither written to audit entries nor allow-listed; whoever allow-lists one adds it to the resolver (`auditNameFields`, `internal/server/audit_names.go`) in the same change. The names are built from the diffs **as they are about to be sent**, after `audit.Redact`, which is what keeps every existing rule in force: a viewer who is not shown the diff (staff with the change-history setting off, a reporting user) gets no `names`; only entries on the page are looked at, so a staff member's ticket scope is untouched and no name arrives through an entry outside it; a field that is not allow-listed is not resolved. A user who would be masked as an actor is masked here: `{"name": "Requester", "masked": true}`, by the same `audit_mask_requester_names` setting for the view (`admin_log` or `ticket_log`), the same current-role rule, and the same `masked` flag, so the setting cannot be bypassed by reading an assignee out of a diff. The lookup is one batch per page: one read of the (small) statuses table, one `id = ANY(...)` query for the users, and one for each of the category, type and item tables (`classified` entries), never one per entry and never one per id. A test pins the statement count. A lookup that fails costs the names, not the page, and is logged.
+
+**Actor names.** Staff and admin actors are always shown by name: the audit trail exists to say which employee did what. A requester (a student, a patient, a customer) is shown as **"Requester"** instead of by name in the views the setting `audit_mask_requester_names` names (Admin → System → Privacy → Privacy, "Mask requester names in Audit Trail"): `admin_log` (the admin-wide log only), `ticket_log` (each ticket's Activity feed only) or `everywhere`, **the default**. Unset or unrecognised reads as `everywhere`, and the settings dump reports a stored value it does not recognise as `everywhere` too (see REST API → Settings dump and choice-list settings; [#366](https://github.com/PubliciaLLC/go-help-desk/issues/366)). An actor whose account has been deleted, of any role, is shown as **"Deleted account"** in both audit views, in the status timeline and in a diff's `names` (owner, 2026-11-11): accurate, the same for staff and requesters so it tells nobody which, and never the name. A masked entry keeps its `actor_id`, so it stays attributable for an investigation, and carries `actor_masked: true` beside `actor_name: "Requester"`, so an account whose display name is "Requester" is not mistaken for a masked requester; the UI shows a masked actor as *Requester (name hidden)* with an eye-off icon, which a display name cannot reproduce. Whether an actor is a requester is read from their role **when the entry is viewed**, not when it was written: a staff member later changed to the user role has their earlier entries shown as "Requester", and a requester promoted to staff has theirs shown by name. **Where it applies** (D35, 1.3.0): in every place an administrator reads requester names in audit output, each by the view the setting names. That is the actor and the names inside a diff in both audit views, a ticket's status timeline (`GET /tickets/{id}/history`, which sends `changed_by_masked: true` beside the label, as the feeds send `actor_masked`; it follows `ticket_log`; it fails closed: a name stays only for an account found and known to be staff or an administrator; an account that cannot be found, of any role, reads **"Deleted account"** and never its name, and when the lookup itself fails every name is withheld as "Requester"), and the audit log's own search: `q` also matches an actor's display name and email, and leaves requesters out of that match while the admin log masks them, so a search is not a way to find out who a masked requester is. There is no export of the audit log. Every change to the setting is itself an audit entry (entity `setting`, action `audit_mask_changed`, the value before and after, the administrator as actor); it is written after the change, outside its transaction, and detached from the request, so a loss between the two writes (a crash) loses the entry, not the change. **The mask is not a protection against the database.** It is applied when an entry is served, not when it is stored: the names are in the `users` table and the `actor_id` on every entry points at them, so anyone with direct access to the database can still read every name. Nor does it stop identification through the API: it keeps requester names off the audit list and whatever is copied or captured from it, and does not stop identification. Anyone who can see an entry may still be able to find out who the requester is. When the masked actor is the ticket's own requester, the usual case, the ticket its `entity_id` names shows them on its page. An administrator can look up any masked actor from its `actor_id` (`GET /admin/users/{id}`). It is not an access control. The setting is auth-critical: loosening it shows requester names, so a machine credential cannot change it. The ticket page itself still shows the requester's name.
+
+The view takes a repeatable `exclude_action` parameter that leaves those actions out, and the page offers it as **Hide replies and notes** (`reply_added`, `note_added`). It is applied in the query, so the page, the offset and the total describe one sequence; it only narrows, so it needs no gate. Every entry carries its diff, run through `audit.Redact`: the staff change-history and follow-history settings govern a ticket's own feed, not this view.
+
+Entries with the same timestamp are ordered by id, so the order is exact. Paging is by offset, so entries arriving between two page requests shift the next page, as with any offset pager.
+
+**Search** (`q`, #629). A case-insensitive substring, matched literally (`%` and `_` are text), of at most 200 characters. It matches (1) the entity type and the action; (2) the display name and email of the actor, for an account that still exists, leaving requesters out while the admin log masks them (D34); and (3) the text values of the change details **at the keys the view shows and nowhere else** (D33: `audit.SearchableKeys`, the allow-list's keys by their exact spelling, minus any that look like a secret). A value the view withholds, such as a ticket's subject, is never a hit, because a hit would confirm what is hidden without showing it; a test proves it for every shown key and for the hidden ones, and a shown key holding a list or an object, or a diff that is itself a list, is not searched either. Numbers and flags are not searched, and a key written in an unusual spelling (`Scope-Path`) is shown but not searched: the search finds less than the view shows, never more. Keys are looked up by exact spelling because that is about ten times cheaper than expanding every row's keys. The change-details part runs **only inside a date range** (owner, 2026-11-11): the request must carry both `from` and `to`, and they must be at most 90 days apart (`audit.DetailsSearchMaxDays`), plus an hour of slack (`audit.DetailsSearchMaxSpan`) because the page picks local date-times and 90 calendar days across the clock change that gives a day 25 hours is 90 days and an hour. Without a range, `q` is still matched on the entity type, the action and the actor, and the details are left out; a range over 90 days with `q` is refused with `400 date_range_too_long` (Erik, 2026-11-11), because a page that quietly searched less than was asked for would read as "nothing found". A long range without `q` is only a date filter and is allowed. With `q`, a `from` later than `to` is refused with `400 invalid_date_range`; without `q` the list answers it with nothing, as it always has. The response says whether the details were searched: `details_searched` (always sent; true only when `q` was also looked for in the details) and, when `q` was sent without a range, `details_skipped_reason: no_date_range`. The Audit Log page shows "Pick a date range of up to 90 days to also search inside change details" under the filters when there is text and the server left the details out, and shows the 400 by the From and To fields (the filters stay as typed). A range replaced an earlier bound, the newest 100,000 entries, which gave a different answer to the same search as the log grew and could not be seen from the page. Measured on 2,000,000 entries spread over two years, for a text that matches nothing (the worst case, a full read) and a 90-day range of about 250,000 entries: the page took 0.6 to 2.1 seconds and the count 1.8 to 3.0, on a shared machine. Before the bound, expanding every row's keys had taken 54 to 69 seconds for the page and 24 to 43 for the count, and the exact-key lookup with no bound 40 and 20. A search with text is also ordered in a way the planner cannot satisfy from the `created_at` index (`SearchAuditLogText`): with the index it walks the table backwards, fetching every row, to find a first page that is empty. On the same 2,000,000 entries, for a text that matches nothing, the page took 0.6 to 2.1 seconds ordered this way and 1.1 to 9.3 with the index, whether or not the search had a 90-day range, so the date range did not make the second ordering unnecessary. The price is a text that matches plenty, where the index finds a first page at once (a few milliseconds) and the other ordering reads the table (0.6 to 3.5 seconds).
+
+**What bounds the cost** (#331, where the measurements are). The page reads `limit + 1` rows; the extra row is how `has_more` is known, so paging never depends on the count. The count is bounded: it stops after 10,001 matches (`audit.TotalCap`, 10,000). `total` is exact up to and including 10,000; beyond that it is 10,000, `total_capped` is `true` and the page shows "10,000+". `total_capped` is always sent, `false` included, and a total that merely equals the cap is `false`. The reason is that retention is off by default, the table only grows, and an exact `COUNT(*)` over it is a full scan on every page view. Limits to know about:
+
+- A filter that matches few rows still reads the table to find that out. `q` is a substring match no b-tree serves, so no index was added for it; `action`, `actor_id` and `created_at` already have one. `q` now also looks in the change details, which makes that scan dearer; see *Search* above for the measurement and for what bounds it.
+- Under a generic plan PostgreSQL's JIT can add hundreds of milliseconds to the first runs of a large scan. That is the server's `jit` setting, not a property of the statements.
+
+**Retention is opt-in and off by default.** `audit_retention_days` (admin setting) governs a daily sweep that hard-deletes anything older, with no archive table. The delete runs in batches of 5,000 (oldest first, `FOR UPDATE SKIP LOCKED`, the context checked between batches), so the first sweep over a large log is many short statements and not one that holds every expired row; a shutdown stops it between batches, and what was already deleted is reported. The first sweep runs two minutes after start rather than only on the 24-hour tick, so an instance restarted more often than daily still prunes, and startup logs the window when one is set. **Unset, zero, negative or unreadable means keep forever**, which is what every release before retention did by having nothing prune at all. The default is deliberate: a 365-day default would delete the first year of history on any instance older than that, a day after upgrading, from a setting the operator never touched (the "existing behaviour must not change" rule), and an audit log is the worst thing in the system to shorten by accident because it cannot be reconstructed. The upper bound is **36,525 days** (`admin.AuditRetentionMaxDays`, a Gregorian century): the settings endpoint refuses anything above it, and a stored value above it (written before the check existed, or directly in the database) is read as the cap, because a cutoff computed from a larger number can overflow into the future and delete everything.
+
+`audit_retention_days` is **auth-critical** (`admin.AuthCriticalKeys`), so a machine credential cannot change it. Shortening retention is the one setting that destroys evidence rather than merely widening access: set it to 1 and tomorrow's sweep removes every `mfa_reset` and `password_reset_by_admin` entry, so a leaked API key that performed a credential reset could erase the record of having done it. That is #306's reasoning about `ResetMFA` ("the exact action an attacker would want unrecorded") applied to the record rather than the act.
 
 ### Tags
 
@@ -128,20 +903,896 @@ The ticket list includes a live search bar with a 300 ms debounce:
 - The query is tokenized into words and each word is prefix-matched (e.g. `print jam` requires a word starting with "print" **and** a word starting with "jam", in any order) — this is what keeps "search as you type" working on partial words, not just whole ones.
 - Subject is weighted higher than description, so a match in the subject line ranks above one buried in a long description.
 - Results are ordered by relevance rank (highest first), then by creation date — a tracking-number-only hit (no content match) ranks after every content match, ordered by recency among itself.
-- Results appear after 2 characters are entered. Fetching is shown inline with a spinner.
+- Results are fetched as you type, with no minimum length. Fetching is shown inline with a spinner.
 - **Staff and admin** can submit the form to perform a direct **tracking number / UUID jump** — navigates immediately to the ticket if found, or shows an inline error.
-- Users only see results from their own tickets; staff/admin see results from tickets assigned to them and their groups.
-- Reply bodies are not indexed in v2 — only ticket subject and description. Deferred: searching reply content, fuzzy/typo-tolerant matching, and per-user saved searches.
+- Users only see results from their own tickets.
+- **Staff and admin** search **every ticket the viewer can see** from the **Search** view of the ticket list: all tickets, or, for staff with `ticket_scope_enforced` on, only what their scope admits (the same rule as everywhere else, not a second definition). The results area says "Searching all tickets you can see". The page sends `scope=visible` for it (see **List filters**). On the three queue views (Assigned to Me, My Group's Tickets, Available) text and filters narrow **within** that queue. In the 1.3.0 betas (#444, never in a release) a search on any queue widened to everything visible and an "Only <queue>" chip narrowed it back; the Search view replaces both (see **Ticket list views**). In 1.2 a search never left the queue, which is again what a queue view does.
+- **Reply search** (`search_replies=true` with text in `q`; off unless asked for, on by default in the page). A ticket also matches when **one** reply holds every word of the search, each as a prefix as above. Words found in different replies, or one in a reply and one in the subject, do not combine. **Staff and admin search public replies and internal notes; a requester, and any role not recognised, searches public replies only**, and is never shown an excerpt of an internal note, even on a ticket that matched by its subject. Which replies are searched comes from the viewer's role on the server and nothing in a request can change it. A ticket found through a reply carries `reply_match` (`reply_id`, `internal`, `created_at`, a snippet of the reply's own text with each matched word wrapped in U+0002 and U+0003, never an author). A ticket that matches on its own subject or description ranks ahead of one that matches only through a reply. A reply is searched, and excerpted, on its **first 50,000 characters** (the limit on a new reply; older replies may be longer), so words after that in a very long reply are not found.
+  - **How it is stored.** `ticket_replies.body_tsv` is a nullable `tsvector` that a trigger fills on insert and on an update of `body`. Migration 000062 only adds the column and the trigger, which rewrites nothing, so it is instant at any size. A background job in the running server fills the column for the replies that already exist, in small batches, and then builds the two indexes the search needs (a GIN index on `body_tsv` and a btree on `created_at DESC`) with `CREATE INDEX CONCURRENTLY`, which blocks no write; it gives that session a larger `maintenance_work_mem` (256 MB, raised and never lowered). An invalid index left by an earlier failed build is dropped first. The job holds one pooled connection throughout and a second during each index build, and a row it cannot index (it computes the column from the first 50,000 characters, so this should not happen) gets an empty column and a log line instead of stopping the fill. One server at a time does it (an advisory lock) and a restart carries on.
+  - **Until the indexes are valid** a search that asks for replies is answered from subject, description and ticket number only. It is skipped, not run as a scan of every reply. The response says so (`X-Replies-Searched: false` and `X-Reply-Index: building`; MCP adds a second text block; the page shows "Reply search is still being prepared").
+  - **Caps.** Ranking looks at the **2,000 newest** matching replies the viewer may see (the cap is applied after the viewer's visibility, so a requester's own matches are not crowded out by other people's), and the whole statement runs under a **five-second** limit. Filters such as status are applied after the cap, so a very common word can miss an older ticket that a filter would have kept. When the limit is passed, the reply part is dropped and the page is answered from subject, description and ticket number, with `X-Replies-Searched: false`.
+  - Deferred: fuzzy/typo-tolerant matching and per-user saved searches.
 - Uses Postgres's `english` text search configuration, which drops common English stop words (e.g. searching just "IT" matches nothing) — an accepted tradeoff of FTS, not a bug.
+
+**List filters.** `GET /api/v1/tickets` is one query for every request: the parameters are parsed and checked by `ticket.ParseListFilter` and `Filter.AllowedFor(role, requesterSearch)` (MCP's `list_tickets` shares them: see **Tools** under MCP), the handler works out what the caller may see and which queue they are on, and the store answers with one `ListFiltered` call. It takes `q` (above) plus `limit` (default 100, maximum 200) and `offset` (see Other protections), and the filters below. **Filters combine with AND, and a filter can only narrow what the caller can already see**: visibility is resolved from the caller's role and `ticket_scope_enforced`, never from a parameter. A filter that names something outside the caller's scope matches nothing, and an id that names nothing gives `200 []` with no existence check.
+
+Multi-value filters (`status_id`, `priority`, `source_channel`) are repeated keys (`status_id=a&status_id=b`), at most 20 values each; values of one key are ORed. An empty value is the same as an absent one. An unknown parameter (`include_internal` included) is ignored.
+
+| Parameter | Value | Who |
+| --- | --- | --- |
+| `reporter_id` | account id: the tickets that account reported | staff and admin (`403` for a reporting user) |
+| `requester` | free text, 2 to 254 characters after trimming, matched anywhere, ignoring case, in the reporting account's name or email and the ticket's guest name and email (deleted accounts included) | staff and admin; an API key or OAuth client also needs `requester_search:read` (below) |
+| `created_after`, `created_before` | RFC 3339 instants; `after` is inclusive and `before` exclusive, and `after` must be earlier than `before` | everyone |
+| `updated_after`, `updated_before` | as above | staff and admin |
+| `priority` | `critical`, `high`, `medium` or `low` (repeatable) | everyone |
+| `category_id`, `type_id`, `item_id` | ids; a category also matches every type and item under it | everyone |
+| `assignee_user_id` | account id | staff and admin |
+| `assignee_group_id` | group id. With `ticket_scope_enforced` on, a staff member may only name a group they belong to (`403` otherwise): group ids are listed to every staff member, so without that the filter would hand over tickets the scope refuses everywhere else | staff and admin |
+| `status_id` | status id (repeatable) | everyone |
+| `include_closed` | `true` (the default) or `false`, which leaves out the Closed system status. Ignored when `status_id` is given | everyone |
+| `source_channel` | `web`, `api`, `mcp`, `guest` or `phone` (repeatable) | staff and admin |
+| `sla` | `breached` or `at_risk`, the same buckets the list's indicator shows. `400` while SLA tracking is off, so an empty list is never mistaken for "nothing is breached" | staff and admin |
+| `held_by` | who personally holds the ticket, relative to the caller: `nobody` (no assignee user), `me` (the caller is the assignee user) or `others` (an assignee user who is not the caller). One value. Applies on every queue; it is how the three filters of **My Group's Tickets** are sent (see **Ticket list views**) | staff and admin |
+| `awaiting_reply` | `true` or `false` (absent and `false` are the same): the ticket is not Resolved or Closed and the newest public message is the requester's side, so it is waiting for the help desk. It reads the current role of the newest public reply's author, which a requester is never sent, so a requester sending it is `403` (see **Awaiting reply: the new list filter** under **Dashboard**, #675) | staff and admin |
+
+**A requester may filter or sort only on what they are sent.** A requester's tickets go through the allowed list (see **What a requester sees of a ticket**). Filtering or sorting on a field they are never sent would read it: narrowing `updated_after` step by step would show the minute staff last touched a ticket. So a filter outside the list above's "everyone" rows is `403 forbidden` ("<param> is not available to requesters"), and a test holds each rule to the allowed list.
+
+**`requester` and the scope.** A browser session may send it (staff and admin). An API key or OAuth client may only if it holds `requester_search:read` (see Credential Scopes); without it the answer is `403 insufficient_scope`, "this credential does not carry the requester_search:read scope", the same code the scope middleware uses. It is checked in the handler on the parameter, because the route is the same `GET /tickets` that `tickets:read` opens. `reporter_id` never needs it. Masking requester names in the audit views (`audit_mask_requester_names`) does not turn off name matching: the mask is display-only, and a staff member who can see a ticket can already read its requester's name.
+
+**Sort.** `sort` is `number`, `subject`, `status`, `priority`, `sla`, `created` or `updated`, and `order` is `asc` or `desc`. With no `sort`, a search with `q` is ranked by relevance and everything else is newest first. A `sort` replaces relevance. `sort=relevance` is `400`, and so is any unknown `sort` or `order`, even without a `sort`. With no `order`, `created` and `updated` are newest first and the rest `asc` (for `priority` and `sla`, most urgent first). Every sort ends with `created_at DESC, id`, so pages are stable. A requester may sort by `number`, `subject`, `status`, `priority` and `created`; `sort=updated` and `sort=sla` are `403`. `sort=sla` while SLA tracking is off is `400`, as for the filter.
+
+**Knowing whether SLA tracking is on.** `GET /api/v1/me` carries `sla_enabled` (boolean) for staff and administrators, so the ticket list can offer the SLA filter, column and sort only while they work. A requester's `/me` has no such key, because a requester is never shown anything about SLA, and the public `GET /site` does not carry it either: whether an instance tracks SLA is not something an unauthenticated visitor needs, and the page already loads `/me`. If the setting cannot be read the key is absent, which a client must treat as unknown rather than off.
+
+**Reply-search signals.** The response stays a bare array. When the request asked for reply search (`search_replies=true`), two response headers say what the server could not do: `X-Replies-Searched: false` (replies were not fully searched, because of the time cap or because the index is not ready, so the results match ticket text only) and `X-Reply-Index: building` (the reply index is not ready yet). Each is sent only when the server has something to say, and neither is sent for a request that did not ask for reply search. The app is same-origin and the API sets no CORS headers, so a browser page reads them directly; a future cross-origin policy must list both in `Access-Control-Expose-Headers`.
+
+**Queue (`scope`).** The handler turns `scope` into a queue and ANDs it with everything else:
+
+- `scope=mine`, the default, is the tickets assigned to the caller or to any of their groups. With scope enforcement on, staff get everything their scope admits instead, so an unassigned ticket in a covered category is not invisible to the people who should pick it up. A reporting user always gets their own tickets.
+- `scope=assigned_to_me` (#676): the tickets whose assignee user is the caller, whatever group they are in.
+- `scope=my_groups` (#676): the tickets whose assignee group is one of the caller's groups, whoever personally holds them.
+- `scope=unassigned` (no assignee user or group; the **Available** view): administrators, and staff while `available_queue_roles` lists `staff` (`403` "only admins can use this scope" otherwise, the same answer as before; see **Ticket list views**). Admin only before #676.
+- `scope=all` is **admin only** (`403` otherwise).
+- `scope=visible`: every ticket the caller can see. This is what the ticket list's Search view sends.
+- Any other value is `mine`.
+- `reporter_id`, `requester` and `assignee_group_id` name which tickets, so for `mine`, `unassigned`, `all` and `visible` the queue is "any" and `scope` is not consulted (and its refusals do not apply). Before 1.3.0 the first of `reporter_id`, `assignee_group_id` and `scope` present won and the rest were ignored; now they all apply, so `reporter_id` together with `assignee_group_id` is both, where the group used to be dropped. `assigned_to_me` and `my_groups` are always applied and ANDed with those three like any other filter.
+
+The exact rules for the two new values, the Available queue under scope enforcement, and MCP are in **Ticket list views**, next.
+
+A search on the `mine` queue is ranked by relevance like every other search. It used to merge one query per group in Go and stayed newest first. No ticket appears or disappears from `mine` because of this, only the order of a search's results changes.
+
+The ticket list page offers its queues as views in the sidebar (see **Ticket list views**; until #676 they were Mine / Unassigned / All buttons for administrators), an "Include closed" toggle (Closed tickets are hidden unless it is on), and a status filter, and pages 50 at a time.
+
+**Bulk status change.** On a desktop-width screen staff and admin can tick tickets in the list and apply one status to all of them. There is no bulk endpoint: the page sends one `PATCH /tickets/{id}` per ticket, so each goes through the same transition rules and authorisation as a single change and some can be refused (a move out of a Closed ticket, for one). The page then reports "n of m updated, k refused: reason" and leaves the refused tickets selected. Bulk selection does not exist on a phone (see Small screens).
+
+### Ticket list views
+
+([#676](https://github.com/PubliciaLLC/go-help-desk/issues/676), 1.3.x; owner decisions 2026-11-23.) The Tickets item in the sidebar has its own views, replacing the Mine / Unassigned / All toggle that only administrators had. Until now `scope=mine` was the **union** of "assigned to me" and "assigned to one of my groups", so there was no queue of what one person holds and no queue of what a group holds. Two scope values add them, one filter splits the group queue three ways, and a setting decides who may open the queue of tickets that nobody holds. **`mine` keeps its meaning** in REST and MCP; nothing an existing caller sends changes its answer.
+
+**Four views.**
+
+| View | What it lists | Request the page sends | Who sees it |
+| --- | --- | --- | --- |
+| **Assigned to Me** (the default) | tickets whose assignee user is me | `scope=assigned_to_me` | staff and admin |
+| **My Group's Tickets** | tickets whose assignee group is one of mine, narrowed by one of three filters | `scope=my_groups`, plus `held_by` | staff and admin |
+| **Available** | tickets with no assignee group **and** no assignee user | `scope=unassigned` | admin always; staff while `available_queue_roles` lists `staff` |
+| **Search** | every ticket I can see (the `all` queue, for an administrator) | `scope=visible` | staff and admin |
+
+A requester has no views: their Tickets item is the list of their own tickets, as before, and the page sends what it sent before.
+
+**How a ticket is classified.** A ticket has at most one assignee group (`assignee_group_id`) and at most one assignee user (`assignee_user_id`), set independently. Each view tests only the column it names, so a ticket assigned to both a group and a person is in **every** view whose test it passes, and in no view by elimination. For a viewer V who is in groups G1 and G2:
+
+| Assignee group | Assignee user | Assigned to Me | My Group's Tickets (`held_by`) | Available | `mine` (unchanged) |
+| --- | --- | --- | --- | --- | --- |
+| none | none | | | yes | |
+| none | V | yes | | | yes |
+| none | someone else | | | | |
+| G1 | none | | yes (`nobody`) | | yes |
+| G1 | V | yes | yes (`me`) | | yes |
+| G1 | someone else | | yes (`others`) | | yes |
+| G3, not one of V's | none | | | | |
+| G3, not one of V's | V | yes | | | yes |
+| G3, not one of V's | someone else | | | | |
+
+"Someone else" is any account that is not V, whether or not it is a member of the ticket's group, and a disabled or deleted account still assigned is someone else. A person in several groups sees, in My Group's Tickets, the union of every group's tickets; a ticket has one group, so it appears once. A person in no group has an empty My Group's Tickets, an administrator included; nothing special-cases it. `assigned_to_me ∪ my_groups = mine` for every viewer, and a test holds it.
+
+**The new scope values.** `GET /api/v1/tickets` accepts two more values of `scope` (see **List filters**):
+
+- `scope=assigned_to_me`: `t.assignee_user_id = caller`.
+- `scope=my_groups`: `t.assignee_group_id = ANY(caller's groups)`, the caller's group ids read just before the query as the store already does for `mine` (`mine_group_ids`).
+
+Both are open to staff and administrators. A requester who sends either gets their own tickets, as for `mine` (a requester has no queues; their visibility is already the answer). Unlike the four older values, these two are **always applied**: `reporter_id`, `requester` and `assignee_group_id` narrow them like any other filter and do not replace them. The older values keep yielding to those three exactly as they do today, which is a compatibility rule from 1.2 and not one the new values need: a group picked inside My Group's Tickets must narrow it, never silently widen to a group the viewer is not in.
+
+**The three group filters: `held_by`.** One new filter parameter, parsed by `ticket.ParseListFilter` like every other, staff and administrators only (`403` "held_by is not available to requesters"), one value, `400` "invalid held_by" for any other value:
+
+| `held_by` | Matches | Page label |
+| --- | --- | --- |
+| absent | no restriction | All |
+| `nobody` | `t.assignee_user_id IS NULL` | Group queue |
+| `me` | `t.assignee_user_id = caller` | Assigned to me |
+| `others` | `t.assignee_user_id IS NOT NULL AND t.assignee_user_id <> caller` | Assigned to others |
+
+It is relative to the caller, so it needs no account id and a page can send it without knowing its own. It is an ordinary filter, ANDed with the queue and everything else, and it means the same on every queue (`held_by=nobody` on Search is "every ticket I can see that no person holds"). On My Group's Tickets the three values partition the queue. `held_by=me` matches what `assignee_user_id=<my id>` matches without needing the id; both may be sent together and both apply.
+
+**Who may open Available: `available_queue_roles`.** The owner ruling is that unassigned tickets are not inherently admin-only.
+
+- **The setting.** `available_queue_roles`, a JSON array of role names, the same shape as `mfa_enforced_roles`. Accepted values are `admin` and `staff`; any other value (`user` included: a requester has no queues) is `400 bad_request` "available_queue_roles may list only admin and staff", and a value that is not an array of strings is `400` as for every typed setting. `[]` is accepted. Duplicates are harmless and stored as sent. Roles are a fixed set of three until v3's custom roles, which will extend the accepted values.
+- **Administrators always.** The rule is `role == admin OR role is listed`, so an administrator's access does not depend on what is stored. The settings control shows Administrators ticked and disabled and sends `["admin","staff"]` or `["admin"]`, so the stored value reads as what is in force.
+- **Default: admins only.** The key is absent on every install, fresh or upgraded, and absent reads as `[]`. So is a stored value that cannot be read or parsed: the reader fails closed. There is **no migration** and no setting changes value on upgrade (what the page shows does change; see **Upgrade**).
+- **Session-only.** It is in `admin.AuthCriticalKeys`, with `ticket_scope_enforced`, so an API key or OAuth client that sends it is `403 session_required`: widening who sees which tickets is a permission change, and a leaked key must not make it.
+- **Domain.** `admin.KeyAvailableQueueRoles`, listed in `KnownKeys`; `Service.AvailableQueueRoles(ctx) []string` (a missing or damaged row reads as none); `Service.AvailableQueueAllowed(ctx, role string) bool`. One function decides it for REST, MCP, `/me` and the sidebar.
+- **Machine credentials** take the role they act as: an API key its owner's, an OAuth client its service user's (staff). So ticking Staff opens `scope=unassigned` to an OAuth client too, as it opens it to every staff member.
+
+**`403` for Available is unchanged** (owner decision: "`403` is unchanged for a role that is not ticked"). `scope=unassigned` from a role the rule does not allow is `403 forbidden`, "only admins can use this scope", the status, code and words it has today, and the existing tests that pin them stay as they are. For staff the words remain true whenever the refusal fires, because it fires only while Staff is not ticked. The one caller for whom they are loose is a requester while Staff is ticked (staff may then use it too); that is accepted, since a requester has no queues and changing the text is not what the owner asked for. `scope=all` is unchanged as well: administrators only, the same `403`. As before, neither refusal applies when `reporter_id`, `requester` or `assignee_group_id` is present, because those requests are not on a queue.
+
+**Scope enforcement.** Visibility is never widened by a queue: every queue is ANDed with what the caller may see.
+
+| Queue | Staff, `ticket_scope_enforced` off | Staff, `ticket_scope_enforced` on | Administrator |
+| --- | --- | --- | --- |
+| `assigned_to_me`, `my_groups` | the queue | the queue (every such ticket is already in scope: it is assigned to them or to their group) | the queue |
+| `unassigned` (if allowed) | every available ticket | the available tickets their scope admits: in a Category/Type one of their groups covers, or reported by them | every available ticket |
+| `mine` (unchanged) | assigned to them or their groups | everything their scope admits | assigned to them or their groups |
+| `visible` | every ticket | everything their scope admits | every ticket |
+
+So with **Limit staff to their group scope** on, a ticked staff member's Available view is the unassigned tickets in their area, which is what **Groups & Scope** asks for (an unassigned ticket in a covered category must not be invisible to a covered staff member). A staff member in no group sees only the unassigned tickets they reported. In code, `queueFor`'s collapse of every queue to "any" for scoped staff stays for `mine` alone; the other values are applied as listed.
+
+**What a scoped staff member loses from the default list.** With `ticket_scope_enforced` on, a staff member's list in 1.2 and in the 1.3.0 betas opened on `mine`, which for them is everything their scope admits, "so an unassigned ticket in a covered category is not invisible to the people who should pick it up" (above). The page no longer sends `mine`: it opens on Assigned to Me, and the tickets their scope admits that are neither theirs nor their groups' are in no queue view: the pickup tickets with no group and no person (Available, closed to staff by default) and the covered tickets held by another group or person. They are not hidden: the **Search** view with an empty box sends `scope=visible`, which for scoped staff is exactly that old list, and `mine` itself is unchanged for every API and MCP caller. The page cannot keep both the owner's default for Available (admins only) and the old default list, so the change is stated, not avoided: the upgrade notes tell an installation with enforcement on to tick **Staff** under Available if staff are expected to pick up unassigned tickets, the settings control says the same while enforcement is on (see **The setting's control**), and the decision is listed below for the owner.
+
+**One resolution for REST and MCP.** The scope-to-queue rule moves from the handler into the domain, beside `AllowedFor`:
+
+- `ticket.Scope` (`mine`, `assigned_to_me`, `my_groups`, `unassigned`, `all`, `visible`) and `ticket.ParseScope(string) (Scope, bool)`, which trims and reports an unknown or empty value as not ok.
+- `ticket.QueueAssignedToMe` and `ticket.QueueMyGroups` join `Queue`.
+- `ticket.ResolveQueue(scope Scope, f Filter, role user.Role, availableOK bool) (Queue, error)`, called after `f.Visibility` is set. It returns the queue, or a `*FilterError` of kind `FilterForbidden` with the message above (one text, "only admins can use this scope", for both `unassigned` and `all`), so REST answers it through `writeFilterError` and MCP through its usual error path, in the same words. It reads `f.ReporterID`, `f.Requester` and `f.AssigneeGroupID` for the yielding rule and `f.Visibility` for the requester and scoped-staff rules. It is pure and table-tested over every scope, role, visibility and named-set combination.
+- REST: `scope` absent, empty or unknown is `mine`, as always. MCP: see below.
+
+**MCP `list_tickets`.** Two new arguments, through the same parser and the same `ResolveQueue`:
+
+- `scope`: a string, one of the six values. **Absent or null means `visible`**, which is what the tool has always listed, so an existing caller's answer is unchanged. An unknown value, an empty string or any other JSON type is refused ("invalid scope"): this tool never skips an argument (owner decision, 2026-11-12). `unassigned` and `all` are refused in REST's words for a role that may not use them.
+- `held_by`: a string, as in REST, read with the other string filters (`listFilterParams`).
+
+The tool needs the Available rule, so `mcp.Authorizer`, the one interface that already answers MCP's visibility questions, gains `AvailableQueueAllowed(ctx context.Context, a *authmw.Actor) bool`; `server.Server` implements it from `admin.Service.AvailableQueueAllowed`, and `deniedAuthorizer` answers false. The tool's other rule stays: a staff member outside a group may still name it in `assignee_group_id`, because it can only narrow what their scope admits.
+
+**What the page needs to know: `/me`.** For a person (a session, or an API key, which answers with its owner's account) `GET /api/v1/me` carries `can_use_available_queue`, a boolean, present in every such answer and never omitted (the same shape as `can_create_api_keys`, and unlike `sla_enabled`, which is absent for a requester): true for an administrator, true for staff while `staff` is listed, false for a requester. `PATCH /api/v1/me/email-preferences` answers with the same account view (the handler builds both with `meView`), so it carries the field too. An **OAuth client** is not a person and has no sidebar: its `/me` answer is the machine object (`machine`, `role`, `scopes`) and carries **no** `can_use_available_queue`, and nothing is added to it. The sidebar and the list read it; Settings makes the `me` query stale when it saves the setting. Until `/me` has answered, a staff member's sidebar shows no Available item (an administrator's always does).
+
+**Sidebar, per role.** For staff and administrators the Tickets item becomes a fixed group, not collapsible (it is the screen people use most, and four links fit): a label "Tickets" with the ticket icon, not itself a link, and indented links under it, in this order:
+
+| Role | Under Tickets |
+| --- | --- |
+| Administrator | Assigned to Me, My Group's Tickets, Available, Search |
+| Staff, `staff` listed | Assigned to Me, My Group's Tickets, Available, Search |
+| Staff, not listed | Assigned to Me, My Group's Tickets, Search |
+| Requester | none: Tickets stays one link to their tickets, as now |
+
+Each link is `/tickets?view=<view>`. A link is current (`aria-current="page"`, the active colour) when the path is `/tickets` and its `view` matches; on a ticket's own page none is. The group is a `role="group"` labelled by the "Tickets" label. The Admin sections below it are unchanged.
+
+**Addresses.** The page keeps its whole search in the address, as before, and adds `view` (`me`, `groups`, `available`, `search`) and `held_by` (kept only with `view=groups`). **The page always writes `view`**, so an address without one is a link made before #676 or by hand, and is translated once, replacing the history entry rather than adding one:
+
+| Address without `view` | Becomes | Why |
+| --- | --- | --- |
+| text or any filter in it (for example the dashboard's `?status=<id>`) | `view=search`, keeping them | before #676 a staff search that narrowed covered everything visible: this is the view that still does |
+| `scope=all` | `view=search` | Search is the administrator's All queue |
+| `scope=unassigned` | `view=available` | the same queue |
+| `scope=mine`, or nothing | `view=me` | the default view; no view equals the old union |
+
+The `scope` key is dropped in the rewrite; the API `scope` is derived from the view and never read from the address again. An address naming a view the viewer may not use (`view=available` for staff the setting leaves out, from an administrator's shared link) is replaced by `view=me`, with no error shown. A requester's `view`, `scope` and `held_by` are dropped. The translation is a pure function in `lib/ticketSearch.ts`, run after `/me` has answered (the list already waits for it). The dashboard's links keep working through the first row; #675 gives its queue strip explicit views.
+
+**On each view.**
+
+- **Text and filters narrow within the view.** The "Only <queue>" chip and the widening of a search to everything visible are retired: the Search view is the wide search. A tracking number or UUID submitted from the box still jumps to the ticket from any view.
+- **The request (`toApiParams`).** For a staff member or an administrator the page **always** sends `scope`, for every view, derived from the view as in the table above. Today's skip in `toApiParams` (`!namesASet(...)`, which sends no `scope` when the search carries a reporter, a requester or a group) is **removed**, and so is the `hasNarrowing` / `onlyQueue` choice of `visible`: with the skip a group or requester filter typed inside a view would send no `scope`, and the server, which reads an absent `scope` as `mine`, would answer with the union queue and widen the list. The server's rule that a named set makes `mine`, `unassigned` and `all` yield is unchanged, and `assigned_to_me` and `my_groups` are never replaced by one (see the decisions). `held_by` is sent only on My Group's Tickets. A requester's request is what it was before #676 (no view, no `held_by`). `namesASet` no longer decides whether `scope` is sent.
+- **Filters offered** (a per-view list, data in `lib/ticketSearch.ts`): Assigned to Me leaves out Assignee (it is always me). Available leaves out Assignee and Group (always empty for this queue) and Requester (with it present, `unassigned` yields to the named set under the 1.2 rule and would list tickets that are not available). My Group's Tickets and Search offer every filter. A filter the view does not offer is neither shown as a chip nor sent, even if the address carries it.
+- **My Group's Tickets** shows a four-way choice under the toolbar, **All / Group queue / Assigned to me / Assigned to others**, buttons with `aria-pressed`, writing `held_by` (All removes it) and resetting the page.
+- **Search** with an empty box and no filter lists every ticket the viewer can see, newest first: for an administrator, the old All queue.
+- **The heading** is the view's name; a requester's is "Tickets".
+- **Empty states**, when the box and filters are empty: Assigned to Me "No tickets are assigned to you." My Group's Tickets: All "No tickets are assigned to your groups.", Group queue "No group tickets are waiting for someone to take them.", Assigned to me "None of your groups' tickets are assigned to you.", Assigned to others "None of your groups' tickets are held by a teammate." Available "No tickets are waiting without a group or a person." Search "No tickets yet." With text or a filter, every view says "No tickets match your search.", as now.
+- **Bulk status change**, sorting, paging, the SLA column and "Include closed" are the same on every view.
+
+**Small screens.** The views are in the navigation drawer below `md`, the same `SidebarContent` as the desktop sidebar, so the two cannot drift; each link is at least 44 px tall on a coarse pointer and closes the drawer when followed. The My Group's Tickets choice wraps rather than scrolls, its buttons at least 44 px tall on a coarse pointer. At 320 px nothing scrolls sideways (an e2e test pins it for the drawer and for the My Group's Tickets toolbar).
+
+**The setting's control.** `AvailableQueueSection` (`frontend/src/components/admin/AvailableQueueSection.tsx`) is self-contained: it reads `GET /admin/settings`, writes only `available_queue_roles` with `PATCH /admin/settings`, shows the server's refusal inline, and invalidates the `me` query on success. No settings type is added to `api/admin.ts`: `getSettings` and `updateSettings` keep their `Record<string, unknown>` signatures, and the component reads and validates the one key it needs from that record. Heading "Available queue"; one sentence, "Who can open the Available view: tickets with no group and no person assigned."; checkboxes **Administrators** (ticked, disabled, "always") and **Staff**; and, while `ticket_scope_enforced` is on, "With Limit staff to their group scope on, staff see only the available tickets in their groups' categories. Tick Staff if your staff pick up new tickets themselves: otherwise they find them only through Search." It sits on **Admin → System → Privacy**, directly after Ticket visibility, "Limit staff to their group scope".
+
+**Upgrade.** The upgrade notes are read by someone coming from **1.2**, so this is what changes against 1.2; the #444 search widening and its chip were only ever in the 1.3.0 betas and are not described as removed.
+
+- **API and MCP callers: nothing changes.** Every value a caller can send to 1.2 means what it meant, with the same refusals in the same words (`403` "only admins can use this scope" for `unassigned` and `all`). The new `scope` values and `held_by` are additive (a 1.2 server answers an unknown `scope` as `mine` and ignores an unknown parameter). MCP's default listing is unchanged. Available stays admin-only until an administrator ticks Staff.
+- **Administrators.** The Mine / Unassigned / All buttons are replaced by the sidebar views: Mine's tickets are split between Assigned to Me and My Group's Tickets, Unassigned is Available, and All is Search with an empty box.
+- **Staff, `ticket_scope_enforced` off.** 1.2 opened on Mine (assigned to me or to one of my groups). The page opens on Assigned to Me; group tickets are under My Group's Tickets. A search made on a queue view stays in that queue, as in 1.2; the Search view is new and searches every ticket the staff member can see.
+- **Staff, `ticket_scope_enforced` on.** 1.2 opened on everything the staff member's scope admits, including unassigned tickets in their categories. That list is now the Search view with an empty box; the queue views are narrower, and unassigned tickets are in Available only once Staff is ticked (see **What a scoped staff member loses from the default list**). The notes say: if staff pick up new tickets themselves, tick Staff under Available.
+- **Requesters: nothing changes.**
+- **Addresses.** Bookmarks and links with `?scope=` are translated as above.
+- **No migration, and no setting changes value.** There is no post-upgrade wizard step (see the decisions).
+
+**API documents.** `docs/api/openapi.yaml`: `scope` on `GET /tickets` lists the six values with the table of who may use them and the 403 wording (unchanged); `held_by` is added as a query parameter; the `/me` schema is changed as follows. On the base branch the `200` of `GET /me` is `oneOf` [`User`, the machine object], and `User` is a schema shared with every endpoint that returns an account, so `can_use_available_queue` must not go on `User` (the other endpoints never carry it). A new schema `MeUser` is introduced: `allOf` `User` plus the extras `meUser` in `handler_me.go` really returns (`can_create_api_keys` and `api_key_max_lifetime_years`, always present; `sla_enabled` and `email_notifications`, optional as today) and the new `can_use_available_queue`, a boolean listed in `required` on `MeUser`. Those extras are declared on `MeUser` instead of `User`, where today's descriptions already say they appear only on `GET /me` and `PATCH /me/email-preferences`. The `200` of `GET /me` becomes `oneOf` [`MeUser`, the machine object] and the `200` of `PATCH /me/email-preferences` is `MeUser`. The machine object is unchanged and has no `can_use_available_queue` property; `available_queue_roles` is added to the admin settings schema, marked session-only. The MCP tools table (see **MCP Interface**) lists `scope` and `held_by` for `list_tickets`. `docs/upgrade-notes-1.3.0.md`: the existing section "Staff Search Now Covers Every Ticket They Can See (#444)" under New features describes the betas' widening and the "Only my tickets" chip, which this work removes, so it is **rewritten in place**, not added to. Its new title is "Ticket List: Views in the Sidebar, a Search View and Who May Open Available (#444, #676)", and it carries the bullets of **Upgrade** above, written against 1.2, plus: the new `scope` values (`assigned_to_me`, `my_groups`, `visible`) and `held_by`; `available_queue_roles`, its default (admins only), that it is session-only and where it is set; and MCP `list_tickets` gaining `scope` (absent means every visible ticket, as before) and `held_by`. Its "Who can see what is unchanged" bullet and its "no migration and no new index" bullet stay. No line in the notes may still mention the chip or say that the search box on every queue covers every ticket. Nothing goes under Breaking changes, because no API answer changes.
+
+**Out of scope.** Per-person saved views, counts beside the sidebar links (the dashboard's queue strip, #675, is where counts go), choosing one of my groups from the sidebar, and custom roles in the setting (v3).
+
+**Decisions taken without the owner.** Each can be overturned in one line.
+
+- Available is `scope=unassigned`, not a new `scope=available`: one queue, one name. Rejected: a synonym.
+- The new values are named `assigned_to_me` and `my_groups`. Rejected: `me` and `groups`, too close to `mine`.
+- The three group filters are one general filter, `held_by=nobody|me|others`, valid on every queue. Rejected: three sub-scopes, or a parameter that is `400` outside `my_groups`; both are special cases of a filter that has one meaning everywhere.
+- `assigned_to_me` and `my_groups` are always applied, even with `reporter_id`, `requester` or `assignee_group_id`; the four older values keep yielding to those as now. Rejected: one yielding rule for all six, which would make a group filter widen My Group's Tickets to a group the viewer is not in.
+- Under scope enforcement a staff member's `mine` still means everything their scope admits; only the new values are narrow. Rejected: narrowing `mine`, a breaking change.
+- The setting is a role list with `admin` implicit and always allowed, accepting only `admin` and `staff`. Rejected: a boolean (the owner asked for the role-list pattern), and accepting `user` (a requester has no queues).
+- No migration: the absent key reads as admins only (the reader treats a missing row as an empty list). Rejected: a migration seeding `[]`, which costs a migration number and changes nothing. (The open #616 branch seeds its `passkey_required_roles` in migration 000066; that is its own choice and does not bind this one, and nothing here takes a migration number.)
+- The setting is session-only (`AuthCriticalKeys`). Rejected: automatable, since it widens who sees tickets, the family `ticket_scope_enforced` is in.
+- MCP `list_tickets` gains `scope`, defaulting to `visible`, and refuses an unknown value. Rejected: no `scope` (no parity), or a default of `mine` (would change every existing caller's answer).
+- `/me` carries `can_use_available_queue` in every answer for a person (an OAuth client's machine answer has no such field). Rejected: the page reading the setting (staff cannot read settings) or guessing from a `403`.
+- Queue views narrow within the queue and the "Only <queue>" chip is retired; Search is the wide search. Rejected: keeping the widening on every view, which makes a queue stop being that queue the moment something is typed, and gives two ways to do what Search does.
+- Search with an empty box lists every visible ticket. Rejected: an empty prompt for staff, when the API already answers it and staff without enforcement can see every ticket anyway.
+- The address carries a page `view`, always written, and an address without one is translated once. Rejected: reusing `scope` for views, since views and API scopes do not map one to one (Search is `visible`, Assigned to Me is not `mine`).
+- `?scope=mine` becomes Assigned to Me. Rejected: My Group's Tickets; neither equals the old union, and the default is the least surprising.
+- A view the viewer may not use falls back to Assigned to Me silently. Rejected: showing the `403`, which would greet a colleague's shared link with an error.
+- Available offers no Assignee, Group or Requester filter, and Assigned to Me no Assignee filter. Rejected: offering them, which gives an always-empty list or, for Requester, one that leaves the queue.
+- Tickets is a fixed group in the sidebar for staff and administrators. Rejected: a collapsible section like Admin, which hides the most used links.
+- With scope enforcement on, staff lose the pickup tickets from their default list unless Staff is ticked; this is stated in the upgrade notes and in the settings control, and the old list stays one click away as Search. Rejected: ticking Staff by default, or only while enforcement is on (the owner set the default to admins only); a fifth view equal to the old scoped `mine` (not one of the owner's four views); and narrowing Search for it (Search must stay every visible ticket).
+- No post-upgrade wizard step. Rejected: a step offering `available_queue_roles` while enforcement is on, like the guest-upload step. It would be the right place if the owner wants more than the notes, and costs one conditional step; without the owner it is left out because no setting changes value and the old list is not lost (Search).
+- The upgrade notes rewrite the betas' #444 search section in place and are written against 1.2. Rejected: adding a #676 section beside it, which would leave the notes describing a chip and a widening that no release ships.
+- Until #674, the control sat under Settings → General → Ticket visibility; with #674 it is on System → Privacy. Rejected: waiting for #674, which would leave the setting reachable only through the API.
+
+**Tests.**
+
+- *Postgres, store* (`internal/database`): one fixture with every row of the classification table for a viewer in two groups, plus a ticket in a third group; `assigned_to_me`, `my_groups` and `unassigned` return exactly their rows; `assigned_to_me ∪ my_groups = mine`; each `held_by` value on `my_groups` returns exactly its rows and the three partition the queue; `held_by` on `any` and on `assigned_to_me`; a viewer in no group gets an empty `my_groups`; scoped visibility (`VisibilityScoped`) with `unassigned` returns only the unassigned tickets in a covered category or type, or reported by the viewer, and with the new queues returns the same as unscoped; the queues combine with a text search, `status_id` and `assignee_group_id`; the scale test's plan check covers `assigned_to_me` and `my_groups`.
+- *Domain*: `ParseListFilter` reads each `held_by` value and refuses others (`400`); `AllowedFor` refuses `held_by` to a requester and the requester-rule test covers the new row; `ParseScope` over every value, empty and unknown; `ResolveQueue` table over scope × role (user, staff, admin) × visibility × `availableOK` × a named set present or not, including that `unassigned` and `all` refusals do not apply with a named set and that the new values are not replaced by one; `admin.Service.AvailableQueueAllowed` for each role with the key absent, `[]`, `["staff"]`, `["admin"]` and a damaged value.
+- *REST, Postgres*: `scope=unassigned` as staff is `403` "only admins can use this scope" (the existing tests that pin those words are left unchanged) with the key absent and `200` with `["staff"]`, with enforcement off (every available ticket) and on (only the covered ones); as an administrator `200` whatever is stored; as a requester `403` whatever is stored; `scope=all` as ticked staff is still `403`; `scope=assigned_to_me` and `my_groups` with enforcement on and off; a requester sending them gets their own tickets; `held_by` as a requester is `403`; an unknown `scope` is still `mine`; `PATCH /admin/settings` accepts `[]`, `["admin"]`, `["admin","staff"]`, refuses `["user"]`, `["root"]`, `"staff"` and `null` with `400`, and answers an API key `403 session_required`; `/me` carries `can_use_available_queue` for each role and setting.
+- *MCP*: `scope` absent is the same listing as before (`visible`); each value gives the same tickets as REST for the same caller and setting (parity test over the store fixture); `unassigned` refused for unticked staff in REST's words; an unknown value, `""` and a number are refused; `held_by` passes through and is refused to a requester; `deniedAuthorizer` refuses `unassigned`.
+- *Frontend*: the address translation table row by row, including `view=available` for unticked staff and a requester's address; `toApiParams` per view (the scope sent, `held_by` only on `groups`, the filters each view leaves out); the sidebar per role and setting, the current link, and the Available link hidden until `/me` answers; the My Group's Tickets choice writes `held_by`; each empty state; `AvailableQueueSection` loads, shows Administrators ticked and disabled, saves `["admin","staff"]` and `["admin"]`, shows a refusal, and shows the enforcement sentence only while enforcement is on.
+- *e2e at 320 px*: the drawer lists the views per role and nothing scrolls sideways; the My Group's Tickets toolbar wraps without horizontal scroll.
+
+### Dashboard
+
+([#675](https://github.com/PubliciaLLC/go-help-desk/issues/675), 1.3.x; owner decisions 2026-11-23.) The dashboard (`frontend/src/pages/DashboardPage.tsx`) was one card per status and, for administrators, a By Client list. It gains **four blocks, and only four**: a queue strip, a needs-attention list, a 30-day volume trend and, for administrators, a health card. The status cards, the **View all tickets** button and By Client stay exactly as they are, with the same data and the same links.
+
+**One request, one rule.** The strip, the list and the trend come from **one new endpoint**, `GET /api/v1/dashboard`. Reusing `GET /tickets?limit=1` was rejected: the list answers a bare array with no total, so it cannot count, and adding a total would change every list response. Every number and every row the endpoint returns is computed by the **same path as `GET /tickets`**: the handler resolves the caller's visibility with `Server.TicketVisibility` and the queue with `ticket.ResolveQueue` (#676), builds a `ticket.Filter`, and the store answers it with the list query's own `WHERE` (below). There is no second definition of who may see what. With `ticket_scope_enforced` on, a staff member's numbers count only what their scope admits, because they are counts of the list they would open.
+
+**Who sees which block.**
+
+| Block | Requester | Staff | Administrator |
+| --- | --- | --- | --- |
+| Queue strip | their own tickets (one cell) | their queues (five cells) | their queues (five cells) |
+| Needs attention | not shown | yes | yes |
+| Volume trend | not shown | yes, over every ticket they can see | yes, every ticket |
+| Health card | not shown | not shown | yes |
+
+A requester's dashboard otherwise is what it was: the status cards already count only their own tickets (`statusCounter`).
+
+**The endpoint.** `GET /api/v1/dashboard?tz=<IANA zone>`, mounted with the ticket router's middleware (`RequireRole(admin, staff, user)`, `RequireMFA`, `RequireResource(tickets)`), so an API key or OAuth client needs `tickets:read`, as for `GET /tickets`. It reads nothing from the request but `tz`.
+
+- `tz`: the time zone the trend's days are counted in, the browser's (`Intl.DateTimeFormat().resolvedOptions().timeZone`). Absent or empty is `UTC`. At most 64 bytes of `A-Z a-z 0-9 _ + - /`, otherwise `400 bad_request` "invalid tz". A name Postgres does not know is `400 bad_request` "unknown time zone" for a staff member or administrator, the callers who get a trend (a requester runs no trend, so their zone is checked for form only): the trend runs before the other queries, and the first of its statements to use the zone maps SQLSTATE `22023` to the store sentinel `ticket.ErrUnknownTimeZone` (once #131 is in, that statement is `LocalToday`, see **KPI reports**). The zone is passed to Postgres as a parameter and only ever used in `AT TIME ZONE`.
+- The response, for staff and administrators:
+
+```json
+{
+  "queues": [
+    {"key": "assigned_to_me", "count": 4},
+    {"key": "my_groups", "count": 11},
+    {"key": "sla_breached", "count": 1},
+    {"key": "sla_at_risk", "count": 2},
+    {"key": "awaiting_my_reply", "count": 3}
+  ],
+  "attention": [
+    {"reason": "breached", "since": "2026-11-21T09:14:03Z", "ticket": {"id": "…", "tracking_number": "GHD-2026-000123", "subject": "…", "…": "…"}},
+    {"reason": "reopened", "since": "2026-11-24T07:40:11Z", "ticket": {"…": "…"}}
+  ],
+  "volume": {
+    "tz": "Europe/London",
+    "days": [{"date": "2026-10-26", "created": 3, "resolved": 2}, "… 30 entries, oldest first, the last is today"]
+  }
+}
+```
+
+  For a requester `queues` has their one cell (`my_tickets`), and `attention` and `volume` are `null`: `null` is "not part of your dashboard", `[]` is "nothing to show". `ticket` in an attention row is exactly the object `GET /tickets` returns for that ticket to that caller (the same `ticketViews` and `viewerJSON` shaping), so the SLA indicator and the badges render with the list's components; nothing is added to the ticket object. `since` (RFC 3339, UTC) is the instant the row's age is measured from, set by the server per reason: the ticket's `created_at` for `breached`, `at_risk` and `unassigned`, and its `last_reopened_at` for `reopened`. The reopen instant is not otherwise sent (`Ticket.LastReopenedAt` is `json:"-"`), and it is sent here only on the row whose reason it is, and only to staff and administrators (a requester has no attention list), so the requester allowed list is not touched. While SLA tracking is off the two `sla_*` cells are left out of `queues` and no SLA reason appears in `attention`, because `sla` is `400` on the list while it is off and a zero would read as "nothing is breached". If `sla_enabled` cannot be read it is treated as off for this response.
+- Errors: `401`/`403` as for `GET /tickets`; `400` for `tz` as above; a store failure is `500 internal_error` for the whole response. Nothing is cached on the server; the page keeps the answer for 60 seconds.
+
+**The queue strip.** A row of small numbers, each a link to the list that shows exactly those tickets. Each cell is data: a key, the `scope` and the filter criteria, from which the count's `ticket.Filter` is built exactly as `GET /tickets` builds one, and the address the page links to, which sends exactly those parameters (`include_closed=false` is what the ticket list sends while **Include closed** is off, its default).
+
+| Key | Label | Count = `GET /tickets` with | Links to | Roles |
+| --- | --- | --- | --- | --- |
+| `assigned_to_me` | Assigned to me | `scope=assigned_to_me&include_closed=false` | `/tickets?view=me` | staff, admin |
+| `my_groups` | My groups | `scope=my_groups&include_closed=false` | `/tickets?view=groups` | staff, admin |
+| `sla_breached` | Breached | `scope=assigned_to_me&sla=breached&include_closed=false` | `/tickets?view=me&sla=breached` | staff, admin, while SLA tracking is on |
+| `sla_at_risk` | At risk | `scope=assigned_to_me&sla=at_risk&include_closed=false` | `/tickets?view=me&sla=at_risk` | staff, admin, while SLA tracking is on |
+| `awaiting_my_reply` | Awaiting my reply | `scope=assigned_to_me&awaiting_reply=true&include_closed=false` | `/tickets?view=me&awaiting_reply=true` | staff, admin |
+| `my_tickets` | Your tickets | `scope=mine&include_closed=false` | `/tickets` | requester |
+
+Every key is distinct, so a cell's label and link are looked up by its key alone (the key enum in openapi is these six values). The order of the table is the order of `queues` and of the strip. The SLA cells count what is assigned to me, not the whole desk: the strip is "your queue", and the desk's breaches are what the needs-attention list is for. A count is a plain number (`0` is shown as `0`; the strip has no empty state). A staff member in no group has `my_groups: 0`; nothing special-cases it. A requester's dashboard has no "awaiting my reply" cell, because the filter behind it is staff-only (below). The page ignores a key it does not know, so a later release may add one.
+
+**Awaiting reply: the new list filter.** "Awaiting my reply" needs a fact the list could not express. `awaiting_reply=true` is an ordinary filter of `GET /tickets` (see **List filters**), parsed by `ticket.ParseListFilter` into `Filter.AwaitingReply bool` (`true` or `false`; any other value is `400` "invalid awaiting_reply"), **allowed to staff and administrators only** (a requester sending it is `403`, below), and ANDed like every other. A ticket matches when:
+
+1. its status is not the Resolved or Closed system status (by kind and name, `IS DISTINCT FROM` as `exclude_closed` does), and
+2. the newest public message on it is the **requester's side**, so the ticket is waiting for the help desk. The newest public reply (`internal = false`, ordered by `created_at DESC, id DESC`) is the help desk's when its author's role is now `staff` or `admin` (a service user is staff), and the requester's side otherwise: the reporter, a follower who is a requester, or a guest (a reply with no author: `author_id IS NULL` is a guest reply and nothing else, see `ticket.Reply.AuthorID`). The role is read whether or not the account is deleted: accounts are soft-deleted (`users.deleted_at`; `SoftDeleteUser`), the row and its role stay, and `ticket_replies.author_id ON DELETE SET NULL` never fires in practice. So a deleted staff member's last reply is still the help desk's, which is what it was when it was written, and the SQL below has no `deleted_at` test on purpose. A ticket with no public reply is the requester's side: the description is the requester's message, whoever typed it. There is one meaning for every caller who may send the filter, so the SQL needs no new parameter but `awaiting_reply` (it does not read `reporter_only`):
+
+```sql
+AND (NOT sqlc.arg(awaiting_reply)::bool OR (
+  t.status_id IS DISTINCT FROM (SELECT s.id FROM statuses s WHERE s.name = 'Closed'   AND s.kind = 'system')
+  AND t.status_id IS DISTINCT FROM (SELECT s.id FROM statuses s WHERE s.name = 'Resolved' AND s.kind = 'system')
+  AND NOT COALESCE((SELECT u.role IN ('admin', 'staff')
+                    FROM ticket_replies r LEFT JOIN users u ON u.id = r.author_id
+                    WHERE r.ticket_id = t.id AND NOT r.internal
+                    ORDER BY r.created_at DESC, r.id DESC LIMIT 1), false)))
+```
+
+Internal notes are never read, so a note neither makes a ticket wait nor stops it waiting. Pending is not special: a ticket a staff member put in Pending with a question has the help desk's message last, so it is not awaiting staff, and when the requester answers it is.
+
+**Staff and administrators only; a requester is refused.** The rule **A requester may filter or sort only on what they are sent** (see **List filters**) decides this. The clause reads the *current role* of the newest public reply's author, and a requester is never sent author roles: the public replies on their own ticket (`GET /tickets/{id}/replies`) carry `author_id` and `author_name`, not a role. If a requester could send `awaiting_reply=true`, toggling it on their own tickets would tell them, ticket by ticket, whether the newest public reply was written by someone who is now staff or an administrator, which is a fact they are not sent. So a requester who sends `awaiting_reply=true` is refused exactly as every other staff-only filter is (`held_by`, `sla`, `assignee_user_id`): `requesterRules` in `filter.go` holds a row for it with `requesterOK` false, and the loop in `AllowedFor` answers `&FilterError{Kind: FilterForbidden, Msg: "awaiting_reply is not available to requesters"}`, `403 forbidden` on REST and the same words on MCP, which runs the same check. The new row is `{"AwaitingReply", "awaiting_reply", "reply_author_role", false, func(f Filter) bool { return f.AwaitingReply }}`: its `ticketKey` names what the clause reads, which is not a key of the ticket object and is not on the requester allowed list, and `TestRequesterRules_OnlyAllowedListKeys` only holds rows whose `requesterOK` is true to that list, so the test needs no change and there is no `requesterThreadKeys` and no `public_replies` entry. `filterRaw` gains `"AwaitingReply": "awaiting_reply=true"`, `TestAllowedFor_FilterByRole`'s `staffOnly` map gains `"AwaitingReply"`, and `ReopenedAfter` is never parsed, so it joins `serverSetFields`. `awaiting_reply=false` sets nothing (absent and `false` are the same), so a requester sending `false` is not refused, as with `include_closed`. `AllowedFor` is the one gate: the store and the SQL do not re-check the role, so every door that builds a `Filter` (`GET /tickets`, MCP `list_tickets`, and the dashboard, whose requester cell never sets it) must call it, and each has a test with a requester.
+
+**MCP** `list_tickets` gains `awaiting_reply` for parity with REST: declared in the tool schema with `mcpgo.WithBoolean` like `include_closed`, and read in `listQuery` by the **boolean** loop, the one that reads `search_replies` and `include_closed` with `listArgBool` (it becomes `[]string{"search_replies", "include_closed", "awaiting_reply"}`), never through `listFilterParams`, which holds string arguments only. So JSON `true` and `false` are accepted and the string `"true"`, a number or an object is refused with "invalid awaiting_reply", as `include_closed` is today. A requester sending `true` is refused by the same `AllowedFor` check as on REST, "awaiting_reply is not available to requesters".
+
+The ticket list page reads `awaiting_reply=true` from the address into its search (`awaitingReply`), shows it as a chip, "Awaiting my reply", and a checkbox in the filter panel, and sends it. It is offered (the per-view list in `lib/ticketSearch.ts`) on **Assigned to Me** and **My Group's Tickets** only. For a requester `toApiParams` drops it, like every other filter a requester may not use, so an address copied from a colleague never sends a request the server would refuse. It is not offered on Available or Search: the test runs one ordered index lookup per candidate ticket, which is cheap on a person's or a group's queue and is not what an administrator's whole-desk search should pay for. The API accepts it everywhere for staff and administrators and means the same everywhere.
+
+**Needs attention.** Up to **five** tickets that want someone, for staff and administrators, each a link to the ticket. Four reasons, in this order; each is one `ListFiltered` call with `Limit: 5` on the `visible` queue (every ticket the caller can see, as Search lists), restricted to **open** tickets: `StatusIDs` set to every status, active or not, except the Resolved and Closed system statuses.
+
+| Reason | Filter, beyond visibility and open | Order | When |
+| --- | --- | --- | --- |
+| `breached` | `SLA: breached` | `created` ascending (oldest first) | SLA tracking on |
+| `at_risk` | `SLA: at_risk` | `created` ascending | SLA tracking on |
+| `unassigned` | queue `unassigned` (no group and no person) | `created` ascending | `AvailableQueueAllowed(role)` (#676): administrators, and staff while Staff is ticked under Available |
+| `reopened` | `ReopenedAfter: now − 7 days` | `updated` descending | always |
+
+The four lists are merged by a pure function, `dashboard.PickAttention(lists []AttentionList, limit int) []AttentionItem` (`AttentionList{Reason AttentionReason; Tickets []ticket.Ticket}`, `AttentionItem{Reason AttentionReason; Since time.Time; Ticket ticket.Ticket}`): walk the reasons in order, take each ticket not already taken (a ticket that is breached and reopened is listed once, as breached), stop at five. It sets `Since` from the reason: `Ticket.CreatedAt`, or for `reopened` `*Ticket.LastReopenedAt`, which the `ReopenedAfter` filter guarantees is set (a nil one is a programming error; `PickAttention` falls back to `CreatedAt` rather than panic, and a test pins both). So a desk with three breaches shows those three first, then whatever else fills the five. The `unassigned` reason uses `ResolveQueue(unassigned, …)` like the Available view, so under scope enforcement it is the unassigned tickets in the caller's scope, and a staff member who may not open Available is not shown its tickets here either. `Filter.ReopenedAfter *time.Time` is a new **server** field (never parsed from a request): `t.last_reopened_at >= reopened_after`, NULL meaning not filtered. The window and the limit are constants, `dashboard.ReopenedWindow` (7 days) and `dashboard.AttentionLimit` (5), not settings.
+
+A row shows the tracking number, the subject (it **wraps**; it is ticket content, and is not added to the list of places that end in an ellipsis), the reason as a badge in the existing colours (Breached red, At risk amber, Unassigned grey, Reopened the existing `ReopenedBadge`), and the age of `since`: "opened 3 days ago", or for `reopened` "reopened 2 hours ago". The frontend has no relative-time helper today (`lib/format.ts` exports `priorityVariant`, `fmtMin` and `slaTargetText` only), so one is added there: `fmtAgo(iso: string, now: Date = new Date()): string`, the time from `iso` to `now` floored to one unit: under 60 seconds, or in the future (clock skew), "just now"; under 60 minutes "1 minute ago" / "N minutes ago"; under 24 hours "1 hour ago" / "N hours ago"; otherwise "1 day ago" / "N days ago", with no weeks, months or years ("120 days ago" is exact and short). English only, like every other string on the page. The row writes "opened " or "reopened " before `fmtAgo(since)`. The age's `title` attribute is the full local date and time (`toLocaleString()`). Empty: "Nothing needs attention right now."
+
+**Volume trend.** One small area chart: tickets **created** and tickets **resolved** per day for the last 30 days, today included, over every ticket the caller can see (staff and administrators). One query, `TicketVolumeByDay`, given the visibility parameters, the caller and `tz`:
+
+- The days are the 30 local dates ending today in `tz`, so a day is a calendar day where the viewer is and a change to or from summer time is still one day.
+- **Created** on a day: tickets whose `created_at`, in `tz`, falls on it.
+- **Resolved** on a day: tickets whose `COALESCE(resolved_at, closed_at)`, in `tz`, falls on it. That is the current resolution: a ticket resolved, then reopened and not resolved again, no longer counts on its old day; one resolved and later closed counts on the day it was resolved; one closed without being resolved counts on the day it was closed. The audit trail is not read for history: it is a second source, and its entries are filtered by retention.
+- Every day is present, with zeros. The sums of `created` over the 30 days equal the count of `GET /tickets?scope=visible&created_after=<first local midnight>&created_before=<next local midnight after today>` for the same caller, and a test holds them equal.
+
+```sql
+-- name: TicketVolumeByDay :many
+WITH bounds AS (
+  SELECT date_trunc('day', sqlc.arg(now)::timestamptz AT TIME ZONE sqlc.arg(tz)::text) - interval '29 days' AS first_day
+), w AS (
+  -- first_day is a local date-time; since_at is the instant it begins in tz
+  SELECT first_day, first_day AT TIME ZONE sqlc.arg(tz)::text AS since_at FROM bounds
+), events AS (
+  SELECT (t.created_at AT TIME ZONE sqlc.arg(tz)::text)::date AS day, 1 AS created, 0 AS resolved
+  FROM tickets t, w
+  WHERE <the visibility block> AND t.created_at >= w.since_at
+  UNION ALL
+  SELECT (COALESCE(t.resolved_at, t.closed_at) AT TIME ZONE sqlc.arg(tz)::text)::date, 0, 1
+  FROM tickets t, w
+  WHERE <the visibility block> AND COALESCE(t.resolved_at, t.closed_at) >= w.since_at
+)
+SELECT d::date AS day, COALESCE(sum(e.created), 0)::bigint AS created, COALESCE(sum(e.resolved), 0)::bigint AS resolved
+FROM w, generate_series(w.first_day, w.first_day + interval '29 days', interval '1 day') AS d
+LEFT JOIN events e ON e.day = d::date
+GROUP BY d ORDER BY d;
+```
+
+The created arm is served by `tickets_created_at_idx`. The resolved arm needs an index of its own, added by a migration (the next free number when it lands: `000068` if #616's `000066` and #670's `000067` are in first): `CREATE INDEX IF NOT EXISTS tickets_done_at_idx ON tickets ((COALESCE(resolved_at, closed_at)))`, and `DROP INDEX IF EXISTS tickets_done_at_idx` down. It is built inside the migration, not concurrently, as `000021` built its ticket indexes: one btree on the tickets table takes seconds at a million rows, and the migration runs before the server answers. It changes no data.
+
+KPI reports (#131) generalise this query to any date range and three filters (see **KPI reports**, SQL). The store method that serves this trend then runs `LocalToday` itself and passes the 30 days ending it and no filters, so the dashboard handler, `ticket.Service` and what the dashboard shows do not change.
+
+Empty: when every day is zero, the chart's box keeps its height and says "No tickets were created or resolved in the last 30 days." Under it, a legend with each series' 30-day total ("Created 84", "Resolved 79").
+
+**The list query's `WHERE` is the one rule, and a test keeps it so.** Counting needs SQL that sqlc cannot share, so it is copied and the copies are pinned:
+
+- `CountTicketsFiltered :one` is `ListTicketsFiltered` with its select list replaced by `count(*)` and everything from `ORDER BY` to the end removed: the same `reply_hits` CTE, the same SLA lateral, the same `WHERE`, the same parameter names, so the store fills both from one function (the existing parameter building in `listFilteredAt`, factored into `filterParams(f, now)`, which returns the list's params; `countParams` copies every field the count query shares, which is all of them but sort direction, limit and offset). `Store.CountFiltered(ctx, f) (int64, error)` and `CountFilteredAt(ctx, f, now)`; `ticket.Service.CountFiltered`. It ignores `Sort`, `Limit` and `Offset`, and never runs the reply arm (it forces `SearchReplies` false: no cell searches text).
+- The visibility clause of `ListTicketsFiltered` (the first `AND` group of the `WHERE`, from `sqlc.arg(unrestricted)` to the end of the staff-scope arm) is wrapped in two comment lines, `-- visibility: begin` and `-- visibility: end`. That is a comment-only change to the list query. `TicketVolumeByDay` carries the same block, between the same markers, in both arms.
+- `TestSQL_DashboardQueriesShareTheListRule` (in `internal/database/ticketstore`, no database needed) reads `queries/tickets.sql`, drops comments and collapses whitespace, and fails unless `CountTicketsFiltered` equals `ListTicketsFiltered` with that select list and tail removed, and every `visibility` block in the file is identical to the list query's. A change to who may see what is then made in one place and copied, or the build fails.
+- The two new filter clauses (`awaiting_reply`, `reopened_after`) are added to `ListTicketsFiltered` and so, by the same test, to `CountTicketsFiltered`.
+
+**Admin health card.** Administrators only. It surfaces five things the app already knows (four from #675, and the SAML sign-in problem added below) and says nothing more when all is well. It is **frontend only**: it reads the two queries an administrator's page already makes, `GET /admin/security-warnings` (query key `['security-warnings']`, shared with `InsecureConfigBanner`, so no extra request and no extra scanner ping) and `GET /admin/settings` (query key `['admin', 'settings']`, shared with the settings pages through the cache). On the dashboard the settings dump is **one new request for an administrator**, refetched when the window regains focus like any query with the default `staleTime`; the warnings query is the banner's, so it adds none. No endpoint, probe or setting is added. A pure function, `adminHealthItems(warnings?, settings?) => HealthItem[]` (`frontend/src/lib/adminHealth.ts`), decides it, in this order:
+
+| Item | Shown when | Severity | Says | Link |
+| --- | --- | --- | --- | --- |
+| Update available | `warnings.update` is present (the check is on and found a newer release) | info (blue) | "Version X is available (you run Y)." | the release notes, the URL the banner uses, new tab |
+| SLA alerts off | `settings.sla_enabled === true` and `settings.sla_alerts_enabled === false` (#670) | amber | "SLA tracking is on, but breach and at-risk alerts are off." | `/admin/settings/email`, "Email → Notifications → SLA alerts" |
+| Passkey requirement suspended | `warnings.passkeys.suspended_roles` is a non-empty array (#616) | amber | "The passkey requirement is suspended for <roles>: passkeys are unavailable (<reason>)." | `/admin/settings/authentication`, "Authentication → Multi-factor authentication" |
+| SAML required but not loaded | `warnings.saml_required_not_loaded` is present (see **`saml_enabled`** under SAML) | red | "SAML is required for staff and users but is not working, so they cannot sign in. Administrators can still sign in with a password." | `/admin/settings/authentication`, "Authentication → SAML" |
+| Attachment scanner down | `attachment_scanning.policy !== 'off'` and not `reachable`, the banner's own `scannerDegraded` test | red | "The attachment scanner is unreachable." plus its `effect` sentence | `/admin/settings/attachments`, "File Attachments → Malware scanning" |
+
+Each item carries its link and its place name as data (`HealthItem{id, severity, text, href, place, external}`), so a page that moves is one row to change. **The card was built after #674**, in the build plan's task 12, once the settings pages and their routes existed, so it has the final addresses from its first line: its four settings items link to `/admin/settings/email` (SLA alerts), `/admin/settings/authentication` (the passkey item and the SAML item) and `/admin/settings/attachments` (the scanner), and `place` is the table's wording (the sidebar's, "Page → Section"). A test pins each `href` and each `place`. There was never an interim `/admin/settings` link and nothing is retargeted; the update item's `href` is the release-notes URL. The card reads `warnings.passkeys.suspended_roles` (#616) and `settings.sla_alerts_enabled` (#670), both in this build's base; a server that does not send one shows nothing for its item. A key that is absent (a server older than the frontend) shows nothing for its item; the function never infers a problem from a missing field. The card has no Hide: it states what is true now, and the banner's Hide, including "Hide until the next release" for the update, governs only the banner. When there is no item, the card is **one muted line**, "No problems to report.", so an administrator can tell "checked and fine" from "not loaded". If either query has failed, the card says "Health checks could not be loaded." with a Retry button that refetches both; it never says "No problems" on a failure. **Which banner problems the card repeats.** The card is a short list, not a mirror of the banner: the secrets, the unwritable attachment directory and the email problems stay banner-only. The SAML item is on it because it has the same shape as the passkey item: a sign-in posture an administrator set that strands people, fixed on a settings page the card can link to. The card still adds no request: the field rides on the banner's query.
+
+**States.** The status cards keep their own query and spinner. The dashboard query (`['dashboard', tz]`, `staleTime` 60 s, refetched on window focus) feeds the strip, the list and the trend: while it loads, each block shows the existing `Spinner` in a box of its final height (no jump); if it fails, one inline message replaces the three blocks, "The dashboard summary could not be loaded.", with **Retry**, and the status cards and By Client still show.
+
+**Layout.** Top to bottom: the header (unchanged); the health card (administrators); the strip, headed "Your queue" ("Your tickets" for a requester); the status cards (unchanged); needs attention and the trend, side by side from `lg` and stacked below it; **View all tickets**; By Client (unchanged). The strip is a `<nav aria-label="Your queue">` holding a list of links, each reading as one phrase ("4 Assigned to me"); a two-column grid below `sm`, three from `sm`, one row of five from `lg`; each cell at least 44 px tall on a coarse pointer. The SLA numbers are red (`text-red-600`) and amber (`text-amber-700`) only when above zero, grey otherwise; no new colours. Needs attention is a list of rows, never a table, so it is the same at every width. The chart takes the full width of its card at a fixed height. Nothing scrolls sideways at 320 px, and the e2e check covers the dashboard at 375 px and at desktop width for each role.
+
+**Chart primitives: `frontend/src/components/charts/`.** Inline SVG, no chart library. The module is shared: the KPI viewer (#131) builds on it, so its exports are a contract and change only additively.
+
+- `tones.ts`: `type ChartTone = 'blue' | 'green' | 'amber' | 'red' | 'gray'` and `TONE_CLASS: Record<ChartTone, string>` mapping each to a Tailwind text class already in use (`text-blue-600`, `text-green-600`, `text-amber-600`, `text-red-600`, `text-gray-500`). Marks are drawn in `currentColor`, so a tone is a class and nothing else.
+- `geometry.ts`, pure and unit-tested: `niceCeiling(n: number): number` (the smallest of 1, 2 or 5 × 10^k at or above `n`; `1` for `n <= 0`); `pointsFor(values: number[], width: number, height: number, max: number): [number, number][]` (evenly spaced from `x = 0` to `x = width`, a single value at the centre, `y` measured down from the top, `max <= 0` treated as 1); `linePath(points): string` and `areaPath(points, height): string` (the line closed down to the baseline), both `''` for no points.
+- `AreaChart.tsx`:
+
+```ts
+export interface ChartSeries {
+  key: string          // stable id, React key and the data table's column
+  label: string        // legend and table header
+  values: number[]     // one per label; must be labels.length
+  tone: ChartTone
+}
+export interface AreaChartProps {
+  labels: string[]                          // x categories, oldest first (ISO dates for a day series)
+  series: ChartSeries[]                     // drawn in order, the first underneath
+  ariaLabel: string                         // what the chart shows, e.g. "Tickets created and resolved per day, last 30 days"
+  height?: number                           // CSS px, default 160; the width is the container's
+  formatLabel?: (label: string) => string   // x labels and the table's first column; default identity
+  formatValue?: (value: number) => string   // axis maximum, legend totals and table cells; default String
+  emptyText?: string                        // shown instead of the marks when there are no labels or every value is 0
+}
+```
+
+  It renders a `<figure>`: an `<svg role="img" aria-label={ariaLabel}>` with `viewBox="0 0 100 {height}"`, `preserveAspectRatio="none"` and `width="100%"`, holding for each series an area at `fill-opacity` 0.15 and a line with `vector-effect="non-scaling-stroke"` (2 px), plus one baseline. Text is never inside the SVG, so stretching cannot distort it: the axis maximum (`niceCeiling` of the largest value) sits in HTML at the top left, the first and last x labels in HTML below, and a `ChartLegend` in the `<figcaption>`. A visually hidden `<table>` (`sr-only`) carries every value, so the data is readable without the picture. A series whose `values.length` is not `labels.length` is a programming error and throws. No hover, tooltip or animation in this version; #131 may add them as optional props.
+- `ChartLegend.tsx`: `{ items: { label: string; tone: ChartTone; value?: string }[] }`, a wrapping row of swatch, label and value.
+- `index.ts` re-exports the above.
+
+The dashboard draws `AreaChart` with `labels` the 30 dates, series Created (blue) and Resolved (green), `formatLabel` a short local date ("26 Oct", from the date at local noon so the zone cannot move it), and the legend values the 30-day totals.
+
+**Code.** `internal/domain/dashboard` (no HTTP, no SQL): `Cell{Key string; Scope ticket.Scope; Filter ticket.Filter}` and `Cells(role user.Role, slaOn bool) []Cell`, the table above as data; `AttentionReason` (`breached`, `at_risk`, `unassigned`, `reopened`), `PickAttention`, `AttentionLimit`, `ReopenedWindow`. `internal/server/handler_dashboard.go`: `handleGetDashboard`, which for each cell sets `ActorID`, `Visibility` and the queue (`ResolveQueue`) and calls `CountFiltered`, runs the four attention lists for staff and administrators, and the trend. The frontend: `api/dashboard.ts` (`getDashboard(tz?: string)`), the `Dashboard` types in `api/types.ts`, `lib/dashboard.ts` (`QUEUE_CELLS: Record<QueueKey, {label: string; href: string}>`, the six distinct keys of the table, data), `fmtAgo` in `lib/format.ts`, and one component per block under `components/dashboard/` (`QueueStrip`, `NeedsAttention`, `VolumeTrend`, `AdminHealthCard`).
+
+**Build order.** #675 is built on #676's code, not beside it: `ticket.Scope` and its `assigned_to_me` and `my_groups` values, `ticket.ResolveQueue`, `admin.Service.AvailableQueueAllowed`, the `view=` addresses of the ticket list and its per-view offered-filter data in `lib/ticketSearch.ts` are all #676's and none exists on `v1.3.0-beta` today. So every part of #675 that names them (the `dashboard` domain package, the endpoint, the ticket list's `awaiting_reply` control and the dashboard page) is built once #676's code is merged on the 1.3 line. The count query and its drift test, the `awaiting_reply` and `ReopenedAfter` filter (REST and MCP), the trend query with its index, and the chart module do not use any of them and may be built first. The health card additionally needs #616 (`warnings.passkeys`), #670 (`sla_alerts_enabled`) and the #674 settings pages it links to, none of which is in this branch's base, so **the card (`AdminHealthCard` and `adminHealthItems`, the build plan's task 9) is built after #674, on the integration branch that holds #616, #670, #672 and #674's pages, with the final addresses** (see **Admin health card**), and every other block is built here.
+
+**Upgrade.** Nothing an existing caller sends changes its answer: the endpoint is new, `awaiting_reply` is a new optional filter (a 1.2 server ignores it), MCP's `list_tickets` gains an optional argument, and the list query's `WHERE` gains two clauses that are inert when not asked for. The migration adds one index and changes no data; no setting is added or changes value. The dashboard shows more for every role but loses nothing. A requester sees one number, their open tickets, above their status cards.
+
+**API documents.** `docs/api/openapi.yaml`: `GET /dashboard` with `tz`, the response schema above (`queues[].key` an enum of the six keys, `attention` items `{reason, since, ticket}` with the reason enum, `since` a date-time and the ticket schema `GET /tickets` uses, `volume`), and the two `400`s; `awaiting_reply` on `GET /tickets` (staff and administrators, `403` for a requester). The MCP tools table (**MCP Interface**) lists `awaiting_reply` for `list_tickets`. `docs/upgrade-notes-1.3.0.md`, under New features: "Dashboard: Your Queue, Needs Attention, a 30-Day Trend and a Health Card (#675)", saying what each block shows and for whom, that every number respects ticket scope, the new `awaiting_reply` filter (REST and MCP, staff and administrators only), and that the migration builds one index on the tickets table, which on a very large install holds writes to that table for the seconds it takes. Nothing goes under Breaking changes. The README's dashboard screenshot is retaken.
+
+**Out of scope.** Configurable or rearranged blocks, per-person dashboards, more blocks than the four, a requester's trend or attention list, drill-down from a chart day to a ticket list, an MCP dashboard tool (a machine caller counts with `list_tickets`), and KPIs (#131).
+
+**Decisions taken without the owner.** Each can be overturned in one line.
+
+- One new `GET /api/v1/dashboard` for the strip, the list and the trend. Rejected: `GET /tickets?limit=1` per number, which cannot count (the list has no total) and would need four to eight requests.
+- The counts run the list query's own `WHERE` (`CountTicketsFiltered`), pinned to it by a text test, and each count is the `Filter` its link sends. Rejected: a dashboard query with its own visibility predicate and `FILTER` counts (one query, but a second rule that would drift); a SQL function for visibility (changes the tuned list plan).
+- The SLA cells count what is assigned to me. Rejected: every visible ticket (that is the whole desk for an administrator; the needs-attention list covers it) and a single "overdue or at risk" number (two links are needed, since `sla` takes one value).
+- "Awaiting my reply" is a new filter, `awaiting_reply`: the requester's side spoke last on a ticket that is not Resolved or Closed, so it waits for the help desk. Rejected: an SLA first-response test (only the first reply counts), "assigned to me and not Pending" (Pending is a renamable custom status, and a Pending ticket the requester has answered does want staff), and leaving it out (the owner listed it).
+- The side of a reply is its author's current role, read whether or not the account is deleted (accounts are soft-deleted and keep their role, so a deleted staff member's last reply stays the help desk's); an author-less reply is a guest's and is the requester's side. Rejected: storing the side on each reply (a migration and a backfill for one count), and adding `AND u.deleted_at IS NULL` (it would turn a departed colleague's answer into a requester message and put the ticket back in someone's "awaiting my reply").
+- Every cell has a distinct key, so a cell is looked up by its key alone. Rejected: one key shared by two roles with different meanings, looked up by key and role (every consumer, openapi's enum and the Go and TS copies of the table would need the role too).
+- The attention row carries `since`, the instant its age is measured from. Rejected: adding `last_reopened_at` to the ticket object (it changes `GET /tickets` and the requester allowed list for one label), and dropping the reopened age (the owner's "recently reopened" wants a when).
+- `awaiting_reply` is a staff and administrator filter only. A requester who sends it is refused like any other staff-only filter (`403`, "awaiting_reply is not available to requesters", through the `requesterRules` row with `requesterOK` false), and a requester's dashboard has no "awaiting my reply" cell. The reason: the clause reads the current role of the newest public reply's author, which a requester is never sent, so letting them filter would disclose, ticket by ticket, whether that author is now staff or an administrator, against the rule that a requester may filter or sort only on what they are sent. Rejected: letting requesters filter and documenting the disclosure (a rule with a written exception is no longer a rule, and the dashboard cell is the only thing that wanted it), and a `requesterThreadKeys` list naming `public_replies` as a source a requester is sent (the replies are sent, but not the role the clause reads, so the row would pass the allowed-list test for the wrong reason).
+- MCP reads `awaiting_reply` with the boolean arguments (`listArgBool`), like `include_closed`. Rejected: a string argument through `listFilterParams` (it would accept `"true"` and refuse `true`, unlike every other boolean on the tool).
+- The relative age is a new `fmtAgo` in `lib/format.ts`, floored to minutes, hours or days. Rejected: `Intl.RelativeTimeFormat` with auto units (it says "last week" and "2 months ago", which is vaguer than a row needs) and a date library.
+- The health card is built after #616, #670 and #674, so its settings links (three when it was built, four with the SAML item) are the final `/admin/settings/email`, `/admin/settings/authentication` and `/admin/settings/attachments` from the start. Rejected: building it before #674 with interim `/admin/settings` links and retargeting them later (a second change to the same rows, and an address that opens the wrong page in between), and two link sets chosen at run time. The order of the work is: #675's other blocks, then #674's pages, then the card.
+- #675's build starts after #676's code is merged. Rejected: building against #676's open branch (two moving bases) or re-creating its names here.
+- `awaiting_reply` is offered in the page on Assigned to Me and My Group's Tickets only; the API accepts it everywhere for staff and administrators. Rejected: offering it on Search and Available, where it would cost a reply lookup per ticket across the whole desk.
+- A requester gets a strip of one cell (Your tickets) and nothing else new. Rejected: an "Awaiting your reply" cell (it needs the staff-only `awaiting_reply` filter, see above), no new block for requesters (the owner said they see their own tickets' summary), and a trend or attention list of their own few tickets.
+- Needs attention lists every visible ticket (the Search set), open only, breached then at risk then unassigned then reopened, five at most, each ticket once. Rejected: only my queues (an unassigned ticket is by definition nobody's queue) and a ranking score (harder to explain than an order).
+- Oldest unassigned follows the Available rule (`AvailableQueueAllowed`). Rejected: listing unassigned tickets to staff the owner's default keeps out of Available.
+- "Recently reopened" is the last 7 days, a constant, via a server-only `ReopenedAfter`. Rejected: a setting, and a public `reopened_after` parameter (no link needs it).
+- Open, for the attention list, is "not the Resolved or Closed system status", sent as `StatusIDs`. Rejected: a new public filter for it.
+- The trend counts days in the browser's time zone, sent as `tz`, validated by Postgres. Rejected: UTC days (today's bar would be wrong for most of the world) and embedding Go's time zone database to validate in Go (a binary change for one parameter).
+- Resolved is `COALESCE(resolved_at, closed_at)`, the current state, with an index added for it. Rejected: the audit trail as history (a second source, and pruned by retention), and no index (a sequential scan of tickets on every dashboard load).
+- The health card is frontend only, reading the security warnings and the settings the page already loads. Rejected: a health endpoint (a second source of truth for the same facts) and adding `sla_alerts` to the security warnings (it is a setting, which the page can already read).
+- The SAML sign-in problem is a field of `GET /admin/security-warnings`, which does not contradict the line above. `sla_alerts_enabled` is a stored setting the page already reads. Whether SAML is *loaded* is the running server's state (an identity provider that did not answer, a key that does not match its certificate), which no setting and no existing field carries; `GET /auth/providers` says it, but is public and says nothing about `saml_enabled`. So the server computes it, as it does `attachment_storage`. Rejected: deriving it in the page from the settings dump (`configured` is not `live`, and the dump cannot tell a metadata URL that answered from one that did not) and a second request to `GET /admin/saml` (`live`) from the banner (an extra request on every admin page for one notice).
+- The card shows the update even if the banner's notice was hidden, and has no Hide of its own. Rejected: honouring the banner's Hide (the card is a status, not a notice).
+- An all-clear card is one muted line. Rejected: hiding the card, which cannot be told apart from a card that failed to load.
+- The chart has no text inside the SVG and stretches to its container. Rejected: measuring the container (a resize observer) to draw text in the SVG.
+- No MCP dashboard tool. Rejected: a `dashboard_summary` tool, which no one has asked for.
+
+**Tests.**
+
+- *SQL text* (`internal/database/ticketstore`, no database): `TestSQL_DashboardQueriesShareTheListRule` as above; it fails on a one-character change to either copy.
+- *Postgres, store*: one fixture with tickets in every visibility case (reported by the viewer, assigned to them, to one of their groups, in a covered category, in a covered type, outside the scope) and every assignment case; `CountFiltered(f) == len(ListFiltered(f with a large limit))` for every dashboard cell's filter, for an administrator, unscoped staff, scoped staff and a requester; `awaiting_reply` for staff over: no reply, the requester last, staff last, an internal note last after the requester (still waiting) and after staff (not), a guest reply (no author) last (waiting for staff), a soft-deleted staff member's reply last (the help desk's: not waiting for staff), an admin's reply, and a Resolved and a Closed ticket (never); `ReopenedAfter` at its boundary; `TicketVolumeByDay`: 30 rows oldest first ending today, zeros present, a ticket created at 23:30 local counted on that local day in `Europe/London` and in `America/New_York` across the end of summer time (1 November 2026), resolved via `closed_at` when `resolved_at` is null, a reopened ticket no longer counted as resolved, scoped visibility, the created sum equal to the created-range count; an unknown zone returns `ErrUnknownTimeZone`; the scale test's plan check covers `CountTicketsFiltered` for `assigned_to_me` with and without `awaiting_reply` and the trend's resolved arm using `tickets_done_at_idx` for an administrator.
+- *Migration*: up creates `tickets_done_at_idx`, down drops it, and up runs on a database that has it.
+- *Domain*: `ParseListFilter` reads `awaiting_reply` `true`, `false`, empty and refuses `yes`; `AllowedFor` allows `awaiting_reply=true` to staff and administrators and refuses a requester with `FilterForbidden` and "awaiting_reply is not available to requesters" (and allows `awaiting_reply=false`); `TestFilter_EveryFieldIsClassified` passes with `AwaitingReply` in `filterRaw` and `requesterRules` (`requesterOK` false) and `ReopenedAfter` in `serverSetFields`; `TestAllowedFor_FilterByRole` lists `AwaitingReply` as staff-only; `TestRequesterRules_OnlyAllowedListKeys` is unchanged and passes; `dashboard.Cells` per role and `slaOn` (keys, order, scope, criteria; no two cells for one role share a key); each cell's filter equals what `ParseListFilter` and `ResolveQueue` make of the table's parameter string for that role; `PickAttention`: order, one ticket once under its first reason, the limit, fewer than five, all empty, `Since` is `CreatedAt` for the first three reasons and `LastReopenedAt` for `reopened`, and `CreatedAt` when that is nil.
+- *REST, Postgres*: per role the response's keys and nulls; **with `ticket_scope_enforced` on, a scoped staff member's counts, attention rows and trend include nothing outside their scope**, and the same caller with enforcement off sees the wider numbers; each cell's count equals the length of `GET /tickets` with that cell's parameters for the same caller; an attention row's `since` is its ticket's `created_at`, and on a `reopened` row the ticket's reopen instant; SLA off: no `sla_*` cell and no SLA reason; staff not ticked for Available: no `unassigned` reason, ticked: present and scoped; `tz` absent (UTC), valid, too long, bad characters and unknown (`400` with each message); an API key without `tickets:read` is `403`; `GET /tickets?awaiting_reply=true` as staff, and as a requester `403` "awaiting_reply is not available to requesters", and `awaiting_reply=maybe` is `400`.
+- *MCP*: `list_tickets` with `awaiting_reply: true` lists what REST lists for the same staff caller, a requester sending it is refused in REST's words, and `false` lists what no argument lists; the string `"true"`, a number and an object are refused with "invalid awaiting_reply"; the tool schema declares it a boolean.
+- *Frontend*: `geometry.ts` (`niceCeiling` at 0, 1, 7, 10, 11, 999; points for one, two and thirty values; paths for none); `AreaChart` renders one area and line per series, the hidden table with every value, the empty text, and throws on a length mismatch; `lib/dashboard.ts`: for every cell, `toApiParams(parseTicketSearch(link))` gives exactly the table's parameters (the table above, copied into the Go test and this one); `QueueStrip` per role, the SLA cells' colours at zero and above, links; `fmtAgo` at 0 s, 59 s, 60 s, 61 min, 23 h 59 min, 24 h, 1 day and 2 days, 120 days and a future instant (singular and plural each); `NeedsAttention` rows, badges, "opened …" from `since` and "reopened …" from `since` on a reopened row, wrapping subject and the empty text; `VolumeTrend` totals and empty; the page per role shows the right blocks and keeps the status cards and By Client; the failure message and Retry; `adminHealthItems` table over each item present, absent and with keys missing, each item's `place` and `href` as the table above gives them: the final addresses and places (`/admin/settings/email`, `/admin/settings/authentication` and `/admin/settings/attachments` for the four settings items, the release-notes URL for the update). The card is built after #674, so there was never an interim link; the card's quiet line and its failure state; the ticket list parses, shows, clears and sends `awaiting_reply` for staff, offers it only on Assigned to Me and My Group's Tickets, and drops it from a requester's request.
+- *e2e*: the dashboard at 375 px and 1280 px for an administrator, a staff member and a requester, with a 300-character subject in the attention list: no horizontal scroll, the strip's cells at least 44 px tall on a touch profile.
+
+### KPI reports
+
+([#131](https://github.com/PubliciaLLC/go-help-desk/issues/131), 1.3.x; owner decisions 2026-11-23.) A **Reports** page shows staff and administrators how the desk is doing over a period: how long tickets take to resolve and to get a first response, how many met their SLA, how many came back, how old the open work is, how much arrived and who holds it. It reads what is already captured (`tickets`, `sla_records`); **nothing new is recorded and no table is added**. Every number is computed on the server, live, by set-based SQL; the browser formats and draws. Scheduled and emailed reports are not part of it (they stay in v1.4 with the rest of #131's original list).
+
+**One rule for who sees what.** The page is for staff and administrators; a requester has no Reports item and the endpoint answers them `403`. Every query carries the ticket list's visibility block (the one between `-- visibility: begin` and `-- visibility: end`, #675), filled from `Server.TicketVisibility` exactly as `GET /tickets` fills it, so a number counts only tickets the caller could open:
+
+| Caller | `ticket_scope_enforced` off | `ticket_scope_enforced` on |
+| --- | --- | --- |
+| Administrator | every ticket | every ticket |
+| Staff | every ticket (they can open every ticket) | the tickets their scope admits: reported by them, assigned to them or one of their groups, or in a Category/Type their groups cover |
+| Requester | `403` | `403` |
+
+There is no second definition of scope and no report-only permission. A staff member in no group with enforcement on sees almost nothing, as on the ticket list. The workload card names the people and groups holding the visible tickets; staff can already read every assignable name (`GET /staff`), so nothing new is disclosed.
+
+**Status of the dependencies.** Pause is built (#127: `tickets.sla_paused_seconds`, `pending_since`, the Pending status), so time to resolve can exclude it. `source_channel` is built (#130, migration `000056`), but the owner's list of volume cuts is category and priority, so a channel cut is not part of this (out of scope, below). The SLA sweep runs (#126). The KPI queries need `tickets_done_at_idx` and the `TicketVolumeByDay` query from #675; #131 adds no migration.
+
+**Prerequisites.** This work is stacked on #675 (the dashboard) and builds only after #675 is **fully built and merged into its base**: when #131's tasks start, `ticket.ErrUnknownTimeZone`, `tickets_done_at_idx`, `TicketVolumeByDay`, the visibility markers with their drift test and the `components/charts/` package (with `AreaChart`) exist, and #131 reuses them. Two things #675 left in its own place are **moved, not created**: the `tz` syntax check is `validTZ`, called inline in `handleGetDashboard` (`internal/server/handler_dashboard.go`), and #131 moves it, unchanged, into `parseTZ` in `internal/server/tz.go`, which both handlers call (see **Code**); and `VolumeTrend` lives in `components/dashboard/`, and #131 moves it into `components/charts/` and re-exports it from that package's `index.ts` (see **Charts**). #131 writes neither from scratch; nothing else of #675 is rewritten.
+
+**Definitions.** Two populations, and every measure names which one it reads:
+
+- **Finished in the period**: tickets whose `COALESCE(resolved_at, closed_at)` (the *finish instant*, the expression the dashboard's resolved series and `tickets_done_at_idx` use) falls in the period. That is the current resolution: a ticket resolved, reopened and not yet resolved again is not finished; one resolved and later closed finished when it was resolved; one closed without being resolved finished when it was closed. A ticket that is reopened leaves the period it had finished in and counts in the period it finishes again, so a past period's numbers can change; the audit trail is not read for history (a second source, pruned by retention), as for the dashboard.
+- **Open now**: tickets whose finish instant is NULL. By the invariant migration `000028` repaired and every status door keeps (Resolved has `resolved_at`, Closed has `closed_at`, every other status has neither), this is exactly "not in the Resolved or Closed system status", and it is served by `tickets_done_at_idx` (a btree indexes NULL). A store test holds the two definitions equal on its fixture.
+
+The period measures:
+
+| Measure | Population | Definition |
+| --- | --- | --- |
+| **Created** | tickets created in the period | `count(*)` of `created_at` in the period |
+| **Resolved** | finished in the period | `count(*)` |
+| **Time to resolve**, median and 90th percentile | finished in the period | per ticket, `finish instant − created_at − sla_paused_seconds`, in seconds, floored at 0. **Pending time is excluded**: every Pending interval is closed by the move out of Pending, so a finished ticket's `sla_paused_seconds` is the whole of its time Pending and `pending_since` is NULL (it is not read). **Time in Resolved before a reopen is included**: the requester's problem was not solved then. The clock starts at creation, not at the last reopen, and SLA records are not read, so it does not depend on SLA tracking. `percentile_cont(0.5)` and `percentile_cont(0.9)`, rounded to whole seconds |
+| **Time to first response**, median | finished in the period, with an SLA first response on the ticket's original clock | per ticket, the frozen reading `sla_records.response_elapsed_at_met_seconds` of its earliest `first_response_at` among its records whose clock runs from creation (`started_at IS NULL`; a re-match copies both the stamp and the reading, so any of them gives the same answer). That is the number the SLA judged: the time to the first public staff reply, or to the resolution when nothing came first (#219), minus time Pending before it. A record a reopen started (`started_at` set) times the response to the reopen, not to the ticket, and is not read. A ticket without such a record does not count; the card says the measure needs SLA tracking |
+| **SLA attainment** | finished in the period that had a **current** SLA record when they finished (*tracked*) | **met**: no record of the ticket carries `response_breached_at` or `resolution_breached_at`. **Breached**: any record does. Once a ticket is tracked, every record of it is read, current and superseded, which is what stops a reopen's clean clock hiding a breach before it. Response met and resolution met are the same test on one stamp each. For a finished ticket that has a current record, both targets have been judged on it (a response, or the resolution counting as one, and the resolution are each stamped when recorded, whether or not the toggle is on), so its stamps are final. That is why the population is the tickets with a current record, not those with any record: a ticket whose record was superseded and not replaced was **never judged**. A priority change to a priority no policy matches supersedes the record and creates none (`planSLARematch` returns `SLARemoved`, and a reopen to such a priority does the same), so when the ticket finishes `RecordResolved` finds no current record and writes nothing, and the sweep never evaluates superseded records. Such a ticket is treated like one that never had a policy: neither met nor breached, in neither the numerator nor the denominator, whatever its superseded records say. Rate = met / tracked |
+| **Reopen rate** | finished in the period | tickets with `reopen_count > 0` / resolved. A share of tickets, so it is between 0 and 100%. `reopen_count` has no backfill (migration `000047`): reopens before 1.3.0 are not counted, which the upgrade notes say |
+
+The snapshot measures ignore the period (they are "now") and honour the filters:
+
+| Measure | Definition |
+| --- | --- |
+| **Backlog aging** | open tickets by age, `floor((now − created_at) / 24 h)` whole days, in four buckets: **0–2**, **3–7**, **8–30** and **over 30** days. The owner's "30+" is read as "more than 30", so the buckets do not overlap. Age is from creation, not from a reopen. Pending tickets are included: they are open work |
+| **Workload** | open tickets counted per assignee person (`assignee_user_id`) and, separately, per assignee group (`assignee_group_id`). A ticket with a person and a group counts once in each list. The tickets with no person are one row of the person list ("Nobody"), those with no group one row of the group list ("No group"); there is no third "unassigned" figure |
+
+**Filters** narrow every measure, the snapshots included, and are ANDed with visibility, on the ticket's **current** values (a ticket moved from Hardware to Network counts as Network): `category_id` (one; the category and everything under it), `priority` (repeatable, at most four, the list's values), `assignee_group_id` (one; the current group). An id that names nothing matches nothing (zeros, not `404`), as on the list.
+
+**Period and comparison.** A period is two local dates, `from` and `to`, inclusive, in the caller's time zone `tz` (validated exactly as `GET /dashboard` validates it). It runs from local midnight at the start of `from` to local midnight at the end of `to`, so a change to or from summer time is still whole days. At most **366 days**; that is the upper bound on what one request scans. The **previous period** is always computed: the same number of days ending the day before `from`. Every period measure comes back for both; the snapshot measures and the breakdowns come back for the current period only.
+
+**The endpoint.** `GET /api/v1/reports/kpi`, mounted beside `/staff` with `RequireRole(admin, staff)`, `RequireMFA` and `RequireResource(tickets)`, so an API key or OAuth client needs `tickets:read` (it can list the same tickets already). Query parameters: `tz`, `from`, `to`, `category_id`, `priority`, `assignee_group_id`; anything else is ignored, as on the list.
+
+- `from` and `to`: `YYYY-MM-DD`. Both absent: the last 30 days ending today in `tz`. One without the other: `400 bad_request` "from and to go together". A malformed date: "invalid from" / "invalid to". `from` after `to`: "from must not be after to". More than 366 days: "the range is longer than 366 days". A `from` before 1970-01-01: "from is too early" (the previous period starts as many days before `from`, and a date near year 1 would be out of Postgres's range). A repeated `priority` value is kept once. A `to` after today is allowed; its days count zero. "Today" is read from Postgres, the only place that knows `tz` (`LocalToday`, below), so the server needs no time zone database.
+- `category_id`, `assignee_group_id`: a UUID or `400` "invalid category_id" / "invalid assignee_group_id". `priority`: one of the four, or `400` "invalid priority"; more than four values: "too many priority values".
+- The response:
+
+```json
+{
+  "tz": "Europe/London",
+  "period":   {"from": "2026-10-26", "to": "2026-11-24", "days": 30},
+  "previous": {"from": "2026-09-26", "to": "2026-10-25", "days": 30},
+  "filters":  {"category_id": null, "priority": [], "assignee_group_id": null},
+  "sla_enabled": true,
+  "measures": {
+    "current": {
+      "created": 84,
+      "resolved": 79,
+      "time_to_resolve": {"count": 79, "median_seconds": 52200, "p90_seconds": 345600},
+      "first_response":  {"count": 61, "median_seconds": 3900},
+      "sla": {"tracked": 61, "met": 52, "response_met": 57, "resolution_met": 54,
+              "met_rate": 0.8525, "response_met_rate": 0.9344, "resolution_met_rate": 0.8852},
+      "reopen": {"reopened": 4, "rate": 0.0506}
+    },
+    "previous": { "…": "the same shape" },
+    "change": {
+      "created":                 {"kind": "relative", "state": "change",      "value": 0.1667},
+      "resolved":                {"kind": "relative", "state": "from_zero",   "value": null},
+      "time_to_resolve_median":  {"kind": "relative", "state": "change",      "value": -0.0812},
+      "time_to_resolve_p90":     {"kind": "relative", "state": "change",      "value": 0.0},
+      "first_response_median":   {"kind": "relative", "state": "no_previous", "value": null},
+      "sla_met_rate":            {"kind": "points",   "state": "change",      "value": -0.031},
+      "sla_response_met_rate":   {"kind": "points",   "state": "change",      "value": 0.0121},
+      "sla_resolution_met_rate": {"kind": "points",   "state": "change",      "value": 0.0},
+      "reopen_rate":             {"kind": "points",   "state": "change",      "value": 0.0506}
+    }
+  },
+  "volume": {
+    "days": [{"date": "2026-10-26", "created": 3, "resolved": 2}, "… one per day, oldest first"],
+    "by_category": [{"id": "…", "name": "Hardware", "count": 31}, "…"],
+    "by_priority": [{"priority": "critical", "count": 2}, {"priority": "high", "count": 9},
+                    {"priority": "medium", "count": 60}, {"priority": "low", "count": 13}]
+  },
+  "backlog": {
+    "as_of": "2026-11-24T10:15:00Z",
+    "total": 42,
+    "buckets": [{"key": "0_2", "min_days": 0, "max_days": 2, "count": 17},
+                {"key": "3_7", "min_days": 3, "max_days": 7, "count": 11},
+                {"key": "8_30", "min_days": 8, "max_days": 30, "count": 10},
+                {"key": "over_30", "min_days": 31, "max_days": null, "count": 4}]
+  },
+  "workload": {
+    "as_of": "2026-11-24T10:15:00Z",
+    "total": 42,
+    "by_assignee": [{"id": "…", "name": "Ada Lovelace", "count": 9}, "…", {"id": null, "name": null, "count": 6}],
+    "by_group":    [{"id": "…", "name": "Service Desk", "count": 30}, "…", {"id": null, "name": null, "count": 3}]
+  }
+}
+```
+
+  Counts are integers. A median or percentile is `null` when its `count` is 0. A rate is a fraction between 0 and 1 rounded to four places, computed on the server, and `null` when its denominator is 0; the counts it came from are sent beside it.
+
+  `measures.change` is the period-over-period change, also computed on the server (`report.Compare`), one entry for each of the nine measures a card compares (the keys above, always all nine). `kind` is `relative` for counts and durations and `points` for rates (it follows the measure, so it never varies). With `cur` the current value and `prev` the previous one, the first rule that applies gives `state` and `value`:
+
+  | `state` | When | `value` |
+  | --- | --- | --- |
+  | `no_current` | `cur` is `null` (no tickets to take a median of, or a rate's denominator is 0 this period) | `null` |
+  | `no_previous` | `prev` is `null` (the same, in the previous period) | `null` |
+  | `change` | `cur == prev` | `0` |
+  | `from_zero` | `kind` is `relative` and `prev` is 0 (a relative change from 0 has no value) | `null` |
+  | `change` | otherwise | `relative`: `(cur − prev) / prev`; `points`: `cur − prev` (both fractions, so −0.031 is 3.1 points down); rounded to four places |
+
+  So a previous rate of 0 (no reopens last period, which is common) is data and gives a `points` change, and a previous count of 0 is data and gives `from_zero`; only a `null` previous value is "no data". The direction that counts as better is presentation and stays in the browser (below); the arithmetic does not. `by_priority` always has the four priorities, in that order, zeros included. `by_category`, `by_assignee` and `by_group` hold only rows above zero, largest first, then by name; the `null` row (no person, no group) is last whatever its count. Names are the current names, of deleted and disabled people and archived categories too (their tickets still exist). `backlog.buckets` always has the four, in order. `filters` echoes what was applied (`priority` sorted in the fixed order). `sla_enabled` is the toggle as now (read failure: `false`), sent so the page can say why the SLA figures are thin; the figures are computed either way from the records that exist.
+- Errors: `401`/`403` as for `GET /tickets`, `403` for a requester; the `400`s above and the dashboard's two `tz` messages; a store failure is `500 internal_error` for the whole response. Nothing is cached on the server.
+
+**SQL.** All queries live in `queries/tickets.sql` under a `-- KPI reports (#131)` heading, each carrying the visibility block between its markers, so `TestSQL_DashboardQueriesShareTheListRule` (which compares every block in that file with the list query's) covers them with no change. Every query takes the visibility parameters, `tz`, and the three filters as `sqlc.narg(category_id)`, `sqlc.arg(priorities)::text[]` (`cardinality(...) = 0` is unfiltered) and `sqlc.narg(assignee_group_id)`, written as the list writes them. A period's instants come from its dates in one CTE, `w`: `since_at = (from_day::timestamp) AT TIME ZONE tz` and `until_at = ((to_day + 1)::timestamp) AT TIME ZONE tz`, and every range test is `>= since_at AND < until_at`.
+
+- `LocalToday :one`: `SELECT (sqlc.arg(now)::timestamptz AT TIME ZONE sqlc.arg(tz)::text)::date`. Run first (`report.Store.Today`, step 4 of the handler below), outside the KPI transaction; an unknown zone (SQLSTATE `22023`) maps to `ticket.ErrUnknownTimeZone` here, before any KPI query runs. The store method serving the dashboard's trend runs it too, through the same `ticketstore` helper (see **Code**).
+- `TicketVolumeByDay` (#675) is **generalised**, not copied: it takes `from_day` and `to_day` in place of "the 30 days ending `now`", and the three filters. Its arms, its `generate_series(from_day, to_day, '1 day')` and its zeros are otherwise unchanged. The dashboard passes `LocalToday − 29` to `LocalToday` and no filters, so its trend is what it was and its tests still pass. One query means "created on a day" and "resolved on a day" have one definition, and the volume card's daily series sums to its headline counts (a test holds `sum(days.created) == measures.current.created` and the same for resolved).
+- `KPIPeriod :one`, run once per period (current and previous): the created count from the `created_at` range (`tickets_created_at_idx`), and every finished-population measure from the finish-instant range (`tickets_done_at_idx`), in one statement:
+
+```sql
+-- name: KPIPeriod :one
+WITH w AS (…), created AS (
+  SELECT count(*) AS n FROM tickets t, w
+  WHERE <visibility> AND <filters> AND t.created_at >= w.since_at AND t.created_at < w.until_at
+), done AS (
+  SELECT GREATEST(0, EXTRACT(EPOCH FROM COALESCE(t.resolved_at, t.closed_at) - t.created_at)::bigint
+                     - t.sla_paused_seconds) AS resolve_s,
+         t.reopen_count > 0 AS reopened,
+         s.tracked, s.response_breached, s.resolution_breached, s.first_response_s
+  FROM tickets t CROSS JOIN w
+  CROSS JOIN LATERAL (
+    SELECT count(*) FILTER (WHERE r.superseded_at IS NULL) > 0 AS tracked,   -- a current record at the finish
+           COALESCE(bool_or(r.response_breached_at IS NOT NULL), false)   AS response_breached,
+           COALESCE(bool_or(r.resolution_breached_at IS NOT NULL), false) AS resolution_breached,
+           (array_agg(r.response_elapsed_at_met_seconds ORDER BY r.first_response_at, r.id)
+              FILTER (WHERE r.started_at IS NULL AND r.first_response_at IS NOT NULL
+                        AND r.response_elapsed_at_met_seconds IS NOT NULL))[1] AS first_response_s
+    FROM sla_records r WHERE r.ticket_id = t.id          -- breaches read from every record, superseded included
+  ) s
+  WHERE <visibility> AND <filters>
+    AND COALESCE(t.resolved_at, t.closed_at) >= w.since_at
+    AND COALESCE(t.resolved_at, t.closed_at) <  w.until_at
+)
+SELECT (SELECT n FROM created)::bigint                                        AS created,
+       count(*)::bigint                                                       AS resolved,
+       round(percentile_cont(0.5) WITHIN GROUP (ORDER BY resolve_s))::bigint  AS resolve_median,
+       round(percentile_cont(0.9) WITHIN GROUP (ORDER BY resolve_s))::bigint  AS resolve_p90,
+       count(first_response_s)::bigint                                        AS first_response_count,
+       round(percentile_cont(0.5) WITHIN GROUP (ORDER BY first_response_s))::bigint AS first_response_median,
+       count(*) FILTER (WHERE tracked)::bigint                                AS sla_tracked,
+       count(*) FILTER (WHERE tracked AND NOT response_breached AND NOT resolution_breached)::bigint AS sla_met,
+       count(*) FILTER (WHERE tracked AND NOT response_breached)::bigint      AS sla_response_met,
+       count(*) FILTER (WHERE tracked AND NOT resolution_breached)::bigint    AS sla_resolution_met,
+       count(*) FILTER (WHERE reopened)::bigint                               AS reopened
+FROM done;
+```
+
+  `percentile_cont` ignores NULLs and returns NULL over no rows, which is the `null` the response sends. The lateral is one `sla_records_ticket_idx` lookup per finished ticket. A ticket is tracked when one of its records has `superseded_at IS NULL` (`sla_records_current_idx`, migration `000043`); the breach flags still read all of its records. Percentiles need every value, so this is not incremental; at the 366-day cap on a desk finishing 1,000 tickets a day it sorts 366,000 integers, which Postgres does in memory in well under a second.
+- `KPICreatedByCategory :many` (`t.category_id, c.name, count(*)` over the created range, joined to `categories`, `GROUP BY` both, ordered count descending then name) and `KPICreatedByPriority :many` (`t.priority, count(*)`); Go puts the priorities into their fixed order with zeros.
+- `KPIOpenByAge :many`: `LEAST(floor(EXTRACT(EPOCH FROM sqlc.arg(now) - t.created_at) / 86400), 31)::int AS age_days, count(*)` over open tickets (`COALESCE(t.resolved_at, t.closed_at) IS NULL`), grouped by it: at most 32 rows. The bucket bounds are Go data (`report.BacklogBuckets`) applied to those rows, so they are written down once.
+- `KPIOpenByAssignee :many` (`t.assignee_user_id, u.display_name, count(*)`, `LEFT JOIN users`) and `KPIOpenByGroup :many` (`t.assignee_group_id, g.name, count(*)`, `LEFT JOIN groups`) over open tickets. The `NULL` key is a row like any other.
+
+All of a request's queries run in **one read-only `REPEATABLE READ` transaction** (`Store.KPI`), so the numbers on the page are one snapshot: the daily series sums to the headline, and the workload total equals the backlog total, even while tickets are being written.
+
+**Code.** `internal/domain/report` (no HTTP, no SQL):
+
+- `Day` is a calendar date (`time.Time` at 00:00 UTC; only the date means anything) with `ParseDay(s string) (Day, error)` and `Add(n int) Day`. `Period{From, To Day}` with `Days() int` and `Previous() Period`.
+- `Query{TZ string; From, To *Day; CategoryID *uuid.UUID; Priorities []ticket.Priority; GroupID *uuid.UUID}` and `ParseQuery(q url.Values) (Query, error)`, whose errors are `*ticket.FilterError` so the handler maps them to `400` as it maps the list's. `(Query) Period(today Day) (Period, error)`: the default, the order check and `MaxDays` (366); `DefaultDays` (30).
+- `BacklogBucket{Key string; MinDays int; MaxDays *int}`, `BacklogBuckets` (the four, as data), and `Buckets(rows []AgeCount) []BucketCount`; `Rate(n, d int64) *float64`; `PriorityOrder` (critical, high, medium, low); the result types `KPI`, `Measures`, `Volume`, `Backlog`, `Workload`.
+- `Compare(cur, prev *float64, kind ChangeKind) Change`, pure, the table under the response; `Change{Kind ChangeKind; State ChangeState; Value *float64}`, `ChangeKind` (`relative`, `points`), `ChangeState` (`change`, `from_zero`, `no_previous`, `no_current`). `Compared` is the nine compared measures as data (`{Key string; Kind ChangeKind; Value func(Measures) *float64}`, counts converted to `float64`), so the keys, their order and their kinds are written once.
+- `Store`, implemented by `*ticketstore.Store` (the same type that implements `ticket.Store`; neither interface names the other's methods):
+
+  ```go
+  type Store interface {
+      // Today is the local date of now in tz (LocalToday). An unknown zone is
+      // ticket.ErrUnknownTimeZone.
+      Today(ctx context.Context, tz string, now time.Time) (Day, error)
+      // KPI runs every query of one request in one read-only REPEATABLE READ
+      // transaction.
+      KPI(ctx context.Context, req Request) (Raw, error)
+  }
+  ```
+
+  `Service` (`NewService(store Store) *Service`) has the two matching methods: `Today(ctx, tz, now) (Day, error)` passes through, and `KPI(ctx, Request) (KPI, error)` turns the raw rows into the result (buckets, rates, `Compare` for every entry of `Compared`, priority order, ordering). `Request` carries `ActorID`, `Visibility`, the query, both periods and `Now`. The server holds `reports *report.Service`, like its other services, wired in `cmd/server/main.go` with the ticket store; the handler reaches `Today` only through it (the recorded decision on `server.Server` holds: concrete `*Service` pointers, no store).
+- The dashboard does not call `report` at all. In `ticketstore`, one unexported helper, `localToday(ctx, q, tz, now) (report.Day, error)`, runs `LocalToday` and maps SQLSTATE `22023`; `Store.Today` calls it, and so does the store method that serves #675's trend, which then passes `today − 29` to `today` to the generalised `TicketVolumeByDay`. The trend's signature, `ticket.Service` and `handleGetDashboard` are unchanged.
+
+`internal/server/handler_reports.go`: `handleGetKPI` does exactly this, in this order, and the first failure answers:
+
+1. `tz`: the dashboard's syntax check, the one function both handlers call (`parseTZ(r *http.Request) (string, error)` in `internal/server/tz.go`; it is `validTZ`, which #675 left inline in `handleGetDashboard`, moved there unchanged) → `400` "invalid tz".
+2. `report.ParseQuery(r.URL.Query())`, which checks its parameters in a fixed order, `from`/`to` together, `from`, `to`, `category_id`, `priority`, `assignee_group_id`, and returns the first error → `400` with its message.
+3. `s.TicketVisibility(ctx, actor)` → `500` on failure.
+4. `s.reports.Today(ctx, tz, now)` → `400` "unknown time zone" for `ticket.ErrUnknownTimeZone`, `500` otherwise.
+5. `query.Period(today)` → `400` "from must not be after to", "from is too early" or "the range is longer than 366 days".
+6. `s.adminSvc.SLAEnabled(ctx)` → an error is logged and reads as `false`.
+7. `s.reports.KPI(ctx, req)` → `500` on failure; otherwise `200` with the JSON above.
+
+So a request that is wrong in several ways gets the first message in this list: a malformed `tz` beats everything, a malformed date beats an unknown zone, and an unknown zone beats a range that is too long (the range cannot be judged without today). `now` is read once, at step 4, and is the `Now` of the request.
+
+**The page.** `/reports`, the sidebar item **Reports** (a bar-chart icon) between Tickets and Admin, shown to staff and administrators. **The sidebar gets denser to make room for it** (desktop pointers only; touch sizes are unchanged): with the four Tickets views of #676 and this item, the administrator's sidebar no longer fits 768 px at its old row heights, so the Admin toggle, the nav padding, the footer and Sign out are a few pixels tighter for every role, and `admin-nav-sections.spec.ts` keeps its 768 px budget; a requester who opens the address is sent to the dashboard. The address holds the state, so a refresh or a shared link shows the same board: `range=7|30|90` (default 30), or `from` and `to` for a custom range, plus `category_id`, `priority`, `assignee_group_id`. The router writes the address with its own serialiser, which quotes a string that reads as JSON, so the page writes the preset as a number (`range=7`) and one priority as a plain value (`priority=high`); two or more priorities are written as the router's list form (`priority=["high","low"]`, URL-encoded), which the page reads back, along with a repeated `priority=high&priority=low` typed by hand. An e2e check reads the real address after a click. The browser turns a preset into dates from its own today, and always sends `tz` (`Intl.DateTimeFormat().resolvedOptions().timeZone`).
+
+- **Header**: "Reports", a line naming the period and its comparison ("26 Oct – 24 Nov 2026, compared with 26 Sep – 25 Oct"), under it a muted line naming the filters ("All categories · All priorities · All groups", or the chosen names, e.g. "Hardware · High, Critical · All groups"), and **Download CSV** and **Download image** (the whole board).
+- **Controls**: a segmented choice 7 days / 30 days / 90 days / Custom; Custom shows two native date inputs and **Apply** (the server's `400` message shows under them). Three selects: Category (top-level categories, "Any category"), Priority ("Any priority" and the four), Group ("Any group"), from the lookups the ticket list's filter panel uses. Changing one updates the address and refetches.
+- **Cards**, in this order, each with a title, the figure, its comparison and a per-card **Download image** button (an icon button with `aria-label` "Download <card title> as an image"):
+  1. *Time to resolve*: the median large, the 90th percentile beside it, "79 tickets resolved".
+  2. *First response*: the median, "61 tickets with an SLA first response".
+  3. *SLA attainment*: met rate as a percentage, then response and resolution rates, "61 tickets tracked".
+  4. *Reopen rate*: the percentage, "4 of 79 resolved tickets had been reopened".
+  5. *Volume*: Created and Resolved totals with comparisons; the daily chart; created by priority and by category as bar charts.
+  6. *Backlog aging*: the total open and a bar chart of the four buckets ("Now", no comparison).
+  7. *Workload*: two bar charts, by person and by group ("Now", no comparison), each the ten largest rows with **Show all (N)** when there are more; once expanded the same button reads **Show top 10**, and collapses the list again.
+- **Comparison**: under each compared figure, the server's `measures.change` entry for it, formatted and coloured; the browser does no arithmetic on the numbers but scaling a fraction for display. A data table in `lib/kpi.ts`, `KPI_MEASURES: {key, label, unit: 'count'|'seconds'|'rate', better: 'lower'|'higher'|'neutral'}[]`, holds the labels and which direction is better. By `state`:
+  - `change`, `value` above 0: "▲ 12%" (`relative`, `value × 100`, no decimals) or "▲ 3.1 pts" (`points`, `value × 100`, one decimal); below 0 the same with "▼"; exactly 0: "No change". Green when the direction is the `better` one, red when against it, grey for `neutral` (Created, Resolved) and for no change.
+  - `from_zero`: "Up from 0 in the previous period", coloured as an increase.
+  - `no_previous`: "No data for the previous period", grey.
+  - `no_current`: nothing (the card is showing its empty text).
+
+  The full sentence is in the text for a screen reader ("up 12% from the previous period", "up 3.1 points from the previous period", "no change from the previous period").
+- **Durations** are written by a new `fmtDuration(seconds: number): string` in `lib/format.ts`: under a minute "under 1 min"; under an hour "N min"; under a day "N h M min" (minutes dropped when 0); otherwise "N d M h" (hours dropped when 0). Percentages: one decimal place.
+- **Empty and SLA-off states**: each card says what it lacks instead of showing zeros or dashes: "No tickets were resolved in this period." (Time to resolve, Reopen rate), "No ticket resolved in this period had an SLA first response." (First response), "No ticket resolved in this period was tracked by an SLA." (SLA attainment), "No tickets were created or resolved in this period." (the volume chart), "No open tickets." (Backlog, Workload). A bar chart that has nothing to draw while its card has other content (the volume card's category and priority charts when nothing was created in the period, though tickets were resolved) says "Nothing to show.", the one empty text every bar chart in a card shares. While `sla_enabled` is false, the First response and SLA attainment cards add one muted line, "SLA tracking is off, so new tickets are not timed. These figures cover tickets timed while it was on." The line names no settings place and links nowhere: #674 is moving Features from Settings to System (and rewriting every "Settings → …" string it lists), so a place named here would be wrong in one of the two merge orders, and #674's table would have to learn about a string on another branch. Staff cannot change the setting anyway; an administrator knows where SLA tracking is.
+- **States**: the query key is `['reports', 'kpi', params]`, `staleTime` 60 s; while loading each card shows the existing `Spinner` in a box of its final height; a failure replaces the cards with "The reports could not be loaded." and **Retry**; the controls stay.
+
+**Charts** reuse `frontend/src/components/charts/` (#675), additively:
+
+- The volume chart **is** the dashboard's `VolumeTrend`, moved from `components/dashboard/` into `components/charts/` and re-exported from `index.ts`, with two optional props, `emptyText` and `ariaLabel`, whose defaults are the dashboard's own wording, so the dashboard is unchanged. The Reports page passes "No tickets were created or resolved in this period." and "Tickets created and resolved per day, <period>". With 366 days it draws 366 points; the x labels are still the first and last only.
+- `AreaChart` is used as it is; the image export finds its `<svg>` in the DOM, so no ref or prop is added for it.
+- `BarChart.tsx` (new): `{rows: {key: string; label: string; value: number}[]; ariaLabel: string; tone?: ChartTone; formatValue?: (n: number) => string; emptyText?: string}`. A two-column grid: labels in HTML on the left, one-line and truncated with the full label in `title` (it is a chart row; this is the fifteenth place on the ellipsis list in **Small screens**, and the e2e check covers it), the value in HTML on the right, and between them **one** `<svg>` with `viewBox="0 0 100 {rows × 28}"`, `preserveAspectRatio="none"`, one `<rect>` per row 28 px apart (height 18, width `value / max × 100`, `max` the largest value, `fill="currentColor"`), so every bar lines up with its HTML row at any width. No text in the SVG, as for `AreaChart`. An `sr-only` table carries every row.
+
+**CSV export.** Built in the browser from the response the page is showing, by a pure function `kpiCsv(resp: KpiResponse, names: KpiNames): string` in `lib/kpi.ts` (`names` resolves the filter ids to labels). It formats numbers the server computed and computes nothing. RFC 4180, CRLF line ends, a UTF-8 byte order mark (so spreadsheet programs read names correctly), one header and long rows, `measure,key,label,current,previous,change,unit`:
+
+- the context first: `period_from`, `period_to`, `previous_from`, `previous_to`, `tz`, `filter_category`, `filter_priority`, `filter_group` (value in `label`);
+- every period measure with both values (`created`, `resolved`, `time_to_resolve_median`, `time_to_resolve_p90`, `time_to_resolve_count`, `first_response_median`, `first_response_count`, `sla_tracked`, `sla_met`, `sla_response_met`, `sla_resolution_met`, `sla_met_rate`, `sla_response_met_rate`, `sla_resolution_met_rate`, `reopened`, `reopen_rate`), durations in seconds and rates as fractions, so the file is data and not formatting, an empty cell for `null`; `change` is the server's `measures.change` value for the nine compared measures (a fraction: relative for counts and durations, the difference of the two fractions for rates) and empty when it is `null` or the measure is not compared;
+- then the current period's rows: `created_by_day` and `resolved_by_day` (key the date), `created_by_category` (key the id, label the name), `created_by_priority`, `backlog` (key the bucket), `workload_person` and `workload_group` (every row, not only the ten shown; the `null` row's key is empty and its label "Nobody" / "No group").
+
+A label that begins with `=`, `+`, `-`, `@`, a tab or a carriage return is prefixed with `'`, so a category called `=HYPERLINK(…)` is text in a spreadsheet, not a formula. The `change` cell of every row after the measures is empty. The file is `kpis-<from>-to-<to>.csv`, saved with `saveDataUrl` (below) from `data:text/csv;charset=utf-8,` plus the `encodeURIComponent` of the text (byte order mark included).
+
+**Image export.** A PNG per card and one of the whole board, with no image library. **The image is the screen as the browser laid it out**: there is one layout, the page's CSS, and the export reads it back instead of laying the card out a second time. The chart marks are the card's own `<svg>` elements; every piece of text, background and border is painted where the browser put it, in the font, size and colour it computed. So the image is the card at the width it has on screen (a phone gives a narrow image, a three-column desktop a wide board), wrapped where the screen wraps and cut where the screen cuts. It is a repaint, not a screenshot: canvas text shaping can differ from the page's by a fraction of a pixel, and two things are added that are not on screen (below). Each card's content is still data before it is markup: a pure `kpiCardModels(resp): KpiCardModel[]` (`lib/kpi.ts`) gives each card its `key`, `title`, figures (`{label, value, comparison?, tone}`), lines, empty text and chart rows, and the card component renders that model; the export does not read the model, it reads the DOM the model produced. The pieces are in `components/charts/exportImage.ts`; the join to the page's own element is in `components/reports/exportElement.ts` (below, after the numbered pieces):
+
+1. `inlineSvg(svg: SVGSVGElement, widthPx: number, heightPx: number): string`. Clone the element; walk the original and the clone together and copy onto each cloned element, as attributes, the computed `fill`, `fill-opacity`, `stroke`, `stroke-width`, `stroke-opacity`, `opacity` and `vector-effect` (computed values are resolved colours, so `currentColor` and the Tailwind tone classes become `rgb(…)`); remove every `class` and `style`; set `width` and `height` to the target pixels (the `xmlns` declaration is written by `XMLSerializer`, which writes it exactly once; it is not set by hand), keeping `viewBox` and `preserveAspectRatio="none"`. Serialise with `XMLSerializer` and return `data:image/svg+xml;charset=utf-8,` plus the `encodeURIComponent` of it. **No font or stylesheet is inlined, because the SVG has no text**: that is #675's rule for these charts, and it is what makes this step small. A `data:` URL, not a `blob:` URL, because the CSP allows `img-src 'self' data:` and nothing else.
+2. `readBoxes(root: HTMLElement, measure: Measure): Box[]` walks `root`'s subtree in document order and returns what to paint, in CSS pixels relative to `root.getBoundingClientRect()`. `Box` is `{kind: 'fill', x, y, w, h, color, radius} | {kind: 'border', x, y, w, h, color, width, radius} | {kind: 'text', x, y, h, text, font, color} | {kind: 'image', x, y, w, h, src}`. For each element: skip it and its subtree if it matches `.sr-only, [data-export="skip"]` or its computed `visibility` is `hidden` (an element with `display: none` has no box and adds nothing); a non-transparent computed `background-color` is a `fill` (radius from `border-top-left-radius`); a non-zero `border-top-width` with a non-transparent colour is a `border` (the cards use one width and colour on all four sides; nothing else is read); an `<svg>` is an `image` from `inlineSvg` at its rect's size, and its children are not walked. For each text node: `font` is the parent's computed `font-style font-weight font-size font-family` and `color` its computed `color`; its lines come from the browser, by asking a `Range` for the rect of each character and grouping them with `linesFromCharRects` (below), one `text` box per line, so wrapped text is wrapped where the screen wraps it. A text node whose parent has computed `text-overflow: ellipsis` and `scrollWidth > clientWidth` (a truncated bar label) is one `text` box, cut with "…" to the parent's `clientWidth` by `measure`, as the browser cuts it. `measure(text, font)` is the canvas's `measureText` width in the browser and a fixed-width fake in tests.
+3. `linesFromCharRects(text: string, rects: {left: number; top: number; height: number}[]): {text: string; x: number; y: number; h: number}[]`, pure: consecutive characters whose `top` is within 1 px of the line's first are one line; `x` is the first character's `left`, the line's text has its trailing whitespace dropped, and an all-whitespace line is dropped.
+4. `contextBox(lines: string[], widthPx, measure, top = 0): {boxes: Box[], h: number}`, pure: the one thing added below the captured element (`top` is where the strip starts, the height of the element, so its boxes are placed in the same coordinates; 0 when omitted), a strip 12 px muted text wrapped to the width (by `measure`, at spaces) with 12 px padding and a top border, holding the period and the comparison period, the filters ("All categories · All priorities · All groups" when none), and "Created <local date and time> · <site name>". A card on its own does not say which period or filters it shows; the strip makes the image say it. It is on every image, card and board.
+5. `paintPng(boxes: Box[], widthPx: number, heightPx: number, background: string): Promise<string>`: wait for `document.fonts.ready`; load each image (`new Image()`, `src` the data URL, `await img.decode()`); make a canvas at the size × 2, or × 1 if either side × 2 would exceed 16,384 px; fill `background` (the computed `background-color` of the root, or of its nearest ancestor that has one; the boxes and the background are read with the light theme applied, so an image is the same whichever theme the person uses: see Appearance (dark mode), Charts and exports); paint the boxes in order (`fill` and `border` with `roundRect`, `text` with `fillText` and `textBaseline = 'middle'` at `y + h / 2`, `image` with `drawImage`); `canvas.toDataURL('image/png')`. If the URL is longer than 2 MiB (`2 * 1024 * 1024` characters, the longest `data:` URL Chromium will download), paint again at × 1; if still longer, reject. Returns the data URL.
+
+`components/reports/exportElement.ts` joins these to the page and holds what needs the browser: `canvasMeasure()` (the `measure` function, canvas `measureText`, or 7 px a character where there is no canvas, as in jsdom), `backgroundOf(el)` (the `background` that `paintPng` takes: the element's own computed `background-color` or its nearest ancestor's that is not transparent, white when none), `exportElement(el, contextLines, filename)` (read the boxes, add the strip below the element at `top` = the element's height, paint at the element's width and the height plus the strip's, save with `saveDataUrl`), the failure message (`IMAGE_FAILED`, the text under **Failure** below) and the hook `useImageExport()` that gives each image button its `busy` and `failed` state and a `run`.
+
+The per-card button exports the card's root element (the `<section>` of the card); the board button exports the board element, `<div id="reports-board">`, which holds the page header (title and period line, and the filter line below) and the card grid but not the controls. Buttons that are not content (every image button, **Download CSV**, **Download image**, **Show all (N)**) carry `data-export="skip"`. Workload is exported as it is shown, ten rows or all. To make the board say what it filters on screen as well as in the image, the header shows, under the period line, the filter line the strip uses ("All categories · All priorities · All groups", or the chosen names); that line is the second addition, and it is on the page, not only in the image.
+
+The file is `kpi-<card key>-<from>-to-<to>.png`, or `kpis-<from>-to-<to>.png` for the board, saved by `saveDataUrl(url: string, filename: string)` (new, `lib/saveFile.ts`: a temporary `<a download={filename} href={url}>`, appended, clicked and removed). **No `Blob` and no object URL anywhere**: `frontend/src/pages/attachments-download-only.test.tsx` ("never turns a response into a blob or object URL") fails on any file matching `createObjectURL` or `new Blob(` in the frontend, and it backs the download-only attachment decision recorded in CLAUDE.md (#165). The PNG is a `data:` URL from `toDataURL` and the CSV a `data:` URL from its text, so that test passes unchanged. Nothing is sent to the server.
+
+**Failure**: an image that fails to decode, a `SecurityError` from a tainted canvas (an SVG image without `foreignObject` does not taint a canvas in current Chrome, Firefox or Safari, but the code does not assume it), or a PNG still over 2 MiB at × 1 rejects the promise; the button then shows, beside itself, "The image could not be created in this browser. Download the CSV for the same numbers." No file is saved. While the image is being made the button is disabled with `aria-busy`.
+
+**Layout.** One column below `md`, two from `md`, three from `xl`, the Volume and Workload cards spanning the full row from `md`. The controls wrap: the segmented choice on its own line, the custom dates stacked below `sm`, the three selects one per line below `sm` and in a row from `sm`. Every button, including each card's image button, is at least 44 px on a coarse pointer. Bar labels truncate; nothing else in a card does (titles and lines wrap). Nothing scrolls sideways at 320 px.
+
+**API documents.** `docs/api/openapi.yaml`: `GET /reports/kpi` with its parameters, the response schema above (`backlog.buckets[].key` an enum of the four keys, `by_priority[].priority` the priority enum, `measures.change` an object with the nine keys required, each `{kind, state, value}` with `kind` an enum of `relative` and `points`, `state` an enum of the four states and `value` a nullable number, the nullable fields marked), the `400`s and `403`. The MCP tools table is unchanged. `docs/upgrade-notes-1.3.0.md`, under New features: "Reports: KPIs for Resolution, First Response, SLA, Reopens, Backlog, Volume and Workload (#131)", saying who sees it, that staff numbers follow ticket scope, how each measure is defined in one line, that time to resolve excludes Pending, that first response and SLA attainment need SLA tracking, that reopens before 1.3.0 are not counted, and that the CSV and the images are made in the browser. Nothing under Breaking changes. **Upgrade**: no migration, no setting, no change to any existing request or response; the dashboard's trend is the same. The roadmap table lists KPI reports under v1 and operational reporting's remainder (scheduled reports, channel and agent cuts, the later measures) under v1.4.
+
+**Build order.** #131 is built after #675 is merged into the base it is stacked on (see **Prerequisites** above); what it uses of #675 is: `tickets_done_at_idx`, `TicketVolumeByDay`, the visibility markers and their drift test, `ticket.ErrUnknownTimeZone`, the inline `tz` validation (`validTZ`, which it moves into `parseTZ`), and `components/charts/` with `AreaChart` and `VolumeTrend` (which it moves there from `components/dashboard/`). #675's other blocks are not read, and #131 names nothing of #676's directly: no #131 definition (the workload's "Nobody" and "No group" rows, the open population) borrows from #676's list views. #676 is nevertheless always in the base, because #675 is built on #676's code and starts only after #676 is merged (see the #675 section), so it is a transitive prerequisite, not an optional one.
+
+**Out of scope.** Scheduled or emailed reports (they need the notification outbox and a schedule; v1.4); cuts by channel, agent, item or type, and per-policy SLA tables; drill-down from a figure or a bar to the ticket list; saved or custom reports; trends of the snapshot measures (no history is kept); an MCP tool; the later measures #131 lists (CSAT, escalations, vendor wait); a rollup table.
+
+**Decisions taken without the owner.** Each can be overturned in one line.
+
+- Staff see Reports, counting only what `ticket_scope_enforced` lets them open (every ticket while it is off). Rejected: administrators only (the owner's constraint names staff numbers), and staff restricted to their own tickets (a third visibility rule).
+- Live queries in one read-only repeatable-read transaction, capped at 366 days. Rejected: a rollup table (premature; it would need its own correctness story for reopens and re-matches).
+- Every period measure reads the tickets **finished** in the period (by `COALESCE(resolved_at, closed_at)`), so one card's numbers describe the same tickets. Rejected: first responses that happened in the period (needs an index on `sla_records` and mixes populations) and tickets created in the period (a recent period would show only the fast ones).
+- Time to resolve is creation to the finish instant minus `sla_paused_seconds`, time in Resolved before a reopen included. Rejected: wall-clock (measures the requester's latency), from the last reopen (the flattering number the issue warns against), and the SLA's frozen resolution reading (needs SLA records, and restarts on reopen).
+- Time to first response is the SLA's frozen reading on the ticket's original clock, which follows the owner's note that it depends on SLA records. Rejected: the first public staff reply from `ticket_replies` (works without SLA, but cannot subtract the Pending time before it, because the pause total is not kept per instant).
+- SLA attainment counts only finished tickets that have a **current** SLA record when they finish, and calls one met only if none of its records, superseded included, carries a breach stamp. A ticket with no current record is excluded from numerator and denominator, like one that never had a policy; that includes a ticket whose priority was changed to one no policy matches, whose record was superseded and not replaced, so it was never judged. Rejected: the current record only (a reopen's clean clock would hide the earlier breach); counting an SLA-removed ticket as met (it was never measured, and it would raise the rate); counting only tickets whose records were all judged (it needs a per-record "was judged" test that no column answers, since a record has no judged flag, and it would still leave out a ticket whose last record was superseded for a reason other than a removal).
+- Reopen rate is the share of finished tickets with `reopen_count > 0`. Rejected: reopen events from `ticket_status_history` over resolutions (history is incomplete before 1.1.1, per `000028`, and needs a new index) and `sum(reopen_count)` over resolved (can exceed 100%).
+- "30+" is "over 30 days"; age counts whole 24-hour days from creation; Pending tickets are in the backlog. Rejected: local calendar days (depends on the viewer), age from the last reopen.
+- Workload is two independent lists, with "Nobody" and "No group" as ordinary rows. Rejected: a separate "unassigned" figure (the Available view's definition belongs to #676's views).
+- Filters apply to current values, one category, repeatable priority, one group, with the list's parameter names. Rejected: values as they were when the ticket was created (needs history), multi-select categories and groups.
+- The comparison is always the immediately preceding period of equal length and is always shown. Rejected: a toggle, year-on-year.
+- Rates and the period-over-period changes come from the server: the rates with their counts, the changes as `measures.change` with a `state` for the cases that have no number. The owner's rule ("aggregates are computed on the server, never in the browser") is read as covering every number the page shows, so the browser only scales a fraction to a percentage and picks an arrow and a colour. Rejected: computing the change in the browser (a number on screen with no server source and none in the CSV), and showing "No data" for a previous value of 0 (a 0% reopen rate or a count of 0 is data).
+- CSV is made in the browser from the JSON on screen, formulas neutralised. Rejected: a server `?format=csv` (a second response format to document and test for the same numbers).
+- **The owner asked for an image "drawn from the same SVG so the image matches the screen"; it is not literally that, and this is how it differs.** Only the chart marks are SVG (four of the seven cards have none, and #675's rule keeps text out of the SVG), so the PNG is the card's live SVG inlined into a `data:` URL plus the card's text, backgrounds and borders repainted on a canvas at the positions, fonts and colours the browser computed for them (`readBoxes`). There is one layout, the page's: the image has the card's on-screen width, wraps and truncates where the screen does, and a board exported on a phone is one tall column. It is not pixel-identical (canvas text shaping can differ by a fraction of a pixel), and it adds a context strip under every image (period, comparison period, filters, when it was made) that is not inside the card on screen. Rejected: a second, canvas-only layout of fixed-width cards (the earlier draft: text cut where the screen wraps, two columns where the screen has three, layout maintained twice); the card's HTML in a `foreignObject` (pixel-exact, but it taints the canvas in Safari, so `toDataURL` throws, and every stylesheet would have to be inlined); text inside the chart SVG (breaks #675's rule and distorts under `preserveAspectRatio="none"`); a library (the owner's rule); `blob:` images (blocked by the CSP).
+- Files are saved from `data:` URLs (`toDataURL` for the PNG, the CSV text encoded into the URL) on a temporary `<a download>`, so `attachments-download-only.test.tsx`'s "no blob, no object URL" check passes unchanged and the recorded #165 decision is not touched. The cost: Chromium will not download a `data:` URL over 2 MiB, so an image is repainted at × 1 above that and refused (with the CSV offered) if it is still too large; a board at × 1 is far below it in practice. Rejected: a named one-file exemption for `lib/saveFile.ts` in that test (an object URL made from a canvas carries no server response, but the test is a tripwire for a security decision and an exemption is the precedent for the next one).
+- The volume card reuses the dashboard's `VolumeTrend` and its query, generalised to a date range and filters. Rejected: a second component and a second query with their own definitions of "created on a day".
+- No MCP tool. Rejected: a `kpi_report` tool nobody has asked for.
+- The SLA-off line names no settings place and does not link. Rejected: naming "Settings → Features" (wrong once #674 moves it to System) or "System → Features" (wrong until #674 lands), and adding the string to #674's rewrite table (two branches that must land in one order).
+- Today's date for the period comes from Postgres through `report.Service.Today` → `report.Store.Today`, both new; the dashboard's trend reaches the same `LocalToday` statement inside `ticketstore` and its signatures do not change. Rejected: a `Today` method on `ticket.Service` (the report has a service of its own; the ticket service would grow a method only the report handler calls) and the server holding a store (the recorded decision on `server.Server`).
+- When several parameters are wrong, the first check in the handler's fixed order answers: `tz` syntax, the query parameters, the zone, the period. Rejected: collecting every error into one response (no other endpoint does).
+- Sidebar label **Reports**, route `/reports`, endpoint `/reports/kpi`. Rejected: "KPIs" (the page will hold scheduled reports later).
+
+**Tests.**
+
+- *SQL text*: `TestSQL_DashboardQueriesShareTheListRule` passes with the KPI queries in `tickets.sql` and fails if any of their visibility blocks differs by one character.
+- *Postgres, store* (`ticketstore`), one fixture, `now` fixed: **time to resolve** for a ticket with no pause, one with two closed Pending intervals (exactly subtracted), one resolved then reopened then resolved (time in Resolved counted), one closed without resolution (ends at `closed_at`), one resolved and later closed (ends at `resolved_at`), one reopened and open (not counted), a negative raw value floored at 0; median and p90 against hand-computed values for odd and even counts; **first response** from the frozen reading, the earliest of two original-clock records, a reopen-started record ignored, a ticket without records not counted, `null` median on no rows; **SLA** met, response breached only, resolution breached only, a breach on a superseded record with a clean current one (breached), no record (not tracked), a ticket with only a superseded record, its priority changed to one no policy matches (SLA removed: not counted in `sla_tracked`, `sla_met` or either rate, even when the superseded record carries a breach stamp and when it carries none); **reopen rate** with `reopen_count` 0 and 2; **periods**: a ticket created and finished at 23:30 local on the last day counts in `Europe/London` and in `America/New_York` across 1 November 2026, the instant `until_at` itself is outside, the previous period is disjoint; **filters**: category (and its types), each priority and two together, group, an unknown id (zeros); **visibility**: administrator, unscoped staff, scoped staff (nothing outside scope in any measure, snapshot or breakdown), the same staff with enforcement off (the wider numbers); **open now** equals "status not Resolved or Closed" on the fixture; **backlog** at 0, 2, 3, 7, 8, 30 and 31 days (boundaries); **workload** with person and group, person only, group only, neither, a deleted assignee's name; **one snapshot**: the daily series sums to `created` and `resolved`, workload total equals backlog total; `TicketVolumeByDay` for the dashboard's arguments returns what #675's tests expect; `LocalToday` across midnight in two zones and `ErrUnknownTimeZone`; a plan check in the style of `planRecorder` (`ticketstore_reply_search_test.go`) on a 20,000-ticket fixture that the finished arm uses `tickets_done_at_idx`, the created arm `tickets_created_at_idx` and the open queries `tickets_done_at_idx`.
+- *Domain* (`report`): `ParseQuery` per parameter (valid, malformed, five priorities, one date without the other); `Period` default 30 days ending today, a 366-day range accepted, 367 refused, `from` after `to` refused, `from == to` (one day); `Previous` for 1, 7, 30 and 366 days and across a month and a leap day; `Buckets` over ages 0 to 31; `Rate` with a zero denominator (`nil`) and rounding to four places; `Compare` for every row of its table and both kinds: `cur` null, `prev` null, both null (`no_current`), equal values including 0 and 0 (`change`, 0), a count from 0 (`from_zero`), a rate from 0.0 (`change`, the points), a rise and a fall, rounding to four places; `Compared` has nine distinct keys in the response's order; `Service.KPI` fills `change` for all nine, orders priorities with zeros, sorts rows by count then name with the `null` row last.
+- *REST, Postgres*: the response's shape and keys for an administrator and for staff; a requester `403`; an API key with and without `tickets:read`; every `400` message; the order of the checks, one request per pair (a malformed `tz` and a malformed `from` answer "invalid tz"; a malformed `from` and an unknown zone answer "invalid from"; an unknown zone and a 367-day range answer "unknown time zone"); `measures.change` present with nine entries; with enforcement on, a scoped staff member's numbers exclude a ticket outside their scope that an administrator's include; `sla_enabled` follows the toggle and the SLA figures are still computed while it is off; `filters` echoes the request.
+- *openapi*: the spec test lists `GET /reports/kpi` with its handler and its roles.
+- *Frontend*: `fmtDuration` at 0, 59 s, 60 s, 59 min, 1 h, 1 h 1 min, 23 h 59 min, 1 d, 1 d 1 h, 400 d; the comparison text and tone for each `state` (`change` up, down and 0, `from_zero`, `no_previous`, `no_current`) per `better` direction and per `kind`, and its screen-reader sentence, from fixed `change` entries (no arithmetic beyond `× 100`); `parseKpiSearch`/`toKpiParams` round trips for each preset, a custom range and every filter, and a preset's dates from a fixed today; `kpiCsv`: header (with `change`), the server's change values in the nine compared rows and empty elsewhere, CRLF, BOM, quoting of a comma, a quote and a newline, the formula prefix for each of the six leading characters, empty cells for `null`, every workload row present; `kpiCardModels` per card including each empty text and the SLA-off line; `BarChart` (one rect per row aligned to 28 px, widths relative to the largest, the hidden table, the empty text, the `title` on a truncated label); `VolumeTrend` with and without the new props renders the dashboard's text by default; `inlineSvg` (no `class` or `style` left, colours resolved from a stubbed computed style, `xmlns`, size, `viewBox` kept, a `data:image/svg+xml` URL); `linesFromCharRects` (one line, a wrap into two and three lines, trailing spaces dropped, a 0.5 px jitter in `top` kept on one line, an all-space line dropped); `contextBox` with the fake `measure` (wrapping at spaces, the no-filter wording, the created line); `readBoxes` in jsdom with stubbed `getBoundingClientRect`, `getComputedStyle` and `Range` rects (`.sr-only` and `[data-export="skip"]` subtrees skipped, `visibility: hidden` skipped, a background and a border read, an `<svg>` an image box and its children not walked, a truncated label cut with "…"); `saveDataUrl` sets `download` and `href` and removes the link; `attachments-download-only.test.tsx` passes unchanged (no `Blob`, no object URL); the export button's busy and failure states with a rejecting painter; the page per role (requester redirected), the sidebar item for staff and admin only, loading, failure with Retry, a custom-range `400` shown under the dates.
+- *e2e*: Reports at 375 px and 1280 px for an administrator and a staff member, with a 120-character category name: no horizontal scroll, buttons at least 44 px on a touch profile; **Download image** for one card and for the board in Chromium yields a PNG (signature checked, and its width twice the card's or the board's on-screen width, so the image is the screen's layout) and **Download CSV** a file whose header row is as specified; the same image download under the production CSP (`e2e-csp`), so a CSP that blocks the `data:` image fails the build.
 
 ### Linked Tickets
 
-Tickets can be linked to any other ticket regardless of status (including Closed). Link types:
+Tickets can be linked to any other ticket regardless of status (including
+Closed) — by staff and admin. A requester cannot add a link to or from a Closed
+ticket (#349). A follow-up opened from a Closed ticket is linked to it as its
+child (`parent_child`, see Ticket Lifecycle). The backend (`ticket.LinkType`; `GET`/`POST /tickets/{id}/links`
+and `DELETE /tickets/{id}/links/{targetId}/{linkType}` in
+`handler_tickets.go`) is the canonical spelling, and the frontend's
+`LinkType` in `frontend/src/api/types.ts` uses the same four values. Links
+are viewed, created and removed from the **Linked tickets** panel on the
+ticket detail page (`LinkedTicketsPanel.tsx`), which is shown to staff and
+admins. (Wiring the UI and reconciling the enum was
+[#185](https://github.com/PubliciaLLC/go-help-desk/issues/185); the
+duplicate-of auto-resolve option was
+[#186](https://github.com/PubliciaLLC/go-help-desk/issues/186).)
 
-- **Related to** — informational association
-- **Parent / Child** — hierarchical grouping (e.g. a Problem with multiple Incidents)
-- **Caused by** — causal relationship
-- **Duplicate of** — marks a ticket as a duplicate (optionally auto-resolves the duplicate)
+Link types — four, not five. A link is directional (source ticket → target
+ticket), and that direction *is* the parent/child distinction rather than a
+separate value for each direction:
+
+- **Related to** (`related_to`) — informational association, symmetric
+- **Parent / Child** (`parent_child`) — hierarchical grouping (e.g. a Problem
+  with multiple Incidents). The ticket the link is created *from* is the
+  parent; the ticket it is created *to* is the child. There is no separate
+  `parent_of` / `child_of` pair — a link's direction already says which end is
+  which, and a UI renders "Parent" or "Child" by comparing the ticket it's
+  displaying against the link's source and target, not by storing two types
+  for one relationship.
+- **Caused by** (`caused_by`) — causal relationship, directional (source was
+  caused by target)
+- **Duplicate of** (`duplicate_of`) — marks the source ticket as a duplicate of
+  the target. Creating this link offers a checkbox, **"Also resolve this
+  ticket as a duplicate"** — when checked, the source ticket is transitioned to
+  Resolved in the same action, with its resolution notes pre-filled as
+  "Duplicate of `<target tracking number>`" (staff can edit before saving).
+  Unchecked, the link is recorded with no status change. This is the
+  "optionally" in "optionally auto-resolves the duplicate" — it is a choice
+  made per link, not an instance-wide setting.
+
+**Resolve all children** (#443). On a ticket that is the *source* of at least
+one `parent_child` link (the parent), the Linked tickets panel offers **Resolve
+all children** to staff and admin. It asks for resolution notes once (required),
+then resolves the children **from the browser, one at a time**, each through the
+ordinary `POST /tickets/{id}/resolve` with the same notes. There is no bulk
+endpoint: each child therefore gets its own audit entry, notifications and SLA
+handling, and the closed-ticket rules apply to it as to any resolve. A child
+that is already Resolved or Closed is **skipped and never re-resolved**,
+because a second Resolve with different notes overwrites the notes the child
+already carries (#225). A refusal on one child does not stop the rest. The
+panel reports `n of m resolved, k already resolved, j refused:` followed by each
+refused child's tracking number and the server's reason, the same shape as the
+ticket list's bulk status change; the notes stay in the box after a partial
+failure, so a retry is one click and only touches the children still open. A
+ticket that is only a child, or has only related, caused-by or duplicate-of
+links, does not show the button.
+
+**Direct children only** (decided on #505, 2026-10-15). The button resolves the
+parent's *direct* children and nothing below them. Its count is the number of
+direct children that are **not** Resolved or Closed: with four children of which
+two are done it reads "Resolve 2 children" and says the other two are skipped,
+and when none is open it is disabled with "All children are already resolved."
+Each child is read again right before its own resolve, since its state can
+change while the form is open. Once the form is open the panel reads each direct
+child's links (one `GET /tickets/{id}/links` per child, nothing before the form
+opens and nothing below the children) and, when some of them are themselves the
+source of a `parent_child` link, says so: "2 of these children have children of
+their own (tracking numbers, listed up to five); resolve those from their own
+ticket." A child whose links cannot be read gets no notice, because the page
+cannot say what it does not know.
+
+### OAuth Clients and Service Users
+
+Decided on [#434](https://github.com/PubliciaLLC/go-help-desk/pull/434) for
+[#420](https://github.com/PubliciaLLC/go-help-desk/issues/420). An OAuth client
+does not act as nobody, and it does not act as "staff in general". It acts as
+**its service user**: one account per client, made with the client in the same
+statement, named after it, and soft-deleted with it.
+
+A service user is an ordinary `users` row with `service_account = TRUE`, and a
+database CHECK (`users_service_account_inert`) that no code has to remember:
+it can never be an administrator and never hold a password, a TOTP secret, a
+SAML subject or an OIDC subject. `oauth_clients.user_id` is `NOT NULL UNIQUE`
+(one user per client, never shared, never a person's account). Migration 000041
+makes one for every client that already exists, with the staff role and no
+groups, so with ticket scope enforcement off an upgraded client behaves as it
+did.
+
+| | |
+|---|---|
+| **Role** | `staff` or `user`, set by an administrator on the Users page; the actor's role is the stored one. Never `admin` (CHECK, and a 409 `service_account` before it). |
+| **Signs in** | Never. Password login, SSO adoption by address, password reset, passkeys and MFA enrolment all refuse it, and no session for one loads. The login lookups (`GetUserByEmail` and the two subject lookups) do not return it; the session lookup skips it. |
+| **Seen** | Listed on **Admin → Users** with `service_account: true` and `auth_type: "service"` (the page shows a "Service" badge and a filter for it). It can be renamed, given groups, disabled and set to staff or user, and nothing else: `PATCH /admin/users/{id}` answers `409 service_account` to a body carrying `email`, a `role` of `admin`, or `reset_mfa: true`, and applies none of it (a `reset_mfa: false` asks for nothing and is accepted; a `role` of `staff` or `user` is accepted, Q2 on #434). The page never sent the refused ones; the server now refuses them too. Renaming it renames its OAuth client in the same statement, so the two names cannot drift. The password route (`POST /admin/users/{id}/password`), MFA reset and API keys issued on its behalf are refused as well. Disabling it stops its client on the next request, and enabling it again restores it. It **cannot be deleted on its own**: `DELETE /admin/users/{id}` answers `409 service_account` with "This is the service account for OAuth client <name>. Delete the client instead.", because a client left listed with a dead user is worse than a refusal. It is left out of assignee pickers (`GET /staff`), assignment (`IsAssignableUser`, so round-robin skips it) and the plain user list. |
+| **Scopes** | A client may be created only with scopes its service user's role can use. The user is made `staff`, so `POST /admin/oauth-clients` answers `400 invalid_scope` for anything beyond `auth.ScopesForRole("staff")` (for example `audit:read`, `settings:*`, `users:*`, `credentials:*`), exactly as a key owned by staff is refused (#450), and the picker on the OAuth clients page offers only the staff scopes. That list includes `requester_search:read`, which is never implied and has to be ticked on purpose. Checked at creation only: a client that already holds a wider scope, or whose user is later changed to `user`, keeps it, and the role check at request time still refuses what the role cannot reach. |
+| **Rotating the secret** | `POST /admin/oauth-clients/{id}/rotate-secret` (#622, a signed-in administrator; refused to keys and clients) replaces the secret at once. There is no grace period with two valid secrets: the usual reason to rotate is a leak. The answer carries `{id, client_id, client_secret}`; the secret is shown once, and the `client_id` and service user do not change. Every access token issued under the old secret is refused: tokens carry an `sv` claim, the first 16 hex characters of the stored hash, and `BearerAuth` compares it with the client's current hash. A token with no `sv` (issued before the claim existed) is still accepted until it expires, at most an hour. Audited in the same transaction as `oauth_client_secret_rotated`, with the name, scopes and service user id and `credential_replaced: true`; no secret and no hash is written. |
+| **Writes** | Under its scopes, a client creates tickets and replies **as its user**. The audit trail and authorship show the client's name. |
+| **Mail** | Never. A service user's address is made up (`oauth-<client id>@service-account.invalid`, which can never receive mail), and requester mail is not queued for a ticket it reported. Staff notifications go out as normal. |
+| **Scope** | Ticket scope enforcement (`ticket_scope_enforced`) applies to its user like any staff member's: it sees what its groups cover. Turning enforcement on warns, on that save, which clients have a user in no group; the Security warnings banner (`oauth_clients_without_groups`) keeps saying so until each has a group or is disabled. |
+
+**Recorded decisions** (the shapes below look wrong and are not):
+
+- **`BearerAuth` keeps `Machine = true` although the actor now has a real
+  user id.** `Machine` is what gates scopes and what closes `/me/password`,
+  `/me/mfa/*` and `/me/passkeys*` to a credential. A user id must not open
+  them, and `GET /me` for a client stays `{machine, role, scopes}`: its check is
+  on the client id, not the user id.
+- **`user_identity_required` still exists and no OAuth client can hit it.**
+  `requireUserIdentity` and the MCP `hasUserIdentity` stay as the refusal for
+  any credential that arrives with no user. The OAuth tests that pinned the
+  refusal were rewritten to pin the opposite, on purpose.
+- **The service user is created by `CreateOAuthClient`'s one statement, not by
+  `user.Service.Create`.** Two writes that can half-apply are what the one
+  statement removes; a client with no user cannot act, and a user with no
+  client is an orphan.
+- **The last-administrator guard is unchanged.** It counts `role = 'admin'`,
+  the CHECK means a service user is never one, and so it neither props the
+  guard up nor trips it. The note that a password is always a way in stays true
+  for administrators for the same reason. A service user is the first account
+  that has *no* way in, deliberately, and the CHECK is what keeps it out of the
+  guard.
+- **A client row that points at a person is refused by `BearerAuth`**
+  (`service_account` must be true), because the schema alone would let it hand
+  a client someone's identity.
+- **The Security warnings banner and the save warning are both kept.** The
+  warning on save is the moment the administrator can act; the banner is for
+  the next day, when they have forgotten.
 
 ### Groups & Scope
 
@@ -153,15 +1804,1246 @@ Tickets can be linked to any other ticket regardless of status (including Closed
 - **Items do not factor into scope** — staff in-scope for a Type see all Items under it
 - Scope is derived **exclusively from group membership** (no direct Category assignment to individual staff)
 - Solo admin scenario: assign all categories to a single group
-- Staff members can see all tickets assigned to any group they belong to, and can take any action on those tickets
+- **Deleting a group** takes every ticket off it, open or not, and writes an `unassigned` audit entry for each one naming the administrator, in the same transaction as the delete. If any part fails, nothing is applied. The group row is locked first, so a ticket cannot be assigned to it between the unassignment and the delete.
+
+Scope does two separate jobs: it can restrict what staff see, and it routes new tickets.
+
+**Visibility: `ticket_scope_enforced`, off by default.** Set under **Admin → System → Privacy → Ticket visibility** ("Limit staff to their group scope"). With it **off**, every staff member can open every ticket, which is how every release before it behaved and why it is not on by default: switching it on during an upgrade would hide tickets from people mid-conversation. (Staff's ticket list still opens on the tickets assigned to them; see **Ticket list views**.) With it **on**, a staff member sees a ticket if they reported it, are assigned it, one of their groups is assigned it, or it falls in a Category/Type a group of theirs covers. That is the union of two readings that both applied (a ticket in your area that nobody has picked up is visible, and so is one assigned to you outside your usual area), and staff can take any action on tickets they can see. Administrators always see everything and a reporting user sees their own. One rule serves REST, MCP and a ticket's own audit feed (`ticket.CanView`, `CanViewTicket`/`TicketVisibility`). Staff in no group see almost nothing, so turn it on once groups and their scopes are configured.
+
+**Routing: auto-assignment.** A newly created ticket is routed once, at creation, by the first rule that matches (the assignment is made by the system, so its audit entry has no actor):
+
+1. A group whose scope covers the ticket's Category (or Category + Type). The ticket is assigned to that group; if several match, the first by name.
+2. `auto_assign_group_id`: one catch-all group for everything the rule above did not match.
+3. `auto_assign_user_ids`: a list of staff the tickets are dealt out to round-robin. The rotation is in memory, per server process. A listed user the assignment refuses (deleted, disabled or no longer staff) is skipped and the next one tried, so a departed colleague does not silently take every Nth ticket out of the queue.
+4. Otherwise the ticket stays unassigned.
+
+Routing is best-effort in one respect: a candidate that cannot be given a ticket (a departed colleague still on the round-robin list, a group that no longer exists) is skipped for the next, and if none is acceptable the ticket is left unassigned and the creation succeeds. A database error while checking a candidate is not skipped: it aborts the create. It runs for every door that creates a ticket: `POST /tickets`, a guest submission (`POST /guest/tickets`), MCP `create_ticket`, and the three follow-ups (`POST /tickets/{id}/follow-up`, `POST /guest/follow-up`, MCP `create_follow_up`). They all call the one routing rule (`Server.Routing`; MCP reaches it through `mcp.Router`), so a rule cannot apply to one door and not another. Until 1.3.0 the guest form and the two MCP tools skipped it, so a ticket filed through them was never given to anyone; a follow-up is routed on its original's category and type (a guest's, while Types is shown to guests, #711; otherwise on the category alone), and the guest form on the category and the type the guest chose (the category alone while Types is not shown to guests). `auto_assign_group_id` (a UUID string) and `auto_assign_user_ids` (an array of UUID strings) are set on **Admin → Routing** (a group picker and a staff checklist, with the rules above listed in order) or through `PATCH /admin/settings`. Saving is checked: a group id that names no group, or a user id that names no one or someone who is neither staff nor an administrator, is refused with 400 `invalid_auto_assign` and nothing in the request is written (before #447 such an id was saved and then skipped at routing time). An empty value clears the setting.
 
 ### Branding
 
 - **Site name** — the product name shown in the sidebar header and browser title. Defaults to "Go Help Desk".
-- **Logo** — uploaded via **Admin → Settings → Branding**. Accepted formats: PNG, JPEG, GIF, SVG. Max 2 MB. Raster images are proportionally scaled to fit within **320 × 64 px** and re-encoded as PNG; SVGs are validated as well-formed XML and scanned for disallowed content (scripts, event handlers, `javascript:` URIs). When set, the logo replaces the site name text in the sidebar.
-- Both settings are stored in the database and managed via **Admin → Settings → Branding**.
-- A public `GET /api/v1/site` endpoint returns `{name, logo_url, version}` — no authentication required, so the shell renders correctly before login.
+- **Logo** — uploaded via **Admin → System → Branding**. Accepted formats: PNG, JPEG, GIF. Max 2 MB. Images are proportionally scaled to fit within **320 × 64 px** and re-encoded as PNG. When set, the logo replaces the site name text in the sidebar. **SVG is not accepted** (#165): the logo is the only upload rendered inline in this origin, and pattern-matching SVG for scripts is a game you have to keep winning. An SVG logo uploaded by an earlier release stops being served after the upgrade — the route serves PNG and nothing else, so the sidebar falls back to the site name. The settings page says so where the logo would be: the file picker no longer offers SVG, a sentence explains why it went, and an instance whose stored logo can no longer be loaded is told that rather than shown an empty space.
+- Both are managed via **Admin → System → Branding**. The site name and the logo's URL are settings in the database; the logo image itself is a file, `ATTACHMENT_DIR/site/logo.png`, so it is backed up with the attachments volume, not with the database. (The icon below is kept differently, in the database, for the reasons given there.)
+- A public `GET /api/v1/site` endpoint returns `{name, logo_url, version, guest_submission_enabled, guest_attachments_enabled, guests_show_types, guests_show_items}` (the last two, #711, are the effective values: `false` while guest submission is off, items also while types is, and they reveal only what opening `/submit` shows anyone), plus `guest_attachment_max_bytes`, `guest_attachment_max_per_ticket` and `guest_attachment_uploads_per_hour` while guests may attach (#445) — no authentication required, so the shell and the login page render correctly before login (`guest_submission_enabled` is what decides whether the login page links to `/submit`; it reveals only what an unauthenticated `POST /guest/tickets` would reveal by answering 404). `guest_attachments_enabled` and the three figures are different: `POST /guest/attachments` answers the same `404` whether the setting or the token failed, so it never says whether uploads are on, but `/site` does, together with the effective per-file limit, to anyone. That disclosure was accepted (#445): it is low sensitivity, and it keeps the guest ticket response's allow-list unchanged.
 - A public `GET /api/v1/logo` endpoint serves the stored logo file with a 5-minute cache header. `logo_url` in the site response points here when a logo is uploaded.
+- **Icon** and **home screen name** (#708, 1.3.0): below.
+
+#### Icon and home screen (#708)
+
+An administrator uploads one image, and it becomes the icon in the browser tab
+and the icon (and name) a phone or computer puts on its home screen when
+someone uses "Add to Home Screen" or "Install". The server makes every size
+from that one image. With nothing uploaded, nothing changes from 1.2: the tab
+shows the built-in icon (`/favicon.svg`).
+
+**The upload.** **Admin → System → Branding → Icon**. One file, PNG, JPEG or
+GIF (a GIF's first frame), at most **5 MB**. **SVG is not accepted**, for the
+logo's reason (#165): the icon is rendered inline on this origin, and every
+byte served is one the server produced by decoding and re-encoding a raster.
+The image must be **exactly square** (width equals height; no tolerance) and
+from **512 × 512** to **4096 × 4096** pixels. Each refusal says what it saw and
+what to do: a 1200 × 800 image is refused with "The image is 1200 × 800
+pixels. The icon must be square: crop it to the same width and height and
+upload it again." The checks run in this order, and nothing is decoded until
+the header has passed them: the byte limit; the format, from the first bytes
+(the name and the declared type are ignored, so an SVG named `icon.png` is
+refused as an unsupported type); the header's dimensions (square, at least
+512, at most 4096); the decoding budget every uploaded image is held to
+(25 megapixels and 100 MB of decoder allocation, see *Uploaded images are
+capped by what decoding them will cost*), and a JPEG whose header cannot be
+read is refused; then the decode, inside the same process-wide limit on
+images decoded at once. A file that fails is not stored, and what was stored
+before is untouched.
+
+**What is made from it.** The decoded image is scaled once to a 512 × 512
+master (Catmull-Rom, from `golang.org/x/image/draw`), and every file below is
+scaled from the master:
+
+| File | Size | Used by | Transparency |
+| --- | --- | --- | --- |
+| `favicon.ico` | 16, 32 and 48 in one file | browsers, bookmarks | kept |
+| `favicon-16.png` | 16 × 16 | browser tab | kept |
+| `favicon-32.png` | 32 × 32 | browser tab (high density) | kept |
+| `apple-touch-icon.png` | 180 × 180 | iPhone and iPad home screen | filled with the background colour |
+| `icon-192.png` | 192 × 192 | manifest, `purpose: any` | filled |
+| `icon-512.png` | 512 × 512 | manifest, `purpose: any` | filled |
+| `icon-maskable-512.png` | 512 × 512 | manifest, `purpose: maskable` (Android adaptive icons) | filled |
+
+The maskable icon is the master scaled to 410 × 410 and centred on a
+512 × 512 square of the background colour (80 %, a 51-pixel margin), so the
+circle every mask is guaranteed to show (diameter 80 % of the icon) is exactly
+the image's inscribed circle; a launcher's mask may trim the image's corners. There is
+no SVG or `mask-icon` output. Every output is a fresh PNG (the ICO holds three
+PNGs), so nothing from the upload survives but its pixels: no metadata, no
+colour profile, no EXIF. **EXIF orientation is not applied**: a JPEG straight
+from a phone camera that relies on the orientation tag comes out the way its
+pixels are stored, which the previews on the settings page show at once
+(the logo behaves the same).
+
+**Background colour.** An administrator's colour, `#rrggbb`, default
+`#ffffff` (white). It fills the transparent parts of the home screen icons,
+because an iPhone fills them with black, and it is the manifest's
+`background_color` and `theme_color`. The browser tab icons keep their
+transparency. Changing it re-makes the four filled files from the stored
+master; the image does not have to be uploaded again.
+
+**Home screen name.** By default the icon's name on a home screen is the site
+name. Under the site name, a checkbox **Use a different name on the home
+screen** shows a **Home screen name** field, setting `site_short_name`. It is
+at most **30 characters** (after trimming; control, invisible and line-separator characters refused,
+`400 invalid_site_short_name`); the page warns, without refusing, above 12,
+which is about what a home screen shows before cutting a name short. Clearing
+the checkbox stores `""`, which means "use the site name". The manifest's
+`name` is always the site name; its `short_name`, and the shell's
+`apple-mobile-web-app-title`, are `site_short_name` when it is set and the site
+name otherwise. It is an ordinary setting, saved with the page's **Save**,
+available to an API key with the settings scope, and not audited, like the site
+name.
+
+**The manifest.** `GET /api/v1/branding/manifest.webmanifest`, public,
+`application/manifest+json`, generated on each request:
+`{"id": "/", "name", "short_name", "start_url": "/", "scope": "/",
+"display": "standalone", "background_color", "theme_color", "icons"}`.
+`display: standalone` opens the installed app without the browser's address
+bar. There is no service worker and no offline mode: the installed app is the
+same site in its own window and needs the network like the site does. With no
+icon uploaded the manifest still exists: its `icons` list the built-in
+`/favicon.svg` (`sizes: "any"`), `background_color` is `#ffffff` and there is
+no `theme_color`. With one, it lists `icon-192.png`, `icon-512.png` and
+`icon-maskable-512.png`.
+
+**The app shell is rendered per request.** The Go server writes a few lines of
+`index.html`'s `<head>` each time it serves it: the `<title>` (the site name,
+so the tab is right before any script runs), the icon links, the manifest
+link, `theme-color` and `apple-mobile-web-app-title`. Everything else in the
+file is served as built. With no icon uploaded the icon link is exactly 1.2's
+(`/favicon.svg`), and only the manifest link and the home screen title are
+new. Every value is HTML-escaped. If the settings cannot be read, the shell is
+served with the built-in block rather than failing. The shell is served with
+`Cache-Control: no-cache`.
+
+**Routes and caching.** The seven files are served by the public
+`GET /api/v1/branding/icons/{file}` (no session, no rate limit, as for the
+logo; nothing in them is user data). The shell and the manifest link them with
+`?v=<version>`, a 16-hex-digit digest of the files as they are stored, so a new
+upload or colour gets new URLs and nothing has to expire first. A request whose
+`v` is the current version is answered `Cache-Control: public,
+max-age=31536000, immutable`; any other request (no `v`, or an old one) gets
+`Cache-Control: no-cache` and the same bytes; every answer carries
+`ETag: "<version>"` and a matching `If-None-Match` is answered `304`. The icon
+routes carry the logo's sandboxed Content-Security-Policy. The manifest is
+served `no-cache` with an `ETag` of its own content, at a URL that never
+changes, which is what lets an installed app pick up a new icon or name. With
+no icon stored every icon route answers a plain-text `404`.
+
+**Where it is kept.** In the database: one row in `site_icon` (background,
+version, the source's side length and SHA-256, when) and one row per file in
+`site_icon_files` (the master and the seven served files), written together in
+one transaction with the audit entry. Not beside the logo on disk: the
+background colour has to be re-applied to a stored master, the audit entry has
+to commit with the change (as for the SAML certificate), every replica has to
+serve the same bytes, and a database backup should hold the whole of the
+branding that is not a ticket file. A `pg_dump` therefore carries the icon and
+its settings; the logo stays on the attachments volume. About 0.5 MB at most.
+
+**Administration API** (administrators, or a key or client with the settings
+scope, like the logo):
+
+- `GET /api/v1/admin/settings/icon`: `{set, background, version, source_size,
+  updated_at, files}`; `files` lists each served file's name, URL, pixel sizes
+  and byte length, for the previews.
+- `POST /api/v1/admin/settings/icon`: multipart, the file in `icon`, optional
+  `background`. Replaces any icon. Answers as the `GET` does.
+- `PATCH /api/v1/admin/settings/icon`: `{"background": "#rrggbb"}`; re-makes
+  the filled files. `404 no_icon` when nothing is uploaded.
+- `DELETE /api/v1/admin/settings/icon`: `204`, also when there was none.
+  Removing it returns everything to the built-in default.
+
+Refusals: `400 invalid_form`, `missing_field`, `file_too_large`,
+`invalid_type`, `invalid_image` (cannot be decoded, or over the decoding
+budget), `icon_not_square`, `icon_too_small`, `icon_too_large`,
+`invalid_background`; `404 no_icon`.
+
+**Audit.** Each change writes one entry in the same transaction as the change:
+entity `setting` (the id derived from `site_icon`, as for other settings), the
+administrator (or the key's owner) as actor, action `site_icon_uploaded`,
+`site_icon_background_changed` or `site_icon_removed`, with `icon_sha256` (the
+uploaded file's), `icon_source_size`, `icon_background` and `icon_version` in
+`before`/`after` as they apply. The audit view's allow-list gains those four.
+A `DELETE` with nothing stored writes nothing.
+
+**Not changed.** `GET /api/v1/site` gains nothing: the shell gets the icon
+from the server-rendered head, and the settings page from its own endpoint.
+No MCP tool reads or sets branding. Icons already on someone's home screen are
+copies: iOS keeps the picture it took when the icon was added, and Android
+updates an installed app's icon and name from the manifest on its own
+schedule (Chrome checks when the app is opened, at most about daily), so a
+change reaches new installs at once and existing ones later or not at all.
+
+**Upgrading.** Migration `000070_site_icon` creates the two empty tables. Until someone uploads an icon, an
+upgraded instance shows the same tab icon and title as before; the shell gains
+the manifest link (so a browser may now offer to install the site) and
+`apple-mobile-web-app-title` (the site name, which iOS used anyway). Rolling the
+migration back drops both tables and the uploaded icon with them; the
+`site_short_name` setting row is left, as other down steps leave settings rows,
+and older releases ignore it.
+
+### Appearance (dark mode) (#709, 1.3.0)
+
+Every person chooses how the help desk looks: **Light**, **Dark** or **Match my
+device** (the default). The choice belongs to the account, so it follows the
+person from the office desktop to their phone. It is a personal preference, not
+an instance setting: there is no administrator switch, no instance default and
+no way for an administrator to set it for someone else. 1.3.0 is not tagged
+until this ships.
+
+#### The choice and where it is stored
+
+- **Values.** `light`, `dark`, `device`. Nothing else is accepted anywhere: the
+  API refuses any other value, the database has a `CHECK` that refuses it, and
+  the browser ignores any other value it finds in its own storage.
+  `device` means "follow `prefers-color-scheme`", re-evaluated live: when the
+  operating system switches to dark at sunset, an open tab follows without a
+  reload.
+- **Column.** `users.theme text NOT NULL DEFAULT 'device'` with
+  `CHECK (theme IN ('light','dark','device'))`. It is migration 000071
+  (000070 is the branding icon); nothing depends on the number.
+  The constant default is a catalogue change only, no table rewrite.
+- **Upgrade.** Every existing account reads `device`, which is what 1.2 looked
+  like for anyone whose device is light, and dark for anyone whose device is
+  dark. Nobody is asked anything and the post-upgrade wizard has no step for it.
+  A service account (an OAuth client's identity, #420) has the column like any
+  row and never uses it.
+- **API.** `theme` is a field of the user object, so it is in `GET /api/v1/me`,
+  in the user object a sign-in answers with, and in the administrator's user
+  views (read-only there). It is changed only by the person, with
+  `PATCH /api/v1/me/appearance` and body `{"theme": "dark"}`: a session that has
+  passed its second factor, any role; refused to API keys and OAuth clients (a
+  key has no screen to look at), like `PATCH /me/email-preferences`. A missing,
+  null, non-string or unknown value is `400 invalid_theme`, "theme must be
+  light, dark or device". The answer is the `/me` view as saved. `updated_at` is
+  not touched: the account did not change. Not audited: it is a display
+  preference and changes nothing anyone else sees. `PATCH /admin/users/{id}` does not read the field, and the
+  administrator's whole-row `UpdateUser` does not write the column, so an
+  administrator saving a user page cannot put back an older choice.
+
+#### Which theme a page uses (precedence)
+
+The browser keeps one value, the key `ghd.theme` in `localStorage`, holding the
+last choice made on this browser by anyone, signed in or not. The rules:
+
+1. **Signed in, `/me` (or the sign-in answer) read:** the account's `theme`
+   wins, always. It is written to `ghd.theme` as it arrives, so the next visit
+   to the login page on this browser looks the same as the session did. An
+   account that says `device` while `ghd.theme` says `dark` is `device`, and
+   `ghd.theme` becomes `device`.
+2. **Not signed in (login, setup, sign-up, email verification, forgot and reset
+   password, the guest submit, track and ticket pages), or signed in before the
+   account has been read:** `ghd.theme` if it holds one of the three values.
+3. **Otherwise:** `device`.
+
+`device` then resolves through `matchMedia('(prefers-color-scheme: dark)')`;
+a browser without `matchMedia` is light.
+
+- **Signing in** replaces whatever the login page showed with the account's
+  value (rule 1). The page may change theme once at that moment, when the
+  person chose differently on another device; that is the only time a page
+  changes theme without being asked.
+- **Signing out** keeps `ghd.theme` as it is, so the login page goes on looking
+  the way the session did. On a shared computer the next person sees the last
+  person's choice until they sign in; nothing about the account is revealed by
+  it.
+- **Choosing on the login page** (or any pre-sign-in page) writes `ghd.theme`
+  only. It is not sent anywhere: there is no account yet. When that person then
+  signs in, rule 1 applies and their account's value wins, even if it differs.
+- **Choosing while signed in** (sidebar or Your account) applies at once,
+  writes `ghd.theme`, and sends `PATCH /me/appearance`. If the request fails,
+  the previous value is put back (on screen and in `ghd.theme`) and the switch
+  says "Couldn't save your appearance. Try again." in a polite live region.
+  While the request is in flight, an older `/me` answer arriving from elsewhere
+  does not overwrite the new choice.
+- **Other tabs** follow: a change to `ghd.theme` fires the `storage` event in
+  every other tab of this browser, and each adopts the new value without a
+  reload or a request. A value that is not one of the three is ignored.
+- **No storage.** Every `localStorage` access is wrapped: a browser that refuses
+  storage (some private modes, a blocked site, a full quota) reads as "nothing
+  stored", so the login page follows the device and a signed-in page follows
+  the account. A failed write is ignored; the choice still applies to the open
+  page and, when signed in, is still saved on the account.
+
+#### No flash of the wrong theme
+
+The theme is decided before the first paint. `index.html` loads
+`/theme-init.js`, a classic (non-module, render-blocking) script in `<head>`,
+before the stylesheet and the application bundle. It reads `ghd.theme`
+(in `try`), resolves `device` with `matchMedia`, and sets `class="dark"` on
+`<html>` or leaves it off, sets `<meta name="color-scheme">` to `light` or
+`dark` (the HTML ships `light dark`), and sets `<meta name="theme-color">`
+(`#ffffff` light, `#101828` dark: the top bar's colour, so a phone's browser
+chrome matches). It is about fifteen lines with no imports.
+
+- **Why a file and not an inline script.** The Content-Security-Policy is
+  `script-src 'self'` (`backend/internal/server/security_headers.go`): an inline
+  script would be blocked, and loosening the policy with `'unsafe-inline'` or
+  maintaining a hash of the script beside the policy is a worse trade than one
+  small same-origin request. The file is in `frontend/public/`, so Vite copies it
+  unhashed into the build and the SPA handler serves it like any other file
+  (`text/javascript`, with `nosniff`).
+- **One source of truth.** The script and the React code read the same key with
+  the same rules; the application takes over from what the script set and never
+  re-applies the theme at mount unless it differs.
+- **No animated switch.** Changing theme sets a `data-theme-switching` attribute
+  for one frame, during which transitions are off
+  (`[data-theme-switching] * { transition: none !important }`), so buttons
+  with `transition-colors` do not fade. Nothing about the theme animates, so
+  `prefers-reduced-motion` needs no special case.
+- **Portals.** Dialogs, the mobile drawer and the select popovers render in
+  Radix portals at the end of `<body>`; the class is on `<html>`, so they are
+  themed like the page.
+
+#### The switch
+
+One component, `ThemeSwitch`, in three places:
+
+- **Sidebar footer.** Three icon-only segments (sun, moon, monitor) at the right
+  end of the Sign out row, directly under **Your account**. The row already
+  exists, so the sidebar is no taller (the 768-pixel budget, see Settings pages
+  under System → Sidebar). The mobile drawer has the same footer.
+- **Pre-sign-in pages.** The same icon switch in the top right corner of every
+  page that has no sidebar: login, setup, sign-up, email verification, forgot
+  password, reset password, and the guest submit, track and ticket pages.
+- **Your account.** A new first section, **Appearance**, with the three choices
+  as labelled options: "Light", "Dark", "Match my device", and the line "Saved
+  to your account, so it follows you to other devices." It saves on change
+  (there is no Save button) and confirms "Saved." politely. Every role has it,
+  requesters included.
+
+Accessibility: the switch is a native radio group (`fieldset` with the legend
+"Appearance", visually hidden in the icon form), so Tab reaches it once and the
+arrow keys move between and select the options, as for any radio group. Each icon
+option has an accessible name ("Light", "Dark", "Match my device") and the same
+words as a tooltip (`title`). The selected option is visibly filled, not marked
+by colour alone. Targets are 28 px (44 px on a coarse pointer, as elsewhere in
+the sidebar). The focus ring is the shared `ring` colour, visible in both
+themes.
+
+#### Colours: tokens, not palette classes
+
+Before this, about 1,500 Tailwind palette classes (`bg-white`, `text-gray-500`,
+`text-red-600`, ...) across 108 source files fixed every colour to the light
+look, and the shadcn token classes the `ui/` components used (`bg-background`,
+`border-input`, `text-muted-foreground`) produced no CSS at all: Tailwind v4
+only generates colour utilities for colours registered in `@theme`, and none
+were. 1.3.0 replaces every palette class with a **semantic token** and registers
+the tokens:
+
+- `src/index.css` defines each token as a CSS custom property on `:root`
+  (light) and `.dark`, mostly as references to Tailwind's own palette
+  (`--fg-muted: var(--color-gray-600)`), so the light value of a token is the
+  class it replaced and the light theme looks as it did. `@theme inline` maps
+  each to a Tailwind colour (`--color-fg-muted: var(--fg-muted)`), which makes
+  `text-fg-muted`, `bg-card`, `border-border`, `ring-ring` and the rest real
+  utilities that change with the theme.
+- `@custom-variant dark (&:where(.dark, .dark *));` makes Tailwind's `dark:`
+  variant follow the class instead of the media query. Tokens are the rule;
+  `dark:` is for the rare non-colour difference (a shadow).
+- **The families.** Surfaces (`canvas`, `card`, `subtle`, `muted`,
+  `muted-strong`, `popover`, `overlay`, `inverse`), text (`fg`, `fg-soft`,
+  `fg-muted`, `fg-faint`, `link`), lines (`border`, `border-strong`, `input`,
+  `ring`), selection (`selected`, `selected-fg`), and one family per meaning
+  (`danger`, `warning`, `attention`, `success`, `info`), each with a solid fill
+  and its foreground, a text colour, a stronger text colour for use on its tint,
+  a tint and a border. `highlight` is the search-match mark. Charts have
+  `chart-blue`, `chart-green`, `chart-amber`, `chart-red`, `chart-gray`.
+- **Meaning survives the theme.** Status, priority, SLA and notice colours are
+  the same family in both themes (a breached SLA is `danger` in both, high
+  priority is `attention` in both); only the shade changes so that it stays
+  readable. An administrator's own status colour (Admin → Statuses) is drawn
+  as chosen in the light theme; in the dark theme its text and border are
+  lightened, in steps of 10% toward white keeping the hue, until the text
+  reaches 4.5:1 on the card, and the dot is drawn as chosen.
+- **Contrast.** Every text token reaches WCAG AA (4.5:1) on every surface it is
+  used on, in both themes; the focus `ring`, the chart colours and the status
+  dots reach 3:1 against the card (WCAG 1.4.11). Input borders are not held to
+  3:1, as before; a field is identified by its label. Three text colours
+  measure just under 4.5:1 on a gray-100 chip in the light theme (`fg-faint`
+  4.39, `danger-fg` 4.33, `success-fg` 4.49) and `fg-faint` 4.44 on the
+  selected tint; they are not allowed there (see Guard), and a chip uses
+  `fg-muted` or the `-strong` level of its family.
+- **Intended changes to the light theme.** Those are the only ones:
+  - Colours that failed AA move to the nearest shade that passes:
+    `text-gray-400` (2.5:1 on white) is now `fg-faint`, which is gray-500;
+    `text-red-500` is red-600; `text-green-600` and white on `bg-green-600` are
+    green-700; white on `bg-yellow-500` becomes dark text on amber-500.
+  - Near-duplicates are merged: `text-gray-800` is `fg` (gray-900), the
+    `-900`/`-950` text of a family is its `-fg-strong`, and `border-gray-200`
+    and `border-gray-100` are the default border colour.
+  - The shadcn classes the UI components always used now produce CSS (Tailwind
+    v4 generates a colour utility only for a registered colour). So cards and
+    inputs and outline buttons are white (`bg-card`, `bg-background`); ghost and
+    outline buttons gain their hover fill (gray-100); input focus rings are
+    blue-500, and so is the primary button's (it was blue-600); body text is
+    `#101828` (it was `#020817`); the page behind the shell is gray-50.
+  A unit test computes every pair from the token definitions; an axe check
+  runs on key pages in both themes.
+- **Guard.** A unit test fails on any Tailwind palette colour class (including
+  the inset-ring, inset-shadow, text-shadow and drop-shadow families), arbitrary
+  colour value (`bg-[#...]`, `text-[red]`, `bg-(--x)`, an arbitrary property
+  such as `[background-color:#fff]`, a colour inside a longer value), colour
+  literal (a hex anywhere in a string, a named colour in a `style` or a `fill`,
+  a canvas `fillStyle`) in a `.ts`/`.tsx` file under `src/` (tests excepted),
+  and on a palette utility, raw palette variable or literal colour in a
+  stylesheet outside the token blocks. It also fails on a class string that
+  puts `fg-faint`, `danger-fg` or `success-fg` on a gray-100/gray-200 or
+  selected tint. A literal that is data rather than styling (the default status
+  colour) is kept with a `theme-ok:` comment on its line giving the reason; a
+  block that must stay literal (the starter HTML of an email, which mail
+  clients draw in fixed colours) is bracketed by `theme-ok-begin:` and
+  `theme-ok-end`. The number of such places is capped. New code cannot bring a
+  light-only colour back.
+
+#### Charts and exports
+
+- **On screen.** The reports and the dashboard trend draw their marks in
+  `currentColor` from the chart tone classes, which are now the `chart-*`
+  tokens: the 600 shades in light, the 400 shades in dark (each at least 3:1 on
+  the dark card). Axis labels, gridlines and legends use the text and border
+  tokens. Area fills keep their 15% opacity, which reads on both cards.
+- **PNG export is always light.** The image is read back from the page (KPI
+  reports → Image export). The read happens with the `dark` class taken off
+  `<html>` and put back in the same task (`withLightTheme`), so the browser
+  never paints the light page and the image is exactly what 1.3.0 exports
+  without dark mode, whichever theme the person uses: images are pasted into
+  documents and printed. The fallback background stays white.
+- **Unaffected.** CSV export, emails (their templates have their own fixed
+  colours), attachments (download-only, never rendered) and the API are not
+  touched by the theme.
+
+#### Editor and rendered Markdown
+
+The Markdown editor's writing surface (`.md-editor`) and rendered ticket text
+(`[data-md-body]`) use the tokens for text, links, quotes, tables and the code
+box. Code highlighting keeps its light colours and gains a dark set, each colour
+at least 4.5:1 on the dark code box. Both move out of `index.css` into
+`src/styles/markdown.css`.
+
+#### Website screenshots
+
+The project site's screenshots stay light. The capture script
+(`frontend/scripts/screenshots/capture.mjs`) already makes its browser contexts
+with `colorScheme: 'light'`; it also stores `ghd.theme = light` before each page
+loads and refuses to take a shot if `<html>` has the `dark` class, so neither
+the seed's accounts (all `device`) nor a runner's default can turn a shot dark.
+No new screenshots are needed. A light and dark pair of the dashboard is
+optional and is not part of 1.3.0.
+
+#### Not in scope
+
+Per-instance default themes, an administrator forcing a theme, high-contrast
+or additional colour themes, theming emails, and a theme for the API docs page.
+Branding (logo and site name) is unchanged; a logo designed for a white
+background may look wrong on dark, which is the administrator's to fix with the
+logo they upload.
+
+### Update check (opt-in, #170)
+
+An administrator can have the server check for newer releases. It is **off unless chosen**, on a fresh install and on an upgraded one alike, and **while it is off the server makes no request at all**. That is how this respects an air-gapped or no-outbound deployment: DESIGN.md has no separate no-outbound rule (the only other outbound call is the reputation lookup, which is also opt-in), so there is nothing to configure, and the setting never needs to be hunted down and disabled.
+
+- **Setting.** `update_check_enabled` (boolean; PATCH refuses any other JSON type, null included; unset reads as off), under Admin → System → General → Updates. It is in `AuthCriticalKeys`, so an API key or OAuth client cannot change it (403 `session_required`): it decides what leaves the server, the same family as the reputation toggles. Choosing it is a decision for a signed-in person.
+- **The request.** At most once every 7 days, `GET https://api.github.com/repos/PubliciaLLC/go-help-desk/releases/latest`. Its own headers are exactly `User-Agent: go-help-desk` (fixed, **no version**) and `Accept: application/vnd.github+json`; no query string, body, cookie or identifier. Ten-second timeout. GitHub learns that an IP address fetched the file, once a week, and nothing about the instance, which is what the checkbox says ("contacts GitHub once a week; sends nothing about your server"). A change to what is sent must change that wording; a test pins the exact headers. Issue #170 asks for no version in the User-Agent because a version turns "an instance exists here" into "an instance running 1.2.0 exists here", a list of applicable CVEs. An earlier draft of this feature sent the version; it does not.
+- **When.** A background goroutine started in `cmd/server/main.go` wakes hourly and does nothing unless the setting is on and the stored `checked_at` is more than 7 days old. Rendering an admin page never causes a request. A restart cannot re-check, because the time is stored (`update_check_result` in the settings table: `checked_at` and the newest stable `latest`). `checked_at` is written **before** the request, detached from the caller's context, so a process killed mid-request (SIGTERM, a crash loop) cannot ask again on restart. A failed check consumes the window too, so an instance with no egress does not retry hourly; the previous answer is kept. If the record cannot be read at all, that tick is skipped rather than treated as "never checked".
+- **What counts.** The endpoint already skips drafts and prereleases, and the checker ignores a response flagged either. The tag must be exactly `v?MAJOR.MINOR.PATCH` with no leading zeros, no `+build` part and no prerelease; anything else is no answer. What is stored and shown is rebuilt from the parsed numbers (`%d.%d.%d`), never the tag's text, and the link is built from that, so a hostile response cannot choose where an administrator is sent. The stored value is re-checked the same way when read. Versions are compared as semantic versions against `internal/version`, so `1.3.0-beta` is behind `1.3.0` and `1.10.0` is ahead of `1.9.0`.
+- **Failure.** A 4xx or 5xx, a timeout, bad JSON or a tag that is not a version is one log line at INFO (`checking for a new release failed`), as #170 asks, and nothing else.
+- **What an administrator sees.** `GET /admin/security-warnings` carries `update: {current, latest, url}` when a newer release is stored and the check is on. `InsecureConfigBanner` adds one `info` entry (id `update:<version>`) to the `ServerNoticeBar`: "Version X is available (you run Y). Release notes", the link opening in a new tab. Being information it never turns the bar red, is not counted as a problem and is announced politely (`role="status"` when it is the only notice). The URL is built from the tag, never taken from the response. Its Hide button reads "Hide until the next release": unlike the bar's session hides it is remembered per browser and per version (`localStorage`), so the next release brings it back. Administrators only; the query is not made for anyone else. Nothing is ever installed.
+
+### Post-upgrade wizard (1.3.0)
+
+An install upgraded from an earlier release has never been asked about the choices 1.3.0 added. The first administrator who signs in lands on the dashboard and is sent to `/after-upgrade`, a short wizard with one step per question and **Back**, **Next** and **Skip** on each. A step shows today's setting, says what changed in 1.3.0 and lets the administrator change it.
+
+- **Steps, in order:** the weekly update check (unchecked); staff email notifications (migration 000052 turned the three overrides off, and 000067 the fourth, SLA alerts); staff API keys (`staff_can_create_api_keys` and the default lifetime slider); the old-password reset window (`password_rehash_grace_days`, with how many accounts are still on an old hash and whether email is set up). Guest file uploads (#536) is a fifth step, shown only while guest submission is on: it says that 1.2 let guests upload through the API and 1.3.0 switches that off, and offers `guest_attachments_enabled`, the size slider (`guest_attachment_max_mb`, running to the per-file limit `attachment_max_mb`, #673) and the per-ticket and per-hour limits, reusing the Settings controls. With guest submission off the step is not part of the wizard and the final step says guest uploads stay off because they need guest submission. Skipping it leaves uploads off.
+- **Saving.** Next sends what the step changed through `PATCH /admin/settings`, so every server-side validation and every session-only rule applies unchanged. Skip sends nothing and drops that step's edits, so the setting keeps its safe default. A refusal is shown on the step and the administrator stays on it.
+- **Upgraded, not guessed.** The wizard is shown while `post_upgrade_130_seen` is not true. Setup writes it `true` on a fresh install (setup asks the update question itself), so a fresh install never sees the wizard; an install that upgraded to 1.3.0 never ran that setup and has no value. The wizard writes it, in the same request as the last step, when it is finished or skipped, and it never shows again. This needs no migration and no version comparison. An administrator who closes the tab part-way sees it again next time, with the steps already saved showing their new values.
+- **Who.** Administrators only. A staff member or requester is never redirected and the route turns them away; `/after-upgrade` redirects to the dashboard once the flag is set. Only the dashboard redirects, so a deep link after sign-in is not interrupted, and a failure to read the settings lets the administrator straight through.
+- **Small screens.** One column, wrapping buttons, no horizontal scroll at 320 px (an e2e test pins it). Each step has one `h2`, focus moves to it when the step changes, and "Step N of M" is announced.
+- **Setup.** The `/setup` form has an unchecked "Check for new releases (contacts GitHub once a week; sends nothing about your server)" box; `POST /setup` takes `update_check` (absent means false) and stores it as `update_check_enabled`.
+
+### Settings pages under System (#674)
+
+Until #674 every instance setting was on one page, `/admin/settings`
+(`SettingsPage.tsx`), behind six tabs: General, Branding, Authentication,
+Features, Email and Attachments. The tab was component state, not part of the
+address, so no link, notice or bookmark could open a tab: every one of them
+opened General. Email Templates was a separate page under Integrations. #674
+splits the tabs into pages listed in the sidebar under **System**, and moves
+Email Templates onto the Email page. It replaces #594's "System hub with
+tabs". #594's People, Tickets and Integrations hubs are not affected.
+
+**This is a frontend change only.** No endpoint, setting key, default, stored
+value, MCP tool or permission changes. Every section keeps its controls, its
+copy (except the cross-references listed under **Copy that names a place**),
+its API calls and its validation. There is no migration, and an existing
+install changes only in where things are on screen.
+
+**Sequencing.** The issue says to land the branches that edit
+`SettingsPage.tsx` first and then split the file. The split is built on an
+`origin/v1.3.0-beta` that already contains #616 (passkey roles), #670 (SLA
+alerts), #672 (the SLA policies editor), #673 (the overall file size limit,
+`AttachmentSizeLimitSection`, the guest clamp in the save and
+`GuestSizeSlider`'s `max`) and #676 (`AvailableQueueSection`). Until all five
+are merged, no part of #674 is implemented. This section names their
+components and rules as those issues specify them. It does not say what to do
+if one of them has not landed, because #674 is not started in that state. If
+one of them is dropped instead, its rows are removed from the tables below,
+and nothing else changes.
+
+**This build's base.** The branch for this build is stacked on a local
+integration branch whose base contains #616, #670, #672, #673, #676, #675 and
+#131, so all five prerequisites above are present, and so are #675 and #131.
+#675 matters here, but **its admin health card is not in this base**: the
+dashboard has the other #675 blocks, and `DashboardPage.tsx` held only a
+placeholder where the card goes (`AdminHealthCard` and `adminHealthItems` did
+not exist). This build constructed the card after the pages and routes below
+existed (plan task 12), directly with the final `href` and `place` values that
+**Copy that names a place** lists, so there was no interim link set and no
+retargeting step anywhere in #674. `warnings.passkeys.suspended_roles` (#616)
+and `sla_alerts_enabled` (#670), the card's two inputs from those issues, are
+both in this base.
+#131 adds no migration and touches no settings page. The newest migrations in
+the base are 000066 (passkey), 000067 (SLA alerts) and 000068 (the dashboard
+index); #674 adds none.
+
+#### The pages
+
+Every section that exists once #616, #670, #672, #673 and #676 have landed is
+assigned to exactly one page. Sections keep their current headings (the `h2`
+of `Section`) and keep their current order on the page.
+
+| Sidebar item | Address | Sections, in order | Comes from |
+| --- | --- | --- | --- |
+| **General** | `/admin/settings/general` | Tickets (tracking number prefix, **Show Items to registered users**, #711) · Ticket lifecycle · Updates | General tab |
+| **Features** | `/admin/settings/features` | tab **SLA**: SLA (the `sla_enabled` switch and, while it is on, the SLA Policies editor from #672) | Features tab |
+| **Branding** | `/admin/settings/branding` | Identity (site name, home screen name, logo) · Icon (#708) | Branding tab; Icon is new in #708 |
+| **Email** | `/admin/settings/email` | tab **Notifications**: Staff email about tickets (the four overrides, #670's included) · SLA alerts (`sla_alerts_enabled`) | Email tab; SLA alerts from the Features tab (#670) |
+| | `/admin/settings/email/templates` | tab **Templates**: the email template list and editor | the `/admin/email-templates` page |
+| **File Attachments** | `/admin/settings/attachments` | Uploads (allowed types, mismatch handling) · File size (#673) · Malware scanning (with the scanner status block) · Reputation lookup | Attachments tab |
+| **Guest Access** | `/admin/settings/guest-access` | Submissions (guest submission and its email note, guests may attach files, **Show Types to guests** and **Show Items to guests** (#711), the guest size slider, files per ticket, uploads per hour) | General tab |
+| **Authentication** | `/admin/settings/authentication` | SAML · OIDC / OpenID Connect · Multi-factor authentication (with #616's passkey roles) · Passwords · API keys · Registration | Authentication tab |
+| **Privacy** | `/admin/settings/privacy` | Ticket visibility · Available queue (#676) · Audit log · Privacy | General tab |
+| **Audit Log** | `/admin/audit` (unchanged) | the audit viewer | unchanged |
+
+The issue's table leaves out the following, or conflicts with the code. Each
+is placed here:
+
+- **Identity (site name and logo).** The issue lists Identity first under
+  Authentication and says Branding is "unchanged". On origin/v1.3.0-beta the
+  only section called Identity is the Branding tab's, and it is the only
+  section that tab has (`SettingsPage.tsx`, `BrandingPanel`). The
+  Authentication tab has no Identity section. Following both lines of the
+  table literally would leave Branding empty. Identity stays on **Branding**,
+  which keeps Branding "unchanged", and is not on Authentication. This is
+  listed for the owner below.
+- **"Should mirror the user's own notification preferences screen."** The
+  issue says this about Staff email about tickets. Once #670 has landed, the
+  section already mirrors it. It has one override row per switch on the
+  profile's `EmailNotificationsSection`, with the same names in the same
+  order: Tickets assigned to me, Activity on tickets I'm assigned to or
+  follow, My groups' tickets, SLA alerts. Each row is a three-way choice
+  (Use each person's choice, On for everyone, Off for everyone), because an
+  administrator chooses whether to override, which the person's on/off
+  switch cannot express. #674 moves the section unchanged. A test pins the
+  mirror so the two lists cannot drift: the override names equal the profile
+  labels, in order. This is listed for the owner below.
+
+- **Available queue** (`AvailableQueueSection`, #676). #676 put it under
+  General → Ticket visibility until #674 placed it. It goes on **Privacy**,
+  directly after Ticket visibility. Its copy is about `ticket_scope_enforced`,
+  which is the switch above it.
+- **The save warning about OAuth clients.** It appears when a save turns
+  `ticket_scope_enforced` on, and it includes the "Open OAuth clients" link to
+  `/admin/oauth-clients`. It moves with Ticket visibility to **Privacy**. An
+  SSO warning from the same `warning` field (a `saml_*` key saved through
+  `PATCH /admin/settings`) shows on **Authentication**. Both are shown by the
+  page shell, as described below.
+- **The "Email templates" section on the Email tab** (one sentence and a link
+  to `/admin/email-templates`). It is removed. The Templates tab next to it
+  replaces it.
+- **`sla_alerts_enabled`.** #670 put it on the Features tab under SLA
+  tracking. The owner's table moves "the fourth SLA alerts switch and
+  setting" to Email. The override row stays in Staff email about tickets.
+  The switch becomes its own section, **SLA alerts**, after it. The section
+  has the same `SettingRow`, label, description and `Toggle` that #670
+  specifies.
+- **`EmailStatusNote`.** It stays under the row it qualifies: under guest
+  submission on Guest Access, and under self-service signup on
+  Authentication.
+
+Audit Log stays administrator-only. The issue says it is "visible to staff",
+but that is not what it does today. Since #129 both the route and
+`GET /admin/audit` are administrator-only, and the sidebar's comment says so.
+#674 moves pages and does not change who may read the log (see the decisions
+below).
+
+#### Addresses and redirects
+
+All settings pages are under `/admin/settings/<page>`. The old address is a
+prefix of every new one, so the active-link rule (`pathname === to ||
+startsWith(to + '/')`) and `sectionOfPath` work without a special case. The
+redirects are routes whose `beforeLoad` throws `redirect({ to, search,
+replace: true })`. That replaces the history entry, so Back does not loop
+through the redirect.
+
+| Old address | New address |
+| --- | --- |
+| `/admin/settings` | `/admin/settings/general` |
+| `/admin/email-templates` | `/admin/settings/email/templates` |
+| `/admin/email-templates?t=<name>` | `/admin/settings/email/templates?t=<name>` (the query is kept as it was) |
+
+That is every old address. The six tabs never had an address, hash or
+query parameter, so no tab-level redirect is needed. A link that opened
+`/admin/settings` to reach, for example, Attachments opened General before
+#674 and opens General after it. `/admin/audit` does not move.
+
+The redirect routes do not check the signed-in user. The route they redirect
+to does: a signed-out visitor is sent on to `/login`, and a staff member to
+`/dashboard`, by the new route's `requireAdmin`, exactly as the old route
+did.
+
+#### Who sees what
+
+Every page in the table is administrator-only. Each new route has
+`beforeLoad: requireAdmin`, as `/admin/settings` and `/admin/email-templates`
+have today. The System section is inside the Admin group of the sidebar,
+which only an administrator is shown. A staff member or requester who types
+a settings address is sent to `/dashboard`, and someone signed out is sent to
+`/login`. The server already refuses `GET|PATCH /admin/settings` and the
+other admin endpoints to everyone but administrators, and that does not
+change.
+
+#### Sidebar
+
+`ADMIN_SECTIONS` in `Layout.tsx`:
+
+- **Integrations**: API Keys, OAuth Clients, Webhooks. Email Templates leaves
+  this section.
+- **System**: General (`SettingsIcon`), Features (`ToggleRightIcon`),
+  Branding (`PaletteIcon`), Email (`MailIcon`), File Attachments
+  (`PaperclipIcon`), Guest Access (`DoorOpenIcon`), Authentication
+  (`LockIcon`), Privacy (`EyeOffIcon`), Audit Log (`HistoryIcon`), in that
+  order. The links are dense `NavItem`s, like every section's.
+- The section ids (`people`, `tickets`, `integrations`, `system`) do not
+  change, so the remembered open section (`ghd.admin-nav-open`) reads as
+  before.
+- Email is the current link on both Email tabs, because
+  `/admin/settings/email/templates` starts with `/admin/settings/email/`.
+
+With nine links, System is now the longest section (Tickets has six). The fit
+test in `e2e/admin-nav-sections.spec.ts` gains the System case on
+`/admin/settings/general`, at 1440×768, 800 and 900, with the notice bar
+showing and #676's ticket views in the sidebar. It keeps all its
+assertions: every heading fully in view, and 24 px of headroom under every
+heading and under the last link. If the last-link assertion fails at 768 or
+at 800 for System only, the nav, which is already `overflow-y-auto`, is
+allowed to scroll in those cases (at 900 the full assertion holds). The assertion for that case becomes "the current
+page's link is fully in view". `NavItem` then scrolls the current link into
+view (`scrollIntoView({ block: 'nearest' })`) when the path changes. The
+link rows are not made any denser. A finger needs their height, and so does
+the 44 px coarse-pointer rule.
+
+**One line per row, in the widest default font.** The budget above counts
+every sidebar row as one line (28 px for a link or the Admin toggle, 24 px for
+a section heading), so no label may wrap at 1440 px. The font decides that:
+where `system-ui` is DejaVu Sans (the default sans-serif on many Linux
+installs, and on the GitHub runner that runs the e2e job), "Canned Responses"
+needs 132.6 px, and the room beside its icon was 130 px. It wrapped, the
+Tickets section came out 20 px taller, and System's heading had 16 px of its 24
+under it at 768 while the same page passed on a Mac (found when the combined
+#674/#676/#675/#131 build first ran in CI). The fix is room, not a looser
+test: each of the three indents of the Admin group (the panel's left margin,
+its padding after the rule, and the section's own margin) is 4 px smaller, so a
+link has 142 px for its text, 9 px more than the widest label needs in DejaVu
+Sans. A wider font than that wraps, as everything outside the list of
+ellipsis places does, and the nav scrolls. `admin-nav-sections.spec.ts` now
+also fails, naming the label, when any sidebar row is taller than one line.
+
+#### The page shell and tabs
+
+`frontend/src/pages/admin/settings/SettingsPageShell.tsx` takes `{ title,
+description, tabs?, draft?, wide?, children }`. It renders `<Layout>`, then
+the `h1` (`title`, the sidebar label), then one line of `description`, then
+the tab bar if `tabs` is given, then, when `draft` is given, the draft's save
+warning, then `children`. When `draft` is given and `draft.isLoading` is
+true, it renders the spinner instead of the save warning and `children`.
+`children` sit in `max-w-2xl`, as the tab panel does today, unless `wide` is
+set. The descriptions are:
+
+| Page | Description |
+| --- | --- |
+| General | Ticket numbers, the ticket lifecycle and update checks. |
+| Features | Optional features of this help desk. |
+| Branding | The name, logo and icon in the sidebar, the browser tab and the home screen. |
+| Email | The email staff receive about tickets, and the wording of every email this help desk sends. |
+| File Attachments | What can be uploaded, how large it may be, and how uploads are checked. |
+| Guest Access | Tickets from people without an account. |
+| Authentication | How people sign in, and who may create API keys. |
+| Privacy | Who sees which tickets, and what the audit trail shows and keeps. |
+
+`SettingsTabs` (same folder) takes `{ label, to }[]`. It renders a
+`<nav aria-label="<Page> sections">` of router `Link`s with the classes of
+today's tab bar (`-mb-px flex gap-6 overflow-x-auto`, a blue bottom border
+on the current tab). A tab is current, with `aria-current="page"`, when the
+pathname equals its `to` exactly. The tabs are links, not `role="tab"`
+buttons, because each tab has its own address, Back works between them and
+the banner can link straight to Templates. Features has one tab, **SLA**.
+Email has **Notifications** and **Templates**.
+
+**One route, one component.** Every address in the table is its own flat
+route in `router.tsx`, like every admin route today, with its own page
+component. There are no layout routes and no `<Outlet>`. The two Email
+addresses are two routes and two components, which render the same shell
+title, description and tabs:
+
+| Route | Component | Draft | Leave guard | Save bar | Shell |
+| --- | --- | --- | --- | --- | --- |
+| `/admin/settings/email` | `EmailSettingsPage` | `useSettingsDraft()` | `useLeaveGuard(draft)` | one `SaveBar` at the end | `draft`, `max-w-2xl` |
+| `/admin/settings/email/templates` | `EmailTemplatesSettingsPage` | none | none | none | no `draft`, `wide` |
+
+Moving between the two tabs is a route change, so the component unmounts and
+the next one mounts fresh. Notifications to Templates with unsaved edits
+therefore asks first, like any other link out of a page with a draft (see
+**The leave guard**). Templates to Notifications never asks, because the
+Templates page has no draft. Coming back to Notifications starts a new draft
+from the dump. The other seven pages are each one component with a draft, a
+guard and one `SaveBar`: `GeneralSettingsPage`, `FeaturesSettingsPage`,
+`BrandingSettingsPage`, `AttachmentSettingsPage`, `GuestAccessSettingsPage`,
+`AuthenticationSettingsPage` and `PrivacySettingsPage`. Branding's draft
+holds only the site name and, since #708, `site_short_name`; the logo uploader
+and the icon section keep their own state, as the logo uploader does today.
+
+**The Templates tab** is the body of today's `EmailTemplatesPage`, moved into
+`frontend/src/pages/admin/settings/EmailTemplatesTab.tsx`: the intro
+paragraph with the advisory link, and the list or the editor.
+`EmailTemplatesSettingsPage` renders it inside the shell instead of its own
+`<Layout>`. Its "Email templates" heading becomes an `h2` under the page's
+`h1` "Email". Nothing else changes. It still keeps the open template in
+`?t=`, reading `window.location.search` and writing with
+`history.replaceState(window.location.pathname + …)`, so it works at the new
+path as it did at the old one. The template editor has no leave prompt today
+and gets none here.
+
+#### State: one draft per page
+
+**What is shared today.** `SettingsPage` holds one draft, `local`, seeded
+from `GET /admin/settings` (query key `['admin', 'settings']`). It holds the
+write-only key fields `apiKeys` and `clearedKeys`, one `saveMutation`, and
+one `saved`, `saveError` and `saveWarning`. All six tab panels read and write
+that draft through `bool`/`num`/`str`/`strArr`/`has` and their setters.
+Every tab's **Save changes** runs the same mutation, which sends every key
+that differs from the dump (#394) on all tabs, not only the tab you are on.
+An edit on General therefore survives a switch to Authentication, and is
+saved by Authentication's Save. The SAML and OIDC sections, the SLA
+policies editor (#672), the logo upload and the Available queue (#676) have
+their own state and saves and are not part of the draft.
+
+**After #674 each page has its own draft.** A page's Save sends only what
+was edited on that page. This is the rule #673 already states for the File
+Attachments and Guest Access pages. One shared draft above every page would
+keep the cross-tab behaviour, but a Save on one page would then write edits
+made on another page that is no longer on screen.
+
+The draft logic is moved out of `SettingsPage`, unchanged apart from the two
+changes listed below, into
+`frontend/src/pages/admin/settings/useSettingsDraft.ts`:
+
+```ts
+interface SettingsDraft {
+  isLoading: boolean                       // no seeded draft yet (see below)
+  stored: Record<string, unknown> | undefined  // the dump as last fetched
+  bool(k: string): boolean; num(k: string): number; str(k: string): string
+  strArr(k: string): string[]; has(k: string): boolean
+  setBool(k: string, v: boolean): void; setNum(k: string, v: number): void
+  setStr(k: string, v: string): void; setStrArr(k: string, v: string[]): void
+  toggleStrArr(k: string, item: string, checked: boolean): void
+  // Write-only keys (today: the three reputation API keys). Never in the draft.
+  secret(k: string): string; setSecret(k: string, v: string): void
+  secretCleared(k: string): boolean; setSecretCleared(k: string, v: boolean): void
+  dirty: boolean                           // the patch below is non-empty
+  save(): void; isPending: boolean; error: string; saved: boolean
+  warning: { text: string; aboutClients: boolean } | null
+}
+export function useSettingsDraft(): SettingsDraft
+```
+
+- **The patch is today's, in one pure function**, `buildSettingsPatch(stored,
+  local, secrets, cleared)`, exported for its tests. It skips `*_set` keys
+  and keys equal to the dump under `JSON.stringify`. It applies #673's guest
+  clamp: a changed `guest_attachment_max_mb` is sent as `min(local guest,
+  overallMB)`, where `overallMB` is `local.attachment_max_mb` if that is an
+  integer from 1 to 100, and 25 otherwise. On Guest Access that local value
+  is the stored one, because nothing on that page edits it, so the rule
+  needs no page-specific code. A key in `cleared` is sent as `''`. Any other
+  key in `secrets` whose trimmed value is not empty is sent trimmed.
+  `secrets` and `cleared` are a general map instead of a loop over
+  `REPUTATION_PROVIDERS`. Only the reputation rows ever set them, so what is
+  sent is identical.
+- **The rest is also today's:** the `email_required` message; `aboutClients`
+  (`patch.ticket_scope_enforced === true`); the success path, which sets
+  `saved` for 2.5 s, clears the secrets and invalidates `['admin',
+  'settings']`, `['site-config']`, `['security-warnings']` and `['me']`; and a
+  refused save, which keeps every edit.
+- **The first change: a save stays pending until the settings have been fetched
+  again.** `onSuccess` awaits the `['admin', 'settings']` invalidation, so
+  `isPending`, and with it "Saving…", lasts until the fresh dump has
+  arrived. Without that, the draft would differ from the old dump for one
+  round trip after a successful save, and the leave guard below would ask
+  about changes that were already saved. The other three invalidations are
+  not awaited.
+- **A second change: no section renders before the draft is seeded.** Today
+  `local` starts as `{}` and the seeding effect fills it after the render in
+  which the query's data first appears. So for one render every section sees
+  an empty draft. On today's page that is harmless only by accident: the
+  sections that copy a draft value into their own state when they mount do so
+  on a tab that is opened by a click, after seeding. The Uploads section
+  seeds its allowed-types text from `has('attachment_allowed_types')` with
+  `useState` and never re-reads it. Mounted in that empty render, as it would
+  be on its own page, it would show `DEFAULT_ALLOWED_TYPES` instead of the
+  stored list, and the next edit would save the defaults over the stored
+  setting. The hook therefore keeps `local` as `Record<string, unknown> |
+  null`:
+  - `local` starts as `queryClient.getQueryData(['admin', 'settings']) ??
+    null`, a `useState` initialiser. A page opened with the dump already
+    cached (from another settings page) is seeded in its first render and
+    shows its sections at once, with no spinner.
+  - Since the third change below, `local` is a `seeded` flag, set by the
+    effect when the dump has been seen (and initially true when the dump is
+    cached); the draft itself is composed from the layers.
+  - `isLoading` is `query.isLoading || (query.data !== undefined &&
+    !seeded)`. It is true while the read is in flight, and for the one
+    render between the data arriving and the effect seeing it. The shell
+    shows its spinner in both, so no section mounts on an empty draft.
+  - The accessors and `buildSettingsPatch` read the composed draft, empty
+    for a failed read. A failed read has no data, so `isLoading` is false and
+    the page renders with an empty draft, as today.
+
+  No section changes. A section that seeds its own state at mount sees the
+  stored value, whichever way the page was opened.
+- **A third change: the draft is layers, so a refetch does not overwrite what
+  the operator has edited (`fix/saml-settings-save`).** The seeding effect used
+  to copy every fresh dump over the whole draft, so any refetch silently reset
+  an unsaved edit, and with it anything that was only shown while that edit
+  stood. Two things refetch the dump: the window regaining focus (the query's
+  `staleTime` is 0, so for instance closing the certificate file picker
+  refetches), and, since this change, "Save SAML config", which also
+  invalidates `['admin', 'settings']` because the save changes the `saml_*`
+  keys the dump carries. The hook no longer copies the dump into `local`. A
+  key's value is the first of these layers that has it:
+  - **edits**: what the operator last set, for the keys they changed
+    (`setBool`, `setNum`, `setStr`, `setStrArr`, `toggleStrArr`);
+  - **sent**: the keys the save in flight carries, with the values the
+    operator set, from the send until the save settles. When the PATCH answers
+    they become the values the server now holds (for the guest figure that can
+    be a clamp of what was typed);
+  - **saved**: what earlier saves wrote whose fresh fetch failed (otherwise
+    absent): the dump is then older than what was saved, so this stays as the
+    base under the edits, the form keeps showing what was saved and is not
+    dirty, until the next dump takes over. Any dump fetched after that save
+    settled does so at once (a fetch that changed nothing counts), also one
+    that lands while a later save is in flight: it is newer than what the
+    earlier save wrote, and `sent` still covers the keys of the later one;
+  - **the dump**: the query's data.
+
+  What is under the edits (sent, then saved, then the dump) is the base an edit
+  is judged against. Setting a key compares the new value, by content, with its
+  base. Equal: the edit is deleted. Otherwise it is recorded. So a key put back
+  to what the dump holds is not held and another administrator's later change to
+  it comes through. A key the save in flight carries is always held as an edit,
+  whatever its value, so setting it again, toggling it, or a dump that arrives
+  meanwhile cannot drop it: it is judged when the save settles. When the dump
+  changes and when a save settles, the other edits that equal their base are
+  dropped. A successful save drops the edits equal to what it sent; the rest
+  stay, and a key put back to its pre-save value during the save stays an edit
+  and is saved next. The save settles after the fresh settings have been
+  asked for: if the dump's own stamp (`dataUpdatedAt`) advanced past the one read when
+  the PATCH answered (no comparison with a separately taken timestamp), `sent`
+  is dropped; if not (the fetch failed), `sent` joins `saved`. A refused save
+  gives back only the keys it sent, with the operator's values, as edits (before
+  anything is dropped); `saved` is left as it was, so what an earlier save wrote
+  does not become an unsaved edit. The page is still dirty and Save sends them
+  again. A second click on Save while one is in flight is ignored. A toggle of
+  an array starts from the draft's current value in whichever layer holds it,
+  including the window between the PATCH answer and the fresh settings.
+  `dirty` is the patch of the composed draft against the base (the dump with
+  `saved` over it), and a key whose edit equals the base never makes it dirty.
+  This applies to every System page, not only Authentication. The write-only
+  keys in `secrets` and `cleared` are not part of the draft. A successful save
+  clears the ones its patch carried: a box is emptied if it still holds what it
+  held when the patch was built, so a removal save also discards a key typed
+  under the ticked "remove" (the patch carries `''` for it), and a key typed over
+  it, or a key typed or ticked for another setting, while the save was on its
+  way stays.
+  Separately, "Save SAML config" empties the private key box once saved (the
+  key is write-only and is not sent again).
+- **`dirty`** is `!isPending && Object.keys(buildSettingsPatch(…)).length > 0`.
+  While there is no dump the patch is empty, so a page that is still loading
+  is never dirty.
+
+Sections receive the draft as one prop, `draft: SettingsDraft`, instead of
+today's ten to fifteen separate functions. The sections that do not use the
+draft (SAML and OIDC config, the SLA policies editor, the logo uploader,
+`AvailableQueueSection`) take no draft and keep their own state.
+
+**Cross-page reads.** The Guest Access slider's `max` is the **stored**
+`attachment_max_mb` (`draft.stored`, with the reader's fallback of 25), as
+#673 specifies for the split. File Attachments passes the stored guest value
+to `AttachmentSizeLimitSection` as `guestMB`, because the guest value cannot
+be edited on that page. `EmailStatusNote` and the scanner status read
+`['security-warnings']`, as they do today. No other section reads a key
+that is edited on another page. The server rules that check two keys
+together (open registration and the domain list, MFA and its roles, the
+guest limit and the overall limit) have both keys on one page, except the
+pair of size limits, which #673 handles.
+
+**The leave guard.** Splitting the draft means that leaving a page with
+unsaved edits would discard them without a word. That used to be a tab
+switch, which kept them. So every page that uses the draft calls
+`useLeaveGuard(draft)` (`frontend/src/pages/admin/settings/useLeaveGuard.tsx`),
+which calls `useBlocker({ shouldBlockFn: () => draft.dirty,
+enableBeforeUnload: () => draft.dirty, withResolver: true })` (TanStack
+Router) and returns the dialog element for the page to render. While the
+blocker is `blocked`, the dialog is `ConfirmDialog` with:
+
+- title "Leave without saving?"
+- description "Your changes on this page have not been saved. Leaving
+  discards them."
+- confirm label "Leave without saving" (`destructive`), which calls
+  `proceed`
+- cancel label "Stay", which calls `reset`
+
+The guard covers every router navigation: sidebar links, tab links, in-page
+links such as Open OAuth clients, and Back and Forward. Reloading or closing
+the tab gets the browser's own prompt. It covers only the draft. The SAML,
+OIDC, SLA and template forms keep their own state, as they do when you leave
+the Settings page today. The Email tabs follow from **One route, one
+component**: from Notifications with unsaved edits, the Templates tab link
+asks like any other link, and Leave discards the edits; the Templates page
+has no draft and never asks. A page with no edits, or with edits that were
+saved, never prompts. Clicking a link in the phone drawer closes the drawer
+before the dialog opens, and Stay leaves the drawer closed.
+
+**Loading and errors.** Each page with a draft shows the shell's spinner
+while `draft.isLoading`, which covers the unseeded render described above. A
+query that is already cached (from another settings page) is seeded in the
+first render and shows at once. The seeding effect updates the untouched keys of the draft
+when the background refetch lands, and keeps the edited ones; a section that copied a
+value into its own state at mount keeps that copy, as it does today after a
+tab switch. A failed read renders the page as today, with an empty draft.
+There is no new empty state: every section already renders its own unset
+values. The Templates page has no draft and loads its templates as today's
+`EmailTemplatesPage` does.
+
+#### Copy that names a place
+
+Places are named the way the sidebar shows them: in UI copy as "System →
+Page → Section", and in the docs as "Admin → System → Page → Section". Each
+of these changes to the new name:
+
+| Where | Today | After |
+| --- | --- | --- |
+| `InsecureConfigBanner.tsx`, reopen-target notice | Settings → Ticket lifecycle → Reopen target status | System → General → Ticket lifecycle → Reopen target status |
+| same, SAML metadata notices (two) | Settings → SAML | System → Authentication → SAML |
+| same, scanner notice | Settings → Attachments | System → File Attachments |
+| same, template notice link | `href="/admin/email-templates?t=…"` | `href="/admin/settings/email/templates?t=…"` |
+| `AfterUpgradePage.tsx`, guest step | under Settings, General, Submissions | under System, Guest Access |
+| `SetupPage.tsx`, update-check box | under Settings | under System → General |
+| `handler_admin_settings.go`, reopen-target `warning` text | under Settings, Ticket lifecycle, Reopen target status | under System, General, Ticket lifecycle, Reopen target status |
+| `notify/templates.go`, `SiteName` variable help | from Settings | from System → Branding |
+| Email → Staff email, #670's SLA override help | Needs SLA alerts turned on under Features | Needs SLA alerts turned on below |
+| `AfterUpgradePage.tsx`, staff-email step, SLA alerts paragraph (#670) | the SLA alerts setting under Features decides whether those alerts are sent at all | the SLA alerts setting under System → Email decides whether those alerts are sent at all |
+| `EmailNotificationsSection.tsx`, the comment above `SWITCHES` (#670) | from Settings -> Email | from System -> Email |
+| `GuestSizeSlider` description (#673) | set under Attachments | set under System → File Attachments |
+| `AttachmentSizeLimitSection` (#673) | — | names Guest Access as the place of the guest slider |
+| `AdminHealthCard` / `adminHealthItems`, SLA alerts off item (#675) | — (new in this build) | `href` `/admin/settings/email`, `place` "Email → Notifications → SLA alerts" |
+| same, passkey requirement suspended item (#675) | — (new in this build) | `href` `/admin/settings/authentication`, `place` "Authentication → Multi-factor authentication" |
+| same, attachment scanner down item (#675) | — (new in this build) | `href` `/admin/settings/attachments`, `place` "File Attachments → Malware scanning" |
+| same, SAML required but not loaded item | — (new) | `href` `/admin/settings/authentication`, `place` "Authentication → SAML" |
+
+The last four rows are the dashboard's health card (#675; the fourth, the SAML sign-in problem, was added after the card). They are links, not
+plain-text notices. The card did not exist in this base (see **This build's
+base**), so their "Today" cell is "— (new in this build)": nothing shipped with
+an interim address and nothing is retargeted. **The plan's task 12 built the
+card once the pages existed, directly with the "After" values**, and tests each
+target (`/admin/settings/email`, `/admin/settings/authentication`,
+`/admin/settings/attachments`) and each `place`, the SAML row's included. The update item's `href` (the
+release-notes URL) is as the #675 section specifies. The #675 section's text
+(**Admin health card**, **Build order** and Decisions) says the card was built
+after #674 with these addresses.
+
+The notices stay plain text. None of them was a link to a settings tab
+before, because a tab had no address, and making them links is not part of
+this issue. The only links into settings today are the template notice (its
+new address is in the table above) and Email's own link to templates, which
+is removed. The admin health card adds four more, built with their final addresses (see the last four rows of the table
+above), so none of them is ever a link to `/admin/settings`. The links out of
+settings (Open OAuth clients, and the user page's OAuth-clients links) keep
+their target. The backend `warning` string
+is human-readable text, not a code. No test pins it, and its `400`/`200`
+shapes do not change.
+
+#### Phone layout
+
+Nothing is redesigned. The rules in *Small screens → Admin pages (#522)*
+apply to each page, as they did to each tab:
+
+- Below `md` the System links are in the navigation drawer, which is the
+  same `SidebarContent`. They are full height on a coarse pointer and close
+  the drawer when followed.
+- The `h1` and description wrap. The tab bar scrolls sideways inside its own
+  row, as today's does.
+- `SettingRow` stacks the control under its label below `sm`.
+- The template editor keeps its own phone layout.
+- There is no sideways scroll at 320 or 375 px on any page or tab, with long
+  data and with short data. `e2e/mobile-layout.spec.ts`'s `ADMIN_PAGES` has
+  one entry per address in the table, with no `tab` field. The two SAML
+  certificate tests go straight to `/admin/settings/authentication`.
+
+#### Docs, screenshots and tests
+
+- **DESIGN.md.** Every "Admin → Settings → …" and "Settings → …" reference
+  is rewritten by the mapping in the table above. Today about twenty-five of
+  them: Tickets (tracking number), Ticket lifecycle (reopen target, closed
+  reopen policy), Privacy (masking), Ticket visibility, Branding (two), Updates,
+  Authentication (SAML, OIDC, Registration, Passwords, API keys, key
+  lifetime), Submissions (guests attaching files), Attachments (scanner
+  address, twice), Email (staff email, twice), Features (SLA), and the ones
+  #616, #670, #673 and #676 add. *Small screens → Admin pages (#522)*
+  becomes "each Settings page" instead of "each Settings tab", and "the
+  Settings Authentication tab" becomes "the Authentication page".
+  *Email templates* (Notifications) gives the new address.
+- **`docs/upgrade-notes-1.3.0.md`.** A new entry, *Settings Are Now Pages
+  Under System (#674)*. It says that the settings page is now eight pages
+  under System, with the table of where each old tab's sections went, and
+  that Email Templates is now the Templates tab of Email. Old addresses and
+  bookmarks redirect. No setting, default or API changes. Each page saves
+  only its own changes and asks before leaving with unsaved edits. Every
+  "Settings → …" location in the notes is rewritten, about fifteen of them.
+- **`README.md`** line 86: "turn it on under System → Email".
+- **`docs/api/openapi.yaml`, MCP, CLAUDE.md:** no change. No API moves.
+- **Screenshots** (`frontend/scripts/screenshots/capture.mjs`). The file
+  names do not change, so the pages that embed them keep working.
+  - `08-admin-settings.png`: path `/admin/settings/general`.
+  - `14-admin-settings-attachments.png`: path `/admin/settings/attachments`,
+    without the tab click.
+  - `19-admin-settings-privacy.png`: path `/admin/settings/privacy`. It
+    covers the same three sections, which are now on one page, plus Available
+    queue between them.
+  - `31-email-template-html.png` and `32-email-template-refused.png`: path
+    `/admin/settings/email/templates?t=ticket_created`.
+
+  The admin guide on the project site (gh-pages, outside this branch) names
+  "Settings → …" places. It is updated when the screenshots are taken
+  again.
+- **Browser tests.**
+  - `admin-nav-sections.spec.ts`: the new `SECTIONS` and the fit case (see
+    Sidebar).
+  - `mobile-layout.spec.ts`: as above.
+  - `email-templates.spec.ts` and `e2e-csp/email-template-preview.spec.ts`:
+    the new path. One test keeps the old path and asserts that it lands on
+    the new one with `?t=` kept.
+  - `after-upgrade.spec.ts`: unchanged, apart from copy.
+
+**Tests to write**:
+
+- *Router* (`router.settings-pages.test.tsx`):
+  - Each of the nine new paths has a `beforeLoad` that resolves for an
+    administrator, redirects staff and a requester to `/dashboard`, and
+    redirects someone signed out to `/login`.
+  - `/admin/settings` lands on `/admin/settings/general` and
+    `/admin/email-templates?t=ticket_created` lands on
+    `/admin/settings/email/templates?t=ticket_created`. Both replace the
+    history entry.
+  - `router.email-templates-guard.test.tsx` moves to the new path.
+- *The patch* (`buildSettingsPatch`, pure):
+  - An unchanged key is not sent, and a `*_set` key never is.
+  - A changed array is sent.
+  - A key that is absent from the dump and set in the draft is sent.
+  - A typed secret is sent trimmed, a blank one is not sent, and a cleared
+    one is sent as `''`.
+  - A changed guest 20 with a draft overall limit of 10 is sent as 10.
+- *The draft hook*:
+  - `dirty` is false while loading and false after load with no edits. It is
+    true after an edit and after typing a secret.
+  - `dirty` is false while the save is pending and after the save and its
+    refetch.
+  - With nothing cached, `isLoading` is true until the draft has been seeded:
+    in the render where the query's data first appears, `isLoading` is still
+    true. With the dump already in the cache, `isLoading` is false and the
+    accessors return the stored values in the first render.
+  - An edit survives a refetch of the dump; a key the operator did not
+    edit follows it; a successful save clears the edited keys, so the next
+    refetch is followed in full; an edit made while a save is pending is kept
+    and still dirty, also when it was set back to its pre-save value; an edit
+    put back to the stored value, with no save pending, is not held; a refused
+    save keeps every value it sent, dirty, also after the same value was set
+    again or another key's fetch landed meanwhile; a refused save after one
+    whose fetch failed gives back only its own keys; a save whose fresh fetch
+    failed still shows what was saved (the clamped figure, for the guest size)
+    and is not dirty; a second Save in flight is ignored.
+  - A refused save keeps the edits and `dirty`.
+  - The `email_required` message is shown.
+  - `aboutClients` is set only when the patch turns `ticket_scope_enforced`
+    on.
+- *Each page holds exactly its sections*: render each page and assert the
+  list of `h2` names equals the table, in order. Features also checks its
+  one SLA tab, and Email checks both tabs and that Notifications has the
+  four overrides and the SLA alerts switch. Nothing else is on the page.
+- *Each page saves only its own keys*: edit one setting on General and save.
+  The `PATCH` body is exactly that key. Repeat on File Attachments with a
+  reputation key typed.
+- *The SAML section*: with `saml_enabled` off the form is shown, with the
+  certificate and private key controls; the toggle is labelled "Require SAML
+  for staff and users"; the Entity ID and the ACS URL are shown with copy
+  buttons. After switching the toggle on without saving, "Save SAML config"
+  makes the page refetch its settings (a second visible setting changed in
+  the mocked dump reaches the page) and leaves the toggle on, and the page
+  Save sends `saml_enabled`. A save that answers a warning shows it. The copy
+  buttons say "Copied" in a status line, and say "Copy failed, select the
+  text" when the clipboard is missing or refuses.
+- *A section that seeds at mount sees the stored value*: with
+  `attachment_allowed_types` stored as `["application/pdf"]` (different from
+  `DEFAULT_ALLOWED_TYPES`), File Attachments' allowed-types box shows
+  `application/pdf`, both when the page is opened with nothing cached and
+  when it is opened with the dump already cached. Editing another Uploads
+  setting and saving does not send `attachment_allowed_types`.
+- *Staff email mirrors the profile*: the override names of Staff email about
+  tickets equal the switch labels of `EmailNotificationsSection`, in order.
+  Both lists are exported for this test (`STAFF_EMAIL_SWITCHES` from
+  `StaffEmailSection`, `EMAIL_SWITCHES` from `EmailNotificationsSection`, the
+  latter renamed from `SWITCHES`).
+- *The Email tabs*: `/admin/settings/email` and
+  `/admin/settings/email/templates` both show the `h1` "Email" and the two
+  tab links, with `aria-current="page"` on the one for the current address.
+  Templates shows no Save changes button.
+- *The leave guard*:
+  - Edit, then follow a sidebar link: the dialog appears. Stay keeps the edit
+    and the address. Leave navigates and discards the edit.
+  - Edit an override on Notifications, then follow the Templates tab: the
+    dialog appears. Leave opens Templates; following Notifications back shows
+    the stored value, not the edit.
+  - With no edits, after a successful save, and on the Templates tab,
+    following a link shows no dialog.
+  - Opening each page and leaving without touching anything never prompts.
+    This catches a control that writes the draft on mount.
+- *Guest Access and File Attachments*:
+  - With `attachment_max_mb` 10 stored, the guest slider's top is 10.
+  - After saving 30 on File Attachments, Guest Access shows a top of 30.
+  - File Attachments shows "Guests: up to …" from the stored guest value.
+- *Sidebar* (`AdminNavSections.test.tsx`):
+  - System lists the nine links in order, and Integrations no longer lists
+    Email Templates.
+  - On `/admin/settings/email/templates`, Email is the current link and
+    System is open.
+  - A non-administrator sees no System section.
+- *Banner*: the template notice links to
+  `/admin/settings/email/templates?t=<name>`, and the reopen-target, SAML and
+  scanner notices name the new places.
+- *After upgrade* (`after-upgrade.test.tsx`): the guest step says "under
+  System, Guest Access", and the staff-email step's SLA alerts paragraph says
+  "under System → Email" and no longer says "under Features".
+- *Moved tests*: every existing test that renders `SettingsPage` and clicks a
+  tab renders the page that now holds the section instead. The ones on
+  origin/v1.3.0-beta are `settings-*`, `audit-*`, `api-key*`,
+  `password-grace-settings`, `saml-metadata`, `guest-attachments-setting`,
+  `scanner-status`, `attachment-security-settings`, `logo-uploader` and
+  `attachments-download-only`. #616, #670, #672 and #673 add
+  `settings-passkey-required`, `settings-sla-alerts`, `sla-policy-form` and
+  #673's. The assertions do not change. Only the rendered page and the
+  router mock change: the mock gains `useBlocker`. The `settings-sla-alerts`
+  switch test now renders Email.
+
+#### Decisions taken without the owner
+
+Each can be overturned in one line.
+
+- **The addresses are `/admin/settings/<page>`.** Rejected:
+  `/admin/system/<page>`. Audit Log stays at `/admin/audit`, so a `system`
+  prefix would not cover the System section anyway, and with
+  `/admin/settings` as a prefix the old address keeps meaning "the settings".
+- **Audit Log stays administrator-only.** Rejected: showing it to staff, as
+  the issue's table says. That is a permission change to `GET /admin/audit`
+  (#129), not a page move, and it would need its own issue.
+- **One draft per page, with a leave guard.** Rejected: one draft shared by
+  every page, which would save edits from a page that is no longer on screen
+  and contradicts #673's per-page rule. Also rejected: no guard, which
+  silently drops the edits that a tab switch used to keep.
+- **A save stays "Saving…" until the settings have been fetched again.**
+  Rejected: writing the patch into the query cache, which would show stored
+  bytes where the dump reports the value in force.
+- **Email has two tabs, Notifications and Templates, each with its own
+  address.** Rejected: one long page with the template editor under the
+  overrides. That would put two save models on one page and give the
+  editor's `?t=` deep link a page it does not own.
+- **Features shows its one tab (SLA) at `/admin/settings/features`, with no
+  tab segment in the address.** The owner asked for SLA as a tab. Rejected:
+  `/admin/settings/features/sla`, an address for a choice that does not
+  exist yet. The second feature tab adds its own segment.
+- **`sla_alerts_enabled` becomes its own section, SLA alerts, after Staff
+  email about tickets on Email.** This follows the owner's "switch and
+  setting". Rejected: one row inside the overrides section, which would mix
+  a gate with the per-person overrides.
+- **Available queue goes on Privacy after Ticket visibility.** Rejected:
+  General → Tickets. Its copy depends on `ticket_scope_enforced`, which is
+  on Privacy.
+- **Privacy keeps today's relative order: Ticket visibility, Available
+  queue, Audit log, Privacy.** Rejected: the order in the issue's table
+  (masking first), which reorders for no stated reason and changes the
+  composition of screenshot 19.
+- **Section headings do not change, including "Privacy" on the Privacy
+  page.** Rejected: renaming it to "Requester names", which is churn in
+  tests and screenshots for wording only.
+- **The Email tab's "Email templates" link section is removed.** Rejected:
+  keeping a link to the tab beside it.
+- **The redirect routes check nothing, and the target route guards.**
+  Rejected: a guard on both, which tests the same rule twice.
+- **UI copy says "System → Page → Section".** Rejected: keeping "Settings →
+  …", which names a page that no longer exists.
+- **Notices are reworded but not made into links.** Rejected: links on every
+  notice, which is new behaviour the issue does not ask for.
+- **Identity (site name and logo) stays on Branding and is not on
+  Authentication.** The issue's table puts Identity first under
+  Authentication and also says Branding is "unchanged". Identity is the
+  Branding tab's only section, so both cannot hold. This reading keeps
+  Branding unchanged. Rejected: moving Identity to Authentication, which
+  leaves Branding an empty page. To overturn: render `IdentitySection` first
+  on `AuthenticationSettingsPage` and remove Branding from the sidebar.
+- **"Mirror the user's own notification preferences screen" is met by the
+  section as it is.** After #670 it has one override per profile switch, with
+  the same names in the same order, and a test now pins that. Rejected:
+  restyling it as the profile's on/off list, which cannot show the third
+  choice ("Use each person's choice") and is a redesign the move does not
+  need. To overturn: say what else should match, and it becomes its own
+  change.
+- **Each address is its own flat route and component; the two Email tabs
+  are two pages that share a title and tab bar.** Notifications has the draft,
+  the guard and the save bar; Templates has none of them. Rejected: one
+  layout route with an `<Outlet>` holding one draft for both tabs, which would
+  keep an unsaved override alive while the template editor is open and put a
+  Save button for overrides under the editor.
+- **The draft hook does not render sections until the draft is seeded, and
+  seeds from the query cache when it can.** Rejected: re-syncing the Uploads
+  section's text box with an effect, which fixes one section and leaves the
+  next control that seeds at mount with the same bug.
+- **#674 is implemented only after #616, #670, #672, #673 and #676 are
+  merged.** This is the issue's own sequencing. Rejected: building on today's
+  base and adding the five later, which means splitting `SettingsPage.tsx`
+  twice and resolving each branch's conflicts against files that no longer
+  exist.
+- **The sidebar keeps its dense rows. If System does not fit at 768 or at 800,
+  the nav scrolls for that case and the current link is scrolled into view
+  (decided without the owner, after the build showed System's nine links run
+  39 px past the headroom at 800; at 900 it fits).** Rejected: denser rows,
+  which make the coarse-pointer target harder to hit, and dropping the last-link
+  headroom check for System at every height.
+- **Page titles are the sidebar labels.** Rejected: "General settings" and
+  similar, which repeat the section heading.
 
 ---
 
@@ -169,59 +3051,1984 @@ Tickets can be linked to any other ticket regardless of status (including Closed
 
 ### Local Auth (Default)
 
-- Username/password with bcrypt hashing
-- Available for all roles by default
-- **MFA** (optional toggle in admin settings): TOTP-based (Google Authenticator, Authy, etc.). When enabled, users enroll via QR code on next login. Admin can enforce MFA for specific roles or all users.
+- Username/password with bcrypt hashing at **cost 12** (`user.ProductionBcryptCost`, #453). Releases up to 1.2 hashed at cost 10; a hash made at a lower cost is replaced at that account's next successful password sign-in, with a write conditional on the old hash so a password changed in between is never overwritten. The upgrade is best effort: a failure is logged and the sign-in still succeeds. While accounts are still on a lower cost, a wrong password for such an account spends the extra comparisons needed to cost as much as one at cost 12, so it takes as long to refuse as an address with no account. An account with no password (one that signs in only through SSO) or with a hash bcrypt cannot read is refused after the same comparison an unknown address gets, so a wrong password does not say which addresses belong to SSO-only accounts (#476). A hash at a higher cost than this one still takes longer to refuse; none is ever written. A password is 8 to 72 **bytes**, the same rule wherever one is set: first-run setup, admin create, admin reset, the account page and signup verification (`user.ValidatePassword`, #368). The upper bound is bcrypt's: it reads only the first 72 bytes and refuses to hash more. It counts bytes, not characters, so accented letters take 2 bytes each and most other non-Latin characters 3 or 4, and a 25-character passphrase in Chinese is already too long. A password over the limit is refused with a 400 that names it (`bad_request`, or `password_too_long` at signup verification). Sign-in applies no maximum, so a hash made elsewhere by a bcrypt that silently truncated still accepts its owner's full password: only the first 72 bytes are compared, as bcrypt always has. A missing or wrong **current** password on `PATCH /me/password` is `400 invalid_current_password`, not 401 (#555): the session is good, and the web client reads every 401 as an expired session and signs the person out. Wrong guesses are throttled per user with a budget the size of sign-in's, counted separately (key `change-password:<user id>`, failures only, same `AUTH_THROTTLE_DELAY` tarpit: the right password always works).
+- **Old hashes stop working after N days (#453).** Rehash at sign-in only reaches accounts that sign in, so a hash made below cost 12 is refused too once the grace period ends. `admin.KeyPasswordRehashStartedAt` (`password_rehash_started_at`) holds the moment 1.3.0 first ran against the database, written once by migration 000044 (`ON CONFLICT DO NOTHING`; a fresh install has no old hashes, so its date changes nothing). It is a settings row rather than an `instance_secrets` row: that table is for secrets (a name allowlist and at least 32 bytes), and a date is not one. It is a known key only because the migration test requires every seeded key to be one; `PATCH /admin/settings` refuses it with `readonly_setting`, it is auth-critical, and the settings dump leaves it out, so nobody can restart the clock. N is `password_rehash_grace_days` (Authentication page, default **30**, 1 to 365 enforced when saved; an unreadable or out-of-range stored value reads as 30). Sign-in only: `user.Service.VerifyPasswordForSignIn` returns `ErrPasswordResetRequired` for a **correct** password on a hash below the current cost once `started_at + N days` has passed, and the handler answers 403 `password_reset_required` (the reset link is sent, or the message says what to do instead; see below). A wrong password still answers 401 `invalid_credentials`, so a guesser learns nothing about the hash. The refusal spends the same bcrypt work as a wrong password on that hash (it burns the cost difference instead of the rehash), pinned by a work-counting test next to #475's. `VerifyPassword` (confirming the current password while changing it) never refuses, since changing the password is the cure. No deadline recorded, or one that cannot be read, means no refusal. **Every administrator is exempt** (rehashed at sign-in as before): administrators are who reset everyone else, setup does not reopen, and email may be off. An earlier version exempted only the last active administrator, which still locked out the others; Erik widened it. Staff and requesters are refused. The SAML restriction (`saml_required`, password sign-in limited to administrators) is checked first, so a non-administrator under SAML gets that refusal rather than a reset instruction. When the server can send email (`passwordResetAvailable()`), the refusal also sends the reset link, through the same code path as "Forgot password" (`requestPasswordReset`, see below), and the message says to check email; Erik's ruling of 2026-10-19, replacing "refuse and point at Forgot password". It is sent only after the password was verified and after the SAML check, so a wrong password or a SAML refusal sends nothing. It spends the same per-address budget as `POST /auth/forgot-password` (`forgotPasswordKey`), and the per-account limit applies when the worker sends. Over the budget, or if the queue insert fails, nothing is queued and the message says "We could not send a reset link just now. Try again in a minute, or ask an administrator." rather than claiming a mail was sent; the code stays `password_reset_required`. The work added to the request is one outbox insert; the mail is sent by the worker. When email is off nothing is sent and the message points at an administrator. The sign-in page shows the "Forgot password?" link in the email-on case (#451).
+- Available for all roles by default. With `saml_enabled` on, only administrators keep it (see SAML below).
+- **MFA** (optional toggle `mfa_enabled` in admin settings): a second factor is **either** a TOTP authenticator app (Google Authenticator, Authy, etc., enrolled by QR code) **or** a registered passkey (below). Admin can enforce MFA for specific roles (`mfa_enforced_roles`) or all users, and can require a passkey, instead of TOTP being enough, for specific roles (`passkey_required_roles`, an auth-critical setting; see "Passkey required for roles (#616 part c)"; a listed role is MFA-enforced as well, and the settings page shows its MFA box checked and disabled); an enforced user with no factor is sent to enrolment at sign-in, and right after verifying a self-service signup.
+- **A half-signed-in session expires** (#452). After the password is accepted but before the second factor is done, the session is good for **5 minutes** when a code from an existing factor is owed (TOTP or passkey) and **15 minutes** for first-time enrolment, which takes longer (installing an app, scanning a code). The limit is chosen when the session is created (`auth.PendingDeadline`) and stored as `SessionData.PendingUntil`; saving a staged enrolment secret does not extend it. Past it, `SessionAuth` deletes the session row and the request carries no actor, so the route answers its usual 401 and the person signs in with their password again; a refused code is never checked, so it does not use up an MFA attempt. The cookie and row are also given that lifetime so an abandoned sign-in clears itself. A pending session with no `PendingUntil` (saved before this existed) counts as expired, so anyone mid-sign-in at upgrade signs in once more. A fully signed-in session is not affected. Enrolment stays outside `RequireMFA`, so the password is still a way in: the sole administrator can always sign in again and recover (`TestSoleAdministrator_CanSelfRecoverWithNoSecondFactor`).
+
+### Forgot password (#451)
+
+A person who cannot sign in can ask for a link by email and choose a new password. It needs email: with `SMTP_HOST` and `SMTP_FROM` unset, `GET /api/v1/auth/providers` reports `password_reset: false`, the sign-in page shows no "Forgot password?" link, and `POST /auth/forgot-password` answers `503 email_not_configured`. An administrator setting the password directly (`POST /admin/users/{id}/password`) is unchanged and is the route when email is off. It is not "Send reset link" from the user page; that is not built.
+
+- **Ask.** `POST /api/v1/auth/forgot-password` takes `{email}` and **always answers `202`** to a well-formed request (`400` only for a body that is not JSON), with the same body whether or not the address has an account. A string that is not an email address is also answered `202` and queues nothing. The request does the same work for every address: it validates the string and queues **one outbox event** carrying the address, and looks nothing up and writes nothing else, so the timing does not say who has an account either (pinned by a Postgres work-counting test in the style of signup's, #348). Each client address has the `AUTH_RATE_LIMIT_PER_MINUTE` budget (`429`).
+- **Decided at send time.** The worker (the `verification` outbox channel, which also carries signup's mail) looks the account up and mails nothing, and does not retry, for an address with no account, a disabled or deleted account, a service account, an account that cannot use a password because `saml_enabled` limits password sign-in to administrators (`user.IsLocalAuthAllowed`, the rule sign-in applies; an administrator keeps it), or an account with **no password** (`password_hash` empty: an identity-provider account, or a local account created without one). **An account is mailed at most once per five minutes**, charged once per request (a retry skips the charge only if an earlier attempt of that row made it, not merely because it is a retry), so the endpoint cannot be used to fill an inbox; the earlier link is still good, so nobody is left without one. The budget is a counter in the database (`rate_limit_counters`, key `password-reset:<account id>`, see Rate limits), so a restart does not clear it and every replica shares it; if the counter cannot be written the send fails and the worker retries it, and nothing is mailed meanwhile. A mail that fails to send is retried by the worker.
+- **The link.** `{BASE_URL}/reset-password?token=…`, never built from the request's host. The token is 256 random bits made **when the mail is sent**, so the outbox row holds the address that was typed and no token, and only its **SHA-256 is stored** (`password_reset_tokens`, migration `000049`): a copy of the database holds nothing that can be turned into a reset. **One live link per account**: a newer link replaces the older. **Single use**, and **valid 30 minutes** by the database's clock (`passwordreset.TokenTTL`).
+- **Choose.** `POST /api/v1/auth/reset-password` takes `{token, password}`. The password goes through `user.ValidatePassword` first (`400 password_too_short` or `password_too_long`) and a refused password does not use the link up. Then **one SQL statement** spends the link, stores the new hash, clears `must_change_password` and **ends every session the account holds**, so a failure part-way cannot leave a spent link with the old password or a new password with old sessions signed in. A link that is unknown, used, replaced, expired, or for an account disabled, deleted or left with no password since is `422 token_invalid`, one answer for all of them. It works with email switched off afterwards: a mailed link was a promise made while it was on. Counted per client address like the request (`429`), which bounds the bcrypt work an anonymous caller can cause.
+- **The link never gives a session.** On success the response is `204` with no cookie. The page says the password is changed and goes back to `/login`, and the person signs in with the new password **and their second factor**, if they have one. A reset link is a credential that sits in an inbox; if it also skipped MFA, a stolen inbox alone would be a stolen account. A test pins that an MFA-enrolled account still answers `mfa_needed` after a reset and that its session cannot read `/me`.
+- **Audit.** `entity_type: "user"`, `action: "password_reset_by_email"`, `after: {sessions_revoked: true}`, **no actor** (nobody was signed in, and naming the account would record a claim; the same reasoning as `reset-factors`), distinct from `password_reset_by_admin`. Like that one it is **not** transactional with the write it describes: the password is already changed, a lost entry is logged and swallowed rather than reported as a failed reset, and the write is detached from the caller's context so hanging up cannot suppress it.
+- **The #453 refusal.** `403 password_reset_required` (a correct password on a hash below the current cost, after the grace period) has three wordings. Email on and the link queued: it says to check email (and names "Forgot password" for a second link). Email off: it says to ask an administrator and that "Forgot password" is unavailable. Email on but nothing queued (the per-address budget is spent, or the queue insert failed): "We could not send a reset link just now. Try again in a minute, or ask an administrator." This one deliberately does not name "Forgot password", because that endpoint shares the budget and would answer 429 for the rest of the minute. So the first two contain "Forgot password" and the third does not.
+- **Not for accounts with no password.** "Forgot password" is for an account that has a password. An account with none (`password_hash` empty) is mailed no link, whether it signs in through OIDC or SAML or is a local account created without a password, and a link that reaches such an account does nothing: the statement that applies a link requires `password_hash <> ''`, so a link made before the account lost its password is refused with `token_invalid` and spent. Giving an identity-provider account a password would put a way in beside the provider's MFA and conditional access, and a local account created without one is left as an administrator made it. The account's password is tested the way the identity provider lockout guard tests it (`password_hash != ""`), not by whether an identity provider subject is set. An identity-provider account signs in through the provider; a local account without a password needs an administrator to set one.
+
+### Rate limits (#621)
+
+Every rate limit counts in the database, in one table, `rate_limit_counters` (migration 000063), through `ratelimit.Limiter` and `ratelimitstore`. They used to count in the memory of the server process, so a restart cleared them and N replicas allowed N times the limit.
+
+| Limiter | Key | Budget |
+|---|---|---|
+| sign-in and wrong current password | `auth:login:<email>`, `auth:change-password:<user id>` | `AUTH_RATE_LIMIT_PER_MINUTE` a minute, failures only |
+| signup, guest form, guest form field lookup (`GET /guest/fields`), guest resend form, forgot-password request, reset-password | `auth:<route>:<source address>` | the same figure, per address |
+| `reporter_email` | `on-behalf:<staff user id>` | 40 an hour |
+| guest uploads | `guest-upload:<ticket id>` | `guest_attachment_uploads_per_hour` an hour |
+| refused guest uploads | `guest-refusal:<ticket id>` | 20 an hour |
+| guest link resend | `guest-resend:<ticket id>` | 1 per 5 minutes |
+| forgot-password mail | `password-reset:<account id>` | 1 per 5 minutes |
+| template test send | `template-test:<administrator id>` | 5 per 10 minutes |
+
+- **One statement counts.** `TakeRateLimit` is a single `INSERT ... ON CONFLICT DO UPDATE ... RETURNING`: the row lock serialises two attempts at once, so each is given its own count and both cannot be told they were the last one under the limit. There is no read followed by a write. Pinned by `TestConcurrentAttemptsCannotBothPassTheLimit` (four stores and a hundred goroutines against one key, exactly the budget gets through).
+- **A window per key.** A key's window opens at its first attempt, is not stretched by use, and ends `window_end` later. There is no table-wide reset. `Retry-After` on a `429` is `window_end - now` for the key that was refused, in whole seconds rounded up, at least 1 and at most the window's length. Before this, one window was shared by every key and cleared all at once, so a key first used late in it was reset early and `Retry-After` described the limiter, not the caller. A key that is over its budget keeps counting, so a client that ignores the `429` still reads as over; it does not extend the window.
+- **The clock is the server's.** `now` is passed in by the Go side, not read by the database, so tests can move a limiter's clock without sleeping. Replicas whose clocks differ by a few seconds disagree by a few seconds about when a window ends; none of these limits is sensitive to that. Windows are fixed, not sliding: a full budget just before the end can be followed by another just after.
+- **Once per queued row.** The guest resend and the forgot-password mail are charged in the outbox worker, which may run one row several times. `Limiter.AllowOnce` charges the row once and writes a marker (a key of its own, kept 24 hours) only after the count came back allowed. A retry skips the charge only if that marker exists; "this is attempt 2" is not evidence, because the first attempt may have failed before the budget or its count may have failed to write. An unmarked retry is counted and, if the budget is spent, dropped without sending and without rotating the guest's link. If the marker cannot be written the call errors and the retry counts again: a row can be charged twice, never let through uncounted. Pinned by `TestAllowOnce` and the `ARetry...` server tests.
+- **Refund.** A caller that spends before the work and finds the work did not happen (a guest upload refused before the scan) gives the unit back with `RefundRateLimit`, which applies only inside the window the unit was counted in and never takes a count below zero.
+- **Fails closed.** A counter that cannot be read or written is an error and never an allow: the route answers `500` and nothing is filed or mailed (`TestRateLimits_FailClosedWhenTheCounterCannotBeUsed`). The forgot-password send returns the error so the worker retries it. The sign-in tarpit is the one exception: it only delays, so a count that cannot be read there is logged and the delay skipped, because refusing would keep somebody out of their own account over a database fault, and the wrong guess that follows has to be counted and so refuses anyway.
+- **Bounded.** A key used again after its window ended is replaced in place, and rows whose window has ended are deleted every five minutes by the sweep in `cmd/server/main.go` (`DeleteExpired`, in batches of 5,000 so a large backlog is many short statements; `window_end` is indexed). The table therefore holds about one row per key used in the last window. Some keys are chosen by the caller (an email address typed into the sign-in form, a source address), so a burst of made-up keys is a burst of rows, gone at the first sweep after their minute ends (`TestSweepDeletesExpiredRowsAndOnlyThose`, `TestAnExpiredWindowIsReplacedNotAdded`).
+- **Not here.** The MFA failed-attempt count is on the user row with its own escalating lock. The sign-in tarpit's queue of waiting requests stays in memory: it is who is waiting in this process now, not a count. The attachment reputation lookup's daily budget stays in memory, a courtesy cap and not a control (see Reputation lookup).
+- **Wiring.** `cmd/server` passes the store with `WithRateLimitStore`. A server built without one has no in-memory fallback: a limiter that is on refuses every request, so a deployment that forgot the wiring fails loudly and a test that never reaches a limiter is unaffected.
+
+### Passkeys (WebAuthn)
+
+A second factor alongside TOTP (introduced in #302), and later an alternative
+to the password itself. TOTP does not change and does not go away; an instance that upgrades
+into this notices nothing until somebody registers a key. Passwordless sign-in
+is **not built** (see the end of this section): a passkey is asserted after the
+password, never instead of it.
+
+**What this claims, and what it does not.** The property bought is
+**phishing-resistance**: a WebAuthn credential is bound to the origin it was
+registered against, so a look-alike login page cannot use it, which TOTP cannot
+claim (a fake page collects the six digits and replays them in the window). That matters on a help desk because a staff account reads every ticket, every attachment and every customer's details. It
+deliberately does **not** claim "something you have" in the hardware sense: a
+passkey today is very often a *synced* credential (iCloud Keychain, Google
+Password Manager), a weaker possession story than a YubiKey. Phishing-resistance
+holds for every credential this accepts, synced or not; physical possession
+does not, so it is not claimed.
+
+**Storage and the library.** A `webauthn_credentials` table, not columns on
+`users`: one person registers several keys on purpose (laptop, phone, a spare
+in a drawer). Each row holds the credential id, public key, sign count,
+transports, AAGUID, the backup-eligible and backup-state flags, an optional
+owner-chosen name (an unnamed key is shown by what its transports and age give,
+e.g. "Security key, added 3 March") and created/last-used timestamps.
+
+- `credential_id` has a **unique constraint in the schema**, not a check in Go:
+  the specification says ids are globally unique, and a read-then-insert has a
+  window whatever it reads.
+- `transports` goes back out on the sign-in challenge as
+  `allowCredentials[].transports`, so the browser skips authenticators that
+  cannot satisfy the request.
+- `aaguid` is read by nothing; it is kept because it is free at registration and
+  unrecoverable afterwards (the reasoning that keeps the unused CIRCL fields).
+- `backup_eligible` / `backup_state` say whether a credential is synced: the
+  only way an administrator can tell a hardware key from an iCloud passkey.
+  Not captured at registration, the question is unanswerable forever.
+- **A sign count that does not advance is refused**
+  ([#616](https://github.com/PubliciaLLC/go-help-desk/issues/616), part b). Each
+  assertion carries the authenticator's signature counter, and a copy of a key
+  runs its own counter, so two copies in use soon assert a count at or below the
+  one on record. The rule is the library's (`go-webauthn`'s `CloneWarning`): an
+  asserted count at or below the stored one is a warning **unless both are
+  zero**. Zero forever is what most authenticators report (synced passkeys among
+  them), and refusing that would refuse honest sign-ins, so the all-zero case
+  passes. On a warning `POST /auth/local/passkey/finish` answers
+  `401 passkey_suspect`, **ends every session the account holds** (the one doing
+  the sign-in included), and writes a `passkey_clone_suspected` audit entry on
+  the account, naming the key by id and no actor (nobody has proved who is at the
+  other end). The entry is best effort and detached from the request, as the
+  other factor audits are. The stored counter is **not** written on a refusal, and
+  the write that records a good sign-in (`Touch`) only ever raises it, because it
+  runs off the response path and two sign-ins can land out of order: a late write
+  of a lower count would otherwise put the counter back below one a clone had
+  used.
+  The cost is a real person whose authenticator reports a buggy counter being
+  refused; how many such authenticators exist is not known. Refusal is per assertion,
+  not a ban: a key that later asserts a count above the stored one signs in
+  again, which is also why a clone and its original keep tripping each other. The
+  remedy is to remove the key and register a new one. The key's owner cannot do
+  that from the Account page when the key is their only way past the second step
+  (the key blocks that step, and enrolment refuses a session that has not proved
+  the factor the account already has), so who can recover depends on who is
+  locked out.
+  **Who can be locked out:** any account, of any role, while sign-in MFA is on
+  server-wide, that holds no TOTP and whose registered key (or every one of its
+  keys) is refused. The sign-in asks for the key whenever MFA is on and a passkey
+  is the account's only factor (`handler_auth.go`), whether or not the account's
+  role is one MFA is enforced for, so enforcement is not a condition. An account
+  that also has a TOTP signs in with it and is not locked out, and an account
+  with a second, unaffected key signs in with that one. **How each recovers:** a
+  staff member or requester has an administrator remove the key (user page) or
+  Reset MFA. An administrator has another administrator do the same, since
+  nobody can Reset MFA on their own account. **A sole administrator has no one to
+  ask**, so the way back is `reset-factors` on the server, below. It does not
+  touch the last-administrator guard, because the password is still a way in and
+  the factors are not what that guard watches.
+- **Counter wraparound is refused like a clone.** The counter is 32 bits. A key
+  that reaches the maximum and wraps to 0 asserts a count at or below the stored
+  one, and the stored one is not zero, so the rule above refuses it, and it keeps
+  being refused: the stored counter is never lowered, so the key would have to
+  climb past the old maximum again. It is refused until the key is removed and
+  registered again, the same remedy and the same recoveries as a suspected clone.
+  No real authenticator is expected to get there (4 billion sign-ins), so it is
+  not special-cased.
+- The ceremonies are `github.com/go-webauthn/webauthn`'s; nothing is hand-rolled.
+- A passkey's `last_used_at` (and its counter, which only rises) is written in a
+  goroutine, off the response path,
+  with a context that does not belong to the request (as webhook dispatch
+  does): it answers "which key is still in use", but a sign-in must not wait on
+  it or fail because of it.
+- An API key's `last_used_at` is written inline, in the request, not in a
+  goroutine, but also with a context that does not belong to the request, so a
+  client that hangs up does not drop it. A failure is logged and ignored. It is
+  written at most once per five minutes per key, judged from the value the key
+  lookup already returned.
+
+**Enrolment.** `POST /me/passkeys/register/start` mints a challenge and stages
+it **in the session**; `POST /me/passkeys/register/finish` verifies the
+attestation and writes the credential. Nothing is written to the account until
+the person has proved they hold the key (the reason `GenerateMFASecret` and
+`ConfirmMFAEnrollmentWith` replaced `EnrollMFA`, which wrote an unconfirmed
+secret over the authenticator its owner still used). A staged challenge is
+answerable once and **expires on a fixed deadline from when it was minted**
+(five minutes), checked when the assertion comes back, because a challenge left
+in a long-lived session is a replay window that stays open as long as the tab
+does; it does not slide forward on use, the same rule the MFA lockout follows. Both routes sit inside
+`meRouter`'s `DenyMachineCredentials` group (an API key or OAuth client may not
+touch how its owner authenticates) and **outside** `RequireMFA`, like TOTP
+enrolment, so somebody told to enrol can finish enrolling.
+
+**Finishing registration satisfies this login's MFA challenge, as finishing TOTP
+enrolment does:** it sets both `MFAPassed` and `FactorVerified`
+(`markPasskeyRegistrationSatisfiesMFA`). Without it a session admitted through
+the no-factor-yet branch could register a key and still be refused by
+`RequireMFA` until it ran the sign-in ceremony against the key it had just
+proved it held ([#307](https://github.com/PubliciaLLC/go-help-desk/issues/307),
+item 3). For an already-protected owner registering a replacement it is a no-op.
+
+**Changing factors needs a session that *proved* one, not one that owed none**
+([#333](https://github.com/PubliciaLLC/go-help-desk/issues/333)). `MFAPassed` is
+true both when a login proved a second factor and when it owed none (MFA off,
+optional for the role). The routes that add or replace a factor
+(`requireFactorOrFirstEnrolment`, and TOTP enrolment's re-enrol check) read a
+separate session fact, `FactorVerified`, set only by:
+
+- a TOTP code (`/auth/local/mfa/verify`) or a passkey sign-in;
+- this session finishing a TOTP enrolment or passkey registration;
+- an SSO sign-in whose identity provider asserted MFA: OIDC `amr` containing
+  `mfa` (RFC 8176), or SAML `authnmethodsreferences` containing
+  `http://schemas.microsoft.com/claims/multipleauthn`. Entra ID sends neither by
+  default: add the `amr` optional claim to the app registration (for SAML, with
+  `include_granular_amr`). Without it SSO sign-in still works, but a user who
+  also has a local factor must enter it before changing factors;
+- an SSO sign-in whose assertion is passkey-grade (below), which also counts as
+  having proved a factor.
+
+Without this, a password-only session on an account where MFA was optional could
+replace the owner's factor at any time after they enrolled. A session written
+before `FactorVerified` existed reads it as false: such a user signs in again
+before changing factors.
+
+**Adding a factor ends every other session,** as a password change does:
+finishing TOTP enrolment or passkey registration revokes the account's sessions
+and re-issues the current one, so a session opened with the password before the
+owner protected the account does not outlive that protection. Enrolment confirm
+re-runs the guard rather than trusting the check made when enrolment was staged
+([#327](https://github.com/PubliciaLLC/go-help-desk/issues/327)).
+
+**A first factor is a conditional write, under a lock.** The guard asks "does
+this account hold no factor yet?" and the confirm then writes; two requests
+racing on a fresh account could both pass the question. A session that has not
+proved a factor therefore writes its first TOTP with `WHERE NOT mfa_enabled` and
+the loser is answered 403; a session that has proved one (a rotation) still
+overwrites, on purpose
+([#338](https://github.com/PubliciaLLC/go-help-desk/issues/338)). That covered
+two TOTP confirms and said nothing about a passkey, which has its own door: a
+TOTP confirm racing a passkey registration, or two registrations, could each pass
+the check and a password-only session could end up adding a factor beside the
+owner's first one
+([#617](https://github.com/PubliciaLLC/go-help-desk/issues/617)). Both doors now
+take the user row (`SELECT ... FOR UPDATE`) and only then ask, in a statement of
+their own, whether the account holds a TOTP or a passkey; whichever gets the row
+second sees what the first wrote, writes nothing and is answered
+`403 mfa_required`, the answer the frontend already handles. The question cannot
+be folded into one statement with the lock: under READ COMMITTED a statement
+that waits on a row keeps the snapshot it started with. Lock order is the user
+row, then credentials, the same as `ClearFactors`. A passkey registration from a
+session that has proved a factor (`FactorVerified`) is unconditional, as a TOTP
+rotation is. The tests hold the row in one transaction, start the write, wait for
+Postgres to report it queued and commit the other factor, so the interleaving is
+staged rather than raced.
+
+**Verifying from the Account page**
+([#336](https://github.com/PubliciaLLC/go-help-desk/issues/336)). A session that
+owed no factor at login (MFA off, optional for the role, an SSO provider that
+asserted nothing, a pre-`FactorVerified` session) is refused on the factor
+routes with `403 mfa_required`, and the login page never asked it for anything.
+The Account page answers that refusal itself: a code field when the account has
+an authenticator app, a passkey button when it has passkeys, posted to the same
+`/auth/local/mfa/verify` and `/auth/local/passkey/*` routes the login page uses,
+then it retries what the person was doing. No new route. A wrong code or refused
+key answers 401 on a live session, so the client does not treat
+`invalid_mfa_code` or `assertion_refused` as a lost session.
+
+**Signing in.** `POST /auth/local/passkey/start` and `/finish` sit beside
+`/auth/local/mfa/verify`, are refused to machine credentials, and need the
+session the password step already produced (`401` otherwise). On a valid
+assertion they re-issue the session with `MFAPassed` and `FactorVerified` true.
+The gate downstream is `Actor.MFAPassed`, already enforced by `RequireMFA`, so
+no route learned a new idea.
+
+**The password step answers with four booleans:** `mfa_needed` (a TOTP
+enrolment exists; TOTP wins when the account has both), `passkey_needed` (a
+passkey is registered and no TOTP) and `mfa_enrollment_needed` (neither, and the
+role is enforced), and, for a role in `passkey_required_roles` only (#616c),
+`passkey_enrollment_needed` (register a passkey). For such a role the first
+three change meaning: `passkey_needed` is sent whenever a key is registered,
+TOTP or not; `mfa_needed` together with `passkey_enrollment_needed` means verify
+the authenticator code, **then** register a key (the TOTP verify still answers
+204); and `mfa_enrollment_needed` is never sent, because enrolling TOTP would
+not satisfy the gate. `POST /auth/verify-email` carries `passkey_enrollment_needed`
+too. For every role not in the list the first three keep their meanings and the
+fourth is false. All false means no factor is owed. Each is also conditional
+on the instance setting `mfa_enabled`: with it off, an account that holds TOTP or
+passkeys owes nothing at login, and the descriptions above apply with it on. Two booleans keyed off
+`u.MFAEnabled`, which is the TOTP column and not "this account has a second
+factor", cannot express the passkey-only account: on its second sign-in the
+server would say "you still need to enrol" and never "assert your passkey", and
+that account could never sign in again. **`MFARequiredFor(role)` is satisfied by
+a TOTP enrolment or at least one registered passkey** (refusing the phishing-resistant factor because it is not the older one would be perverse), so `mfa_enabled` and
+`mfa_enforced_roles` keep their meanings and an operator reconfigures nothing.
+
+**Losing a key.** The owner removes it from their own account page
+(`DELETE /me/passkeys/{id}`, behind the same factor guard) and registers a new
+one; that is the ordinary case. **Removing your own key ends your OTHER
+sessions and keeps this one**
+([#615](https://github.com/PubliciaLLC/go-help-desk/issues/615)), as a password
+change and a new factor do: the key may be the one somebody else is signed in
+with. The delete and the sessions ending are one statement (the same
+`RemoveUserPasskey` the administrator's removal uses, which is told which session
+to spare), so a failure between them cannot leave the key gone and the other
+sessions alive, and a credential that is not yours is a `404` that ends nothing.
+It writes a `passkey_removed` audit entry on the account with **the user as the
+actor** (the factor guard has already required that they proved a factor), naming
+the key by id and not its label; best effort and detached from the request, like
+the administrator's. **An administrator can remove ONE credential
+for somebody else** ([#615](https://github.com/PubliciaLLC/go-help-desk/issues/615)):
+the user page lists the person's passkeys (`GET /admin/users/{id}/passkeys`, the
+same JSON as `/me/passkeys`) with a Remove on each
+(`DELETE /admin/users/{id}/passkeys/{credId}`). Neither route depends on passkeys
+being available (#494), because a lost key has to be cleanable while they are off.
+
+- **Always ends every session the account has**, whether or not it was the last
+  factor: the key is presumed lost or compromised, and one rule is simpler than
+  two. The removal and the sessions ending are one statement, and the credential
+  is matched on its owner in that statement, so naming somebody else's key under
+  this person's path is a `404` that removes nothing and ends nothing.
+- **Audited** as `passkey_removed_by_admin` on the account, naming the
+  administrator and the key's id (never its label, which is free text the owner
+  typed). Like `mfa_reset`, it is not transactional with the removal: whoever can
+  remove a key already holds the capability, so the entry is visibility, and the
+  write is detached from the request so hanging up cannot suppress it.
+- **Session only.** A key or OAuth client is refused (`403`): how a person signs
+  in is not something a machine credential may change.
+- **Not your own account.** `DELETE` on your own id is `409 own_account`, and so
+  is `PATCH /admin/users/{your id}` with `reset_mfa: true` (refused whole, before
+  any write). `adminRouter` checks only that the session passed MFA, and a
+  session that owed no factor has passed it without proving one, so either door
+  would let such a session strip its own factor around
+  `requireFactorOrFirstEnrolment`. The Account page is the way for your own, and
+  it holds that guard; another administrator, or `reset-factors` on the server,
+  resets yours. The user page does not offer either on your own account.
+- **Last administrator:** not affected. Removing a key leaves the password as a
+  way in, and enrolment stays outside `RequireMFA` (see the guard note under User
+  Management and the end of this section).
+
+What an administrator can also do is the user page's **Reset
+MFA**, which clears **every** second factor (the authenticator and all passkeys)
+and ends the account's sessions in one statement (`ClearFactors`, all or
+nothing; it used to clear only the authenticator, leaving a passkey-only person
+locked out by the key they had lost,
+[#307](https://github.com/PubliciaLLC/go-help-desk/issues/307) items 2 and 4).
+`reset-factors` (below) does the same from the server.
+
+**Self-recovery covers an account with *nothing* enrolled, not a lost key.**
+Enrolment lives outside `RequireMFA`, so somebody whose factors were cleared (or
+who never had any) signs in with their password, reaches enrolment and recovers
+alone; `TestSoleAdministrator_CanSelfRecoverWithNoSecondFactor` pins it. An
+account that still *has* a registered factor is different, and both enrolment
+doors refuse a session that has not passed MFA: without that refusal somebody
+holding only the password registers their own key and obtains the second factor,
+passing the gate rather than breaking it. The consequence is a real lockout:
+**an administrator whose registered key is lost cannot recover alone**, and a
+*sole* administrator has no one to ask (setup does not reopen). The recovery is
+`reset-factors` on the server: another administrator can remove the key (one
+credential, or Reset MFA for all of them), but a sole administrator has none.
+The same holds for a key refused as a suspected clone (the sign count paragraph
+above). This is not new: `GenerateMFASecret` has refused
+re-enrolment for a TOTP-protected account since the re-enrolment fix.
+
+**The way back in is a command run on the server**, not a recovery code and not
+a second factor required up front:
+
+```
+/app/server reset-factors <email>
+```
+
+It clears the account's TOTP enrolment, removes its registered passkeys and ends
+its sessions (one statement), so the next sign-in reaches enrolment and the
+person starts again. It is the answer for every cause of lockout, and for the
+sole administrator the only one, since the web path must keep refusing (a
+password alone being enough to replace somebody's second factor is the bypass
+the guards exist to prevent). It takes an email address only and does not touch
+the password (`unlock`, below, does). It grants nothing new: anyone
+able to run it already has the filesystem and the database credentials, so it
+widens no web-facing surface, which a recovery code (another secret at rest,
+worth stealing, the property passkeys exist to remove) would.
+
+**`unlock` is the complete version** (#497):
+
+```
+/app/server unlock <email>
+```
+
+(In the published image the binary is `/app/server`:
+`docker compose exec app /app/server unlock <email>`.) In ONE transaction it
+does what `reset-factors` does (`ClearFactors`: every second factor and every
+session), and also re-enables the account if it was disabled, clears the TOTP
+failure count and lock, and sets a **new random password** (24 characters from
+`crypto/rand`, hashed at the current bcrypt cost) that it prints **once** to
+standard output after the commit, never to the log and never into the audit
+entry. It refuses an unknown or deleted address, and if any step fails
+(the audit write included) nothing changes and nothing is printed. It does not
+touch the sign-in throttle (a counter in `rate_limit_counters` that ends on its
+own within a minute, and only delays a login, never refuses the right password).
+It refuses an OAuth client's service account (#490), which has no password to unlock, naming the client.
+
+**The password it prints must be changed at the next sign-in.** It sets
+`users.must_change_password` (migration 000045). While the flag is set the
+session a correct password opens may do exactly one thing, change the password
+(`PATCH /me/password`, which asks for the current password as ever); the
+login answer carries `password_change_required`. The login page shows the
+change step first for an account that holds no factor, and the factor step first
+(`mfa_needed` or `passkey_needed` in the same answer, since the server refuses
+the change with `403 mfa_required` until a code or key is proved) for one that
+does, with the change after it. Every other route answers `403 password_change_required`:
+`RequireMFA` refuses it for all the routes behind it, and `RequirePasswordCurrent`
+for the enrolment routes outside it, the way the MFA-pending gate holds a
+half-signed-in session. Changing the password (`SetUserPasswordHash`) clears the
+flag. **The flag must never stop an account signing in**, which is the
+last-administrator rule applied to a new gate: it gates nothing at login, and
+the password change is reachable without having passed MFA. Otherwise an
+administrator whose role must enrol MFA would be held at "enrol first" by
+`RequireMFA` and at "change the password first" by the flag, with a way out of
+neither. That exemption is for a session that owed no factor when the password was
+checked (the login decides, into `PasswordChangeNeedsNoFactor`), never for the raw
+flag: the flag outlives the cleared factors, and a single sign-on session, which
+ignores it, can enrol a new one, after which a password alone must not be enough
+to change the password (`TestMustChangePassword_DoesNotLetAPasswordOnlySessionSkipAnEnrolledFactor`).
+An account with a factor verifies it first and then changes the password
+(`TestMustChangePassword_DoesNotLockOutAnAccountThatOwesEnrolment` covers the
+other case).
+Single sign-on and passkey sign-ins do not read the flag; it is about the
+password, and a federated administrator who never uses it simply keeps it set.
+
+**Its audit entry** (`action: "account_unlock"`, `actor: "server console"`, with
+the operating-system user and host and no actor id) is written in the same
+transaction, unlike `reset-factors`' best-effort write below: this command
+hands out a credential, so an unlock with no record is refused.
+
+**`reset-factors` writes an audit entry** naming the account and the operating-system user
+and host that ran it, with no actor id: nobody signed in, and inventing one
+would record a claim rather than a fact. The shape (`entity_type: "user"`,
+`action: "mfa_reset"`) is the one the user page's Reset MFA writes, and an
+administrator resetting somebody's password writes `password_reset_by_admin`
+naming themselves as actor. None of this prevents anything (whoever can run the
+command holds everything an audit entry could gate), but helping a colleague who
+lost a phone is a normal operational event that belongs in the trail with every
+other account change
+([#306](https://github.com/PubliciaLLC/go-help-desk/issues/306)).
+
+**The last-administrator guard's fourth case belongs with passwordless sign-in.**
+The guard (see User Management) refuses to disable, demote or delete the last
+active administrator and says nothing about removing their last way to
+*authenticate*. That is correct only while a password is always a way in. The
+entry points today are local login, SAML and OIDC; a second factor gates a
+session that has already authenticated and is not a way in by itself, so removing
+somebody's last second factor cannot strand them while a first factor exists, and
+there is no operation for a fourth case to refuse yet. What strands somebody today
+is a lost registered key (`reset-factors`), and an account provisioned by an
+identity provider that has no password when that provider is switched off
+([#300](https://github.com/PubliciaLLC/go-help-desk/issues/300); see the guard
+below). **When the password stops being a way in, self-recovery stops working**,
+and removing an administrator's last credential becomes the same permanent
+mistake as deleting the last administrator. The guard grows its fourth case **in
+the change that introduces passwordless sign-in**, not afterwards and not as a
+follow-up issue, and `TestSoleAdministrator_CanSelfRecoverWithNoSecondFactor`
+must be made to pass for passkeys before that change is done. `reset-factors` is
+a precondition for that case, not its trigger: "refuse to remove the last way in"
+is half an answer without "and here is how you recover when it happens anyway".
+
+**`BASE_URL` is security-relevant.** A WebAuthn credential is bound to its
+origin and the relying party is derived from `BASE_URL`, so the setting stops
+being only about links in emails. An instance that changes domain invalidates
+every registered credential and every user re-registers. A `BASE_URL` that
+cannot be a relying-party id is never defaulted, because a default would produce
+passkeys that silently never verify.
+
+**An unusable `BASE_URL` turns passkeys off; it does not stop the server** (#494).
+go-webauthn accepts a domain name and `localhost`, and rejects an IP address
+(`127.0.0.1`, `192.168.1.10`, `[::1]`), a single-label host (`helpdesk`) and a
+non-ASCII host (pinned by `TestNewService_WhichHostsTheLibraryAccepts`). Many
+1.2.x instances run on exactly such a LAN URL, and a second factor they never
+used must not take the whole help desk down. So startup logs once (`passkeys
+unavailable: ...` with the reason) and carries on with no passkey service, and:
+
+- `GET /admin/security-warnings` gains `passkeys: {available, reason}` and the
+  admin banner (`InsecureConfigBanner`) says `BASE_URL` must be a domain name or
+  `localhost`.
+- `GET /auth/providers` gains `passkeys` (boolean, public, no reason), so the
+  UI offers no key it cannot check. The account page hides enrolment when its
+  list request answers `503 passkeys_unavailable`.
+- `GET /me/passkeys`, `POST /me/passkeys/register/start|finish` and
+  `POST /auth/local/passkey/start|finish` answer `503 passkeys_unavailable`
+  (the `requirePasskeys` middleware, so no handler can reach the nil service).
+  `DELETE /me/passkeys/{id}` still works: it never uses the service.
+- **A passkey-only account is refused, not let in on its password alone.** A
+  passkey is only ever a second step after the password (there is no
+  passwordless sign-in). While passkeys are off, a key cannot be checked, and
+  accepting the password alone would let a stolen password take over exactly
+  the accounts that chose a stronger factor. So when the instance's MFA is on
+  and an account's only second factor is a passkey, `POST /auth/local/login`
+  answers `403 passkey_unavailable` ("Your passkey can't be used on this server
+  right now. Ask an administrator to reset your sign-in factors."), creates no
+  session and does not count as a failed attempt. An administrator's **Reset
+  MFA** (which clears the passkeys too, see above) unblocks the account; it
+  then signs in and enrols TOTP as usual. An account with a passkey **and**
+  TOTP uses TOTP as always. `passkey_needed` is never sent while passkeys are
+  off.
+- **A passkey requirement for a role is suspended while passkeys are off**
+  (#616c, "Passkey required for roles" below): TOTP passes again, and
+  `GET /admin/security-warnings` gains `passkeys.suspended_roles` (the listed
+  roles, while `mfa_enabled` is on) so the banner can say so.
+- **There is no exception for the last administrator.** They are refused too,
+  and `alreadyProtected` still counts passkeys, so a password alone cannot
+  enrol TOTP on any passkey-only account. Recovery is on the server:
+  `docker compose exec app /app/server reset-factors <email>` (from the `docker/` directory; clears every
+  factor, including passkeys), or an administrator's Reset MFA for anyone else.
+  Fixing `BASE_URL` also brings old keys back, provided the domain is the one
+  they were registered on.
+
+**Not built**, written down so it is not rediscovered as a gap: passwordless
+sign-in; attestation verification against a metadata service (below); and any
+route by which a machine credential could register or use a passkey
+(`DenyMachineCredentials` refuses that and will keep refusing it). The per-role
+"passkey required, TOTP no longer sufficient" policy that
+[#616](https://github.com/PubliciaLLC/go-help-desk/issues/616) raised was
+first listed here and is now built (part c, below).
+
+**Attestation is deliberately not built** (#616 part a). Registration asks for
+no attestation, so browsers send `fmt: none`, and the library checks a present
+statement's signature but not its trust chain. Nothing here knows what kind of
+authenticator a key is. Enforcing attestation (the FIDO Metadata Service, a
+request for `direct` attestation, a refusal of `none`, a cache and a refresh, an
+answer for installs with no outbound access) would also very likely mean
+**hardware keys only**, because synced passkeys (iCloud Keychain, Google
+Password Manager) generally send none; that contradicts accepting synced
+passkeys, which this section does on purpose. The AAGUID is stored but is
+self-reported, so an allow-list on it would not be a control. What the property
+above does claim, phishing-resistance, holds for every credential this accepts;
+what an operator cannot do is require a particular kind of authenticator. The
+`backup_eligible` flag is how to tell a synced credential from a hardware key
+afterwards. The signature counter check (part b) shipped in 1.3.0 (#645).
+
+### Passkey required for roles (#616 part c)
+
+`passkey_required_roles` (a JSON array of `admin`, `staff` and `user`, seeded
+`[]`, auth-critical so machine credentials cannot change it) lists roles whose
+members must finish **every sign-in with a passkey**. For them a TOTP code still
+proves a factor, but it does not pass MFA. With the list empty, which is how an
+upgrade leaves it (migration 000066), every path behaves as before.
+
+- **A listed role is MFA-enforced, computed when read.** `MFARequiredFor(role)`
+  is `mfa_enabled` and the role is in `mfa_enforced_roles` **or**
+  `passkey_required_roles`. Nothing writes `mfa_enforced_roles` for the
+  operator: untick the passkey requirement and the role is exactly as enforced
+  as it was before. The settings page shows the role's "Require MFA" box checked
+  and disabled while it is listed, with the stored value untouched; the server
+  enforces the implication regardless of the page. Like `mfa_enforced_roles`
+  the list has no effect while `mfa_enabled` is off (`PasskeyRequiredFor`).
+  `PATCH /admin/settings` refuses an element that is not one of the three roles
+  (`400 bad_request`).
+- **The decision is one pure function**, `auth.SecondStep` (table-tested), called
+  by the password login, signup verification, SAML and OIDC. Its output is what
+  the wire carries, plus the stranded refusal. For a role not in the list it is
+  the old logic unchanged. For a listed role: a passkey **registered** means the
+  passkey is owed (`passkey_needed`), even when the account also holds TOTP; TOTP
+  only: verify it, then register a key (`mfa_needed` and
+  `passkey_enrollment_needed` both true); nothing: register a key
+  (`passkey_enrollment_needed`), **never** TOTP enrolment, because that would not
+  satisfy the gate.
+- **The session fact is `PasskeyOwed`,** set only when a sign-in creates the
+  session (password login, signup verification, SAML, OIDC), from the role's
+  policy at that moment. Existing sessions are untouched: a policy change applies
+  at the next sign-in and ends nobody's session, as `mfa_enforced_roles` behaves.
+  A session saved before the field existed decodes it false. TOTP verification
+  and TOTP enrolment confirm leave `MFAPassed` as it was (`MFAPassed = !PasskeyOwed`)
+  and set `FactorVerified`, which is what lets a key be registered (#333, #617),
+  and they keep the pending deadline rather than extending it (#452). A password
+  change carries the flag, or a session that must change its password could then
+  enrol TOTP and pass. It is cleared by the only things that satisfy it: a
+  passkey sign-in and a passkey registration (`markPasskeyRegistrationSatisfiesMFA`).
+  A second fact, **`PasskeyHeld`**, is set with it when the sign-in owed a key the
+  account **already had** (`Owed.PasskeyHeld`: password login, signup, SSO), carried
+  with it and cleared with it. While it is set the session may neither register a
+  passkey nor delete one (`403 passkey_required`, `requirePasskeyNotHeld`, on
+  register start and finish and on `DELETE /me/passkeys/{id}`), whatever else it
+  has proved: otherwise a TOTP code, or an IdP that asserted MFA but not a passkey,
+  would let the caller register an authenticator of their own and pass, never
+  using the owner's key, or delete the keys first and become the "no key yet"
+  case. Recorded at sign-in, so deleting keys mid-session cannot change it. Not set
+  for the onboarding sign-ins (TOTP only, or nothing), which keep their route to a
+  first key.
+  A forced password change (`must_change_password`) on a session that has proved a
+  factor and is owed a first key goes **before** the key: `RequireMFAOrPasswordChange`
+  admits `PasskeyOwed && FactorVerified && !PasskeyHeld && MustChangePassword`,
+  since registering waits behind `RequirePasswordCurrent` and `MFAPassed` cannot
+  come until a key exists. The route is open to such a session only while the
+  change is actually owed (a session with no forced change gets `403
+  mfa_required` from it), and the change **keeps the pending deadline the
+  sign-in gave** rather than minting a fresh one, as TOTP verification does
+  (#452): otherwise repeated calls would push the deadline back indefinitely
+  (`TestPasskeyRequired_PasswordChangeDoesNotExtendThePendingDeadline`).
+  A session owed a held key signs in with it first.
+  The Account-page step-up (#336) on a fully signed-in session is unaffected,
+  since that session never owed a passkey.
+- **Suspended while passkeys are unavailable (#494).** With no passkey service the
+  requirement could not be met by anyone, so it is not applied
+  (`passkeyRequiredFor` is availability and the setting): TOTP passes again, a
+  role with no factor still enrols TOTP because the role is still MFA-enforced,
+  and a passkey-only account is still refused (`403 passkey_unavailable`). The
+  policy itself locks nobody out, but a passkey-only account, which the policy
+  creates when it sends a no-factor account to register a key, is stranded (an
+  accepted, documented consequence) while
+  passkeys are unavailable (a bad `BASE_URL`), until passkeys work again or an
+  administrator resets the account's factors (reset-factors). `GET /admin/security-warnings` gains
+  `passkeys.suspended_roles` (always an array; non-empty only when passkeys are
+  unavailable, `mfa_enabled` is on and the list is non-empty) and the banner shows
+  "Passkey requirement suspended", saying TOTP is accepted for those roles until
+  `BASE_URL` is fixed.
+- **Recovery.** A person who lost the key is helped by an administrator removing
+  it or resetting MFA, as in Losing a key above; there is no self-service route,
+  because a held key is exactly what the policy requires (`PasskeyHeld`). A TOTP
+  holder with **no** key verifies the authenticator and registers a first one. The
+  sole administrator in a listed role with no factor signs in, registers a key and
+  is in. A sole administrator in a listed role who holds TOTP and has lost the key
+  needs `reset-factors` on the server; the guard below does not prevent that, since
+  a lost key still counts as held.
+- **Self-lockout guard (owner ruling).** An administrator does not require a
+  passkey of their own role before they have shown they can hold one: someone who
+  cannot create a passkey on their device or browser would be stuck at the
+  registration step at their next sign-in. `PATCH /admin/settings` therefore
+  refuses (`400 bad_request`, the status and code of #300's
+  `ErrWouldOrphanInstance`, whose shape this follows) a `passkey_required_roles`
+  that **newly lists the saving user's own role** unless that user has at least one
+  registered passkey (`refusePasskeySelfLockout`; the message says to register a
+  passkey first, and names `BASE_URL` only when passkeys are unavailable, in which
+  case someone with no key cannot register one now). Only a newly listed own role is judged:
+  when the stored list already names the saver's role, or the new list does not,
+  nothing about their own exposure changes, so any other edit (another role added
+  or removed, an unchanged list) is never refused. A refused
+  save writes nothing. It applies whether or not `mfa_enabled` is on, because
+  switching it on later would otherwise activate the policy under the saver. A
+  machine credential cannot reach the key at all (`AuthCriticalKeys`; `a machine
+  credential is refused` in `TestPatchSettings_PasskeyRequiredRoles`), so the saver
+  is always a signed-in person. Server-side only: the settings page shows the
+  refusal through its existing error display. The same narrow race as #300 is
+  accepted (the last key deleted between the check and the write), and so are two
+  more: a key bound to an old relying-party ID (`BASE_URL` moved), which counts as
+  held but cannot sign in, and another administrator unticking the role between the
+  check and the write (the stored list is read when validating and written
+  afterwards, with no transaction), which lets a keyless saver re-add their own role.
+  The settings page sends the whole form, so a keyless administrator whose page
+  still shows their role ticked after someone else unticked it is refused on any
+  save until they reload.
+
+Decided by the owner, as built: an SSO user in a listed role with no passkey is
+sent to register one after the SSO; the policy is inert while `mfa_enabled` is
+off; and a passkey-only account stranded while passkeys are unavailable is
+accepted, as described under the suspension above.
+
+SSO is covered under SAML and OIDC below: a listed role is let in by an IdP only
+on a passkey-grade assertion, otherwise a passkey step follows the SSO.
 
 ### SAML (Optional, Off by Default)
 
-- Toggle in admin settings
-- When enabled: all users (Admin, Staff, User) authenticate via SAML
-- **Admin failsafe**: admins can still log in with local username/password when SAML is enabled
-- Non-admin local auth is disabled when SAML is on
+- Configured under **Admin → System → Authentication** with the IdP's metadata, given as a URL the server fetches or as the metadata XML pasted or uploaded on the settings page (readable after saving: it is public data), and a service-provider certificate and key, which the server generates (see **The service-provider certificate and key are generated** below; the key is write-only and never shown). The IdP registers this instance from `GET /api/v1/auth/saml/metadata`. Sign-in starts at `GET /api/v1/auth/saml/login`, which always opens a new request at the IdP (even when the browser still holds a hand-over cookie) and accepts no return address. It returns to `POST /api/v1/auth/saml/acs`, then always to `GET /api/v1/auth/saml/complete` ([#390](https://github.com/PubliciaLLC/go-help-desk/issues/390); pinned by `TestSAMLLogin_RedirectsToTheIdP`, `TestSAMLLogin_IgnoresReturnToParameters` and `TestSAMLLogin_StartsFreshEvenWithAHandoverCookie`). IdP-initiated sign-in is not accepted. The login page shows a **Sign in with SAML** button, a plain link to `GET /api/v1/auth/saml/login`, when `GET /auth/providers` reports SAML enabled (the middleware is loaded, whatever `saml_enabled` says) ([#393](https://github.com/PubliciaLLC/go-help-desk/issues/393), [#421](https://github.com/PubliciaLLC/go-help-desk/issues/421)).
+- **SAML runs whenever the IdP metadata (a URL or XML), the certificate and the key are all set**; otherwise its routes answer `503 saml_not_configured`. There is no on/off switch for SAML itself: **"Save SAML config" (`PUT /admin/saml`) is what switches SAML on**. The settings page therefore **always shows the SAML form** (IdP metadata, the service-provider certificate section, and "Save SAML config"), whatever `saml_enabled` says. It also always shows the two values the administrator gives the identity provider: the **Entity ID** (`<BASE_URL>/api/v1/auth/saml/metadata`, the SP metadata URL) and the **ACS URL** (`<BASE_URL>/api/v1/auth/saml/acs`), each with a copy button. `GET /admin/saml` returns both, built from the server's base URL: `sp_metadata_url` and `sp_acs_url`. The toggle is a separate posture, labelled "Require SAML for staff and users" (see `saml_enabled` below); it is saved by the page's own Save, not by "Save SAML config".
+- **The service-provider certificate and key are generated; an administrator never runs `openssl`.** SAML needs a certificate and private key of this instance: the certificate is published in the SP metadata as both the signing and the encryption key, and the key decrypts encrypted assertions (an IdP such as Microsoft Entra ID encrypts to the certificate's RSA key) and signs the SAML library's own cookies (the hand-over `token` and the request-tracking cookie). AuthnRequests are **not** signed, and nothing here changes that. Before this, an administrator had to create the pair and upload both halves, and SAML did not load without them.
+  - **When.** `PUT /admin/saml` generates a pair when, after the request's fields are merged over the stored ones, the IdP metadata (URL or XML) is set and **both** `saml_cert_pem` and `saml_key_pem` are empty. It happens at the first save that has metadata and no pair, not at startup and not on first use: nothing is generated until an administrator configures SAML, and a save that clears all of the SAML settings (metadata included) generates nothing. Only `PUT /admin/saml` generates; `PATCH /admin/settings` never does.
+  - **Never over a stored pair.** A stored certificate or key is never replaced by a first-save generation. A pair the administrator uploads (`cert_pem` and `key_pem` together, as before) is validated and stored exactly as before, and a half-supplied or mismatched pair (a certificate without a key, a key without a certificate, or two that do not match) is still `400 invalid_cert_key` with the same message. An upgraded installation that already has a pair keeps it: nothing in this change reads, rewrites or regenerates it.
+  - **At most once, even when saves race.** Two saves in one server are already serialised by `samlReloadMu`, which `PUT /admin/saml` holds from reading the stored settings to the commit. Several servers share one database, so the write is also conditional: the certificate and the key are written in one transaction, each only if its row is still empty (`INSERT ... ON CONFLICT (key) DO UPDATE ... WHERE value = '""'`, which makes the row lock the gate: a second transaction waits for the first and then finds the row filled). The loser writes nothing, reads the winner's pair and uses that, so both saves go on to load the same certificate. The pair is stored when it is generated, before SAML is built and before the stranded-administrator guard, so a save that guard then refuses leaves the pair it generated (harmless: the next save finds it and keeps it). Pinned against real Postgres on two connections (`TestSetSAMLSPPair_IfAbsentIsAtomic`) and through the handler (`TestSaveSAMLConfig_GeneratesOnceWhenSavesRace`).
+  - **What is generated** (`auth.GenerateSPCertificate`, in `domain/auth`, which imports no infrastructure): a self-signed **RSA 2048** certificate signed with **SHA-256**, valid for **10 years** (`NotBefore` is one hour before the moment of generation, so a replica whose clock runs a little behind does not see a certificate that is not yet valid), subject **CN = the host of `BASE_URL`** (no port; `go-help-desk` if there is none) and **O = Go Help Desk**, a random **128-bit serial**, key usage `digitalSignature` and `keyEncipherment`, no CA (`BasicConstraints` present, `IsCA` false). RSA, not ECDSA, because an IdP encrypts assertions to the SP certificate and Entra ID needs an RSA key. The key is PKCS#8 PEM (`PRIVATE KEY`). No Subject Alternative Name: IdPs take the certificate from the metadata and do not check a host name against it.
+  - **Regenerating** is `regenerate_cert: true` on the same `PUT /admin/saml` (not a new route: the save already holds the lock, builds the middleware, applies the stranded-administrator guard and reloads, and a second route would copy all of it). It generates a new pair and **replaces** the stored one, unconditionally, and SAML is rebuilt with it. It cannot be combined with `cert_pem` or `key_pem` (`400 invalid_cert_key`): one request, one source for the pair. The identity provider has to be given the new certificate if it pinned the old one; the page says so and asks to confirm.
+  - **What the API says.** `GET /admin/saml` gains `cert_not_after` (RFC 3339, the stored certificate's expiry, `null` when there is none or it cannot be read) and `cert_generated` (true when the stored certificate is one this server generated). `cert_generated` is derived from the certificate, not stored: self-signed, subject organisation `Go Help Desk`, not a CA, key usage exactly `digitalSignature` and `keyEncipherment` (an `openssl req -x509` certificate is a CA with no key usage, so one with our organisation, such as this repository's test fixture, is not mistaken for ours). So it cannot disagree with the pair, whichever way the pair was written (an upload, or `PATCH /admin/settings`); the cost is that an uploaded certificate built to look the same on purpose reads as generated, which only changes a label. **The private key is never returned by any endpoint, shown on the page, logged or audited.** `cert_pem` is public and is what the administrator downloads for the IdP.
+  - **Audit.** Nothing about SAML configuration was audited before, and an upload still is not. A generation or regeneration is: `entity_type: "setting"` (entity id derived from `saml_cert_pem`, as the audit-mask entry does), `action: "saml_cert_generated"` or `"saml_cert_regenerated"`, the administrator as actor, `after: {source: "generated", cert_not_after, cert_fingerprint}` (the certificate's SHA-256, colon-separated hex: public information, and what an administrator compares with what the IdP shows). It is written **in the same transaction as the pair**, so there is no pair without its entry and no entry without its pair. The audit view's allow-list gains `certnotafter` and `certfingerprint`; no key material, and no key that could carry it, is written.
+  - **The settings page.** The "SP certificate" section no longer asks for a file. It shows **Generated automatically** with the expiry date and a **Download certificate** button (the public certificate, for an IdP that wants it) once a pair is stored, and says the certificate is created when the configuration is saved before that. **Replace…** reveals the two upload controls (certificate and key, sent together); **Regenerate** asks for confirmation and sends `regenerate_cert`. A pair that was uploaded reads **Uploaded certificate** with the same expiry and download. The private key is not mentioned beyond "kept on the server".
+  - **Not changed here:** the SP certificate's own expiry is not warned about (the IdP-side warning in `/admin/security-warnings` is about the IdP's certificate); ten years is the answer to that for now.
+  - Pinned by `TestGenerateSPCertificate_*`, `TestSaveSAMLConfig_Generates*`, `TestSaveSAMLConfig_Regenerate*` and `TestSetSAMLSPPair_*`.
+- **IdP metadata: a URL or XML (#461).** `saml_metadata_url` and `saml_metadata_xml` are alternatives. A save that would leave both set is refused: `400 saml_metadata_conflict` on `PUT /admin/saml`, and `400 bad_request` on the settings PATCH. Pasted XML is parsed before anything is saved, by the parser a fetched URL goes through (`samlsp.ParseMetadata`). A document that does not parse, is not SAML metadata, has no `IDPSSODescriptor` (most often this instance's own SP metadata pasted by mistake), or has no signing certificate that parses as X.509 (the certificates the SP verifies every assertion against; such metadata loads, so it would otherwise count as reachable for the lockout guard and then refuse every sign-in) is refused with `invalid_saml_metadata`, and one over 256 KiB with `saml_metadata_too_large`. Go's XML decoder resolves no external entities, fetches no DTD and expands no declared entity, so a pasted document cannot make the server read a file or a URL (pinned by `TestParseIdPMetadataXML_FetchesNoExternalEntity`). The settings page's upload button only fills the text box, so pasted and uploaded XML are the same input. Saved XML is never refreshed: when the IdP rotates its signing certificate, paste its new metadata. A URL is fetched again at each save and each restart, and **every hour** by `Server.RefreshSAML` (from the same hourly goroutine that sweeps expired sessions) under the rules in the next bullet. Pasted XML may declare any `encoding` in its XML declaration, UTF-16 included (a UTF-16 file keeps its declaration when a browser reads its text): the text is already UTF-8, so the declaration is rewritten to `UTF-8` for parsing only and the stored XML is exactly what was pasted. A metadata URL that serves real UTF-16 bytes is not decoded. **Certificate expiry warning:** `GET /admin/security-warnings` carries `saml_idp_certificate: {expires_at, expired}` when the live IdP metadata's signing certificate is expired or expires within 30 days (absent otherwise, and while SAML is not loaded). With several signing certificates (an IdP mid-rollover) the latest expiry decides. The banner shows it amber before expiry and red after. Metadata cannot be refreshed from pasted XML, so this is the only signal; prefer the URL if your IdP has one (Google Workspace offers only a download). The private key stays write-only; the XML is returned by `GET /admin/saml` and the settings dump.
+- **The hourly refresh may not move the trust anchor unattended (#619).** What the IdP's metadata says decides which certificate signs anyone in, so an automatic re-fetch is limited; a save by an administrator is not. Each tick, under the reload lock (below), `RefreshSAML` compares the stored settings with the settings the running middleware was built from:
+  - **They differ** (saved on another replica, or nothing has loaded yet): the stored settings are loaded exactly as a save loads them, over http or https, with no further test. They are the administrator's choice. "Nothing has loaded yet" includes an IdP that was unreachable at boot: each hourly tick retries the startup load, at startup's trust level (no refresh rules), and the `http_url` warning still applies while the stored URL is not https.
+  - **A failed settings read** (the database is briefly unreachable) is not "SAML is not configured": the tick, and the reload a settings PATCH or startup runs, keep the running middleware, log it, and try again next hour (`admin.Service.SAMLSettings` reads the four keys in one query and reports a failed read as an error).
+  - **They are the same and the metadata is pasted XML:** nothing to fetch.
+  - **They are the same and the metadata is a URL:** the URL is re-fetched under these rules, and the result replaces the running middleware only if all pass.
+    1. **https only.** The refresh fetches only an `https` URL, and refuses a redirect that leaves https (the request is never made for an http URL). With an http URL the refresh does nothing, and `GET /admin/security-warnings` carries `saml_metadata_refresh: {problem: "http_url"}` for as long as the stored URL is not https (computed from the stored URL, so it shows at save time and clears when the URL is fixed). The administrator's own save and load of an http URL work as before.
+    2. **Same EntityID.** Refreshed metadata whose `entityID` differs from the one in use is refused: the running configuration is kept, the server logs an error, and the warnings carry `problem: "entity_id_changed"`.
+    3. **No certificate may be added.** The signing certificates the SP verifies with (`KeyDescriptor` with `use="signing"` or no `use`) are compared by the certificate itself. The refreshed set is applied only if it is a **subset** of the set in use: certificates removed or unchanged (`auth.AddedSigningCerts` is empty). Removal applies automatically, so a retired or revoked certificate stops being trusted. If the refreshed metadata **adds** any signing certificate, nothing from it is applied (not the certificate, not a moved endpoint), whether or not a certificate in use is still published beside it: someone serving a tampered response would keep the real certificate and add their own, and overlap proves nothing about who served it. The running configuration is kept, the server logs an error with the fingerprints, and `GET /admin/security-warnings` carries `saml_metadata_refresh: {problem: "new_certificate", new_certificates: [{sha256, expires_at}]}` (SHA-256 of the DER certificate, colon-separated upper-case hex, as identity providers show it). The banner is red: "The identity provider published a new signing certificate. Re-save the SAML settings to trust it.", with each fingerprint and expiry to compare with the provider's own page. **An administrator re-saving the SAML settings** (`PUT /admin/saml`, the existing manual path) loads the full metadata, new certificates included, and clears the warning. **A certificate rollover therefore needs one administrator re-save after the identity provider publishes the new certificate, and before the old one expires** (the expiry warning above gives 30 days). **Fetched metadata is checked like pasted XML.** There must be at least one signing certificate and every one must parse (`checkIdPSigningCerts`), because the library fails every sign-in otherwise. Pasted XML passes it at save; fetched metadata passes it whenever the middleware is built, so startup, a manual save and the hourly refresh all enforce it. Metadata that fails it is never loaded: the hourly refresh keeps the running configuration and the warnings carry `problem: "metadata_invalid"`; a manual save of such a URL is saved with the usual "metadata could not be loaded" warning and the running configuration kept; at startup SAML is left unloaded and the hourly tick retries. `metadata_invalid` clears on the next commit.
+  - A fetch that fails (IdP down, bad XML) keeps the running middleware and is not a warning: an outage is not a trust problem.
+  - A `saml_metadata_refresh` of `entity_id_changed` or `new_certificate` clears on the next commit of any kind: the administrator's re-save, or a later refresh that passes (for instance when the added certificate is withdrawn).
+  - Pinned by `TestRefreshSAML_*` and `TestNewSAMLMiddleware_HTTPSOnly`.
+- **Reloads are serialised (#619).** Reading the stored settings, building from them (a network fetch of up to 15 seconds) and committing are done under one lock per provider (`samlReloadMu`, `oidcReloadMu`), held by startup, the hourly refresh, the `PATCH /admin/settings` reload, and the `PUT /admin/saml` and `PUT /admin/oidc` saves. An older reload therefore cannot commit after a newer one and put the old configuration back live (pinned by `TestReloadSAML_ANewerReloadIsNotOverwrittenByAnOlderSlowOne` and `TestReloadOIDC_ANewerReloadIsNotOverwrittenByAnOlderSlowOne`). The hourly refresh holds the SAML lock across its metadata fetch, so a SAML save or a settings PATCH that reloads can wait up to 15 seconds, about once an hour; the lock is deliberately not narrowed to the commit.
+- **`saml_enabled`** (the "Require SAML for staff and users" toggle) is a separate, stricter posture an operator opts into: it removes password login for non-administrators (`user.IsLocalAuthAllowed`; refused with `403 saml_required`) and OIDC sign-in for them too (see **Require SAML covers OIDC** under OIDC), and `GET /auth/providers` says so with `local_admin_only` (true exactly when `saml_enabled` is on; `local` stays true, since the password form is still offered). `GET /auth/providers` is JSON, and its `saml` and `oidc` entries mean *loaded and able to sign someone in now*, not *switched on*: an identity provider that did not answer no longer gets a button that leads to a 503 (#421). The toggle's hint says that SAML is switched on by "Save SAML config", and that this switch only turns off password and OIDC sign-in for staff and users (administrators keep both). **A save that leaves it on while SAML is not loaded still succeeds, with a warning.** Then every staff and user password sign-in is refused and `GET /auth/providers` offers no SAML button, so those accounts have no way in. `PATCH /admin/settings` answers `200 {"warning": "..."}` (the same field the stranding and OAuth-client warnings use) when, after the save has been applied and SAML reloaded, `saml_enabled` is true, SAML is not loaded, and the body set `saml_enabled` or any SAML metadata, certificate or key field (so removing the SAML config while the switch is on says so too). `PUT /admin/saml` adds the same sentence when its save leaves SAML not loaded while `saml_enabled` is true. It is a warning and not a refusal: administrators are unaffected (they keep password sign-in), so no instance is locked out, and the setting is the administrator's to choose; the settings page shows the warning after its Save. No warning when SAML is loaded, and none when `saml_enabled` is false. Pinned by `TestPatchSettings_SAMLEnabledWithoutLiveSAMLWarns`.
+- **A server problem while `saml_enabled` is on and SAML is not loaded.** The save-time warning above is said once, to whoever saved. The state it describes outlasts the save (the identity provider can stop answering, a restart can find it down, another administrator can remove the key), so it is also a standing server problem, listed with the others. It is the only one of its kind: **a problem is something broken now, or a switch an administrator set whose purpose the current state defeats.** A feature left unset is not (the same rule as email, which is a warning only once signup or guest submission needs it, and as the attachment scanner, which is quiet when its policy is "off"). So there is nothing to say while `saml_enabled` is off, **whatever state the SAML fields are in**: complete or not, loaded or not, the instance works and the page already shows `configured` and `live`. (A half-filled SAML form with the switch off is an operator part-way through setting it up.)
+  - **Condition**, read on each `GET /admin/security-warnings` from live state (`adminSvc.SAMLEnabled` and `samlReachableNow()`, the same two facts the save warning uses), so it clears by itself the moment SAML loads, the switch is turned off, or a save removes the requirement, with no restart and no timer, like `attachment_storage`: `saml_enabled` is on **and** SAML is not loaded. The four combinations: enabled and not loaded, a problem; enabled and loaded, none; disabled and not loaded, none; disabled and loaded, none. A metadata URL that fails to load, or metadata that is refused, while the switch is on is the first case (SAML is then not loaded); the hourly refresh retries it and the problem clears when it loads.
+  - **Field**: `saml_required_not_loaded: {reason}`, an object present only while the condition holds (absent otherwise, as `saml_idp_certificate` is). `reason` is `incomplete` when the stored IdP metadata (URL or XML), certificate or key is missing (`samlFieldsLookConfigured` is false), and `not_loaded` when all are saved but the middleware is not running (the metadata did not load, or the pair is unusable). Additive; an older frontend ignores it, a newer one reading an older server sees no field and shows nothing.
+  - **Clears at once after the fix.** The security warnings are read with a five-minute `staleTime`, so the saves that can fix the problem ask for them again: "Save SAML config" (`SAMLSettingsSection`) invalidates `['security-warnings']` in its `onSuccess`, and the settings pages' own Save does (`useSettingsDraft`, which turning the switch off goes through). Pinned by `saml-required-clears.test.tsx` (the bar goes away after each save with no refocus, no Details click and no reload) and by `e2e/saml-server-problem.spec.ts`.
+  - **Who**: administrators only, as the endpoint is (`403` for staff and users, `401` anonymously). It is not on the public `/site` payload: it says how sign-in is configured.
+  - **Banner**: id `saml-required-not-loaded`, red (`failure`: people cannot sign in now), signature the `reason`. Title, for both reasons: "Staff and users cannot sign in: SAML is required but is not working" (not "not set up": with `not_loaded` everything is saved and SAML is not running). Body, one paragraph, word for word as `InsecureConfigBanner.tsx` renders it and `InsecureConfigBanner.saml-required.test.tsx` pins it. Its first sentence is `"Require SAML for staff and users" is on, so staff and users can sign in only with SAML, but ` followed by the cause. For `incomplete` the cause is `the identity provider's metadata, the certificate or the private key is missing.` For `not_loaded` it is `SAML could not be loaded: the identity provider's metadata could not be fetched or was refused, or the certificate and private key do not work together. The server tries again every hour, and saving the SAML configuration tries again now.` (The server cannot tell which cause it was, so both are named. The hourly retry is the one `RefreshSAML` makes for settings that never loaded; a save retries at once.) Then, for both: `Until that is fixed their password sign-in is refused and the login page has no SAML button. Administrators can still sign in with a password. ` a link, `Open System → Authentication → SAML` (a plain anchor to `/admin/settings/authentication`, as the other notices), and ` to fix it, or turn off "Require SAML for staff and users" there. This goes away by itself once SAML is loaded or the switch is off.` **Hide** is the banner's: for the session, by id, severity and signature, returning at the next sign-in while the problem remains. Counted in "N server problems need attention", listed under Details.
+  - **Card**: the item in the **Admin health card** table, red, from the same field, with the same text for both reasons (the banner says which), no Hide of its own.
+  - **Not covered**: OIDC has no equivalent notice; `oidc_enabled` is a sign-in method and not a requirement that removes the password form. Pinned by `TestGetSecurityWarnings_SAMLRequiredNotLoaded` (the table above, the two reasons, the clearing without restart, administrators only), `InsecureConfigBanner.saml-required.test.tsx`, `adminHealth.test.ts`, `AdminHealthCard.test.tsx` and `e2e/saml-server-problem.spec.ts`.
+- **Admin failsafe**: administrators can still sign in with a local password.
+- **NameID format: persistent (1.3.0).** The authentication request asks the identity provider for a **persistent** NameID (`NameIDPolicy Format="urn:oasis:names:tc:SAML:2.0:nameid-format:persistent"`), and the SP metadata advertises it. The NameID is the account's permanent key (`users.saml_subject`), so it has to be the same value every time the same person signs in. The library's default is `transient`, which Microsoft Entra ID (and others) answer with a random value for every sign-in; before 1.3.0 that made every SAML account work for exactly one sign-in, because the second sign-in carried a NameID no account knew and its address was already held (`email_taken`). A format named in the request overrides the one set in the identity provider's own application settings, so there is nothing for an administrator to change on that side. An identity provider that cannot issue a persistent NameID answers with a SAML status error such as `InvalidNameIDPolicy`; the ACS answers by redirecting to `/login?error=saml_nameid_format` (every other failed response keeps the library's plain `403`; the library checks destination, `InResponseTo`, issue time and issuer before the status but not the signature, so an unsigned or unproven error response can trigger this one fixed redirect, which shows nothing from the response), and the login page says the provider cannot issue the identifier this help desk asks for and to ask an administrator. The remedy is to allow persistent identifiers for the application at the provider (pinned by `TestACSError_*`). **What the identity provider must send:** a NameID of any non-empty value (opaque is fine) and the user's address as an attribute (`email`, `mail`, the LDAP `mail` OID or Entra ID's `…/claims/emailaddress`), as before. The address is what finds an account again if the NameID ever changes, so an assertion with no address attribute and an opaque NameID creates nobody (`invalid_email`; the address is validated before the domain allowlist, so the answer is the same with an allowlist set).
+- **First sign-in provisioning and account matching.** Each assertion is matched to an account in this order, and the first step that applies decides. The address is normalised like every other address here (`ValidateEmail`: trimmed, lower-cased, brackets and needless quotes removed) and compared **ignoring case** (`lower(email)`). The unique constraint on `users.email` is case-sensitive and addresses were lower-cased on write only from v1.2.0, so an older row can be mixed case and `A@x` and `a@x` can both exist (legacy data only: nothing writes such a pair now). When several rows match, the holder is chosen in this order: a live row over a deleted one; then the row whose address is exactly the lower-cased one (the one the unique index sees as holding it); then a row SAML did not create over one it did, so a deleted local account blocks when no row is exact; then the oldest. The exact row is decided before the kind, so among deleted rows the exact lower-case row decides, and a deleted local twin in other capitals neither blocks a deleted SAML-created row that is exact nor is written. The choice is therefore the same whichever row is older.
+  1. **By subject.** A live (not deleted) account whose `saml_subject` equals the NameID signs in and has its email and display name refreshed from the assertion (the domain allowlist is not applied again). An address that differs from the stored one only in case is not a change: the stored spelling stays, because writing the lower-cased form could collide with a deleted row that holds exactly that spelling and lock the person out. A disabled account is refused (`account_disabled`) as it always was.
+  2. **By address, among SAML-created accounts, and only live ones: relink.** No account has this subject, but a live account that was itself created by SAML (`saml_subject` is not empty) holds the assertion's address. It is the same person arriving under a new NameID: the account is **relinked**, meaning its `saml_subject` is replaced with the new NameID, its display name refreshed, and they are signed in as that account. Role, groups, tickets and MFA state are untouched, so a promoted account stays promoted, and the domain allowlist is not applied again (as for step 1). **Trust:** the identity provider's address attribute is the identity here, so anyone who can make the provider assert an address can sign in as the SAML-created account that holds it, including a promoted administrator and an account later given a password or MFA. Check which attribute is mapped to the address and that users cannot edit it at the provider. This heals every account created before 1.3.0, whose stored subject is a dead transient value, at its owner's next sign-in; and it keeps an identity provider that still sends a different NameID each time working. A **disabled** account is not relinked and is refused (`account_disabled`), the same rule as step 1: disabling someone is not undone by their address arriving under another subject. The write is one guarded statement (live, SAML-created, not disabled, not a service account), so an account that was deleted or disabled between the read and the write is not relinked on the strength of the older read; the sign-in is then decided again from the start.
+  3. **By address, among deleted SAML-created accounts: tombstone and re-create.** The address is held by a **deleted** account that was created by SAML. Deleting someone means they are gone, so signing in again is a new person: the old row's address is renamed to `deleted-<its id>@invalid` and its `saml_subject` and `oidc_subject` cleared, and the new account is created (role `User`, subject set, domain allowlist applied, exactly as for any first SAML sign-in), in **one transaction**, by the same function the administrator's New user form uses (User Management → Delete). The old row keeps its id, so its tickets, replies and audit history stay attached to it and it still shows the display name it had. If the create fails, the rename is rolled back with it. It is audited as described there.
+  4. **Otherwise create.** No account holds the address: an unknown subject creates a `User`-role account, provided the email's domain passes `allowed_email_domains` (an empty list is unrestricted for this path).
+  5. **A local account holds the address: refuse.** SAML never takes over an account it did not create, an administrator least of all. The holder is any account with no `saml_subject` (live or deleted) or a service account: the sign-in is refused (`/login?error=email_taken`) and nothing is written. The login page says what is true: an account with this address exists and was not created by single sign-on, or is held by a removed account; ask an administrator. A local account made by the administrator's New user form over a deleted SAML-created account is exactly such an account.
 
-**Supported IdPs:**
-- Okta
-- Azure AD / Entra ID
-- Google Workspace
-- (Standard SAML 2.0 — additional IdPs should work via metadata import)
+  Two first sign-ins of the same person at the same moment end with one account and no error for either: the loser's create hits the unique address, the sign-in is decided again from step 1, and the winner's row is found. The email comes from `email`, `mail`, the LDAP `mail` OID or Entra ID's `…/claims/emailaddress`, falling back to the NameID. The name comes from `displayName`, Entra ID's `…/identity/claims/displayname`, `cn` or `name`, then the given name (`givenName`, `firstName` or `…/claims/givenname`) and surname (`sn`, `lastName` or `…/claims/surname`), either alone if only one is sent, then Entra ID's `…/claims/name` (ranked last because Entra fills it with the user principal name), falling back to the email (#461; `TestSAMLIdentity`). A blank value counts as absent. Each sign-in of a known subject rewrites the stored name, and the email when it is valid, from these, so an IdP that starts sending a name, or a release that starts reading one, changes the display name at the next sign-in. Other refusals redirect to `/login?error=` with `domain_not_allowed`, `account_disabled`, `account_link_refused`, `saml_nameid_format` (raised at the ACS, above), `invalid_assertion`, `email_not_verified`, `sso_session_used` or `invalid_email` (an address that needs quotation marks, see Guest Submission). The login page shows a fixed message for each of these codes and a generic one for any other; it never displays text from the query string. An SSO sign-in counts as having passed MFA, **except for a role in `passkey_required_roles`** (#616c): that role is let in only when the assertion is passkey-grade, namely `authnmethodsreferences` (under its `Name` or `FriendlyName`) containing `fido` or `hwk` **together with** `http://schemas.microsoft.com/claims/multipleauthn`. Otherwise the session is pending (`MFAPassed` false, `PasskeyOwed` true) and the browser is redirected to `/login?sso_step=<code>` instead of `/`, where `<code>` is `passkey` (the account has a key: use it), `passkey_enroll` (register one) or `verify_then_passkey_enroll` (an authenticator code, then register one). The login page reads the code through an allowlist and ignores an unknown value; it only chooses the screen, and the server enforces the step whatever the URL says. With no live pending session behind it (a bookmark, or the 5 or 15 minute window ran out) that step cannot succeed, so it carries a **Start over** button: it signs out any partial session, removes `sso_step` from the URL and shows the ordinary credentials form. With passkeys unavailable (#494) the requirement is suspended and the redirect is to `/`. **The accepted values are documented for Microsoft Entra ID only.** Okta and Google Workspace values are unverified and none is invented, so those providers fall through to the local passkey step. All accepted values, and the check for whether MFA was asserted, live in one file, `backend/internal/domain/auth/ssofactor.go`. Whether an SSO sign-in counts as having proved a factor is under Passkeys above.
+
+**Supported IdPs:** Okta, Azure AD / Entra ID, Google Workspace (whose metadata is a download: paste or upload it; standard SAML 2.0; additional IdPs should work via metadata import).
+
+The SP root URL passed to the SAML library carries a trailing slash
+(`{baseURL}/api/v1/auth/`), not the bare prefix (see `auth.NewSAMLMiddleware`).
+Without it the library's relative URL resolution computes `saml/metadata` and
+`saml/acs` one path segment short of the routes this server registers, every
+request to them 404s, no login completes and no IdP can fetch the metadata, in
+any configuration (found while testing #304; pinned by
+`TestNewSAMLMiddleware_ComputesRoutesMatchingTheServerMounts`).
+
+The SAML library's own login cookie (`token`, a signed JWT) is a hand-over,
+not a session. `/auth/saml/complete` spends it as soon as it has read it,
+whatever the outcome. The browser is told to delete it (under the name,
+domain and path the library set it with), and the SHA-256 of its signed input
+(`header.payload`, never the signature) is recorded in `spent_saml_handovers`.
+The signature is left out on purpose: the verifier decodes it leniently, so
+one token has several spellings that all verify (unused low bits in the last
+base64 character, or the ECDSA `s` value replaced by `N-s`), and keying on the
+whole cookie would let a respelled copy through. A cookie whose signed input is
+already recorded is refused with `/login?error=sso_session_used`. The app
+session written at hand-over is the only credential from then on, so a copy of
+the cookie captured earlier cannot mint a new session after a revocation
+(password change, MFA reset, a new factor, disable). Without a revocation it
+cannot mint one either
+([#337](https://github.com/PubliciaLLC/go-help-desk/issues/337); pinned by
+`TestSAMLComplete_RefusesASpentLibraryCookie`,
+`TestSAMLComplete_RefusesARespelledSpentCookie` and
+`TestSAMLComplete_CapturedCookieDoesNotSurviveRevocation`). The primary key
+decides, so two concurrent uses of one cookie cannot both succeed. If the
+record cannot be written, the sign-in fails with a 500 rather than going
+ahead. Rows are purged after a day.
+
+Every hand-over JWT carries a random `jti` (`auth.HandoverCodec`), so two
+sign-ins by one person in the same second never share a signed input and
+cannot collide in the record.
+
+The cookie and its JWT live five minutes (`auth.SAMLHandoverMaxAge`), not
+the library's default of one hour. That bounds the case the record cannot
+close: a cookie copied in flight and used before the browser it was issued to
+reached `/complete`. Five minutes rather than seconds, because the JWT's
+expiry is checked against the clock of whichever instance serves `/complete`.
+
+**Assertions are single-use (#618).** The assertion POST to the ACS used to be replayable for about 90 seconds (the library's `MaxIssueDelay`) by someone holding both the POST body and the browser's request-tracking cookie (`saml_` followed by the RelayState: HttpOnly, sent only to the ACS path): the library validates the response and the cookie but keeps no record of assertion IDs. IdP-initiated sign-in is off, so the library accepts a response only when its `InResponseTo` matches the request ID inside a tracking cookie sent with it; the body alone is refused (pinned by `TestNewSAMLMiddleware_RefusesIdPInitiatedResponses`). The middleware's `AssertionHandler` (`samlAssertionSpender`, which the library calls after full validation and before it creates a session) now records `SHA-256("saml-assertion\0" + issuer + "\0" + assertionID)` in the same `spent_saml_handovers` table and the same insert-on-conflict as the hand-over cookie, so a second use is refused with the `403` the library gives any invalid assertion. The prefix cannot collide with a cookie's `header.payload`. The record is shared by every replica. An assertion with no ID is refused, an IdP that reuses assertion IDs breaks the SAML specification and is refused from its second sign-in, and if the record cannot be written the assertion is refused (fail closed, as `/complete` is). The write is bounded at 5 seconds because the library passes no context. Pinned by `TestSAMLACS_RefusesAReplayedAssertion`, `TestSAMLACS_FailsClosedWhenTheLedgerFails` and `TestSAMLAssertionSpender`.
+
+This is a one-time-use record, not a "sessions revoked at" timestamp checked
+against the JWT's issue time. The timestamp would have to be written by
+every revocation path (several, including one in SQL that never calls the
+session store). It would compare one host's clock with another's at
+one-second precision. It would also do nothing against a replay where
+nothing was revoked. OIDC has no equivalent cookie: its login state lives in
+the server-side session and is cleared on use.
+
+The request-tracking cookie is `SameSite=None; Secure` when the base URL is https, because the IdP returns the browser with a cross-site POST, and a cookie with any other SameSite value would be withheld from it. Over http (development) it carries no SameSite attribute: browsers refuse `None` without `Secure`, and explicit `Lax` would be withheld from the POST. The hand-over cookie (`token`) is `SameSite=Lax`, because it is only read on the top-level GET to `/complete` that the ACS redirects to ([#399](https://github.com/PubliciaLLC/go-help-desk/issues/399); pinned by `TestNewSAMLMiddleware_TrackingCookieIsSameSiteNoneOverHTTPS`, `TestNewSAMLMiddleware_TrackingCookieHasNoSameSiteOverHTTP` and `TestNewSAMLMiddleware_HandoverCookieIsSameSiteLax`). The whole sign-in (login, a signed assertion from a fake IdP, the ACS, `/complete`, and a refused replay) is covered by `TestSAMLSignIn_EndToEndWithASignedAssertion`.
+
+### OIDC (Optional, Off by Default)
+
+- Configured under **Admin → System → Authentication** (`PUT /api/v1/admin/oidc`, refused to machine credentials; `GET` blanks the secret): `oidc_enabled`, `oidc_issuer_url`, `oidc_client_id`, `oidc_client_secret` (write-only; a blank secret on save keeps the stored one) and `oidc_redirect_url`. `PUT /admin/oidc` takes no redirect URL: the stored value is kept, or `{BASE_URL}/api/v1/auth/oidc/callback` is filled in when there is none, and that is what the identity provider must allow. The provider is found by OIDC discovery from the issuer URL and reloaded without a restart. Enabling it with a blank issuer, client id or secret is refused (`400`).
+- Sign-in is the authorization-code flow with PKCE (S256), a `state` and a nonce, scopes `openid profile email`. `GET /api/v1/auth/oidc/login` redirects to the provider; `GET /api/v1/auth/oidc/callback` finishes it and redirects to `/`. A refused callback redirects to `/login?error=<code>`, as SAML does, so the login page can say why. A missing or mismatched `state` is `invalid_state`, and a missing session is `invalid_session`. The routes answer `503 oidc_not_configured` while no provider is loaded. The login page shows a **Sign in with OIDC** button when `GET /auth/providers` reports it enabled, which means the provider is loaded. `GET /admin/oidc` and `GET /admin/saml` carry two facts: `configured` (the saved settings are complete) and `live` (the provider is loaded now), so "saved, not working" is `configured: true, live: false` (#421).
+- **Only a verified email counts.** An address the provider has not marked `email_verified` is dropped: it cannot be used to adopt an account or provision one. A subject already bound to an account still signs in; a first-time login with no verified email is refused (`email_not_verified`), and one whose address needs quotation marks with `invalid_email` (see Guest Submission).
+- **Require SAML covers OIDC.** With `saml_enabled` on ("Require SAML for staff and users"), only an administrator may sign in through OIDC, as only an administrator may use a password (`user.MaySignInWithoutSAML`, the rule `user.IsLocalAuthAllowed` uses). Anyone else is refused at the callback with `/login?error=saml_required`, no session is set, and nothing is written: a first sign-in is not provisioned and an existing local account is not adopted, because the check runs before `UpsertOIDCUser`. The check asks who the subject is already bound to; an unknown subject can only become a `User` (never an administrator), so it is refused. A disabled administrator is refused as `account_disabled`, as before. With the setting off nothing changes. The check is made at sign-in only: sessions already issued when the setting is turned on are not revoked, which is the same for passwords. The row that gets the session is checked again after the upsert, so an administrator demoted in between does not sign in as staff, and each refusal is logged at info level with the role and a short hash of the subject (never the address). A blank subject is `invalid_id_token`, not `saml_required`.
+- **`allowed_email_domains` applies to every OIDC sign-in** that carries an email (`domain_not_allowed`), unlike SAML where it gates provisioning only; an empty list is unrestricted.
+- **Provisioning and linking.** The `sub` claim is the primary key. A known subject has its email and name refreshed. An unknown subject whose verified email matches an existing local account **adopts** it (matched on the parsed address, so `<a@x>` or `"a"@x` from the provider finds `a@x`), but only when that account is active, is not an administrator, is not already federated through SAML and is not bound to a different OIDC subject (otherwise `account_link_refused`; the write statement asks the rule again, so an account promoted in between is not adopted). An unknown subject with no matching account creates a `User`-role account. A disabled account is refused (`account_disabled`), an address held by another account is `email_taken` and a missing subject is `invalid_id_token`. The name comes from `name`, `preferred_username`, given plus family name, then the email.
+- An OIDC sign-in counts as having passed MFA (the identity provider's job); `FactorVerified` is set when the ID token's `amr` contains `mfa`, or contains `fido` or `hwk`, for every role including one not in `passkey_required_roles` (Passkeys above). The exception is a role in `passkey_required_roles` (#616c): it is let in only when `amr` contains `fido` or `hwk` (documented for Entra ID; other providers' values are unverified and not accepted, see SAML above), which also sets `FactorVerified`. Without one the callback redirects to `/login?sso_step=<code>` (`passkey`, `passkey_enroll` or `verify_then_passkey_enroll`) with a pending session, exactly as the SAML sign-in does. The accepted values are in `backend/internal/domain/auth/ssofactor.go`.
+
+### Self-Service Signup (Optional, Off by Default)
+
+A visitor creates a `User`-role account for themselves and proves they own the address before it exists.
+
+- Settings, all under **Admin → System → Authentication → Registration** and all auth-critical (a machine credential cannot change them): `self_signup_enabled` (off), `allowed_email_domains` (one domain per line) and `open_registration_enabled`. With a non-empty domain list only those domains may sign up. With an empty list, signup is refused (`422 domain_not_allowed`) unless open registration is on, so "anyone with any address" is a separate, confirmed choice and never the accident of a blank list. The same domain list also gates SAML provisioning and OIDC sign-in (above).
+- `GET /api/v1/auth/signup/status` (public) returns `{enabled, open_registration, restricted_by_domain_list, saml_enabled}`; the login page offers "Create one" from it. `open_registration` is what is in force: the setting **and** no domain list, because a non-empty list overrides open registration. `restricted_by_domain_list` is true when such a list limits signup, which is why `open_registration` can be false while its setting is on (#421). Who may sign up is unchanged.
+- `POST /api/v1/auth/signup` takes `{email}` and answers `403 signup_disabled` when off. The signup form takes only the address: no password (#360) and no display name (#374), and either one sent by an older client is ignored. The address must be a single valid email (`400`), and not one whose local part needs quotation marks (#389, see Guest Submission). Attempts are counted per source address (`AUTH_RATE_LIMIT_PER_MINUTE`, `429`). It stores a **pending registration** (address and a 24-hour token; one pending row per address, and a repeat only re-issues the token, since no name or password is stored) and queues one event naming only that registration's id; the verification mail, a link to `{BASE_URL}/verify-email?token=…`, is sent from the notification outbox, not on the request (see the signup bullet under Notifications). Nothing is sent if SMTP is not configured, so signup cannot complete on an instance without email; turning `self_signup_enabled` on in that state is refused (`400 email_required`, see Notifications), and an instance that already has it on is warned in the admin security warnings.
+- **Same answer whether or not the address already has an account.** The response is `202` with the same body either way (deleted accounts still own their address; only an administrator's New user form and a SAML sign-in by the owner of a deleted SAML-created account retire it, see User Management → Delete), and a new and a taken address do the same work on the request: the address is checked, the pending row written and one event queued. Whether a mail goes out is decided when it would be sent, off the request: the send re-reads the row and mails nothing if the row is gone or expired or the address has an account, so a taken address gets a pending row that is never mailed and expires unused. Because neither case dials the mail server on the request, the timing does not tell them apart either. That is the request only: the timing of the send is a separate signal, recorded under Guest Submission. Anything that distinguished them would make signup a way to find out who has an account here; the person who forgot they have one reaches for the login page.
+- **The display name and password are chosen at verification** (#360, #374). The link opens the `/verify-email` page, which asks for both, neither pre-filled. `POST /api/v1/auth/verify-email` takes `{token, display_name, password}`: `422 token_invalid` for an unknown, used or malformed token, `422 token_expired` past 24 hours, `400 display_name_required` for a blank name, `400 password_too_short` for a password under 8 characters and `400 password_too_long` for one over 72 bytes; all three are refused without using up the link. An address that has gained an account since the link was mailed is also `422 token_invalid`. Anything that is not a verdict on the link, such as a database fault, is `500 internal_error` on the POST and on the lookup below, and the page keeps the form for it (#373). On success it creates the account with that name and password, deletes the pending row and signs the person in. When MFA is on and enforced for the `user` role (`mfa_enforced_roles`) the response says `mfa_enrollment_needed`, the session does not count as having passed MFA yet, and the page shows the same enrolment form a password login does before it goes to the dashboard (#369). When `user` is in `passkey_required_roles` instead (#616c) the response says `passkey_enrollment_needed` (and `mfa_enrollment_needed` false) and the page asks for a passkey rather than an authenticator. The page first looks the link up with `GET /api/v1/auth/verify-email?token=` (#370), which answers `{email}` and nothing else and refuses an unknown, used, malformed or expired link the same way the POST does (`422 token_invalid` or `token_expired`), and so an address that has gained an account since the link was mailed (`422 token_invalid`, #421; before that the lookup answered 200 and only the POST refused). This reopens nothing from #348: `POST /auth/signup` is untouched, and a token for a taken address was never mailed, so its only holder is the inbox owner who received the link before the account existed. A link can still fail at the POST if the account appears between the two calls. That lets it show which address the account is for, hand a password manager the address, and say a dead link is dead before anything is typed. It never returns a display name, because none is stored before verification. Choosing the name and password there means only whoever holds the link, that is the owner of the mailbox, sets them: when signup carried them, anyone who knew an address could sign up after its owner and have the owner's newest link create an account with the other person's password, and later with their name (an attacker's words, on this site, in front of the inbox's owner).
+
+### Identity provider lockout guard (#300)
+
+A federated account (SAML or OIDC) can have no local password at all
+(`password_hash` empty; local login refuses it with 401), so its only way in is
+that provider. Disabling or clearing the provider's configuration in **Admin → System → Authentication** removes that channel while leaving the row, the role and the
+active-administrator count untouched: the same class of mistake as the
+last-administrator guard (see User Management), reached through a door that
+guard does not watch, since it watches the administrator *row* and not their
+ability to authenticate.
+
+Saving the OIDC or SAML configuration therefore computes what each provider's
+reachability will be immediately afterwards and looks at every active
+administrator:
+
+- If the change would leave **every** active administrator with no way to
+  authenticate, the save is refused (`400`), the same severity as `ErrLastAdmin`
+  and for the same reason: this is the unrecoverable case.
+- If it strands **some** administrators but at least one other can still sign in
+  and fix things, the save is allowed and a warning names who is affected.
+  Refusing would only move the unrecoverable-lockout shape onto somebody else's
+  account, and an operator migrating providers deliberately should not be blocked
+  by a stranding they already know about.
+- **Viability.** A password is always a viable channel, independent of either
+  provider's state. A federated subject is viable only while its **own** provider
+  is reachable: an OIDC subject is not a channel through SAML, and vice versa.
+  MFA (TOTP or passkey) is deliberately not consulted: a second factor is never a
+  way *in* on its own, so it cannot rescue a stranded administrator and cannot
+  strand one.
+- SAML reachability depends only on the IdP metadata (a URL or XML), the
+  certificate and the key being non-empty plus a successful metadata load (a
+  fetch for a URL, a parse for XML). The guard gives SAML **no `enabled`
+  flag**, and `saml_enabled` is not part of the load decision: it already means
+  something else (it removes password login for non-admins). Wiring it in would
+  take SAML down on every instance that leaves it off to keep password login
+  alongside SAML, and backfilling it to true to avoid that would silently remove
+  password login from every non-administrator there (tried and reverted before
+  merge in #304).
+
+**How "reachable" is decided differs by route, on purpose.**
+
+- The dedicated endpoints (`PUT /admin/oidc`, `PUT /admin/saml`) build the real
+  provider or middleware against the *candidate* configuration (running OIDC
+  discovery, or fetching or parsing the SAML metadata) **before** persisting
+  anything, and the guard's decision is that real outcome. "Are the fields
+  non-empty" is wrong in the dangerous direction: a well-formed but unreachable
+  IdP (a typo'd issuer, a metadata endpoint that is down) would sail through. The
+  already-built object is what gets committed on success, so the guard's decision
+  and the live effect agree.
+- The generic `PATCH /admin/settings` reaches the same keys. It loads what it
+  saved (`reloadSSOAfterSettings`: SAML for a metadata, certificate or key key,
+  OIDC for an enabled, issuer, client or redirect key; #619) only after the write,
+  so there is no construction attempt to observe before it. A load that fails keeps
+  the running provider, leaves the settings saved and adds a `warning` to the
+  response without the error text, as the PUT endpoints do. The guard falls back to
+  the field-completeness check: narrower, but real coverage for a
+  route that otherwise could set `oidc_enabled: false` or blank a SAML field with
+  no refusal and no warning.
+- `reachable` is unconditionally `false` whenever the *candidate* fails to build
+  (both providers), whatever the currently live provider says;
+  `buildOIDCProvider` and `buildSAMLMiddleware` return it separately from
+  `commit`. Two different questions, and only one survives a restart: the live process keeps its
+  fail-safe (a bad edit or a transient IdP outage leaves what is running
+  untouched), but the guard reasons about what the persisted row would do on a
+  cold load.
+- An enabled-but-incomplete OIDC configuration (blank issuer, client id or
+  secret) is refused outright (`400`) through either path rather than
+  reachability-checked: at the next restart there would be no OIDC at all, and a
+  save that only looked safe because an old, unrelated config was still live is
+  exactly the gap this guard closes. SAML has no equivalent case; any blank field
+  is unreachable unconditionally.
+- The generic PATCH (`ssoSettingsWarning`) refuses outright (`400`) a JSON type mismatch (`oidc_enabled`
+  sent as the string `"false"`) **and the literal `null`** (`unmarshalSetting`),
+  for every key the guard reads. The write that follows persists the malformed
+  value regardless, and every real reader (`GetBool`/`GetString`) silently
+  returns the Go zero value, flipping the setting to disabled/blank. A guard
+  reasoning about one value while the system reads another from the same bytes is
+  worse than none, because it reports confidence it does not have. (`null` is
+  caught separately because `encoding/json` treats it as a no-op rather than an
+  error when decoding into a non-pointer.)
+
+**A narrow race is accepted.** The guard reads the active-administrator list,
+decides, and only then writes the setting, unlike the last-administrator
+guard's statements, which decide and write in one `UPDATE`. A concurrent
+role change or second settings save can slip between; this is a deliberate,
+infrequent action from the settings page, not a path an unauthenticated attacker
+can drive, and closing it would need a transaction spanning the users and
+settings tables.
+
+**The complete way back is `/app/server unlock <email>`** (#497, #300's option
+4), so a locked-out federated administrator has more than a warning that would
+have stopped them getting here: it sets a password. See Passkeys, "The way back
+in", for what it does. `reset-factors` remains and clears factors only.
+
+---
+
+## Submission, Attachments and Small Screens
 
 ### Guest Submission (Optional, Off by Default)
 
 A visitor with no account files a ticket and is sent a per-ticket link. The link
 is the whole credential, so it is treated like one: stored as a hash, replaced
-whenever the ticket changes in a way the guest is told about, revoked when the
-ticket closes, and expiring after thirty days if nothing happens at all.
+whenever the ticket changes in a way the guest is told about, **read-only once
+the ticket closes**, and expiring after thirty days if nothing happens at all.
+
+**An address whose local part needs quotation marks is refused** with `400`
+(#389), here and everywhere else an address is taken. Parsing drops the
+quotes, so `"john doe"@example.com` became `john doe@example.com`, which the
+mailer then could not send to: the guest was never sent their link. One with
+a leading space, `" a"@example.com`, was worse and was mailed to
+`a@example.com`. Quotes that were never needed are dropped and the address
+is kept: `"john"@example.com` is stored as `john@example.com`. Addresses
+already stored are not changed. A first-time single sign-on with such an
+address creates no account: both SAML and OIDC redirect to `/login?error=invalid_email`. An
+existing single sign-on user keeps their stored address when the identity
+provider sends one that needs quotes; their other details still sync and
+sign-in succeeds.
+
+**Email addresses must be ASCII.** `user.ValidateEmail` refuses any address
+containing a non-ASCII character with `400`, and so does every path that takes an address: signup, administrator create and
+edit, a typed `reporter_email`, a guest submission, and a first-time SAML or
+OIDC sign-in (`/login?error=invalid_email`, or `domain_not_allowed` when an
+allowed-domains list is set and the domain is not ASCII). Addresses must be ASCII so that they
+compare reliably. The guest re-request lookup and a
+password-reset request match nothing for such an address.
+
+- **Allowed domains** must be ASCII. An entry with
+  a non-ASCII character is refused when the setting is saved (`400`,
+  `invalid_allowed_email_domains`): use the `xn--` form for an
+  internationalised domain. The message names the form (`bücher.de` is refused
+  with "for this one, xn--bcher-kva.de"); the entry is not rewritten for you.
+- **Existing accounts** with a stored non-ASCII address keep signing in: by their
+  identity provider subject, and by password. An administrator can still rename
+  them or change their role: an edit that leaves the address alone does not
+  validate it again, and one that sets a new address is checked before anything
+  is written. They cannot be reset by typing the
+  address, and a sync that carries a non-ASCII address keeps the stored one.
+- **An existing user with a non-ASCII domain** (#620) is judged by the `xn--`
+  form of the domain: `user.IsEmailDomainAllowed` converts it with
+  `idna.Lookup.ToASCII`, so a list holding `xn--bcher-kva.de` admits
+  `a@bücher.de`. This matters for OIDC, which checks the address the IdP sends on
+  every sign-in (SAML checks only new subjects, and those fail `ValidateEmail`
+  anyway). ASCII domains are compared exactly as before. A domain that does not
+  convert, or whose conversion has no `xn--` label (UTS-46 folding fullwidth
+  letters onto an ASCII domain), keeps its raw text and is refused, so this only
+  widens matching for real internationalised domains. Add the `xn--` form to the
+  list to admit them.
+- Check for stored ones with
+  `SELECT count(*) FROM users WHERE email ~ '[^\x01-\x7f]'`. Those that matter
+  for OIDC: `SELECT email FROM users WHERE oidc_subject <> '' AND
+  split_part(email,'@',2) ~ '[^\x01-\x7f]';`.
+
+**Closed means read-only, not revoked** (#349). Closing, a status change to
+Closed and the auto-close sweep **stop rotating** the guest's link; they do not
+delete it. The last link sent keeps reading the ticket until it expires
+(`GuestTokenTTL`, thirty days). Before this, closing revoked every link, so a
+guest could never read the answer on a ticket that staff replied to and closed
+straight away. Reading and writing are different lookups:
+
+- `GET /api/v1/guest/ticket` resolves the token for a **read**, closed or not.
+- `POST /guest/replies` and `POST /guest/attachments` (every route that changes
+  something, grouped behind one middleware so a new one cannot forget it) resolve
+  through the **write** lookup, which refuses a Closed ticket with the same
+  error as a link that never existed. The response is the generic `404`,
+  byte-identical to the one a bad link gets (status, content type and body), so
+  the refusal does not reveal that the ticket exists. A request that races the
+  close past the middleware is mapped to the same `404`, not the `409` a
+  signed-in reporter gets: see "Races" below.
+
+The replacement link is created when the email carrying it is **sent**, not
+inside the transaction of the change (#164). Notifications are queued in an
+outbox (below), and the outbox must never hold a working credential: the token
+table keeps only hashes. So the change marks its event for a guest link, and
+the send re-reads the ticket and rotates. The previous link therefore dies at
+the send rather than the commit, normally seconds later. A ticket that has
+**closed since** is still sent its mail (#349 replaced #346's skip), with a link
+**added** beside the existing ones rather than a rotation; see below.
+
+A link re-request (`POST /api/v1/guest/resend`) does no lookup on the request
+at all. Every request, matching a ticket or not, queues the same event carrying
+what the visitor typed, and matching, the per-ticket budget and the rotation
+all happen at send time. The request used to dial the mail server on a match
+and run one query on a miss, so its timing said whether a tracking number and
+an address went together, though its answer did not.
+
+**What is left of that signal.** Each server process has one worker sending
+rows in order, so a matched resend holds it for a mail-server round trip and
+a miss for one query. Someone who queues a probe and then a notification of
+their own (a resend for a ticket they hold) could time their own mail's
+arrival to learn which the probe was. It needs their own mailbox, crosses a
+queue shared with every other notification, and is far noisier than timing the
+request was. Recorded rather than claimed closed.
+
+**Signup verification leaves the same signal** (#361). The request side of
+signup is covered under Self-Service Signup. Verification rows share
+that worker and its order, so one for an address with no account holds it for
+a mail-server round trip and one for a taken address for the two queries that
+decide not to mail. Someone who signs up for an address and then at once for
+their own could time their own verification mail's arrival to learn whether
+the first address has an account. Accepted for the same reasons as above: it
+needs their own mailbox, crosses a queue shared with every other notification,
+and is tens to hundreds of milliseconds against seconds of mail-delivery
+jitter. Recorded rather than claimed closed.
+
+The rotation runs in one transaction with the ticket row locked, so concurrent
+sends for one ticket (two replicas, or a reclaimed row beside a fresh one)
+leave exactly one working link. The per-ticket resend budget is charged on a
+row's first delivery attempt only, so a resend whose first send fails is
+retried rather than refused. The exception: a row whose first claim never
+reached the budget (the worker stopped mid-batch, or the lookup failed) comes
+back on a later attempt uncharged, at the cost of one extra rotation.
+
+**A guest email for a ticket that closed before it was sent is still sent**
+(#349). Staff reply, then close straight away (common, and what an MCP agent
+does): the reply's mail goes out after the close and carries a link that opens
+the thread. #346 skipped it and, before the outbox, the same sequence sent
+"there is a new reply" with a link that was already dead, so the guest could
+never read the last answer.
+
+What "the existing link" means is decided here, because raw tokens are stored
+hashed and cannot be re-sent:
+
+- On a **Closed** ticket the send issues a **new** token and **deletes
+  nothing**: the links the guest already holds keep working until they expire.
+  This is not a rotation. It is added at most once per mail sent on that ticket,
+  each expiring thirty days after it is issued.
+- If **no** link is live — the thirty days passed, or the ticket never had one —
+  the same happens: the mail carries a new link. A closed ticket is never left
+  with a mail and no way to read it; staff wrote to the guest, and the mail is
+  how they learn.
+- A link issued for a closed ticket **can only read**: the write lookup refuses
+  a Closed ticket whatever the link's age. Closed is terminal by default; if an
+  operator enables forced reopen (`closed_reopen_policy`) and a staff member
+  reopens the ticket, the guest's links write again as soon as it is not Closed
+  (they belong to the same guest), and the reopen's own mail rotates them all
+  into one fresh link, as any reopen does. If that mail cannot be sent, the
+  older links stay live until they expire.
+- On an open ticket, rotation is unchanged.
+
+**Resend for a closed ticket re-sends a read-only link** (decision, #349). A
+guest who has lost their link may ask for another with the tracking number and
+address, for a closed ticket as for an open one: both halves must match, the
+per-ticket budget applies, and the link is added beside the existing ones, not
+rotated, so a resend cannot lock them out. It stays indistinguishable between a
+match and a miss: the request still does no lookup and queues one identical
+event, so its timing and its `202` say nothing, and only the send-time step
+decides. The reason: closing no longer revokes anything, so there is no access
+for a resend to "resurrect", and refusing it would leave a guest with a deleted
+mail unable to read their own archive for up to thirty days. The cost: each
+resend extends that guest's read access by thirty days from the send, bounded by
+possession of the mailbox, which is the credential already. (Anyone who knows a
+tracking number and an address can still only cause mail to that address; they
+never receive the token.)
 
 Submission is a separate public route rather than a relaxation of the ticket
 router. Every route under `/tickets/{id}` would otherwise have to re-derive
 whether the caller is a guest, which is the shape of the authorisation bug fixed
 in 1.2.0.
 
-- Toggle in admin settings
+- **Toggle in admin settings:** when off, all guest routes (both public submission and token-based read/reply/attach) answer 404 to visitors, suspending any links already issued until the setting is turned back on (#424).
+- **Guests attaching files** (#445) is a second, separate switch, **Guests may attach files** (`guest_attachments_enabled`, **Admin → System → Guest Access → Submissions**, under guest submission). **Off by default, upgraded installs included**: before it existed a guest could upload through `POST /guest/attachments` whenever guest submission was on, and that is now closed until an administrator opens it. It is **dependent** on guest submission: the setting only takes effect while `guest_submission_enabled` is on (the settings page shows it unavailable while submission is off, and the server treats it as off), so there is no state in which uploads are on and submission is off.
+  - **Size.** `guest_attachment_max_mb` is a per-file maximum for guests, 5 MB by default, set with a slider that runs from 1 MB to the per-file limit every upload has (`attachment_max_mb`, 25 MB by default; see Per-file size limit, #673). The server holds the guest to the **lower** of the two. A value outside 1 to that limit is refused at save (`400 bad_request`) and not stored; a stored value that the limit was later lowered beneath is kept, and the limit applies until one of them changes (the page says so). An unreadable stored value, or one outside 1 to 100, reads as 5. Over the limit is `413 too_large`, with the limit that applied in the message ("file exceeds 5 MB limit"); the body is capped while it is read, as for every upload.
+  - **Per-ticket cap and hourly rate** (Erik, 2026-10-19). `guest_attachment_max_per_ticket` is the most files guests may attach to one ticket (1 to 50, default 5); `guest_attachment_uploads_per_hour` is how many uploads one guest link may make per hour (1 to 30, default 3). Both are set under the uploads switch in Settings, unavailable while it is off, session-only, validated at save (`400`, nothing stored) and read as their defaults when unset or damaged, so an upgraded install gets 5 and 3 as soon as an administrator turns uploads on. Both are checked on the guest upload route after the setting, the token and the lifecycle check, the cap first: a full ticket answers `409 guest_attachment_limit` ("This ticket already has the most files a guest can attach"), and the cap does not spend the hour. Past the hourly figure the answer is `429 rate_limited` with `Retry-After` in whole seconds. The rate is keyed by the **ticket the link names**, not the address, so a guest behind a shared address cannot use up another's hour; it counts in the database like every limiter (see Rate limits), through `ratelimit.Limiter.TakeWithLimit`, because the figure is an admin setting that changes while the server runs. The window is the ticket's own, opened by its first upload in an hour, so `Retry-After` is the time left in that ticket's window; a restart does not clear it and every replica shares it. The unit is spent before the work, so parallel uploads cannot all pass a budget with one slot left, and **given back only when the refusal was decided before the scanner**: a wrong type, an over-size file, a name or request the parser refuses (`unsupported_type`, `too_large`, `invalid_filename`, `bad_request`). Those cost the server a body read and nothing more. Everything decided after the scan keeps its unit: `invalid_image`, `invalid_file` (a content mismatch), a malware verdict (`422 infected`), a scanner or storage fault (`503`) and any 5xx, and so does the cap refusal that comes from inside the transaction. Refunding a post-scan refusal let a guest make the server scan without limit (measured: twenty bad PNGs at a budget of one were twenty scans). Because a pre-scan refusal is free of the hour, **every refused attempt also draws on a second, fixed budget of 20 per hour per ticket** (`guestRefusalLimiter`, not a setting), whether or not its unit came back; it is charged up front in one locked step (so parallel refusals cannot overshoot it) and given back when the upload is accepted, and it is charged before the hourly budget, so an attempt turned away by it never spends an hourly upload (#559). Once spent, the route answers `429 rate_limited` with `Retry-After` before reading anything, a good file included, until the window ends. It is in the database too, with the window of its own ticket. The cap counts **only guest uploads**, for which `attachments.uploaded_by_guest` (migration 000054) records the fact, because nothing recorded who uploaded a file; staff and reporter files never count. Files a guest attached before the migration are not counted (the column defaults to false). The cap is **exact**: the authority is `ticket.Service.CreateGuestAttachment`, which counts inside the transaction that already locks the ticket row, so uploads racing for the last slot leave exactly one file there (`TestCreateGuestAttachment_ParallelUploadsCannotOvershootTheCap`). A cheaper count before the file is read and scanned only saves that work. `GET /site` carries the cap and the hourly figure with the size, and the page offers at most the lower of what the ticket has room for and the hour allows, worded "up to 3 files now (5 per ticket)" when they differ.
+  - **Refusal.** With uploads off the route answers the generic `404 not_found`, byte-identical to a bad link and to guest submission being off, like every other guest refusal: a different status would tell an anonymous caller which setting is in force.
+  - **Session only.** All four keys are in `AuthCriticalKeys`: they widen what anonymous people can do, and a leaked API key must not be able to turn them on and use them. They are in `KnownKeys`.
+  - **One migration.** 000054 adds `attachments.uploaded_by_guest BOOLEAN NOT NULL DEFAULT false`, so the cap can count only guest uploads (nothing recorded who uploaded a file). The settings themselves are rows read with defaults and need none; files guests attached before the upgrade are not counted.
+  - **Where the control is.** The guest ticket page (`/g`) shows **Add files** on an open ticket when `GET /site` says `guest_attachments_enabled`, with the effective per-file limit in `guest_attachment_max_bytes` (the lower of the two figures, so the page never promises more than the server takes). Files go up one after another as they are chosen, to `POST /guest/attachments` with the `Authorization: Guest` header; there is no draft, because a guest's attachment belongs to the ticket and not to a reply. The server's own reason is shown for a refusal. There is no control on the submission page (`/submit`): the link that identifies the ticket is emailed after the ticket exists, so a guest attaches from that link. The page does not list the guest's uploads (the guest read has no attachment list) and renders none of their content; attachments stay download-only.
 - Unauthenticated users submit a ticket at `/submit` and receive a **tracking number**
-- Guest ticket form collects: **name** (required), **email** (required), **phone** (optional), subject, description, and category (active only — no type or item)
+- Guest ticket form collects: **name** (required), **email** (required), **phone** (optional), subject, description, and category (active only). **No type or item, unless an administrator turns on Show Types to guests and Show Items to guests** (`guests_show_types`, `guests_show_items`, off by default, upgrades included; see Ticket Classification → Which levels of the tree a caller sees), in which case the form shows Category, then Type, then Item (an Item only with Types) with the cascade the new-ticket page has. The chosen row's description (the item's, else the type's, else the category's) is shown beneath the selectors (see Ticket Classification → Descriptions); it is public to anyone who can open the form, and the description of every active type is public only while Show Types to guests is on, and of every active item only while Show Items to guests is on too
 - The tracking number can be referenced when following up with the help desk by phone or email
 - No account creation required
+
+### Small screens
+
+Two jobs are supported on a phone: **a staff member triaging away from their
+desk**, and **a reporter filing a request and following it**. Administration is
+not a job the product is designed around: an operator configuring categories,
+editing roles or managing API keys is at a desk, and the admin tables are built
+for one. The admin pages do still **fit** a phone: no sideways scroll at 320
+pixels, whatever the data (#522). They are not redesigned for it. A wide admin
+table stays a table and scrolls inside its own box; the page never does.
+
+**Server warnings.** Administrators see problems with the server (unwritable
+attachment storage, an unreachable scanner, passkeys unavailable, email not set
+up, and the rest of `GET /admin/security-warnings`) in **one slim bar** above
+the page, never a stack of banners. It is a single line: "N server problems
+need attention", or the notice's own title when there is exactly one, with a
+**Details** button (`aria-expanded`) that opens the full explanation of each
+notice. Red marks something broken now (unwritable attachment storage, a
+scanner that is down, under either policy: `required` refuses uploads and
+`permissive` stores files unscanned right now; insecure secrets; email not being
+delivered; SAML required for staff and users while SAML is not loaded); configuration notices are amber. An `info` severity (neutral blue)
+exists for good news such as an available update: it never turns the bar red,
+is not counted as a problem, and is announced politely as a status. **Hide** removes one notice
+for the current session: it is kept in `sessionStorage` by notice id, severity
+and a short summary of what it said (so a notice that gets worse, such as a
+changed scanner policy, more failed email, another blind OAuth client or a
+second exposed secret, comes back), sent nowhere, cleared at sign-out and when
+the session expires (the 401 handler), and the notice returns at the next
+sign-in while the problem remains. When every notice is hidden the bar goes away. The query
+is refetched when the window regains focus and when Details is opened, so a
+problem that was fixed stops showing within seconds. Everything inside wraps
+anywhere, including the `reset-factors` command, because the bar sits above
+`<main>` and a long unbroken token there once widened the whole page. Only
+administrators are asked. Only the summary line is a live region; the bar
+is a labelled region, focus moves to the next Hide button (or Details) after a
+Hide, and Hide is at least 44px on a touch screen.
+
+**What each job covers.** The staff path is the queue, a ticket, and the
+actions taken on it: read, reply, reassign, change status, resolve. The
+reporter path is the new-ticket form, their own list, and the thread they can
+read and reply to. Both include signing in.
+
+**How it is built.** The unauthenticated pages (sign-in, registration, first-run
+setup, email verification, guest submission, the guest ticket view and the
+tracking-number form) render outside the application shell as centred cards with
+their own maximum widths, and fit at phone size. Inside the shell, the sidebar
+is permanent from the `md` breakpoint up; below it the sidebar becomes a drawer
+opened from a top bar, because a fixed 240-pixel column is more than half of a
+390-pixel viewport and left the pages beneath it too narrow to lay anything out
+in. The ticket list is a table from `md` up and one card per ticket below it.
+
+**The rule for the pages that are in scope** (Dashboard, ticket list, ticket
+detail, new ticket): no horizontal scrolling at 390 CSS pixels, controls large
+enough to hit with a thumb, and a layout that stacks rather than shrinks. A
+five-column table squeezed into a phone is not a mobile layout; where a table
+carries one row per thing, that becomes one card per thing. The end-to-end
+check `frontend/e2e/mobile-layout.spec.ts` pins it at 390×844.
+
+**Long text wraps; ticket content is never cut.** A token with no break point,
+such as a 300-character URL in a reply, is wrapped at the edge of its box
+(`overflow-wrap: anywhere`, Tailwind `wrap-anywhere`) down to 320 pixels. This
+holds for everything a person wrote on a ticket: the subject heading, the
+description, replies and internal notes, reply author names, attachment
+filenames, the requester line, the activity feed and its diffs, the status
+history, followers, the assignee, status names, category, type and item names,
+custom-field labels and values, tags, and the requester picker. Plain-format text
+and the other fields listed here are never truncated, rewritten or linkified, so
+they stay whole and copyable (#479). Markdown-format text is linked as described
+under *Ticket text formatting*; its code blocks and tables scroll inside their
+own box, which does not count as cutting text.
+
+**Admin pages (#522).** The same treatment, applied to every page under Admin
+(Users and a user's page, Groups, Roles, Categories, Statuses, Tags, Canned
+responses, Custom fields, API keys, OAuth clients, Webhooks, Routing, Audit and
+each settings page): `wrap-anywhere` on what an administrator typed (names,
+descriptions, URLs, email addresses), and `min-w-0` on flex and grid children so
+they can shrink to it. The tables on Users, Roles, Statuses, Tags, Canned
+responses, Custom fields, API keys, OAuth clients, Webhooks and Audit, and the
+Categories tree, each sit in an `overflow-x-auto` box. Those tables are still
+wider than a phone with short data, so they scroll sideways inside that box and
+every column, action buttons included, can be reached; the page does not move.
+(They used to be `overflow-hidden`, which cut the columns off instead.) Groups,
+a user's page, Routing and the settings pages are cards and forms, not tables. On the pages with tabs, the tab bar scrolls inside its own row, and a
+setting's control sits under its label below `sm` instead of beside it, because
+a select or number box that cannot shrink does not fit beside a label at 320
+pixels. The end-to-end check pins every admin page, with a 300-character name,
+description and URL and again with short data, at 320 and 375 pixels, and also
+opens the forms and expanded rows on Users, Groups, Categories and Webhooks. It
+fails if the page or `main` scrolls sideways, and also if anything sticks out
+past `main`'s right edge without an `overflow-x: auto` box around it, which is
+what an `overflow-hidden` wrapper looks like.
+
+Fifteen compact places still end in an ellipsis, because they are one-line rows or
+chips where wrapping would break the row, and none of them is ticket content:
+
+- in the Linked tickets panel, the linked ticket line;
+- in the desktop ticket table, the subject;
+- in the reply composer, a pending upload's filename before it is sent, and the
+  canned-response preview in its picker;
+- in the shell, the signed-in email at the foot of the sidebar and the brand
+  name in the mobile top bar;
+- on the Dashboard, each client's name and email in the By Client cards;
+- on the Reports page (#131), each bar chart row's label (the Backlog and
+  Workload bars, and the Volume bars by category and priority), with its full
+  text in the `title`;
+- on the Account page, a passkey's label;
+- in the authenticator-app setup, the secret under the QR code;
+- on a ticket, each attachment's SHA-256, cut to its first 12 characters;
+- on the Canned responses admin page, the body preview, cut to 80 characters;
+- on the Authentication page, the SAML certificate: its first line, with
+  the whole PEM in the `title`;
+- on the same tab, the SAML private key: its first line followed by "…". It is
+  not cut by CSS, the text is simply shortened, and it has no `title`, on
+  purpose: its full text is a secret and must not sit in an attribute.
+
+Each, except the private key line, carries a `title` attribute with its full
+text, which a pointer shows on hover; touch browsers do not show one, so the two
+ticket rows also open the ticket, where the text wraps in full. Everything else wraps, including the
+sidebar brand in the drawer and the Dashboard's "Welcome back" line. On the
+ticket page below `md` the header's action buttons sit on their own row under
+the title and tracking number, which keep the full width (#480).
+
+**Not a claim of feature parity.** Everything a staff member can do to a ticket
+from a desk they can do from a phone, because those actions live on the ticket
+page. Bulk selection across a queue is the exception and stays desktop-only: it
+is a multi-select over a table, which is the shape that does not translate.
+
+Tracked as [#296](https://github.com/PubliciaLLC/go-help-desk/issues/296); shipped in #299.
+
+### Ticket text formatting
+
+Markdown in ticket descriptions, replies and internal notes ([#443](https://github.com/PubliciaLLC/go-help-desk/issues/443)).
+
+**The format is stored.** Every description and every reply carries `plain` or
+`markdown` (`tickets.description_format`, `ticket_replies.body_format`,
+migration 000055). Nothing is guessed from the text. Every record written before
+1.3.0 is `plain`: 1.2 promised Markdown but never rendered it, so older text
+stays as it was typed. The columns have no default after the migration, so a
+write path that forgets the format fails instead of choosing one.
+
+| Writer | No `format` sent | Accepts |
+|---|---|---|
+| REST `POST /tickets`, `/tickets/{id}/replies`, `/guest/tickets`, `/guest/replies` | `plain`, so existing integrations are unchanged | `plain`, `markdown` |
+| The web app (every form with the editor, staff, requester and guest) | always sends `markdown` | |
+| MCP `create_ticket`, `add_reply` | `markdown` (the tool descriptions say so, and say to escape characters meant literally) | `plain`, `markdown` |
+| Follow-ups | copy the original's format with its text | |
+
+Anything else (an explicit `""`, `"Markdown"`, `"html"`, a number) is `400
+invalid_format` on REST and a tool error on MCP, and nothing is written. Both
+fields are on every ticket and reply object, on the requester and guest views
+too. Notes and resolution notes, canned responses and settings are not
+descriptions or replies: they stay plain text.
+
+**The renderer cannot output script, raw HTML, images or anything outside one
+list.** The guarantee is how the page is built, not filtering. Every element is
+created by React from our own component map; all user text is a React text node;
+the only attribute that carries user data is `href`, checked against `http`,
+`https` and `mailto`. `rehype-sanitize` runs last as a second, independent
+check, and the content security policy is a third line of defence, not the
+guarantee. `dangerouslySetInnerHTML` and `rehype-raw` are banned by lint.
+
+- **One allow-list** (`frontend/src/lib/markdownAllowList.ts`) drives the
+  sanitize schema, the renderer's elements and the editor's node and mark list;
+  a test fails when the three disagree. Allowed: paragraphs, quotes, lists
+  (numbered lists keep `start`), code blocks, rules, tables, emphasis, strong,
+  strike-through, inline code, line breaks, links. All six heading levels render
+  as one small bold line, so a requester cannot post a page-sized banner.
+  Not allowed: images, task-list checkboxes, footnotes, `style`, `id`, `on*`.
+- **Raw HTML is shown as text**, so `<server01>` and `<b>x</b>` read as written.
+- **Images are never loaded.** An image shows as the link "[image: alt]", which
+  follows the link rules (no tracking pixels, no `data:` images).
+- **Links** open in a new tab with `rel="noopener noreferrer nofollow ugc"`.
+  The real host is shown after the link unless the link text is exactly the URL
+  (plain ASCII, no `user:password@`); a look-alike international domain shows in
+  its `xn--` form, and invisible and direction-changing characters are removed
+  from link text and the host. Bare URLs and `www.` addresses are linked, but
+  only in Markdown text. Relative links, `#fragment`, `javascript:`, `data:`,
+  `vbscript:` and `tel:` render as plain text.
+- **Code** in a fenced block is highlighted for 13 languages (bash, powershell,
+  json, yaml, xml/html, sql, javascript, typescript, python, go, ini, diff,
+  plaintext) by `lowlight`, which yields a tree of elements, never an HTML
+  string. A fence in another language, or with none, is not guessed at.
+- **Formatting is bounded, not guessed.** Parsing Markdown is not linear in the
+  size of the input (a table header's width multiplies every short row, unclosed
+  brackets rescan the rest of the text, hard breaks and nested lists add up), and
+  a reply has no length cap. So text over 50,000 characters is never formatted,
+  a table is limited to 5,000 cells, and everything else is parsed in a Web Worker
+  with a three-second budget (`BUDGET_MS`); past it the worker is terminated. The
+  slowest text the length limit lets through (50,000 characters of hard breaks)
+  takes about 0.6 s on a developer laptop, and the budget is wall-clock, so it is
+  set to leave a loaded machine room: at one second a slow runner overran it and
+  an ordinary post was called "too complex". The page never waits for the worker
+  (the post is readable as written meanwhile), so a longer budget costs only the
+  core a runaway parse keeps busy for the extra seconds. In every such case
+  the post is shown as plain text with a note ("too long to format", "too
+  complex to format", or "formatting unavailable" when the worker could not
+  start), and its **Plain text** button stays reachable. A failure that may be a
+  slow moment is not remembered, so the next view tries again.
+- **Replies are limited to 50,000 bytes, and older longer posts are collapsed.**
+  A reply (REST, guest, MCP, anything that makes one) is held to the
+  description's limit, counted the same way: **bytes** of the stored text, so
+  letters outside basic English and emoji count 2 to 4 each (16,667 Chinese
+  characters are 50,001 bytes and are refused). Over it is `400 body_too_long`
+  ("body must be at most 50000 bytes"), checked before anything is written. The
+  forms say "size limit", never "characters": "This is N% over the size limit
+  (50,000 bytes). Letters outside basic English and emoji take 2 to 4 bytes
+  each." A reply had no cap before 1.3.0, so some stored posts are longer, up to a
+  megabyte. Laying out a megabyte takes seconds, and splitting it into blocks
+  changes what copying gives back, so such a post (the page's rule is over 50,000
+  characters, a threshold of its own) is shown **collapsed**: its first 5,000
+  characters, a note ("Showing the first 5,000 of N characters. This is only part
+  of the post: copying here copies only that part.", counting real characters, an
+  emoji as one), and a **Show full text (size)** button. The button draws all of
+  it in one block, as stored, so selecting and copying it returns exactly the
+  stored text (tested in Chromium and WebKit), with one exception that is the
+  browser's and not ours: a browser drops a trailing newline when copying, for
+  every post, formatted or plain, collapsed or not. Saving does not change it.
+  Expanding is allowed to be slow, once, and only when asked for. Nothing is
+  truncated or rewritten: the rest is one click away. Over 50,000 characters is
+  never formatted, expanded or not.
+- **A page of long plain-text posts is laid out only where it is read.** Plain
+  text over 5,000 characters has `content-visibility: auto`, so the browser lays
+  it out when it scrolls near the screen and not before (220 replies of 50 KB took
+  3.3 s of layout at once; in Chromium the page now reaches its first frame in
+  1.4 to 3.5 s instead of 7 to 16 s, and the first formatted post in about 1.6 s
+  instead of 7 to 17 s. WebKit gains little: the same 4 to 9 s to a first frame
+  and 4 to 5 s instead of 5 to 10 s to the first formatted post; #650). Until a post is drawn its height is an
+  estimate (`contain-intrinsic-block-size`, with `auto` so the browser keeps the
+  real height once it has drawn it): the post's own rows at the box's own width,
+  with the width of a Latin letter measured in the post's font on a canvas (an
+  assumed half of the font size was 10 percent low in the wider sans-serif of the
+  Linux CI runner and 20 percent low in a monospace font), 10 percent added for
+  what wrapping loses at the end of a row, and a wide character (Chinese,
+  Japanese, Korean, fullwidth forms, emoji) counting as one font size wide, a
+  surrogate pair as one character (`lib/plainRows.ts`). That lands within about 7
+  percent of the real height of a post for English in sans-serif and monospace
+  fonts and for Chinese, and is exact for text written a line at a time. It is
+  not good for text that is mostly one width of letter: narrow Latin ("iiii
+  llll") comes out about twice too high, and wide Latin ("WWWW") and emoji about
+  0.6 to 0.75 of the real height. A width that is not a width (a hidden ancestor,
+  0) falls back to 80 characters a row, not one row per character. A browser that
+  has `content-visibility` but not the `lh` unit (Chrome 95 to 108) gets the same
+  estimate in `em`, at 1.5 times the font size a row. The estimate matters because
+  Safari does not keep the reader's place when content above them changes size:
+  with one row per stored line the page jumped 8,000 to 20,000 px and grew by 40
+  to 140 percent as it was read, and with one unit per UTF-16 character Chinese
+  text, which is twice as wide a character, jumped 2,820 to 11,060 px (5 to 13
+  screens). Measured now in WebKit, scrolling through 30 posts at 320 to 1440 px:
+  Chinese moves at most 40 px, English in the default font at most 780 px (0.8 of
+  a screen, at 768 px, when scrolling back up through posts not yet drawn), English
+  in a monospace font at most 1,020 px (1.2 screens, at 1440 px), and in Chromium
+  nothing moves. Short posts are laid out
+  as usual, nothing is rewritten, and Select All still holds every post
+  (`e2e/lazy-layout.spec.ts`, both engines, four widths). **One post is still one
+  element**, unlike the chunked rendering removed before 1.3.0, so copying within a
+  post gives the stored text exactly.
+- **A page of long posts is formatted only where it is read.** A post is formatted
+  when it comes within about 1,500 px of the screen (measured in the scrolling
+  area that holds it), and the page as a whole has a budget of 300,000 formatted
+  nodes; past it, further posts stay as written with the note "this page already
+  shows a lot of formatted text". Without this, 220 replies of 50 KB each took
+  3.76 GB of heap. The page
+  itself only turns the worker's sanitized result into elements from the
+  component map, after checking it again, inside an error boundary per post. The
+  worker is same-origin, so `script-src 'self'` covers it (pinned by
+  `TestDefaultCSP_AllowsTheSameOriginMarkdownWorker` and `frontend/e2e-csp`).
+- **Two kinds of link are not links.** A `mailto:` with any query (`?bcc=`,
+  `?cc=`, `?subject=`, `?body=` can add recipients or write the message), with a
+  `;`, a quote, a backslash, whitespace or control character, an `@` or a `%` left
+  in a local part, or a domain that is not a host; its addresses are otherwise
+  shown with the domain in `xn--` form. And a link to one of this help desk's own
+  attachment routes, which would skip the "content looks like..." and reputation
+  warnings of the attachments list: it reads "(attachment: open it from the
+  attachments list)". That rule compares what the server compares: the host
+  without scheme, port, case or trailing dot, and the path with repeated slashes
+  collapsed, decoded once and lower-cased.
+- **Long text** (#479, #517): prose and links wrap; a code block or table scrolls
+  inside its own box (focusable by keyboard); the page itself never scrolls
+  sideways at 320 px.
+
+**Reader toggles.** Every Markdown post has a **Plain text** button that shows the
+stored characters, to copy them exactly or check a suspicious link. Every plain
+post has **Show formatted**, which shows the same text through the same strict
+renderer. Both are the reader's choice, change nothing stored and send nothing to
+the server; the default is the stored format. Both buttons use `aria-pressed`.
+
+**The editor.** The web app's forms use a Milkdown WYSIWYG editor that writes
+Markdown, loaded on demand; it is built from the same allow-list (no task lists,
+footnotes or images; an image node is the text "[image: alt]"). A paste is parsed
+against that schema, so a pasted image or script is dropped and nothing is
+requested from the network. Tab always leaves the editor (list indent is
+`Mod-]`). While it loads, if it fails, or by the writer's choice ("Switch to plain
+editor"), a plain textarea holds the same Markdown. The webhook and email
+formats are unchanged: Markdown source reaches a chat as literal characters, and
+email carries no ticket text.
 
 ### Ticket Submission by Role
 
 | Field | Guest | User (logged in) | Staff / Admin |
 |-------|-------|-----------------|---------------|
 | Name, email, phone | Required / optional | — (uses account) | — |
-| Category | Active only | Active only | All |
-| Type | — (not shown) | Active only | All |
-| Item | — | — (not shown) | All |
+| Category | Active only | Active only | Active selectable; archived shown greyed |
+| Type | — (not shown), unless **Show Types to guests** is on: active only | Active only | Active selectable; archived shown greyed |
+| Item | — (not shown), unless **Show Types to guests** and **Show Items to guests** are on: active only | — (not shown), unless **Show Items to registered users** is on: active only | Active selectable; archived shown greyed |
 | Priority | — (defaults to Medium) | — (defaults to Medium) | Selectable |
+| Requester | Their own name and email (above) | Always themselves | Me (default), an existing user, or a typed email address (below) |
 | Attachments | — | Yes | Yes |
 
-Attachment upload is available to all authenticated (non-guest) users. Accepted formats: PDF, DOCX, XLSX, TXT, LOG, JPEG, PNG, BMP. Max 25 MB per file. Images (JPEG, PNG, BMP) are re-encoded to whichever of JPEG (quality 85) or PNG produces a smaller file. File names on disk are obfuscated (UUID-based); the original file name is preserved in the database for download.
+**Filing on behalf of a requester (#444).** Staff and administrators can open a
+ticket for someone else, which is how a phone-in request is recorded. `POST
+/tickets` takes one of two optional fields, never both (`400` if both are sent):
+
+- `reporter_user_id`, an existing account. The checks are MCP `create_ticket`'s,
+  because they are the ticket service's: an id that is not a live account is
+  `400`, and a disabled account is accepted.
+- `reporter_email`, an address typed for someone who may have no account. It is
+  trimmed and lower-cased, and held to the same address rules as a guest's (a
+  display name or a local part that needs quotation marks is `400`). **If the
+  address belongs to an account, the ticket is filed for that account**, as if
+  its id had been sent, rather than creating a guest identity for a person who
+  can sign in. **Otherwise it is filed exactly like a guest ticket**: the same
+  creation path, the person is sent the same guest link at that address (read
+  and reply, read-only once the ticket closes, replaced when the ticket changes
+  in a way they are told about). **`guest_name` is required with every
+  `reporter_email`** (`400` without a non-blank one), whether or not the address
+  has an account, so that its absence says nothing about the address; it is
+  ignored for an account. `guest_phone` is optional and kept. Guest links
+  are suspended while guest submission is off (#424), so a typed address with no
+  account behind it is `400` then, and nothing is filed; an address that belongs
+  to an account is not affected. Only the requester's identity follows the guest
+  rules: the ticket is still filed with the caller's staff rights (type, item,
+  priority) and routed like any `POST /tickets`.
+
+With neither field the caller is the requester, as before. **The member of staff
+is the actor** in the status history, the `created` audit entry and the
+`created` event (`ticket.CreateInput.FiledBy`); the requester is the ticket's
+reporter or guest, and the staff ticket page shows them (the Requester line,
+below). **An existing user who is filed for is told**: someone picked by id, or
+a typed address that matches an account, is sent the ordinary "We have received
+your ticket" email with a link to the ticket (the sign-in one: they have an
+account, so no guest link), queued through the notification outbox like every
+other requester mail, so one mail goes to an address even when it is also a
+staff recipient of the same change (the staff mail wins). A member of staff who
+files their own ticket, with neither field or by naming themselves, is not
+mailed about it, as before; nor is a requester who files theirs. A typed
+address with no account is filed as a guest ticket and gets the guest link, as
+above.
+
+**Budget on the typed-address path (#290).** A typed address mails a stranger
+on a staff member's say-so alone, and is also the one way to learn whether an
+address has an account, so every attempt is capped: **40 per hour per staff
+member**, and the 41st is `429 rate_limited` with `Retry-After` (the time left
+in the window) and files nothing. Every `reporter_email` that passes validation
+takes a unit before the address is looked up, account or not, and the refusal
+for guest submission being off is not given back. A request refused by
+validation spends nothing. **A unit is never given back once taken**, not for
+the guest-submission refusal and not when `Create` then fails: a refund after
+the address is known makes a miss free whenever a failure can be provoked for
+one kind of address only. A genuine database error costs one of the 40. A picked `reporter_user_id` is not counted and
+is not stopped by a spent budget. The key is the authenticated user, not the
+address of the request, so an API key or OAuth client counts against the user it
+acts as (the same budget as that person's own session), and another staff
+member is unaffected. The figure is fixed, not configurable. Like every limiter it
+counts in the database (see Rate limits): a restart does not clear it and every
+replica shares it. The window is a fixed one that opens at that staff member's
+first use, so a full budget filed just before it ends can be followed by another
+just after. MCP `create_ticket` cannot
+file for a typed address (picked users only), so it is not counted.
+
+A reporting
+user who sends either field gets `403 forbidden`, the same as any other staff-only
+action; it is never ignored, because a ticket quietly filed under their own name is
+not what they asked for. A guest (no credential) is refused the same way.
+
+**The Requester line (#444).** The staff ticket page shows a **Requester** line
+on every ticket, not only those filed on behalf of someone: the reporting
+account's name and email, or the guest's. `GET /tickets/{id}` carries it as
+`requester` (`{name, email}`) for staff and administrators only; it is not on
+the requester allowed list, so a reporting user is never sent it (they are on
+their own ticket, and what they see does not widen), and it is not on a ticket
+list. A deleted account is still named; if the account cannot be read the line
+reads "unknown" and the failure is logged.
+
+On the New ticket page, staff and administrators see a **Requester** choice
+(Me, the default; Another user; Email address) and a requester sees none. Email
+address shows a required **Name** and an optional **Phone**, as the guest form
+does. Another
+user is a search box: `GET /users/lookup?q=` (staff and administrators **in a
+signed-in session only**; an API key or OAuth client gets `403 session_required`,
+`users:read` or not, `DenyMachineCredentials`) answers with `id`, `display_name` and `email` of at most
+ten accounts whose name or address contains the query, ignoring case, ordered by
+display name then id. Disabled, deleted and service accounts are excluded by the
+query itself (one read, `LIMIT 10`), not read and dropped afterwards. A query
+shorter than two characters is `400`, so the endpoint finds a person and cannot
+list the directory; deleted accounts, disabled accounts (they cannot sign in) and
+service accounts are not found. The search minimum is counted in characters, not
+bytes or UTF-16 units. A reporting user gets `403`. The lookup is the picker's:
+a disabled account sent by id is still accepted, as MCP accepts one.
+
+`GET /users/lookup?id=<uuid>` is the same lookup for one account, so the ticket
+list's requester chip can turn the id in its address back into a name after a
+reload. Same route, so the same rules: a signed-in staff or administrator
+session only, and the same accounts left out, by the same query conditions. It
+answers the account as one object (`id`, `display_name`, `email`), `400` for an
+id that is not a UUID or for `id` together with `q`, and one fixed `404` for an
+unknown id and for a disabled, deleted or service account alike, so it does not
+say which ids are real. Masking changes nothing here: the setting is for the
+audit views, and this returns what `?q=` returns.
+
+**There is no user lookup for machine credentials (#290, Erik 2026-10-14).** A
+key that files for someone sends `reporter_email` and the server resolves it:
+an account if one exists, otherwise a guest ticket. That leaves no endpoint
+that confirms whether an address has an account or lists the directory. The
+`201` does carry `reporter_user_id` (the response of a ticket the caller filed
+shows who it was filed for), which tells a key that an address has an account.
+Erik accepted that on 2026-10-16 ("leak accepted").
+
+What the server does to keep that the only leak: `Server.ResolveOnBehalf` runs
+every check that does not depend on the address (subject and description,
+priority, the category, type and item existing, belonging together and being
+open: `ticket.Service.ValidateCreate`) **before** it looks the address up, so a
+request that was going to fail anyway gets the same answer for every address,
+over REST and MCP, with guest submission on or off. `guest_name` is required with every
+`reporter_email`, checked with the rest, so leaving it out is refused the same
+way for every address. Only after all that does the address take a unit of the
+40-an-hour budget and get looked up. The answer is then the ticket (`201`, with
+`reporter_user_id` when there is an account) or, for an address with no
+account, `guest submission is off` (the unit is not given back). So every
+probe that learns anything costs a unit, or a filed ticket and a unit, and
+probing is bounded at 40 an hour per staff member, over REST and MCP together.
+That is what the "leak accepted" ruling covers.
+
+MCP `create_ticket` takes `reporter_user_id` or `reporter_email` (never both),
+`guest_name` and `guest_phone`, with the REST rule, from the same code
+(`Server.ResolveOnBehalf`, which REST's handler calls too): the same address
+rules, the same account-or-guest resolution, the same refusal while guest
+submission is off, the same name requirement (always), the same 40-an-hour budget (one
+per staff member across REST and MCP), the same created mail. A refusal
+comes back as the tool's error text. `reporter_user_id` stays, because existing
+callers send it. **When either names someone other than the caller, the caller
+is the actor** of the creation, as on REST (`CreateInput.FiledBy`), and the
+reporter is who it is for; the account is emailed as above. Naming yourself, or
+omitting both, is filing your own ticket and is unchanged.
+
+**Nobody newly picks an archived category, type or item (#421).** Staff and
+administrators see archived rows (in the picker and in the catalogue API) so they
+can read the classification of tickets already filed under them, but cannot
+choose one: creating a ticket under an archived node, or reclassifying a ticket
+into one, answers `400` naming the field (`category_id`, `type_id` or `item_id`
+`is not an active ...`), for every role and every credential (session, API key).
+This replaces the earlier staff exception. The rule is enforced once, in the
+ticket service (`refuseArchivedPick`, called by `Create` and `UpdateCTI`), so the
+REST API, the MCP `create_ticket` tool and the guest form all obey it. Items are
+included; they were checked for nobody before.
+
+Only a **new pick** is refused. A ticket already in an archived node keeps it: a
+PATCH that leaves a level unchanged (including one that repeats the existing
+classification) is not checked at that level, so an unrelated edit still works,
+and a staff follow-up of a closed ticket copies its classification as before. A
+reclassify is checked level by level against the ticket's current classification,
+so keeping an archived type while choosing a new active item under it is allowed.
+A requester's follow-up is unchanged and still needs an active category and type
+(#349). OAuth clients cannot create or reclassify tickets yet (they carry no user
+identity; see #434), so the rule is not exercised for them until they can.
+
+**Archive and restore from the admin page (#446).** Every category, type and
+item row of **Admin → Categories** has an Archive button (Restore on an archived
+row). Archive asks first and says what it does: it cannot be chosen for new
+tickets, and tickets already filed keep it. Restore acts at once. Both send
+`PATCH ... {"active": ...}` to the row's own URL; archived rows stay in the tree,
+greyed and labelled "Archived", so there is no hide/show filter. Archiving is one
+row: the API does not cascade, so a type under an archived category keeps its own
+flag.
+The row buttons (rename, archive/restore, delete) appear on hover or focus with a
+mouse, and are always shown and 44px square on a touch screen. Rename's Save and
+Cancel are shown whenever a name is being edited; on a touch screen they are also
+44px square. Below the `sm` breakpoint (640px) a row's badge and buttons go on
+their own line under the name, so a long name keeps its column. At `sm` and wider
+the row is a single line of controls with the name's text wrapping in its column.
+A refusal from the API is shown in the dialog as sent.
+
+Attachment upload is available to every authenticated non-guest user on the
+API, and the reply composer offers the same control to every role that can
+already upload at ticket creation (#175) — staff-only controls in that
+composer are the internal-note flag, the customer-notify flag and canned
+responses, not the attachment control. A guest cannot attach at ticket
+creation (there is no ticket yet to attach to), but can attach to an
+existing one afterward at `POST /api/v1/guest/attachments` (only while an
+administrator has turned on **Guests may attach files**, off by default, and
+within the guest per-file limit; see Guest Submission, #445), authorized the
+same way `POST /api/v1/guest/replies` is: the ticket comes from the guest
+token in the `Authorization` header, never from an id in the path, so there
+is nothing for a guest to change to reach a different ticket. Which types are accepted is an operator setting, `attachment_allowed_types` — a JSON array of lowercase extensions with the leading dot, each matching `^\.[a-z0-9]{1,16}$`. The shipped default is PDF, DOCX, XLSX, TXT, LOG, JPG, JPEG, PNG, BMP; an empty array means this instance takes no attachments at all. `.jpg` and `.jpeg` name one format, so allowing either allows both. Changing it needs a signed-in administrator — an API key cannot widen what the instance accepts. The largest file is an operator setting too, `attachment_max_mb`, 25 MB by default (a guest's maximum is the lower of that and `guest_attachment_max_mb`, 5 MB by default, #445; see Per-file size limit, below, #673). Images (JPEG, PNG, BMP) are re-encoded to whichever of JPEG (quality 85) or PNG produces a smaller file — except an image with transparency in it, which is always PNG, because JPEG has no alpha channel and "smaller" would be comparing two different pictures. File names on disk are obfuscated (UUID-based); the original file name is preserved in the database for download.
+
+Every attachment upload — authenticated or guest — is authorized the same
+way a reply is (`CanUploadAttachment` / `CanGuestUploadAttachment`, reusing
+`CanUserUpdate` / `CanGuestUpdate`): a reporting user must own the ticket,
+and neither a Closed ticket nor a Resolved one past its reopen window
+accepts a new attachment from anybody but staff or an admin. A Closed ticket is
+read-only to **every requester** (#349): a guest's upload is refused with the
+generic `404` (a link to a closed ticket reads and cannot write), and a
+reporting user's with `409 ticket_closed`. Staff and admin are unchanged (#315 — the
+upload handler used to check ownership and nothing else, so a reporter
+could attach to their own Closed ticket even though the equivalent reply
+was already refused).
+
+### Per-file size limit (#673)
+
+([#673](https://github.com/PubliciaLLC/go-help-desk/issues/673), 1.3.0.) The
+largest file anyone may attach used to be a constant, `attachMaxBytes = 25 <<
+20` in `handler_attachments.go`, while the guest slider beside it ran to
+100 MB, so every figure from 26 to 100 on that slider did nothing. The limit is
+now a setting, the guest slider stops at it, and everything that assumed
+25 MB reads it instead.
+
+**The setting.** `attachment_max_mb` (`admin.KeyAttachmentMaxMB`), an integer
+number of megabytes (MiB: the bytes are `mb << 20`, as today's constant and
+`tooLargeMessage` already count them), **1 to 100, default 25**. It is a row in
+the settings table like every other key, so **there is no migration**: an
+install that never sets it reads 25, which is exactly today's constant, and
+nothing changes on upgrade. `admin.Service.AttachmentMaxMB(ctx)` reads it, with
+the rule the guest figure already has: unset, unreadable or outside 1 to 100
+reads as **25**, so a damaged row can neither lift the limit nor drop it to
+zero. Constants beside the guest ones in `domain/admin/settings.go`:
+`AttachmentMaxMBDefault = 25`, `AttachmentMaxMBMin = 1`, `AttachmentMaxMBMax =
+100`, and `ValidAttachmentMaxMB(v int) bool`. It is listed in `KnownKeys` and in
+`AuthCriticalKeys` (session-only), for the reason `attachment_allowed_types` is:
+a leaked API key must not be able to widen what this instance accepts and then
+upload it. A machine credential that sends it gets `403 session_required`.
+
+**One limit, one place.** `attachMaxBytes` is removed. The server reads the
+limit through one method, `(*Server).attachmentMaxBytes(ctx) int64` (=
+`int64(AttachmentMaxMB) << 20`), and the guest's through the existing
+`guestAttachmentMaxBytes(ctx)`, which becomes `min(guest MB, AttachmentMaxMB)
+<< 20`. The authenticated upload passes `attachmentMaxBytes` to
+`storeUploadedAttachment` where it passed the constant; the guest upload is
+unchanged in shape. Everything after that already takes `maxBytes` as a
+parameter: the body cap (`maxBytes + 1 MiB` of multipart framing), the declared
+part size, the read, and the `413 too_large` message, which names the limit that
+applied ("file exceeds 10 MB limit"). Both figures are read once per request, at
+the start, so a request is judged by one limit even if an administrator saves a
+new one while it is arriving.
+
+**Bounds: 1 to 100 MB** (the owner's proposal in the issue). 100 is the top
+because it is the stock clamd's `StreamMaxLength` and `MaxFileSize` (below),
+because what the limit costs grows with it (below), and because a help desk is not a
+file transfer service: 100 MB covers a large log bundle or a scanned document
+set, and anything bigger belongs in a link. 1 is the bottom because 0 is
+already expressed another way: an empty `attachment_allowed_types` takes no
+attachments at all, and a second way to say that would be a special case.
+
+**What scales with the limit, and what does not.** Every assumption in the
+upload path that named 25 MB is one of these four:
+
+- **The transfer deadline scales.** `bodyTransferTimeout` (five minutes, set on
+  the connection for the upload and download routes only, replacing the
+  server-wide 15 s read and 30 s write deadlines in `cmd/server/main.go`) was
+  sized as "25 MB at roughly 700 kbit/s". That rate is the rule, and the
+  minutes follow from it: five minutes for every 25 MiB, never less than five
+  minutes. Written exactly as
+
+  ```go
+  const transferAnchorBytes = 25 << 20 // 25 MiB moves in five minutes (≈ 700 kbit/s)
+
+  func transferTimeout(n int64) time.Duration {
+      return max(5*time.Minute, time.Duration(n)*time.Second/transferAnchorBytes*300)
+  }
+  ```
+
+  in that order of operations, and in no other: there is **no rate constant**,
+  because `(25 << 20) / 300` truncates to 87381 bytes a second and would make
+  25 MiB come out at 5 min 0.0003 s rather than five minutes. Multiplying `n`
+  by a second first and dividing by the anchor second is exact at every whole
+  MiB (`k << 20` bytes is `k × 40 ms` before the `× 300`), and `n × 10⁹` stays
+  inside `int64` up to about 9 GB, ninety times the top of the range. So the
+  values are exact, and the tests assert them with `==`: **5 min** at 0, 1 MiB
+  and 25 MiB (the default, and every lower limit, is exactly today's
+  deadline), **10 min** at 50 MiB, **20 min** at 100 MiB. Multiplying `n` by
+  five minutes first is not an option: `100 MiB × 5 min` in nanoseconds is
+  about 3 × 10¹⁹ and overflows `time.Duration`. The upload passes the
+  `maxBytes` that applies to it (a guest's lower limit gets a shorter
+  deadline); the download passes the stored file's `size_bytes`, so a 100 MB
+  file stored before the limit was lowered still has time to leave. The server-wide deadlines
+  do not change: every other body is a JSON document. The longer window is
+  only open to a caller who has passed authorisation (signed in, or holding a
+  guest link that passed the guest checks), and a slow body costs a connection
+  and a goroutine, not memory, until its bytes arrive.
+- **The scan timeout scales the same way.** `antivirus.Scanner`'s 60-second
+  scan deadline was justified as "a 25 MB file over INSTREAM on a busy daemon".
+  It becomes one minute for every 25 MiB, never less than one minute, written
+  the same way and for the same reason: `scanTimeoutFor(n int) time.Duration =
+  max(time.Minute, time.Duration(n)*time.Second/(25<<20)*60)`, computed per
+  scan from `len(data)`. Exactly **60 s** up to 25 MiB, **2 min** at 50 MiB,
+  **4 min** at 100 MiB. The dial timeout stays five seconds.
+- **Upload memory is bounded where it can be, and stated where it cannot.**
+  `ParseMultipartForm(maxBytes)` keeps up to `maxBytes` of the file in memory
+  before spilling the rest to a temporary file, and the handler then reads the
+  whole file into a slice to hash, detect, scan and store it. At 100 MB that
+  was two in-memory copies. The parse's memory argument becomes a constant,
+  `multipartMemoryBytes = 25 << 20`, so the parse holds what it holds today and
+  anything larger spills to disk, bounded by the body cap and removed by
+  `net/http` when the request ends. At or below 25 MB this is today's behaviour
+  byte for byte. The working slice is not removed: hashing, the content
+  detector, the scanner's INSTREAM and the wrap all take the file whole, and
+  streaming them is a rewrite of the pipeline, not this issue. So an upload
+  costs roughly the limit in memory, plus a second copy while a wrap is built,
+  and the upgrade note says so for an operator choosing 100.
+- **The image caps do not scale.** `maxImagePixels` (25 megapixels) and
+  `maxDecodedBytes` (100 MB) bound what decoding costs, and the byte size of a
+  file was never that bound: a 169 KB PNG decodes to 142 MB. They stay as they
+  are at every limit; a larger byte limit only lets through larger files that
+  are not images, or images that still fit the decode budget. The comment
+  beside them that reasons from "the 25 MB upload cap" is reworded to say the
+  caps are independent of it.
+
+**The scanner has a limit of its own, and the stock one is the top of the
+range.** clamd closes an `INSTREAM` session that sends more than its
+`StreamMaxLength`, and skips (answering `OK`) a file larger than its
+`MaxFileSize`. Since ClamAV 0.105 (2022) both default to **100M**, and
+`MaxScanSize` to 400M (`clamd.conf.sample`: "Default: 100M"; the 0.105 release
+notes list "StreamMaxLength: 25M -> 100M, MaxFileSize: 25M -> 100M,
+MaxScanSize: 100M -> 400M"). The compose file pins `clamav/clamav:stable`, a
+1.x release, so **the shipped scanner accepts every value in this setting's
+range with no change**. clamd's `M` is 1,048,576 bytes, the same MiB this
+setting counts in, and it refuses a stream only when the bytes sent *exceed*
+the length, so a file of exactly 100 MiB, the largest this setting can let
+through, sits exactly on the stock `StreamMaxLength` and `MaxFileSize` and
+still fits, with no headroom. That is the better argument for 100 as the top
+(below): it is the stock scanner's ceiling, and the range never asks an
+operator to retune clamd. The implementer confirms the two defaults with
+`docker run --rm --platform linux/amd64 clamav/clamav:stable clamconf -n`
+against the pinned image and says so in the PR; if they differ, this paragraph
+is wrong and the bound is revisited before merge.
+
+What can still go wrong is a clamd that is **older than 0.105** (25M stream
+and file limits) or **hand-tuned below the new limit**. The scanner already
+reads clamd's `size limit exceeded` reply as `Unavailable` (#167), so such a
+file is `503` under `required` scanning and stored unscanned under
+`permissive`; a file over a lowered `MaxFileSize` that fits the stream limit
+is skipped and answered `OK` unless `AlertExceedsMax yes` is set, which makes
+clamd answer `FOUND`, which this application refuses. The server cannot read
+clamd's configuration, so it does not refuse the setting. It says so, quietly:
+while `attachment_scan_policy` is not `off` and the value is above 25, the
+field carries a grey hint (below, not an amber warning, since the stock
+scanner is fine), and the upgrade note and `docker/.env.example` say which
+clamd settings matter for an older or tuned daemon.
+
+**A reverse proxy has a limit too.** The compose file exposes the app directly,
+so nothing else is in the path. An operator who puts nginx or similar in front
+must allow a body of the limit plus 1 MB of framing (`client_max_body_size`,
+1 MB by default in nginx) and a read timeout at least the transfer deadline
+above. The upgrade note says this; the server cannot see it.
+
+**The guest limit.** `guest_attachment_max_mb` keeps its key, its default (5)
+and its reader (unset, damaged or outside 1 to 100 reads as 5). What changes is
+the save and the page:
+
+- **The effective guest limit is `min(guest, overall)`**, computed in
+  `guestAttachmentMaxBytes` on every upload and in `GET /site`'s
+  `guest_attachment_max_bytes`, so the guest page never offers more than the
+  server takes. There is no stored "effective" value: the two settings are
+  facts the administrator chose, and the lower one wins wherever it is read.
+- **PATCH refuses a guest value above the overall limit.** The ceiling is the
+  overall limit **as it will be after this PATCH**: `attachment_max_mb` from
+  the same body when the body carries a valid one, else the stored
+  `AttachmentMaxMB`. So `{"attachment_max_mb": 50, "guest_attachment_max_mb":
+  40}` is accepted in one request from a default install, and
+  `{"attachment_max_mb": 10, "guest_attachment_max_mb": 20}` is refused whole,
+  nothing stored. Refused as `400 bad_request`, "guest_attachment_max_mb must
+  be between 1 and N MB, the per-file limit for every upload" with N the
+  ceiling. Validated after `attachment_max_mb`'s own check, so a bad overall
+  value is the error named. The old 1-to-100 check is this check with N = 100.
+- **Lowering the overall limit below the stored guest value is accepted**, and
+  the guest value is left as stored. The guest is held to the overall limit
+  until either changes, and raising the overall limit again restores the guest
+  figure the administrator chose. Rewriting the guest row would be a change
+  nobody asked for, made silently, and it would lose the figure; refusing the
+  lower overall limit would make an administrator who wants to tighten uploads
+  edit a second setting first. A guest value is refused only when it is the
+  value being saved. The settings page sends only the keys that changed
+  (#394), so an untouched guest value never travels with a later save and
+  never trips this check.
+
+**Who reads the limit.** Three places outside the upload handler:
+
+- **`GET /me`** gains `attachment_max_bytes` (integer, always present for a
+  person, and for an API key, whose `/me` answers as its owner's account; not on an
+  OAuth client's `/me`, which has a different shape and no uploader UI). The
+  reply composer (`components/ticket/ReplyComposer.tsx`) and the new-ticket
+  page pass it to `AttachmentUpload` as `maxBytes`, which until now defaulted
+  to a 25 MB literal. Without this a raised limit would be refused in the
+  browser before the server saw the file. On `/me` rather than `/site` because
+  only signed-in people use it; `/site` already carries the guest figure.
+
+  **Where the browser reads it: the `['me']` query, not the auth store.** The
+  store is filled from two different shapes. `requireAuth` in `router.tsx`
+  fills it from `GET /me` (the `meView`), but a password sign-in fills it from
+  the login response's `user` (`LoginPage.tsx`, `setUser(user)`), which is a
+  plain `user.User` serialised by `handleLogin` and has no
+  `attachment_max_bytes`; the store is also never refreshed when an
+  administrator saves. So both components read
+  `useQuery({ queryKey: ['me'], queryFn: getMe, retry: false })`, the query the
+  ticket list already uses for `sla_enabled` and that the Settings save already
+  invalidates, and take `me?.attachment_max_bytes ?? user?.attachment_max_bytes`
+  (the store's copy stands in until the query answers, which covers a reload,
+  where the store came from `/me`). With both absent (an older server, or the
+  first render right after a password sign-in) `AttachmentUpload` keeps its
+  25 MB default; the query answers before anyone has picked a file in practice,
+  and the server's `413` names the real limit if it has not. The login
+  response is not changed to carry `meView`: that is a second shape on a
+  security route to fix one figure, and every other field it would add is
+  already read from `/me` where it matters.
+- **`GET /site`**: unchanged in shape; `guest_attachment_max_bytes` is the
+  effective guest limit as above.
+- **MCP**: no tool takes a file (`MaxRequestBody` is 1 MiB and
+  `list_attachments` is read-only), so MCP changes nothing.
+
+**The settings page.** The control is its own component,
+`frontend/src/components/admin/AttachmentSizeLimitSection.tsx`, a `Section`
+titled **File size** rendered by `AttachmentsPanel` directly under **Uploads**
+in `SettingsPage.tsx`, and taking only what it shows: `value?: number` (the
+stored `attachment_max_mb`, absent when unset), `onChange(mb)`,
+`scanning: boolean` (`attachment_scan_policy` is not `off`), and
+`guestMB: number` (the guest's own limit as the page shows it, by the rules
+below). It reads no query and no page state of its own, so #674's move to a
+**File Attachments** page is moving one JSX line.
+
+- A `BoundedNumberInput` labelled **Largest file anyone may attach**, `min 1`,
+  `max 100`, hint "1 to 100 MB. Default 25.", followed by "MB". Unset shows 25.
+  A displayed value is the reader's: absent or outside 1 to 100 shows 25.
+- Under it, one sentence: "Applies to every upload: staff, requesters and
+  guests. Guests are held to the lower of this and their own limit."
+- **Both limits, read-only for the guest one** (the issue's "shows both
+  limits"). A line under the sentence: "Guests: up to G MB." with G =
+  `min(guestMB, shown value)`. When `guestMB` is the higher, it continues:
+  " Their own limit is {guestMB} MB; this one is lower, so it applies." The
+  guest figure is edited only on the guest slider (General → Submissions
+  today, **Guest Access** after #674); this line shows it, it does not offer
+  a second control for the same setting.
+- While `scanning` and the value is above 25, a grey hint (`text-xs
+  text-gray-500`, not a warning): "Your virus scanner must accept files this
+  large. clamd 0.105 and later accept up to 100 MB unless StreamMaxLength or
+  MaxFileSize was lowered; an older clamd stops at 25 MB. A file the scanner
+  cannot take is refused while scanning is required, and stored unscanned
+  while it is permissive." Not shown at 25 or below, which the old 25M
+  default accepts too, or with scanning off.
+
+The guest controls stay where they are (General → Submissions; #674 moves them
+to **Guest Access**). `GuestSizeSlider` loses its literal range:
+
+- `instanceMaxMB` becomes the slider's `max` (`min` stays 1), and its value
+  is the overall limit in force, `num('attachment_max_mb')` with the reader's
+  fallback of 25. The ticks become two, `1 MB` and `{max} MB`, at the ends; a
+  fixed `[1, 25, 50, 75, 100]` row has no meaning for a range that moves.
+- The position is `min(stored, max)`, where a stored value outside 1 to 100,
+  or none, is 5 (the reader's rule). The old fallback treated anything above
+  the slider's top as invalid and showed 5, which would misreport a stored 20
+  under a limit of 10 as 5.
+- When the stored value is above `max`, the existing amber note says:
+  "Saved as {stored} MB. Every upload is limited to {max} MB, so guests are
+  held to {max} MB until you raise that limit or lower this one." and
+  `aria-valuetext` is "{max} MB, saved as {stored} MB, limited by the per-file
+  limit". Moving the slider writes a value within range and the note goes; not
+  touching it sends nothing.
+- The description above the slider loses "25 MB" and reads "The largest file a
+  guest may attach. It can never exceed the per-file limit for every upload,
+  {max} MB, set under Attachments."
+- On the Settings page, editing `attachment_max_mb` moves the guest slider's
+  top in the same render, before saving, so the page never shows a guest value
+  the save would refuse. This holds while both controls share
+  `SettingsPage`'s one `local` draft, which they do until #674 (below).
+
+**An unsaved guest value above an unsaved overall limit.** The two controls
+are on different tabs sharing one draft, so an administrator can move the
+guest slider to 20, then type 10 into the overall field. Saving both as typed
+sends `{attachment_max_mb: 10, guest_attachment_max_mb: 20}`, which the PATCH
+rule above refuses whole, and the slider's "Saved as 20 MB" would be untrue
+for a value never saved. The rule, in `SettingsPage`:
+
+- The overall limit **as the page shows it** is `overallMB` =
+  `local.attachment_max_mb` when it is an integer 1 to 100, else 25.
+- The guest value is **dirty** when `local.guest_attachment_max_mb` differs
+  from `settings.guest_attachment_max_mb` (the same comparison the save uses
+  to decide what to send, #394).
+- A dirty guest value is **shown and saved as `min(local guest, overallMB)`**.
+  The page passes that to `GuestSizeSlider` as its `value` (so a dirty value
+  never exceeds `max`, and the "Saved as" note, which is only ever about a
+  stored value, cannot appear for it) and to `AttachmentSizeLimitSection` as
+  `guestMB`; the save's patch builder applies the same `min` to the guest key
+  when it sends it. The draft itself is not rewritten: `BoundedNumberInput`
+  reports every keystroke, so typing "10" passes through "1", and clamping
+  the draft on each change would leave the guest at 1. Raising the overall
+  field again shows the guest value that was dragged.
+- An untouched (stored) guest value is passed as stored, and the stored-value
+  rules above apply: it sits at `max` with the "Saved as" note, and it is not
+  sent.
+
+**After #674 splits the page.** The overall limit moves to **File
+Attachments** and the guest slider to **Guest Access**, each with its own
+draft and save. Then the slider's `max` is the **stored**
+`attachment_max_mb` (from the `['admin', 'settings']` query, reader fallback
+25), never a draft on another page, and the same-render test above no longer
+applies and is replaced by: saving a new overall limit on File Attachments
+invalidates `['admin', 'settings']`, and Guest Access shows the new `max`. A
+dirty guest value is then at most the stored overall limit because the
+slider cannot go higher, so the clamp above has nothing to do; it stays, as
+the rule for whatever draft the slider is given. If another administrator
+lowers the overall limit between load and save, the server refuses the guest
+value with the `400` above and the page shows it as any refused save. #674
+owns that wiring; this section states what it must keep.
+
+The after-upgrade wizard's guest step uses the same component with the same
+rule (`settings.attachment_max_mb`, fallback 25) and the same sentence; it
+offers no control for the overall limit, because nothing about it changed on
+upgrade.
+
+**Phone layout.** Nothing new: the input is the `BoundedNumberInput` the guest
+cap already uses, full width under its label below `sm`, and the guest line
+and the scanner hint are text that wraps. The admin-page width checks (Small
+screens) cover the File Attachments page at 320 and 375 pixels with the hint and the
+two-sentence guest line shown.
+
+**Docs.** `openapi.yaml`: `attachment_max_mb` in the settings schema (integer,
+1 to 100, default 25, session-only) and in `PATCH /admin/settings`'
+description; `guest_attachment_max_mb`'s range becomes "1 to
+attachment_max_mb"; `attachment_max_bytes` on the `/me` user schema; every
+"25 MB" in the upload, guest-upload and `/site` descriptions becomes "the
+per-file limit, `attachment_max_mb`, 25 MB by default". `upgrade-notes-1.3.0.md`:
+under the guest-upload heading (#445) the size line now says the slider runs to
+the per-file limit and a guest value above it is refused; a new entry under New
+features, *Administrators Can Set the Largest Upload (#673)*, with the default
+(nothing changes), the bounds, the scanner (the shipped `clamav/clamav:stable`
+accepts up to 100 MB as it stands; a clamd older than 0.105, or one with
+`StreamMaxLength` or `MaxFileSize` lowered, needs both at least the new limit,
+and `AlertExceedsMax yes` if `MaxFileSize` stays lower), the proxy limits, and
+the memory cost. `docker/.env.example` gains, next to `CLAMAV_ADDR`, one
+comment saying the same in two lines: no clamd change is needed with the
+shipped image; an older or tuned clamd must allow the per-file limit. The
+`.env.example` and `docker-compose.yml` comments that say "a 25 MB upload"
+say "an upload".
+
+**Tests.**
+
+- `domain/admin`: `AttachmentMaxMB` reads 25 when unset and for 0, -1, 101 and a
+  string; reads a stored 1, 50, 100 as stored. `KnownKeys` and
+  `AuthCriticalKeys` contain it (the existing reflection test covers the
+  first).
+- `server` (Postgres): **default 25 behaves as today**: a 25 MiB file is `201`,
+  25 MiB + 1 is `413` naming "25 MB", with the setting unset. **A lower limit
+  refuses larger files** naming it: at 10, a 10 MiB file is `201` and 10 MiB + 1
+  is `413` "file exceeds 10 MB limit", through both the declared-size and the
+  read check, and a body over the cap is the same `413`. **A raised limit takes
+  larger files**: at 30, a 26 MiB file is `201`.
+- PATCH: 1, 25, 100 accepted; 0, 101, "25", null, 1.5 refused `400` and not
+  stored; an API key gets `403 session_required`.
+- **Guest held to the lower of the two**: guest 20, overall 10 refuses a 10 MiB
+  + 1 file with "10 MB"; guest 5, overall 10 refuses 5 MiB + 1 with "5 MB";
+  `GET /site` reports `min` in both.
+- **Guest PATCH refuses above the overall limit**: guest 26 at the default is
+  `400` naming 25, and not stored; guest 40 with `attachment_max_mb: 50` in the
+  same body is `204` and both are stored; `{attachment_max_mb: 10,
+  guest_attachment_max_mb: 20}` is `400` and neither is stored. The existing
+  `TestGuestAttachmentsSetting_ValidatesOneToOneHundredMB` is rewritten
+  accordingly: 26 to 100 are accepted once the overall limit is 100, and the
+  instance-cap test sets the guest to 25 rather than 100.
+- **Lowering below the stored guest value**: guest 20 stored, then
+  `attachment_max_mb: 10` is `204`; the guest row still reads 20; a guest
+  upload of 10 MiB + 1 is `413` "10 MB"; raising to 25 again lets a 15 MiB
+  guest file in.
+- `/me` carries `attachment_max_bytes` for each role, `26214400` by default.
+- Pure, asserted with `==`, no tolerance: `transferTimeout` is exactly 5 min at
+  0, 1 MiB and 25 MiB, 10 min at 50 MiB, 20 min at 100 MiB, and at 101 MiB is
+  exactly 20 min 12 s (positive, no overflow); `scanTimeoutFor` is exactly
+  60 s at 0 and 25 MiB, 2 min at 50 MiB and 4 min at 100 MiB.
+- Frontend: `AttachmentSizeLimitSection` shows 25 when unset, reports the
+  typed value, shows the scanner hint above 25 only while scanning; shows
+  "Guests: up to 5 MB." with guest 5 and overall 25, and "Guests: up to 10 MB.
+  Their own limit is 20 MB; ..." with guest 20 and overall 10; the
+  settings save sends `attachment_max_mb` only when changed; `GuestSizeSlider`
+  has `max` equal to the overall limit, positions a stored 20 at 10 with the
+  saved-as note, and its ticks are the two ends; raising the overall field
+  raises the slider's top before saving; **an unsaved guest 20 with the
+  overall field then typed as 10** shows the slider at 10 with no "Saved as"
+  note and saves `{attachment_max_mb: 10, guest_attachment_max_mb: 10}`, and
+  typing the overall back to 30 before saving shows 20 again;
+  `AttachmentUpload` uses the `maxBytes` it is given; the composer and the
+  new-ticket page take the `['me']` query's figure, including **after a
+  password sign-in**: with the store holding a login-response user that has no
+  `attachment_max_bytes` and `/me` answering 30 MB, a 26 MB file is not
+  refused; the wizard's guest slider tops out at the stored overall limit.
+
+**Decisions taken without the owner.** Each can be overturned in one line.
+
+- **Bounds 1 to 100 MB, as proposed.** Rejected: capping at 25 until the
+  deadline is redesigned. The deadline scales by a stated rate instead, so the
+  assumptions hold to 100.
+- **The transfer deadline is the limit at ≈ 700 kbit/s, never below five
+  minutes.** Rejected: one fixed longer deadline (say 20 minutes) for every
+  limit, which would hold a default install's slow connections four times
+  longer than today for nothing.
+- **The download deadline follows the file's stored size, not the current
+  limit.** Rejected: the current limit, which cuts off a large file stored
+  before the limit was lowered.
+- **The scan timeout scales with the bytes too.** Rejected: leaving 60 s, which
+  the code's own comment sized for 25 MB.
+- **The multipart parse keeps at most 25 MB in memory; no new upload
+  concurrency limit.** Rejected: a process-wide byte budget for uploads like
+  `imageWork`. It is the right shape if memory becomes the problem, but it is a
+  new behaviour (queued uploads) that the issue did not ask for; the upgrade
+  note states the cost instead.
+- **The image caps do not move.** Rejected: scaling them with the byte limit;
+  they bound decoding, which the byte size never bounded.
+- **No check against clamd's limits; a grey hint on the page above 25 and a
+  line in the docs**, because the shipped clamd (0.105 and later: 100M stream
+  and file limits) already takes the whole range. Rejected: refusing values
+  above 25 while scanning is on, which would refuse the stock image that takes
+  them; and an amber warning at every value above 25, which would tell every
+  administrator on the stock image to change settings that already fit.
+- **Lowering the overall limit keeps the stored guest value.** Rejected:
+  clamping the guest row to the new limit (a silent second change that loses
+  the figure) and refusing the lower overall limit (makes tightening a
+  two-step edit).
+- **The guest ceiling is the overall limit after the PATCH**, so both can be
+  raised in one request. Rejected: the stored value only, which would make
+  "raise both" two requests in a fixed order.
+- **`attachment_max_mb` is session-only.** Rejected: allowing API keys, as for
+  ordinary configuration; it widens what the instance accepts, like
+  `attachment_allowed_types`.
+- **The browser learns the limit from `/me.attachment_max_bytes`.** Rejected:
+  `/site`, which anyone can read and no anonymous page needs.
+- **The composer and new-ticket page read the `['me']` query, with the auth
+  store's copy standing in until it answers.** Rejected: the store alone,
+  which a password sign-in fills from the login response (no
+  `attachment_max_bytes`) and a Settings save never refreshes; and changing
+  the login response to carry `meView`, a second shape on a security route
+  for one figure.
+- **The File size section shows the guest limit read-only ("Guests: up to G
+  MB"), and the guest slider stays with guest submission.** The issue asks the
+  File Attachments page to show both limits; #674 puts the slider on Guest
+  Access. Rejected: moving the slider onto the attachments page (contradicts
+  #674's table) and a second editable guest control (two inputs for one key).
+- **An unsaved guest value above the draft overall limit is shown and saved as
+  the overall limit; the draft is not rewritten.** Rejected: clamping the
+  draft on each overall keystroke (typing "10" passes through "1" and leaves
+  the guest at 1), and dropping the guest key from the patch (silently
+  discards an edit the administrator made).
+- **The deadline and scan formulas multiply by a second before dividing by
+  25 MiB, with no rate constant**, so the anchors are exact and tested with
+  `==`. Rejected: a bytes-per-second constant, which truncates and puts the
+  default deadline 0.3 ms past five minutes.
+- **The control is a number field, not a slider.** Rejected: a second slider;
+  the value is set once, and a number field is what the guest cap and hourly
+  rate beside it use.
+- **The guest slider's ticks become the two ends.** Rejected: quarter marks of a
+  range that moves, which land on odd numbers.
 
 ### Attachment scanning
 
-The scanner is configured with `CLAMAV_ADDR`, which an administrator can
-override under **Admin → Settings**; the environment value is what the instance
-starts with. Docker Compose ships ClamAV by default.
+The scanner is configured with `CLAMAV_ADDR`. Docker Compose ships ClamAV as
+an opt-in `antivirus` profile (see #297) — unset by default, so the common
+path skips a ~300 MB signature download it may never need. Enabling it is
+documented in `docker/.env.example`.
+
+The setting `attachment_scan_address` overrides it and takes precedence once
+saved. It has a field under Admin → System → File Attachments, beside the scan
+policy select (#172): a plain text input showing the current value, accepting
+`tcp://host:port` or `unix:///path/to/socket`, blank to fall back to
+`CLAMAV_ADDR`.
 
 What happens to a file the scanner could not look at is a policy, not an
 accident:
@@ -249,12 +5056,29 @@ doing**, including a live reachability check rather than a restatement of the
 configuration: an instance whose scanner container has died has an address
 configured and no protection, and those two facts must not look alike.
 
-The admin UI does not render that yet — it shows only the insecure-secrets
-warning — so today this is visible to an administrator who asks the API. The UI
-is the obvious follow-up and is not in this change.
+The admin UI surfaces it (#176): `InsecureConfigBanner` renders a second
+alert, alongside the insecure-secrets warning, whenever the operator's own
+policy intends scanning (`policy !== "off"`) and the live ping just failed —
+the exact combination that used to be invisible, including the `permissive`
+case, where uploads keep being accepted without ever being scanned and
+nothing before this said so. A deliberate `policy: off` is not shown as a
+warning: that is a choice already visible in Settings, not a hidden failure.
+
+**The one exception (#459): a policy nobody chose is warned about.** When no
+policy was ever saved (`policy_explicit` is false), no scanner address is set in
+either the setting or the environment, and the instance already holds at least
+one attachment, the response carries `stale_off: true` and the banner tells the
+administrator how to turn scanning back on. This is the state of an install that
+upgraded from a release whose Compose file ran a scanner by default: "off" there
+is an accident of what was deployed, not a position anyone holds. Explicitly
+saving "Do not scan" makes `policy_explicit` true and clears the banner for good,
+so a deliberate "off" is still never warned about. Admin → System → File Attachments shows
+the same status (policy, configured, reachable, and the `effect` sentence) so an
+administrator can check it without waiting for an upload to fail.
 
 **Attachments are download-only. There is no previewer, and there will not be
-one.**
+one.** (Markdown text follows the same rule for images: an image in a post is a
+link, never loaded. See *Ticket text formatting*.)
 
 No inline rendering of any attachment, images included: no lightbox, no
 thumbnail, no `<img>` pointing at the download route, no PDF viewer. Every link
@@ -271,9 +5095,20 @@ CSP — the shape the logo route already uses, being the one place this
 application does render an uploaded file inline. Real complexity, for a feature
 nobody has asked for.
 
-The corollary is that the **ticket attachment** allowlist does not have to be a
-sanitiser: types a browser will execute — HTML, JavaScript, XML, SVG — are
-refused outright rather than cleaned.
+The corollary is that the **ticket attachment** allowlist is not a security
+boundary and does not have to be a sanitiser. Nothing is rendered, so what the
+list decides is which files this deployment is willing to hold — a policy
+choice, which is why it belongs to the operator rather than to a Go file. An IT
+team triaging a suspicious `.exe` has a real reason to accept one; a deployment
+that wants PDF and nothing else has an equally real reason to say so.
+
+That is what made the list safe to hand over. While `Content-Type` came from
+the claimed extension, the list *was* the boundary and widening it was a
+security decision rather than a policy one — an operator allowing `.html` would
+have been allowing this origin to serve `text/html`. Once every download is an
+opaque blob with an attachment disposition, there is no set of types that is
+dangerous to the server, so there is nothing left for a code-side list to be
+the outer bound of.
 
 The case that makes this load-bearing is **PDF**. `application/pdf` opens in the
 browser's built-in viewer, and those viewers run JavaScript, so a malicious PDF
@@ -310,22 +5145,630 @@ Two limits, stated because they are easy to forget:
   mistake, but it reads source text and cannot follow a value between files,
   so it catches carelessness at review time rather than being a control.
 
-Two caveats, both tracked in #165:
+Three caveats:
 
-- **Content is only checked for types with a recognisable signature.** A `.pdf`
-  must begin `%PDF`, a `.png` must have the PNG header, and so on — but `.txt`
-  and `.log` have no signature to check, so a `.txt` containing HTML is
-  accepted. It is stored under a name that says what it is and downloaded as an
-  opaque blob like everything else, so nothing on this origin renders it — but
-  the file on disk is still HTML, and whoever opens it afterwards is opening
-  HTML. Step 2 of #165 records what the file actually is alongside what it
-  claims to be, so at least the difference is visible.
+- **Content detection, described in full below, reads a prefix rather than the
+  whole file.** It is confident about formats that declare themselves in their
+  first bytes, and it is not a parser: a file that is a valid one thing and a
+  usable other thing is beyond it. Content it cannot place at all is recorded
+  as unidentified, which counts as a contradiction rather than as a pass.
+- **Attachments uploaded before any of this carry none of it** — no detected
+  type, no hash, no mismatch answer. That renders as an absence and never as a
+  finding: nobody looked, and "not recorded" and "nothing wrong" are different
+  statements. Nothing is backfilled and nothing is re-scanned.
 - **The logo is the exception**, and the only upload this application renders
-  inline. It is served under its own sandboxing policy (`sandbox; script-src
-  'none'`), and an SVG is parsed and *refused* if it contains scripts, event
-  handlers or `javascript:` URIs — refused, not stripped. #165 removes SVG from
-  that uploader anyway: pattern-matching for dangerous SVG is a game you have
-  to keep winning, and the 1.2.0 advisory already contains one escape from it.
+  inline. #165 removed SVG from that uploader: it was accepted after being
+  parsed and pattern-matched for scripts, event handlers and `javascript:`
+  URIs, and pattern-matching for dangerous SVG is a game you have to keep
+  winning — the 1.2.0 advisory already contains one escape from it. PNG, JPEG
+  and GIF are accepted, all re-encoded as PNG. The route keeps its own
+  sandboxing policy (`sandbox; script-src 'none'`) on top of that, because what
+  decides those bytes are an image is a four-byte magic check rather than a
+  proof. The **site icon** (#708) is the second, and is held to the same
+  rules: raster only, every served byte re-encoded by the server, the same
+  sandboxing policy on its route (see *Branding → Icon and home screen*).
+
+### What an upload actually is
+
+Every upload is inspected as it arrives, and what is found is recorded beside
+what the file claimed.
+
+**The detected type** comes from a content detector that reads a prefix of the
+file and returns its own canonical extension for the format it recognised —
+`.docx`, `.html`, `.exe` — together with the bare media type (`text/html`,
+never `text/html; charset=utf-8`; the parameters are noise in a column the UI
+renders). Returning an extension is the point of it: the comparison against the
+claimed extension is then extension against extension, with no table mapping
+one detector's MIME vocabulary onto another's for somebody to keep correct.
+It replaced a hand-written check that matched a signature per extension and
+ended in `default: return true`. That was not a text special case but a
+default, so every extension without an entry was never looked at — `.txt` and
+`.log` then, and whatever an operator adds now, which is what made the default
+a hole rather than a gap.
+
+**The SHA-256** is the hex digest of the same bytes. It is what an analyst
+looks a sample up by, what a chain-of-custody record has to state, and the key
+the reputation cache below is kept under.
+
+Both are computed on the bytes as uploaded — before an image is recompressed,
+before a wrap puts the file inside an archive — because both answer the same
+question: what did this person actually send us. The consequence is stated
+rather than left to be discovered. For a recompressed image the stored file's
+hash is **not** the hash of the file on disk; for everything else the two are
+the same.
+
+Content nothing recognises is an answer and not a failure. It is recorded as
+`application/octet-stream` with no extension. Under a name that claims a binary
+format it counts as a contradiction, because saying nothing there would make an
+unidentifiable file look like a verified one. Under a text extension it does
+not — see the third relaxation below.
+
+**A content mismatch** is the detected extension differing from the claimed
+one, after three relaxations and no others:
+
+- `.jpeg` and `.jpg` collapse into one. The only synonym, and it is there
+  because the two spellings name a single format — the same normalisation the
+  allowlist applies, so allowing either allows both.
+- A text extension — `.txt`, `.log`, `.csv`, `.md` — matches any content that
+  is inert text, and *inert text is whatever the detector says it is*. The
+  library arranges every type it knows into a tree; a type whose ancestry
+  passes through `text/plain` is one it is willing to call text. That covers
+  `text/*`, and also `application/json`, `application/x-ndjson`,
+  `application/geo+json`, `image/svg+xml`, `application/xhtml+xml` and
+  `application/x-subrip` — text the IANA registry happens to file elsewhere.
+  It does not cover a ZIP or anything packaged inside one, which is the case
+  that decided it: a Visio drawing is registered as
+  `application/vnd.ms-visio.drawing.main+xml`, so any rule reading the name
+  rather than the ancestry lets an archive through under a `.txt` name while
+  flagging a plain ZIP under the identical one. **`text/html` is included**,
+  and used not to be. The exclusion was argued from "HTML runs when
+  it is opened", which is false in the way that decides this: what opens a file
+  is chosen by its name, not by its content, so `notes.log` opens in a text
+  editor whatever bytes are inside it. Nothing here renders an attachment
+  either. The exclusion protected nothing and flagged a captured HTTP response
+  saved as a `.log` — this document's own example of an ordinary attachment.
+- Content nothing recognised at all, under a text extension, is not a
+  contradiction. The detector failing to place a file is a limitation of the
+  detector rather than evidence of deception, and it takes very little: one NUL
+  byte from a process that died mid-write, UTF-16 with no BOM. Under a claimed
+  binary format an unplaceable file stays a mismatch — a PDF that cannot be
+  identified as a PDF is worth a sentence.
+
+A text extension is not a blanket pass: a rotated log compressed in place and
+still named `.log` is detected as `application/gzip`, which is not inert text,
+so it is flagged — and, being text-named, it is stored under its own name
+rather than wrapped or refused.
+
+The text relaxation (the second) is decided by asking the detector, not by a
+list of our own, and the difference is not cosmetic. A list of acceptable
+detected *extensions* called a container log (`application/x-ndjson`), a config
+file (`text/xml`) and an exported contact (`text/vcard`) files lying about
+themselves; a list of media types (`text/*` plus JSON and NDJSON) flagged a
+GeoJSON document; accepting any name ending `+json` or `+xml` admitted the
+Visio drawing above, which is an archive. The tree has no such gap, because it
+is the same source that produced the media type being judged: a rule written
+from the detector's own answers cannot disagree with the detector. A warning
+that fires on ordinary files is one staff learn to click past, which is worse
+than no warning, so where a legitimate case fires, the fix is to widen one of
+these two rules and never to soften the flag.
+
+The answer is recorded at upload rather than recomputed on read, because a file
+this application renamed has lost the name the uploader claimed: recomputing
+would compare `.zip` against the content and report a truthfully named sample
+as lying about itself.
+
+Recording a mismatch never refuses an upload, and the recording is not
+optional: `detected_mime`, `sha256` and `content_mismatch` are written on every
+file this instance stores, whatever the operator's settings say. They are facts
+about what arrived rather than enforcement.
+
+Whether a mismatch is then refused or stored is a separate decision, and it is
+the operator's: see the second tier below.
+
+### The three tiers an upload is stored in
+
+Wrapping and recompression are alternatives rather than steps: a wrapped file
+is an archive, so recompressing one would mean handing a ZIP to the JPEG
+encoder. The upload handler takes the first of these that applies.
+
+1. **The scanner identified it**, and the operator set
+   `attachment_infected_handling` to `quarantine`. The sample is wrapped in a
+   ZIP with the password `infected` and stored under the uploaded name plus
+   `.zip` — `sample.exe` becomes `sample.exe.zip`, so nothing downstream
+   double-clicks an executable. The scanner's name for the detection is stored
+   with it. Under the default, `refuse`, an infected upload is rejected with
+   `422` and never reaches this tier. The setting only ever decides what to do
+   with a verdict the scanner actually returned: with the scan policy `off`, or
+   the scanner unreachable under `permissive`, nothing is ever identified as
+   infected and `quarantine` does nothing at all.
+2. **The name claims a binary format, the content contradicts it, and the
+   detected type is not on the operator's allowlist**, and the operator set
+   `attachment_mismatch_handling` to `wrap`. The file is wrapped with no
+   password and stored as `suspicious-<crc32>.zip` — the CRC32 of the file
+   inside, which every ZIP entry already carries, so the archive is named after
+   a value its recipient can verify and it costs nothing to produce. Under the
+   default, `refuse`, the upload is rejected with `415` `invalid_file` and
+   never reaches this tier.
+
+   **A claimed text extension never reaches this tier at all**, under either
+   value of the setting. Wrapping contains a file by taking away the name that
+   decides how it opens; `crash.log` already opens in a text editor whatever is
+   inside it, so there is nothing to contain, only something to say. Such a
+   file is flagged if its content contradicts the name — when the name is one
+   this project ships, which `.txt` and `.log` are and `.csv` and `.md` are
+   not; see the paragraph on shipped extensions below — recorded either way,
+   and stored under its own name.
+3. **It is an image** — `.jpg`, `.jpeg`, `.png` or `.bmp` — and neither of the
+   above. It is recompressed to whichever of JPEG (quality 85) or PNG is
+   smaller, under the name it was uploaded with.
+
+Anything else is stored exactly as it arrived.
+
+**Which mismatches are wrapped and which are only flagged is the distinction
+people will get wrong.** Not every mismatch is wrapped. The judgement is the
+operator's own allowlist, which means there is no second list to keep correct:
+a file is wrapped when the type it turned out to be is not a type this instance
+accepts, in the detector's spelling of that type — and then only under a name
+claiming a binary format. So HTML inside a
+`.pdf` is wrapped on an instance set to `wrap`, because `.html` is not an
+accepted type; on a default instance it is refused with `415` instead, which is
+the same condition and the other action. A real PNG inside a `.pdf` is a
+mislabelled file of an accepted type: flagged on the row, stored under its own
+name, not wrapped, under either value. And a `.log` holding a captured HTML
+response is an ordinary help desk attachment — neither flagged nor wrapped nor
+refused, because `.log` is a text name and `text/html` is inert text.
+
+**Wrapped or refused is an operator setting, and refusing is the default.**
+`attachment_mismatch_handling` takes `refuse` (the default) or `wrap`:
+
+| Value | Behaviour |
+|---|---|
+| `refuse` | **Default.** `415` `invalid_file` — the same status, code and message 1.2.0 refused with, so whatever an operator has wired into that response still reads it. |
+| `wrap` | Accepted, stored as `suspicious-<crc32>.zip`, flagged. |
+
+Deliberately the same shape, the same words and the same default as
+`attachment_infected_handling`, because it is the same decision about a
+different question: does this instance store a file it has reason to distrust,
+or turn it away? An operator who has reasoned about one does not have to start
+over on the other. Both are session-gated — an API key cannot change what this
+instance will hold — an unrecognised value falls back to `refuse` rather than
+to the permissive option, and the settings endpoint refuses the write outright
+with `invalid_mismatch_handling`, following `invalid_scan_policy`.
+
+`refuse` is the default because relaxing a security control in an upgrade
+nobody opted into is the wrong default for a behaviour only some deployments
+want.
+
+**What a default instance does with a contradicting upload.** The judgement is
+the content against the operator's allowlist, so it moves rows in both
+directions compared with 1.2.0's hard-coded signature check. What the upload
+handler does on a default instance (these rows were measured through the
+handler when content detection was introduced, #171):
+
+| Upload | Result |
+|---|---|
+| plain text named `.pdf`, `.docx` or `.xlsx` | `201`, stored under its own name, flagged |
+| a real PNG named `.jpg`, or a real PNG named `.pdf` | `201` |
+| a plain ZIP named `.docx` | `415` |
+| under four bytes, text-looking, under a text or document name | `201` |
+| under four bytes, unplaceable, under a binary name | `415` |
+| under four bytes, text-looking, under an image name | `422` |
+| under four bytes, unplaceable, under an image name | `415` |
+| text named `.png` or `.jpg` | `422` `invalid_image` |
+| a `.txt` or `.log` of four bytes or more, whatever is inside it | `201` |
+| HTML named `.pdf` | `415` |
+
+The first row is the one to understand rather than to fix. A `.pdf` holding
+plain text is a contradiction and is flagged, and it is neither wrapped nor
+refused, because the judgement for tier 2 is the operator's own allowlist and
+`.txt` is on it: the content is something this instance would have accepted
+under its own name, so there is nothing to contain, only something to say.
+Refusing it would need a second list of "types that may not hide inside other
+types", which is the second list this design exists to avoid keeping correct.
+The third row is the stricter direction and is deliberate: any ZIP used to pass
+as a `.docx` because both start `PK\x03\x04`, and an Office document is now
+identified as an Office document.
+
+**Containment only applies to the nine extensions this project ships.** Each
+was checked against the detector, so a contradiction under one of those names
+is one we can stand behind. An extension an operator adds is neither contained
+nor flagged — the detector reports one canonical spelling per
+format, so `.htm` is HTML and `.tif` is TIFF but it calls them `.html` and
+`.tiff`, and an operator who allowed `.htm` and received genuine HTML would
+otherwise be refused with a message saying the content did not match the name.
+It matched exactly. A bigger synonym table is not the fix: the two libraries
+involved do not agree on a name for the same format — Go's standard library
+calls a Windows executable `application/x-msdownload` where the detector calls
+it `application/vnd.microsoft.portable-executable` — so there is no canonical
+mapping to build one from.
+
+The invariant is narrower than "their spellings are the detector's own", and
+the difference is worth stating because it is what a future reader would check:
+the detector calls a `.log` a `.txt` and a `.jpeg` a `.jpg`, so two of the nine
+are not its spelling at all. They survive because the relaxations above cover
+them. The real rule is that every shipped extension is either the detector's
+spelling **or** covered by a relaxation, and a test walks the shipped list and
+fails on any entry that is neither — because adding `.tif` to the defaults is
+an entirely reasonable thing to do, and would otherwise contain and refuse
+every genuine TIFF.
+
+**What this gives up.** An operator-added extension is no longer contained even
+when the content genuinely contradicts it. The case worth naming: an instance
+that has allowed `.xml`, receiving an XHTML document carrying a script under
+the name `report.xml`. It is stored under that name, and a browser opening it
+from disk will run the script. That is bounded — allowing `.xml` already allows
+XSLT-bearing XML, which does the same — and it is the price of not refusing
+genuine files with a false explanation. An operator who wants containment for a
+type gets it by that type being one we ship.
+
+Neither the containment nor the flag applies to an extension we did not ship.
+"No contradiction" is a claim too, and it is not one we can make about a
+spelling we cannot check: the row carries the detected type and no verdict,
+which reads as "we looked and could not judge" and is distinguishable from a
+row that predates detection and has neither.
+
+**Why `wrap` exists at all.** Refusing closes off the case this product is
+otherwise good at — the suspicious file a user reported is exactly the file a
+ticket is about — and merely flagging it would be too quiet, because the file
+still lands on somebody's disk called `report.pdf`. The archive name is the
+warning, it cannot be double-clicked into whatever the file actually is, and
+unlike our UI it survives being forwarded or saved to a share. That is a real
+scenario for an IT or security team whose tickets are *about* suspicious files,
+and a minority one, which is exactly what a setting is for.
+
+**What the setting does not govern.** It swaps the action on one condition and
+changes nothing else. A mismatch whose detected type *is* on the allowlist — a
+real PNG named `.jpg` — is flagged and stored under its own name under both
+values: there is nothing to contain there, only something to say — with the
+spelling caveat below. And a file
+the scanner identified is governed by `attachment_infected_handling`; this
+setting never applies to it. The two are independent because the claims are
+different — "the scanner named this" and "the content is not what the name
+says" are not the same fact — and a file that is both is quarantined.
+
+**"Accepted" there means the detector's spelling.** The question the escape
+asks is whether the format the file turned out to be is one this instance
+accepts, and it is answered by looking the detector's extension up in the
+operator's list. Those are two vocabularies. An instance that allows `.pdf`
+and `.htm`, receiving genuine HTML named `report.pdf`, refuses it under
+`refuse` and wraps it under `wrap`; an instance that allows `.pdf` and `.html`
+flags the same file and stores it under its own name. Both operators allowed
+HTML. Only one spelled it the way the detector does.
+
+This is deliberate and it is not a synonym table. The same table was tried and
+rejected for containment itself, for the reason given above — the two libraries
+involved do not agree on names for one format, so there is nothing canonical to
+build it out of — and a table here would have the same problem with a worse
+consequence, since guessing that two spellings mean one format is how a real
+contradiction stops being contained. The error runs in the strict direction: a
+file only reaches this question by already lying about its name, and the worst
+outcome is that a lying file is contained on one instance and merely flagged on
+another. The spellings where it bites are the ones where the detector differs —
+`.htm`, `.tif`, `.mpg` — and an operator who wants the lenient answer
+gets it by adding the spelling the detector uses.
+
+**Why the password is published.** `infected` is in this document, in the issue
+and in the UI beside every quarantined file. It protects nothing and is not
+meant to. Its only two jobs are that the stored bytes are not directly
+double-clickable, and that an on-access scanner — on our storage or the
+downloader's — does not eat the sample out from under the ticket a day later.
+It is the long-standing convention for moving samples, so an analyst's tooling
+already knows what to do with it. The encryption is ZipCrypto rather than AES
+for the same reason: weak is fine when the password is public, and an AES-256
+ZIP is opaque to Windows Explorer and macOS Archive Utility, which is precisely
+the friction this is meant to remove. A wrong password does not reliably fail
+to open a ZipCrypto archive either, which is irrelevant here and must not be
+read as confidentiality.
+
+**Why the second tier has no password.** A mismatched file is not known-bad; we
+could not identify it, which is a different claim. It is undouble-clickable
+either way, and blinding the recipient's own antivirus over a wrong extension
+would be the wrong trade.
+
+The sample keeps its own name inside the archive, so unwrapping produces the
+file the ticket is about rather than our wrapper's name. The appended `.zip`
+describes the wrapper and not the sample: it is added after the allowlist has
+had its say on the uploaded name and after the hash and detected type were
+taken, so `.zip` does not have to be an accepted type for either tier to work.
+Wrapping is not optional per file — when the setting says `quarantine`, or
+`wrap`, every upload that meets the condition is wrapped, because a setting
+that can be bypassed for one file is a setting nobody can reason about. Neither
+tier is retroactive in either direction: turning quarantine or the wrap on does
+not rewrap what is already stored, and turning either off does not unwrap it.
+
+What the row says afterwards. `mime_type` describes the file as stored;
+`detected_mime` describes the bytes that arrived; `size_bytes` is the stored
+file, because that is what a download costs:
+
+| | stored name | `mime_type` | `detected_mime` |
+|---|---|---|---|
+| ordinary PDF | `report.pdf` | `application/pdf` | `application/pdf` |
+| PNG recompressed to JPEG | `shot.png` | `image/jpeg` | `image/png` |
+| HTML named `.pdf`, under `wrap` | `suspicious-4f2a91c3.zip` | `application/zip` | `text/html` |
+| infected `.exe`, quarantined | `sample.exe.zip` | `application/zip` | `application/vnd.microsoft.portable-executable` |
+
+A recompressed PNG is not a mismatch: detection ran on the uploaded bytes,
+which were a PNG, under a claimed `.png`. An infected file that was named
+truthfully is not a mismatch either — the two tiers answer different questions,
+and a file can be both, in which case it is quarantined and the mismatch is an
+extra line on the row rather than a replacement for the malware warning.
+
+Where the built-in extension-to-MIME map has no entry — which is every type an
+operator adds — `mime_type` falls back to what the detector said, and to
+`application/octet-stream` when it could not place the bytes either. A blank
+type column is not an answer. None of this is a decision about how the file is
+served: every download is `application/octet-stream` regardless.
+
+**The ticket list marks a ticket that holds a quarantined file** (#628): a quiet red "Quarantined file" badge beside Priority, next to Reopened, in the table and on the mobile card. The ticket JSON carries `has_quarantined_attachment: true` for staff and administrators only, and only when true (omitted otherwise, and never sent to a requester). It is decided by one query per page of tickets (`attachments.virus_name IS NOT NULL`, using `attachments_ticket_idx`), after the page is cut, so it costs one extra query however many tickets are listed. If that query fails the list is still sent, without the marker. It is not a count and not a per-file list: the ticket page shows each file.
+
+### Reputation lookup
+
+A quarantined sample is worth asking the world about, so the SHA-256 can be
+looked up at third-party reputation services. **Four independent toggles**, a
+key for each of the three commercial providers, and one shared refresh
+interval — all session-gated like the scanner keys, because an API key must not
+be able to decide where customers' file hashes go, or how often:
+
+- `attachment_reputation_virustotal_enabled` + `attachment_reputation_virustotal_key`
+- `attachment_reputation_metadefender_enabled` + `attachment_reputation_metadefender_key`
+- `attachment_reputation_polyswarm_enabled` + `attachment_reputation_polyswarm_key`
+- `attachment_reputation_circl_enabled` — **no key setting at all.** hashlookup
+  authenticates nobody, so there is none an operator could supply, and an empty
+  box somebody feels obliged to fill is worse than no box.
+- `attachment_reputation_refresh` — how often a stored verdict is asked about
+  again. An unrecognised value is refused at save time with
+  `invalid_reputation_refresh` and read as the default, never as `never`: a
+  typo must not silently switch re-checking off, because the symptom is a
+  verdict that looks current for as long as the instance lives.
+
+The keys are write-only over the API, like the OIDC client secret and the SAML
+key, and are never logged.
+
+**Enabling a provider requires its key.** Turning VirusTotal on with no key is
+refused at the write with `invalid_reputation_config`, naming which provider is
+missing one — the same rule as everywhere else in that handler, a setting
+accepted and then ignored being worse than a refusal. It disposes of a state
+that existed before, "enabled but silently doing nothing", by making it
+unreachable. Separate keys are the other half of what one selected provider
+could not do: switching services no longer destroys the key you had already
+pasted, and an operator can hold keys for two without choosing between them.
+
+The rule is checked for each provider whose toggle or key the write includes. A write that mentions neither is not refused because of that provider's stored state ([#394](https://github.com/PubliciaLLC/go-help-desk/issues/394)). Only a database edit can leave a provider enabled with no key, and checking it on every write refused them all, including the one that would fix it. Such a provider does no lookups.
+
+**Every enabled provider is queried, and every answer is stored.** They answer
+different questions, which is the point of allowing more than one: VirusTotal
+counts engines, CIRCL says whether a catalogue has the file on record, and a
+sample one calls `detected` while another calls `known` is telling staff
+something either alone would hide. The cache is already keyed
+`(sha256, provider)`, so this needs no schema change — one row per provider per
+file, each with its own expiry clock and its own re-check. The cost is real:
+four enabled providers means four lookups per quarantined file on first view,
+against caps of 500/day (VirusTotal's own published figure), 4,000/day and
+300/hour (ours — OPSWAT and CIRCL publish no number), and 60/hour
+(PolySwarm's own).
+
+**The row shows the worst verdict; one click shows them all.** Inline, staff see
+the single most serious answer across every provider that replied:
+
+```
+detected  >  unseen  >  unscanned  >  clean  >  known
+```
+
+`unseen` outranks `clean` because only quarantined files are looked up, so every
+hash here is one ClamAV already called malicious — a file no service has ever
+seen is a novel sample, more concerning than one seventy engines examined and
+passed. `known` is the floor because it is the only positive claim in the set;
+everything else is an absence of findings. And **`unavailable` is not in the
+ordering at all**: it is a failed lookup rather than a verdict, and it must
+never displace a real answer, so VirusTotal timing out while CIRCL says `known`
+reads `known`. It is the inline answer only when nothing answered, and it is
+always listed against its own provider, because an operator needs to see their
+key failing.
+
+The expanded view carries each provider on its own line — named, with its own
+verdict, its own `analysed_at`, its own `fetched_at`, its own link and its own
+*Check again* control where the state allows one.
+
+The wire carries an `inline` flag saying which of those lines the one-line
+summary was copied from, and the expanded view marks it: a quiet grey
+"· shown in the summary" at the end of that line's details, with
+`aria-current="true"` on the line, so the row's single sentence has a visible
+source. The marker follows the flag and never this build's own ranking. It is
+absent when nothing answered (the summary belongs to nobody, so no line is
+marked), before the list is expanded, and in the single-provider layout, where
+there is no list to mark.
+
+**All four off is a supported configuration, not a broken one.** It means
+attachments are judged by this instance's own scanner alone, which is a complete
+answer and the legitimate choice of an operator who cannot send customer file
+hashes anywhere. There is no warning, no banner, and specifically no "not
+checked yet" — that phrase belongs to a lookup that was attempted and did not
+finish, and nothing was attempted. The reputation block is absent from the
+payload entirely. The admin settings page says so plainly where the toggles are:
+*with none enabled, attachments are judged by this instance's own scanner
+alone.*
+
+**The VirusTotal hash link does not follow the toggles**, and it is not on
+every attachment either — those are two separate rules and both matter. On the
+rows that carry it, it carries
+`rel="noreferrer noopener"`. A link is not a lookup. A lookup is this server
+sending a customer's file hash to a third party — the operator's decision, their
+allowance, and what the toggles govern. A link sends nothing from this server:
+it is an anchor the analyst clicks in their own browser, under their own account
+or none, exactly as if they had copied the hash off the page and pasted it
+themselves, which they can do anyway because the hash is there with a copy
+control. Disabling VirusTotal as a lookup provider means *do not send my
+customers' hashes to VirusTotal from my server*; it does not mean *my staff may
+never look at VirusTotal*. VirusTotal specifically because its page is the one
+every analyst already knows — no account needed, the complete report renders
+logged out — where MetaDefender's public page announces itself as a reduced view
+and CIRCL has no per-hash web UI at all. One line of copy beside it says the
+link opens in the reader's own browser and that this instance sends nothing
+there unless VirusTotal is enabled above; without it, an operator who switched
+VirusTotal off and still sees the link will reasonably conclude the setting does
+not work.
+
+**It is not on every attachment, though.** A link goes only where this instance
+itself found something worth a second opinion: the scanner named the file, or
+its content contradicts the name it arrived under. An ordinary attachment —
+content matching its name, scanner passed — carries the hash and no link,
+because a link and a line of explanatory text under every holiday-request PDF
+is the noise that teaches people to stop reading the rows that matter.
+
+Note what is deliberately not consulted: the reputation verdict. Only
+quarantined files are ever looked up, so an ordinary attachment could not have
+one — and on a quarantined file, hiding the link because some provider said
+"clean" would be second-guessing the analyst doing the triage.
+
+An instance that set the earlier `attachment_vt_lookup` / `attachment_vt_api_key`
+keys, or the `attachment_reputation_provider` / `attachment_reputation_api_key`
+pair that replaced them, is not migrated. Nothing reads any of the four, they are
+removed a release later with a row-deleting migration, and an operator has to
+re-enter their key against the provider they want: copying somebody's secret from
+one setting to another on their behalf is not something to do quietly.
+
+CIRCL is a **catalogue and not a scanner**, which is why it answers with fewer
+states than the others: `known` when a hash set it re-publishes carries the
+hash, `unseen` when none does, and `unavailable` when it could not be asked. It
+never says `clean`, `detected` or `unscanned`, because no engine runs there and
+there is nothing for one to have found or missed. Two things follow that the UI
+has to respect. Its `unseen` is **weaker** than the others' — NSRL's legacy
+sets are SHA-1 indexed and the SHA-256 mapping was added afterwards, so a file
+can be in NSRL and still answer 404 — which is why it reads as "CIRCL has no
+record of this SHA-256" and not "this file is unknown". And asking it is a
+**disclosure of a different kind**: it records the caller's IP and User-Agent,
+and its public instance serves a leaderboard of the most-queried hashes with
+filenames, where VirusTotal and OPSWAT log but do not publish. Hash reputation
+data from CIRCL hashlookup, Computer Incident Response Center Luxembourg,
+CC-BY-4.0.
+
+What the lookup does:
+
+- **Lazy, and only where it is worth spending.** A lookup happens when staff
+  open a ticket carrying a quarantined attachment with no current verdict —
+  never at upload, never on the ordinary attachments, and never for a reporting
+  customer looking at their own ticket, because that would spend an operator's
+  allowance on a page refresh. There is no reputation queue: the project's
+  background workers (the notification outbox worker and the periodic sweeps)
+  do none of this work, so a lookup is made inside the request that needs it
+  (#126).
+- **Cached against the hash and the provider**, not against the attachment, so
+  the same file on five tickets costs one lookup per provider. One row per
+  provider per hash is what lets four services be asked at once without either
+  one's answer being attributed to another, and it is what gives each verdict
+  its own expiry clock and its own *Check again*.
+- **Budgeted.** Each provider is metered at its own published free-tier
+  ceiling, in that provider's own shape: 500 a day for VirusTotal plus a
+  four-a-minute bucket, 4,000 a day for MetaDefender with no bucket — a
+  courtesy cap of ours, since OPSWAT publish only "a limited number of API
+  calls per day" — and 60 an
+  hour for PolySwarm, which publishes no daily figure at all and so is given
+  none. CIRCL publishes no ceiling of any kind, so its 300 an hour is a
+  politeness cap of ours rather than a limit of theirs — a free best-effort
+  service run by a CERT should not be metered by nothing. The daily counters
+  reset at 00:00 UTC and the hourly ones on the hour.
+  In memory and per process: it is a courtesy cap rather than an accounting
+  record, and a restart spending a handful of extra lookups is cheaper than a
+  table. **Per provider, because the allowances are:** an exhausted VirusTotal
+  bucket does not stop CIRCL answering, and the row then shows CIRCL's verdict
+  rather than nothing.
+- **Expiring.** `attachment_reputation_refresh` decides when a stored verdict
+  is asked about again: `weekly`, `biweekly` (the default), `monthly`,
+  `quarterly` or `never`. A verdict decays, which is the whole reason this
+  exists — new signatures catch old malware, and the sample nobody had
+  submitted when we asked is precisely the one submitted a week later.
+- **Except a detection or a `known` file, which never expire.** Engines do not
+  un-flag a file, so re-confirming known malware is the one lookup guaranteed
+  to tell nobody anything; and a hash does not fall out of a vendor catalogue,
+  so re-confirming a catalogue entry is the other. Both would be spent out of
+  the same allowance as the lookups that would tell somebody something.
+- **Re-checkable by hand.** Staff get a *Check again* control on a verdict that
+  can still change, and the server allows one re-check per hash every seven days
+  whatever the interval says — including when it says `never`, because an
+  operator who turned automatic checking off to save quota did not mean that
+  nobody may ever ask. It is a floor and not an override: the daily budget
+  still applies, a re-check inside the week is refused with the date it clears,
+  and a re-check of a verdict that cannot change — a detection or a `known`
+  file — is refused outright. The control is disabled
+  rather than hidden while the week runs, because a control that vanishes
+  teaches nobody anything, and it is absent where there is no verdict to
+  refresh.
+
+A verdict is one of five things a provider can tell us apart from failure:
+never seen this hash, seen it but holding no verdict, seen it and no engine
+flagged it, seen it and some did, or **known** — a named vendor feed has this
+exact hash in its catalogue. The distinctions are the value of the feature and
+none of them may collapse into the others.
+
+**`known` is the one verdict here with somebody standing behind it**, and it
+is an exception for a reason worth stating: a named feed made a positive claim
+about the file. Everywhere else in this feature an absence must never read as
+safety — `clean` only means engines ran and found nothing, `unseen` only means
+nobody has submitted it — and none of those has anybody behind it.
+
+It does not render as reassurance, and that is deliberate. Only a file the
+local scanner has already flagged is ever looked up, so a catalogue hit is
+never the stronger claim: it is context on a sample somebody has already
+called malicious, which is a reason to look harder rather than a reason to
+relax. The row says so — amber, with the caveat attached — and a test pins it.
+
+It is `known` and deliberately **not** `known_good`, because how much the claim
+is worth depends entirely on which feed is speaking, and the state name must
+not overclaim on the weakest of them. PolySwarm's `microsoft_windows` feed is
+an Authenticode signature assertion — a positive claim that the file is signed
+and trusted. An NSRL catalogue entry means only that the file appeared in a
+known software distribution, and NSRL catalogues hacking tools; that is not a
+statement that the file is safe.
+
+So one state, and the feed names travel with the verdict and carry the weight.
+A renderer must say which feed is speaking — "known file, signed by Microsoft
+Windows" against "known file, catalogued by NSRL" — because those two sentences
+are not worth the same and neither of them is "known good". A bare `known` with
+no feed named would be a claim from nowhere, which is the shape this feature
+refuses everywhere else.
+
+Two providers produce it today: PolySwarm, from its `KNOWN_GOOD` state, and
+CIRCL, when a hash set it re-publishes carries the file. VirusTotal and
+MetaDefender never return it.
+
+**What it does not do**, stated plainly because every one of these is the
+mistake that has already been made twice in the virus scanner:
+
+- No key means no lookup at all. The page renders, the hash and the link are
+  still there, and no request is made.
+- A lookup that failed, timed out, was rate-limited or ran out of daily budget
+  renders as **not checked**. Never as clean. "Clean" is reachable only from a
+  completed lookup that came back with no detections, and an unavailable answer
+  is never written to the cache — caching a transient failure against a verdict
+  that is kept would freeze it permanently.
+- A verdict that has passed its interval but could not be re-checked stays on
+  screen rather than disappearing. A re-check that cannot be made — no budget,
+  provider down — must not delete a real answer from the page, and "clean,
+  and here is when the service last analysed it" is worth more to the reader
+  than "not checked yet".
+- Nothing is uploaded. A hash lookup tells a provider that somebody has seen a
+  file they already hold; submitting the file hands them a customer's document,
+  which is a different feature with different terms attached and is
+  deliberately not built.
+- Nothing is re-scanned locally. The ClamAV verdict is recorded when the file
+  arrives and never revisited, so a file that was clean last month and would be
+  recognised today still reads as it did on the day it was uploaded. The
+  reputation lookup is the only part of this that expires.
+- A slow provider cannot hold a page open. The whole of one request's
+  reputation work shares a five-second budget, not five seconds each: lookups
+  run one after another, so without a shared bound three quarantined
+  attachments and two unreachable providers is six fifteen-second timeouts and
+  a response the server can no longer write. Measured at ninety seconds before
+  the bound and five after. What the budget covers is the outbound call and
+  nothing else — a verdict already in the cache is still served after the time
+  is gone, because a hung provider must not erase answers we already hold.
+
+The verdict carries the provider's name so the UI can attribute it —
+"VirusTotal has never seen this file" is a claim with a source, and the generic
+version is a claim from nowhere. The name and the finished link URL are built
+by the server, because the provider is an admin-only setting staff cannot read
+and a frontend that rebuilt the URL itself would hold a second copy of provider
+knowledge to drift from the first.
 
 ---
 
@@ -335,51 +5778,155 @@ Two caveats, both tracked in #165:
 
 Serves both the frontend SPA and external integrations.
 
-**Notable public endpoints (no auth):**
-- `GET /api/v1/site` — branding info and app version; used by the SPA shell before authentication
-- `GET /api/v1/setup/status` — whether first-run setup is needed
+**Public endpoints (no session or credential):**
+- `GET /health` — liveness, `{"status":"ok"}`. Outside `/api/v1`.
+- `GET /api/v1/site` — branding info, app version, `guest_submission_enabled`, `guests_show_types` and `guests_show_items` (#711) and the guest attachment setting (`guest_attachments_enabled`, `guest_attachment_max_bytes`, `guest_attachment_max_per_ticket`, `guest_attachment_uploads_per_hour`); used by the SPA shell and login page before authentication
+- `GET /api/v1/logo` — the stored logo (PNG), with a 5-minute cache header
+- `GET /api/v1/branding/icons/{file}` — the uploaded site icon's generated files (#708), versioned with `?v=`; `404` while none is uploaded
+- `GET /api/v1/branding/manifest.webmanifest` — the web app manifest (#708), always served
+- `GET /api/v1/setup/status` — whether first-run setup is needed; `POST /api/v1/setup` creates the first administrator (and the first category, see Ticket Classification). It answers `409 already_configured` once **any** user row exists, disabled and deleted accounts included, so setup never reopens.
+- `/api/v1/auth/*` — `POST /local/login`, `POST /local/logout`, `GET /providers`, `POST /oauth/token` (OAuth client credentials), the SAML and OIDC sign-in routes, and `GET /signup/status`, `POST /signup`, `GET` and `POST /verify-email` (see Authentication). `POST /local/mfa/verify` and `POST /local/passkey/*` need the session the password step produced and are refused to machine credentials.
+- `/api/v1/guest/*` — `POST /tickets` (submit), `GET /fields?category_id=` (the custom fields the form offers, #627) and `POST /resend` (re-request a link) are public, throttled, and answer `404` while guest submission is off. `GET /ticket`, `POST /follow-up`, `POST /replies` and `POST /attachments` are authenticated by the per-ticket link token alone (see Guest Submission); `POST /follow-up`, `GET /ticket`, `POST /replies` and `POST /attachments` answer `404` while guest submission is off (#424).
+- `GET /api/v1/categories` and its `/{id}/types` and `/{id}/types/{typeId}/items` children — public **only while guest submission is on**, because the guest form needs them; otherwise they require a fully signed-in caller (a session that has passed MFA and owes no password change, an API key or an OAuth token; a half-signed-in session gets `403` like every other route). Active entries for a guest or a reporting user, all of them for staff and administrators; nothing under an archived parent for anyone else. Each entry carries its `description`.
+
+Everything else under `/api/v1` requires a session, API key or OAuth token, and the role and scope rules below.
+
+**Unknown settings keys.** `PATCH /admin/settings` accepts only the keys declared as `Key*` constants in `internal/domain/admin/settings.go` (`admin.KnownKeys()`, held equal to the constants by a test, with further tests that every key the settings pages send and every key a migration seeds is in it). A body with any other key is refused whole with `400 unknown_setting` naming the first such key (sorted), and nothing is written, the valid keys beside it included. A key ending in `_set` keeps its own `400 readonly_setting`. Before 1.3.0 any key was stored, so a typo answered 204 and changed nothing (#421).
+
+**Errors and limits worth knowing.** A handler panic answers the standard `500 internal_error` JSON envelope (logged with the request id and stack, never echoed), not an empty body. A `429 rate_limited` from a counted window carries `Retry-After` as the whole seconds *left in the refused key's own window* (rounded up, at least 1, at most the window's length: 60 for sign-in, signup and the guest forms); the per-account MFA lock keeps its fixed length. `POST /tickets/{id}/resolve` takes an optional body: empty resolves with no notes, malformed JSON is `400`. `POST /guest/resend` accepts an empty body as `{}`. The passkey finish routes read at most 64 KiB (`413 too_large`) and answer a fault writing the session as `500`, not `400 no_challenge`. `POST /me/mfa/enroll/confirm` answers a wrong code or an unstarted enrolment as `400 invalid_code` and a storage fault as `500` (`user.ErrMFAInvalidCode`, `user.ErrMFANotStarted`). A 405 on `/tickets` names its methods in `Allow` as one line per method (chi's behaviour); read every line (#421).
+
+**Settings dump and choice-list settings.** Six settings take one value from a fixed list: `closed_reopen_policy`, `audit_mask_requester_names`, `attachment_scan_policy`, `attachment_infected_handling`, `attachment_mismatch_handling` and `attachment_reputation_refresh`. `PATCH /admin/settings` refuses any other value, `null` and a non-string included. `GET /admin/settings` reports each one as the value in force, not the stored bytes. A stored value the `PATCH` would refuse (only a direct database edit can put one there) is reported as what the server does with it instead: `off`, `everywhere`, `refuse`, `refuse` and `biweekly` respectively. The exception is `attachment_scan_policy`, which is reported as unset, because an unrecognised scan policy follows the scanner address exactly as an unset one does. Echoing the stored value made every save on every tab fail until someone changed that one dropdown, because the settings page sent every setting on each save ([#383](https://github.com/PubliciaLLC/go-help-desk/issues/383)). The page now sends only the settings the operator changed ([#394](https://github.com/PubliciaLLC/go-help-desk/issues/394)), so a damaged value of any kind blocks only a save that changes it. The dump still reports the value in force, for clients that send it back whole. An unset setting stays absent from the dump.
 
 ### MCP Interface
 
-Exposes help desk operations as an MCP server for AI tool integration, served
-over SSE at `/mcp/`.
+Exposes help desk operations as an MCP server for AI tool integration, over two transports behind one authentication chain:
+
+- **Streamable HTTP at `/mcp`**, the current MCP transport. `/mcp/` answers the same, because the 1.2 documentation gave that URL. It is **stateless**: no `Mcp-Session-Id` is issued, every POST is one complete JSON-RPC exchange answered with `application/json`, `GET` answers `405` because the server never sends anything unprompted, and `DELETE` answers `405` because there is no session to end (mcp-go would otherwise unregister whatever session id it is given, an SSE stream's included). Stateless is deliberate. mcp-go's session-issuing mode keeps every initialized session in memory until the client deletes it, and its stateless GET stream shares one session between all callers. Nothing in this tool set needs a session.
+- **HTTP+SSE at `/mcp/sse` (stream) and `/mcp/message` (posts)**, the transport MCP deprecated in its 2025-03-26 revision. It is kept so existing client configurations keep working.
 
 **Tools**
 
 | Tool | Who may call it | Notes |
 |------|-----------------|-------|
-| `get_ticket` | any signed-in user | By UUID or tracking number. Returns the reply thread and linked tickets; internal notes are omitted for reporting users. |
-| `list_tickets` | any signed-in user | Optional `assignee_user_id`, `status_id`, `priority`, `category_id`, `q` filters. `limit` defaults to 20 and is clamped to 100; `offset` pages the full result set. |
-| `list_categories` | any signed-in user | The Category/Type/Item tree, nested, for filling in CTI. |
+| `get_ticket` | any signed-in user | By UUID or tracking number. Returns the reply thread and linked tickets; internal notes are omitted for reporting users. `include_replies` (default `true`): `false` returns the ticket alone, without replies or links. Staff and administrators also get the ticket's `custom_fields` (field id, name, type, options, retired options, value), left out when it has none (#627); a reporting user is never given them here. |
+| `list_tickets` | any signed-in user | The filters of `GET /api/v1/tickets` (see **List filters**), through the same parser and the same check, so the same values are accepted and the same callers are refused, in the same words (one exception: a requester who sends `assignee_group_id` is told "assignee_group_id is not available to requesters" here, where REST says "users cannot list group tickets"): `q`, `search_replies`, `reporter_id`, `requester`, `created_after`, `created_before`, `updated_after`, `updated_before`, `priority`, `category_id`, `type_id`, `item_id`, `assignee_user_id`, `assignee_group_id`, `status_id`, `status_ids`, `include_closed`, `awaiting_reply`, `source_channel`, `sla`, `held_by`, `sort` and `order`, plus `scope` (#676: absent means `visible`, what this tool has always listed; the other values and their refusals are REST's, through the same `ticket.ResolveQueue`, and an unknown value is refused; see **Ticket list views**). Lists are JSON arrays (`status_ids`, `source_channel`, and `priority`, which is still accepted as a single string), at most 20 values each (a longer list is refused before any work is done on it), ORed. `status_id` (one) is kept for existing callers and may be combined with `status_ids`. `awaiting_reply` is a JSON boolean (`true` or `false`; absent is `false`; a string, number or object is refused with "invalid awaiting_reply"), staff and administrators only: a requester sending `true` is refused "awaiting_reply is not available to requesters". A requester is refused the filters and sorts outside their allowed list ("<param> is not available to requesters"), and `requester` free text from an API key or OAuth client needs `requester_search:read` ("this credential does not carry the requester_search:read scope"); a session needs no scope. `sla`, and `sort` by `sla`, are refused while SLA tracking is off. An argument of the wrong JSON type (`limit` and `offset` included), an unknown value, or an unknown `sort` or `order` is refused with a message, never skipped (owner decision, 2026-11-12), and is not logged as a server error. Whether a reply search may match internal notes comes from the caller's role; there is no argument for it. With no `scope` the listing is every ticket the caller may see, as it has always been here (REST's `scope=visible`), not REST's default queue of tickets assigned to the caller, and `assignee_group_id` is not refused to a staff member who is outside the group, because it can only narrow what their scope already admits. `limit` defaults to 20 and is clamped to 100; `offset` pages the full result set. A filter on `item_id` (or `type_id`) is refused to a caller who is not shown that level, `item_id is not available to this account`, and `item_id` is left out of the tickets a requester gets unless Items is visible to them: the one policy, `catalogue.VisibleLevels` (#711, see Which levels of the tree a caller sees). |
+| `list_attachments` | any signed-in user | `ticket_id` is a UUID or tracking number; a ticket the caller may not see answers the same "not found" as one that does not exist. Metadata for each file: `id`, `filename`, `mime_type`, `size_bytes`, `created_at`, `detected_mime`, `sha256`, `virus_name`, `mismatch` and `quarantined` (`virus_name` is set). `mismatch` is `null` for a file that predates the inspection, which is not the same as `false`. **No file content** (attachments are download-only) and **no reputation lookup**: that spends the operator's provider allowance, so it stays in the web interface. |
+| `list_categories` | any signed-in user | The Category/Type/Item tree, nested, for filling in CTI. Every entry carries its `description` (plain text, `""` when none; 1.3.0). Active entries only; `include_inactive: true` adds retired ones, for staff and administrators only, as on the REST catalogue; for anyone else the flag is ignored and they get active entries (no error). Only the levels the caller may see (#711): a requester gets categories and types, and items only while registered users are shown them (`users_show_items`); staff get all. |
 | `list_statuses` | any signed-in user | The statuses this instance defines. |
-| `create_ticket` | staff, admin | Category required; Type and Item optional. `reporter_user_id` names the subject of the ticket and defaults to the caller. |
-| `add_reply` | staff, admin | `internal: true` posts a staff-only note and does not notify the reporter. |
-| `assign_ticket` | staff, admin | To a user or a group. |
-| `update_ticket_status` | staff, admin | Target status must be one the caller's role may transition to. |
+| `list_ticket_fields` | any signed-in user | `category_id` required; `type_id` and `item_id` optional. The custom fields the new-ticket form would show there (#627): shown on the form and active, at their most specific attachment, in the form's order. Each is `id`, `name`, `field_type`, `options` (select, in use only), `required`, `max_length` (the longest value, in characters) and `level`. These are the ids and options `create_ticket`'s `custom_fields` takes. A field hidden from the form, deactivated, or attached at a level not asked for is not listed. A level the caller may not see is not resolved, so a requester who is not shown items gets no item-level fields whatever `item_id` they send (#711). |
+| `create_ticket` | staff, admin | Category required; Type and Item optional. `reporter_user_id` or `reporter_email` (with `guest_name`, always required with the address) names the subject of the ticket; both are absent by default and the caller is the subject. `description` is Markdown unless `format: "plain"` is passed (#443); an invalid `format` is a tool error. The ticket is recorded as `mcp` (#130), including one filed for someone else; a `source_channel` argument is a tool error and nothing is written. `custom_fields` (an object of field id to string, #627) is held to the REST rules from the same code: a field the classification requires must have a usable value or the call is a tool error and nothing is created (#626); any other value that cannot be written is dropped and returned under `warnings`, as on REST. A value that is not a string, or a `custom_fields` that is not an object, is a tool error. |
+| `add_reply` | staff, admin | A public reply emails the requester exactly as the REST reply does (#442): the guest's address (with a guest link) or the reporting account's, through one shared rule, `ticket.Service.ReplyRecipient`. No mail is sent when the requester has no address on record or the account is gone, or when the requester is a staff member or administrator writing the reply on a ticket they filed (they are not mailed a copy of their own reply, over REST or MCP; an ordinary requester replying on their own ticket still is); the reply is still saved. `internal: true` posts a staff-only note and never notifies the requester. There is no `notify_customer` option over MCP: a public reply always notifies. `body` is Markdown unless `format: "plain"` is passed (#443). |
+| `assign_ticket` | staff, admin | To a user (`assignee_user_id`) or a group (`assignee_group_id`). To take the ticket off whoever has it, pass `clear_assignee: true` (the audit entry is `unassigned`); it cannot be combined with an assignee id, and omitting everything is refused rather than read as unassigning, because that silently took tickets off the people working them. |
+| `update_ticket_status` | staff, admin | Target status must be one the caller's role may transition to. A ticket in Closed cannot be moved out of it unless `closed_reopen_policy` lets the caller's role (#349; off by default): the result says reopening is disabled or restricted and points at `create_follow_up`. There is no separate reopen tool and never was; this is MCP's path out of Closed, through the same service rule as REST. A move out of Resolved or Closed is a reopen like any other (flagged, priority raised on the first, SLA restarted, staff mailed), with the caller as the actor. |
+| `create_follow_up` | staff, admin | `ticket_id` of a **Closed** ticket. Opens a new, linked ticket (see Closed is terminal); refused for a ticket that is not closed. |
 
-**Authorization.** `/mcp/` runs behind the same middleware chain as `/api/`, so
-every call is authenticated. Beyond that, the transport does not decide what a
+**Authorization.** `/mcp` and everything under `/mcp/` run behind the same middleware chain as `/api/`, so
+every call is authenticated. On both transports the acting identity is taken from each HTTP request, never from a stream or session: an SSE stream opened by one credential does not make later messages act as it, and a Streamable HTTP request acts as the credential it carries. Beyond that, the transport does not decide what a
 caller may do: each tool gates its own writes, and every read is filtered
 through the same visibility rule the REST API applies — staff scope when
 enforcement is on, own-tickets-only for reporting users. A ticket the caller may
 not see reports "not found" rather than "forbidden", so tracking numbers cannot
-be probed.
+be probed over MCP.
+
+The REST API answers the same way as of this release: `404 not found`, not
+`403 forbidden`, for a ticket that exists and the caller may not see — the same
+status, code and message `GET /tickets/{id}` already gives a tracking number
+that does not exist at all, so a signed-in reporter can no longer walk the
+sequential numbers (`GHD-2026-000001`, `...000002`) to learn which exist. This
+was a breaking change to the REST API's published contract, made deliberately
+in this beta's bug-fix branch rather than deferred to a major version — see
+`ticketNotFound` in `backend/internal/server/ticket_access.go` and #174.
+
+**Origin.** The MCP specification asks servers to validate the `Origin` header against DNS rebinding, and so does every MCP route: `/mcp`, `/mcp/`, `/mcp/sse` and `/mcp/message`. mcp-go does not, so `ProtectMCP` does it.
+
+- A request with **no `Origin` header** passes. Only browsers send one on a cross-origin request, and MCP clients that are not browsers (SDKs, editors, `curl`) send none.
+- A request with an `Origin` must carry exactly one, and it must be the origin of `BASE_URL`: scheme, host and port, compared without regard to case and with the default ports (80 for `http`, 443 for `https`) filled in. Anything else, `null` included, is refused with `403` and the error code `origin_not_allowed`.
+- The comparison is strict. An `Origin` with a path, a trailing slash, userinfo, a percent-escape or any byte outside printable ASCII (browsers send hosts as punycode) is refused, as is a repeated header, because a browser sends none of those.
+- The check runs **before authentication**. The refusal is the same for every caller, so it does not reveal whether a key is valid, whether a session owes MFA, or what role it has. A caller with no `Origin` never meets it and sees the responses it always saw.
+- If `BASE_URL` has no usable origin, every request that carries an `Origin` is refused (fail closed). The server starts whatever `BASE_URL` holds. A host passkeys cannot use (none, an IP address, a single-word host other than `localhost`, a non-ASCII host, or a port that is not a number) turns passkeys off. Other unusable values, such as a scheme other than `http`/`https` or a port out of range, leave passkeys on. No usable origin means no host, a scheme other than `http`/`https`, a port that is out of range or not a number, or a non-ASCII host; an IP address or a single-word host does have a usable origin, so a request from that exact origin is allowed. Write a non-ASCII host in punycode, which is also what a browser sends in `Origin`.
+- The check applies to **every** request that reaches `ProtectMCP`: `/mcp`, `/mcp/`, and the older SSE transport (`/mcp/sse`, `/mcp/message`), and an unknown path under `/mcp/` as well, so a route added later is covered without anyone remembering to list it. The SSE transport is deprecated but not harmless: a browser page can open its stream and post to its message endpoint exactly as it can reach `/mcp`, and a DNS-rebound page reaches both alike, so leaving it open would leave the very hole the check closes on the other routes. An earlier draft of this release exempted SSE to keep existing configurations working; that was reversed (#460) because no legitimate client is affected: SDKs, editors and `curl` send no `Origin`, and a browser client served from `BASE_URL` itself sends the right one. `TestMCPOrigin_SSEIsChecked` pins it.
+
+**SSE sessions are bound to their actor** (#495). The stream `GET /mcp/sse` records who opened it: the user and the credential it came in on (the API key, the OAuth client, or the browser session). A `POST /mcp/message` for that `sessionId` is processed only when its own authenticated actor is the same user on the same credential. Anyone else, an unknown or missing `sessionId`, and a stream that has closed all get the same `403` (`forbidden`, "session not available to this caller"), so the answer does not reveal which ids exist, and the body is not read. The same person on a different key is a different actor. The record is held in memory and dropped when the stream ends. Tests: `TestMCPSSE_SessionBoundToActor`, `TestOwnerOf`.
+
+**Request body size** (#481). Every `POST` body on both transports (`/mcp`, `/mcp/`, `/mcp/message`) is capped at 1 MiB, the same as the REST API's JSON cap. A request is one JSON-RPC call and the largest arguments any tool takes are a ticket description or a reply body; MCP takes no file upload (`list_attachments` returns metadata only). Over the cap the server answers `413` with `{"error":{"code":"request_too_large",...}}` and closes the connection; it reads no more than 1 MiB + 1 byte to decide, whether or not the client declared a length (before, a 100 MB body allocated 340 to 712 MB). `mcp.MaxRequestBody` is the constant. Tests: `TestMCPBodyLimit`, `TestHandler_OversizeBodyIs413WithJSONEnvelope`.
+
+A browser-based MCP client served from an origin other than `BASE_URL` cannot use any MCP route. It could not before either: the MCP routes grant no CORS preflight, so the browser never sent the request.
+
+The Origin check refuses any request that carries an `Origin` that is not `BASE_URL`'s, the stream `GET` included: a cross-origin `GET /mcp/sse` made with `EventSource` or a CORS-mode `fetch` carries one and is refused (`TestMCPOrigin_SSEIsChecked`). What it cannot stop is a stream `GET` that carries no `Origin`: a same-origin `GET` after DNS rebinding, or a no-cors or navigation `GET`. The other barriers do not all apply to every route.
+
+- On `/mcp` the check is one of several independent barriers. A non-JSON `POST` is refused before anything runs, and a JSON `POST` needs a CORS preflight that `/mcp` never grants. Those two hold **only for `/mcp`**.
+- On `/mcp/message` a `text/plain` `POST` runs, and it is a "simple" request, so no preflight is sent. For a page on the same site as the help desk (a sibling subdomain, say) the `SameSite=Lax` session cookie is sent with it, so **the Origin check is the only barrier there**. `TestMCPOrigin_SSEMessageCheckedWhereNothingElseStopsIt` pins that case.
+- The stream `GET` (`/mcp/sse`) that carries no `Origin` is protected by authentication and by what the page can do with the answer. A no-cors `GET` from a sibling-site page carries the `SameSite=Lax` cookie and passes authentication, and is harmless only because the response is opaque to that page. A DNS-rebound page holds no credential: it gets no help-desk cookie and has no API key.
+
+Tests: `TestOriginPolicy_Allows` (the comparison), `TestMCPOrigin_*` (the check behind `ProtectMCP`) and `TestMCPStreamable_NoCrossSiteSurface`, plus the cookie attributes in `backend/internal/database/sessionstore/cookie_attributes_test.go`.
 
 ### Authentication Methods
 
 | Consumer | Auth Method | Details |
 |----------|------------|---------|
 | Browser (SPA) | Session cookies | HttpOnly cookie carrying an opaque id; the session itself is a row in Postgres. Backed by local auth, SAML or OIDC. |
-| Formal integrations (JIRA, chatbots, CI) | OAuth2 client credentials | client_id + client_secret → short-lived JWT, scoped per integration |
+| Formal integrations (JIRA, chatbots, CI) | OAuth2 client credentials | client_id + client_secret → short-lived JWT, scoped per integration. The client acts as its own service user (see [OAuth Clients and Service Users](#oauth-clients-and-service-users)) |
 | Lightweight scripting / webhooks | API keys | Hashed bearer tokens with scoped permissions |
-| MCP | Inherits from above | Sits on top of the REST API. Same authentication, and scopes are enforced per tool. |
+| MCP | Inherits from above | Served at `/mcp` (Streamable HTTP) and `/mcp/sse` + `/mcp/message` (SSE), behind the same authentication chain as `/api/`, and scopes are enforced per tool. It calls the domain services directly, not the REST API, so a rule that lives in a REST handler does not apply to it unless the tool repeats it (for example, MCP repeats the REST create's routing by calling the same rule, `Server.Routing`, rather than carrying a copy). |
 
 Sessions are server-side rows, not self-contained cookies, because that is the
 only shape in which a session can be revoked. Logout, a password change, an MFA
 reset, a role change, disabling and deleting all take effect on the next
 request. A session whose owner is disabled or deleted stops loading whether or
 not anything deleted it, and the session id rotates on login and on any
-privilege change. Lifetime is 7 days.
+privilege change. Lifetime is 7 days, except a session that belongs to nobody
+yet (the OIDC state, a passkey challenge), which lives 10 minutes: anyone can
+create one with `GET /auth/oidc/login`. The OIDC callback builds a fresh
+session rather than editing the one the browser held, so a previous sign-in's
+password-change or enrolment state cannot ride onto it. SAML's library cookie is not a
+session; it is spent at hand-over (see Authentication → SAML).
+
+**The generated JWT signing key is stored unencrypted in `instance_secrets`,
+on purpose (#454).** When `JWT_SECRET` is unset or under 32 bytes, the server
+generates a random 32-byte key once and keeps it in that table. Do not
+"fix" this by encrypting it:
+
+- It sits in the same database as session tokens, which are more sensitive: a
+  reader of this table could already act as any signed-in user.
+- Encrypting it with `SESSION_SECRET` would lock the key out whenever that secret
+  changed, and the key would silently regenerate. Every OAuth client would then
+  hold a token the server no longer accepts.
+
+A long `JWT_SECRET` in the environment still wins over the stored key, with
+one exception: a value that is exactly one of the example secrets this
+repository publishes (`config.IsExampleSecret`) is discarded and treated as
+unset, with one warning logged at startup. Anyone can read the example, so a
+token signed with it would prove nothing. `SESSION_SECRET` has no such fallback
+and is still flagged, not discarded. A long `JWT_SECRET` that merely looks like a
+placeholder without being an exact example is used (it is the key), so it is
+flagged in the admin warnings like `SESSION_SECRET`.
+
+**An unwritable `ATTACHMENT_DIR` disables uploads and nothing else (#458).**
+The directory is probed (a scratch file is created and removed) at startup,
+which logs a warning, and again on every upload attempt and every
+`GET /admin/security-warnings` (`attachment_storage`). It is probed rather than
+remembered so that fixing the permissions recovers on the next request with no
+restart and no timer. While it fails, the staff, requester and guest upload
+routes answer 503 `attachments_unavailable` before reading the body, the admin
+banner says why, and downloads of files already stored keep working for as long
+as the directory is readable.
+
+**Compose makes the directory writable before the app starts.** The app runs
+as uid 100 / gid 101 (`ghd`, pinned in `backend/Dockerfile`). A bind mount, unlike
+a named volume, does not take the image's ownership, so on a fresh Linux host,
+where Docker creates `docker/data/attachments` as `root:root`, the probe above
+fails and uploads are off from the first start. Docker Desktop on macOS hides
+this, and an install upgraded from 1.2 keeps the owner it had. A named volume
+would strand 1.2 data, so `docker-compose.yml` has a one-shot `attachments-init`
+service instead: the same image as `app`, run as root with only `CHOWN` and
+`DAC_READ_SEARCH`, no network, which creates `/data/attachments` if missing and
+runs `chown -R 100:101` only when the top directory is not already owned by
+100:101 (a restart on a large store walks nothing). `app` waits for it with
+`service_completed_successfully`. The numbers are written in the Dockerfile and
+the compose file; `scripts/check-compose-attachments.sh` (CI, Docker image job)
+fails if they differ, and runs the service's own command against root-owned,
+missing and already-owned directories. A deployment that does not use this
+compose file must make the directory writable by uid 100 / gid 101 itself.
 
 ### Credential Scopes
 
@@ -388,13 +5935,16 @@ sessions do not: a session **is** the user, with whatever their role allows.
 Scopes exist to give a machine credential *less* than its owner, and there is
 nothing to narrow when a person is driving.
 
-A scope is `resource:action`, where action is `read` or `write`.
+A scope is `resource:action`, where action is `read` or `write`. `audit` and
+`requester_search` have only `read`.
 
 | Resource | Covers |
 |----------|--------|
-| `tickets` | Tickets and everything under `/tickets/{id}` — replies, links, tags, attachments, custom fields, status transitions |
-| `users` | User administration |
-| `groups` | Groups, their members, and their category/type scopes |
+| `tickets` | Tickets and everything under `/tickets/{id}` — replies, links, tags, attachments, custom fields, status transitions — plus the staff picker (`/staff`) |
+| `audit` | The admin-wide audit view (`/admin/audit`), administrators only: staff get `403` whatever scope their credential holds, and a key owned by staff cannot be given `audit:read`. A signed-in administrator needs no scope; an administrator's API key needs `audit:read`, which an administrator grants on purpose and which `tickets:read` does not imply. There is no `audit:write`: only the running server writes audit entries, so granting it to an API key or OAuth client is refused like an unknown scope, and one stored before the refusal ([#371](https://github.com/PubliciaLLC/go-help-desk/issues/371)) grants nothing, not even `audit:read` |
+| `requester_search` | The free-text `requester` filter on `GET /tickets` and the same argument of the MCP `list_tickets` tool: tickets whose reporter's name or email, or whose guest name or email, contains the text. **It gates a parameter, not a route**, so the handler checks it and the router cannot. It is **never implied** by another scope (`tickets:read`, `users:read` and `tickets:write` do not grant it, and a key that exists before the scope does not gain it), and nothing is implied by it. A key owned by **staff or an administrator** may hold it, and so may an OAuth client, whose service user is staff; a requester never owns a key. A browser session needs no scope: staff and administrators may send free text on the web (Erik, 2026-11-10: "free text on web, api keys need explicit freetext search permission"). It does **not** open `GET /users/lookup`, which stays session-only ([#290](https://github.com/PubliciaLLC/go-help-desk/issues/290)), and the id-based `reporter_id` filter needs only `tickets:read`. There is no `requester_search:write`: it is refused like an unknown scope, and one stored by hand grants nothing |
+| `users` | Reading users, and the requester lookup (`GET /users/lookup`, #444). **Read only for keys:** keys can't write users, so `users:write` is no longer offered by the catalogue or the pickers (it still parses, so a stored key or a script that names it keeps working, and it opens nothing) |
+| `groups` | Groups, their members, and their category/type scopes. `groups:write` covers creating, renaming and deleting groups; **membership and scope writes are session-only** (keys can't write users), so it opens neither |
 | `categories` | Categories, types, items, and custom-field assignments |
 | `tags` | Tag administration |
 | `canned_responses` | Canned response templates |
@@ -408,11 +5958,14 @@ Four rules govern them:
 
 1. **Scopes narrow; they never grant.** The scope check runs *after* the role
    check, so `users:write` on a key owned by a reporting user reaches nothing.
-   An API key acts at its owner's role; an OAuth client acts as staff.
+   An API key acts at its owner's role; an OAuth client acts at its service
+   user's role (staff or user, never admin; see
+   [OAuth Clients and Service Users](#oauth-clients-and-service-users)).
 2. **An empty scope list denies everything.** A credential with no scopes
    reaches nothing at all.
-3. **Write implies read** on the same resource. An integration that may create
-   tickets but not read them back is not a useful shape.
+3. **Write implies read** on the same resource, except `audit` and
+   `requester_search`, which have no write scope. An integration that may create tickets but not read them back
+   is not a useful shape.
 4. **There is no wildcard.** A credential that should reach everything lists
    every scope it needs. This keeps what a credential can do legible from the
    credential itself, and means adding a resource later does not silently widen
@@ -422,31 +5975,66 @@ The action is taken from the HTTP method — `GET` and `HEAD` need `read`,
 everything else needs `write` — and enforced per route group rather than per
 handler, so a route added later cannot forget it.
 
+`requester_search:read` is the one exception: it is checked in the handler, on
+the `requester` parameter, because the route it rides on (`GET /tickets`) is the
+same one `tickets:read` opens. `TestScopesForRole_MatchTheRouter` derives the
+scope table from the router and would call a parameter scope unused, so the
+exception is a short named list in `internal/server/parameter_scopes_test.go`;
+a second test requires every entry on it to be exercised by a handler test.
+Add to that list only a scope that truly gates a parameter.
+
 **MCP is covered too.** Every MCP message is a POST, so the action cannot come
 from the method; each tool declares what it needs at registration. The read
-tools (`get_ticket`, `list_tickets`, `list_categories`, `list_statuses`) need
+tools (`get_ticket`, `list_tickets`, `list_categories`, `list_statuses`, `list_ticket_fields`) need
 `tickets:read` and the write tools (`create_ticket`, `add_reply`,
-`assign_ticket`, `update_ticket_status`) need `tickets:write`. The two reference
+`assign_ticket`, `update_ticket_status`, `create_follow_up`) need `tickets:write`. The two reference
 tools sit under `tickets` rather than `categories`/`settings` because they exist
 to compose a ticket and are available to every role, unlike the administrative
 category and status endpoints. The top-level `/tags` and `/statuses` reference
 endpoints are covered by `tickets:read` for the same reason.
 
 A machine credential is also refused the endpoints that change how an account
-authenticates: its own (`/me/password`, `/me/mfa/enroll*`), and — through the
-admin surface — **any administrator's**. It may not create an administrator,
-promote a user to administrator, or reset an administrator's password or MFA.
+authenticates: its own (`/me/password`, `/me/mfa/enroll*`, `/me/passkeys*`) and its owner's API keys (`/me/api-keys*`, #450).
 
-The rule is about administrators rather than about the credential's own owner
-because refusing only the owner closed the path and not the outcome: every key
-reaching `/admin` is administrator-owned, so `users:write` allowed creating a
-second administrator, signing in as them, and resetting the first one's
-password. Guarding only promotion left the reverse open too — demote an
-administrator, reset the now-staff account's password, sign in — so the rule
-covers the whole account in either direction. Managing non-administrator users
-stays available.
+**Keys can't write users** (Erik, 2026-10-16). An API key or OAuth client may
+**read** users (`GET /admin/users`, `GET /admin/users/{id}`, the group member and
+scope lists, the assignee picker) and nothing more. **Every user write needs a
+signed-in administrator.** Each of these carries `DenyMachineCredentials` (an API
+key gets `403 session_required`; an OAuth client is a staff identity, so the
+admin role check refuses it first with `403 forbidden`):
 
-Three more things are off limits to a machine credential, for the same reason:
+| Route | Writes |
+|---|---|
+| `POST /admin/users` | creates an account |
+| `PATCH /admin/users/{id}` | role, disabled, name, email, MFA reset |
+| `DELETE /admin/users/{id}` | soft-deletes an account |
+| `POST /admin/users/{id}/password` | sets a password |
+| `POST /admin/groups/{id}/members`, `DELETE /admin/groups/{id}/members/{userId}` | group membership, which grants ticket visibility |
+| `POST /admin/groups/{id}/scopes`, `DELETE /admin/groups/{id}/scopes` | what a group's members can see |
+
+The rule is the route, not the field. It replaces a set of per-field rules (no
+administrators, no password on create, no `reset_mfa`, no email) that each closed
+one door of the same room and left another: a key could create a staff account
+with a password it chose, or promote a requester whose password it knew, sign in
+as that person (no second factor), and from that session create an API key
+(`POST /me/api-keys`) that survives the revocation of the key that started it;
+re-addressing an account would send its reset link (#451) to whoever holds the
+key. A key that can write users can make itself a person, so it cannot write
+them. Group create, rename and delete, and the rest of the admin surface, are
+unchanged.
+
+What this does not change, and is not a hole this rule closes: **OIDC sign-in
+can adopt an existing account by email** (`canAdoptByEmail`): when a verified
+address matches an account that is active, not a service account, not an administrator, not federated
+through SAML and not bound to another OIDC subject, the first OIDC sign-in with
+that address takes it over, whatever its password. That is how a locally
+provisioned account joins an identity provider, and it is how this behaved before
+#450. With keys unable to create or re-address accounts, a key can no longer
+create the account that would be adopted, but a signed-in administrator can, and
+so can self-signup. The adoption is gated by the identity provider verifying the
+address, and by `allowed_email_domains` (Authentication, OIDC).
+
+Four more things are off limits to a machine credential, for the same reason:
 
 - **Changing the SAML or OIDC configuration.** Login providers are settable from
   the admin UI and nowhere else. Repointing the identity provider at one the
@@ -456,22 +6044,246 @@ Three more things are off limits to a machine credential, for the same reason:
   Blocked on both doors: the dedicated config routes and the `saml_*` / `oidc_*`
   settings keys. Reading the configuration stays available to automation, since
   the handlers already blank the secrets.
-- **Changing an auth-critical setting** — MFA enablement and enforcement, the
-  SAML/OIDC keys, the email-domain allowlist, and the signup toggles. Ordinary
-  configuration such as the site name stays automatable.
-- **Verifying an MFA code** (`POST /auth/local/mfa/verify`). A machine
-  credential reaching it could spend the account's durable failed-attempt budget
-  and lock the owner out repeatedly.
-- **Issuing a credential broader than itself.** Otherwise `credentials:write` is
-  every scope: hold only that, mint a key with `users:write`, use it. A
-  signed-in administrator is exempt — they already hold everything a credential
-  could be granted, so they are not escalating.
+- **Changing an auth-critical setting** (`admin.AuthCriticalKeys()`; refused
+  with `403 session_required`). These decide who may authenticate and how, or
+  what the instance will accept and keep: MFA enablement and enforcement; the
+  SAML and OIDC keys; the email-domain allowlist and the signup toggles; guest
+  submission (#177: it decides not just whether anonymous people can file a
+  ticket but also, since the category catalogue stopped being anonymous,
+  whether that catalogue is readable without a session at all, one flag and two
+  exposures); `closed_reopen_policy` (#349); the attachment policy (scanner
+  address and policy, allowed types, infected and mismatch handling, the
+  reputation toggles, keys and refresh interval); and audit retention, staff
+  visibility of change history and whether requester names are masked in audit
+  views; who may create API keys (`staff_can_create_api_keys`) and how long a new one may live (`api_key_max_lifetime_years`, #450); and who sees tickets and who is handed them (`ticket_scope_enforced`, `auto_assign_group_id`, `auto_assign_user_ids`, #450; `available_queue_roles`, #676): a key that could switch scope enforcement off, or point auto-assign at an account it controls, would widen what that account sees or is given.
+  Ordinary configuration such as the site name
+  stays automatable.
+- **Verifying a second factor** (`POST /auth/local/mfa/verify` and
+  `POST /auth/local/passkey/start|finish`). A machine credential reaching the
+  code check could spend the account's durable failed-attempt budget and lock
+  the owner out repeatedly; the passkey routes sit beside it and answer to the
+  same rule.
+- **Creating an API key** (#450). Keys can't make keys: only a signed-in person
+  creates one. (It used to be allowed within the key's own scopes, which still
+  let `credentials:write` mint a successor before the first expired, and that one
+  another.) See Who can create API keys, below. A key can still list and revoke
+  keys.
 
 Scopes cannot express any of this. The narrowest possible key still belongs to
 its owner, so any scope reaching those routes reaches account takeover.
 
 `GET /api/v1/admin/scopes` returns the catalogue. The admin UI builds its
 picker from it so the two cannot drift.
+
+**Who lists and revokes which API keys** ([#419](https://github.com/PubliciaLLC/go-help-desk/issues/419),
+[#466](https://github.com/PubliciaLLC/go-help-desk/pull/466)). An administrator
+signed in through the browser lists and revokes every key, with its owner
+shown (`owner_name`, `owner_email`). An API key lists and revokes only
+itself: not its owner's other keys, and not anyone else's (any other id answers
+`404`, as if it did not exist). The rule follows the credential, not the role,
+so a leaked key held by an administrator cannot revoke the owner's other keys,
+which are what would let the owner recover.
+Before 1.3, revoking ignored the owner while listing did not, so any admin
+credential that knew a key id could revoke another administrator's key.
+
+**Who can create API keys** ([#450](https://github.com/PubliciaLLC/go-help-desk/issues/450)).
+A key is a long-lived bearer credential that acts as its owner, so who may make
+one is a permission decision with one switch and no per-user exceptions.
+
+- **Administrators** can always create their own keys.
+- **Staff** can create their own only while the admin setting
+  `staff_can_create_api_keys` ("Staff may create their own API keys", Admin →
+  System → Authentication → API keys) is on. It is off by default. It governs
+  *creating* a key: turning it off revokes nothing, and staff can still list
+  and revoke their own keys whatever it says, including a key an administrator
+  issued for them. Revoking only ever removes access, and a person must be able
+  to remove a credential that acts as them.
+- **Requesters never own keys.** `/me/api-keys` answers them `403`, and an
+  administrator cannot issue one for them either (`400 requester_cannot_own_key`).
+  A requester's integration uses an OAuth client or a staff member's key.
+- **An administrator can issue a key for a staff member, or for themselves**
+  (`user_id` on `POST /admin/api-keys`, a signed-in session only, or `user_id`
+  equal to their own id). The key belongs to that account and acts as it. Not for
+  another administrator (`400 cannot_issue_for_administrator`: one administrator
+  minting another's credential), not for a requester, and not for a service
+  account, the identity an OAuth client acts as (`400
+  service_account_cannot_own_key`; the client has its own credential and the
+  admin "issue for" search leaves service accounts out). A deleted account is
+  `404`, a disabled one `400 user_disabled`. The owner is judged before the
+  scopes, so the refusal gives the real reason.
+- **Keys can't make keys** (Erik, 2026-10-16). Only a signed-in person creates an
+  API key, on `/me/api-keys` or `POST /admin/api-keys`. A key that could would
+  mint a successor that expires up to the full lifetime limit later, and that
+  one another, so the limit would mean nothing, and revoking the first would
+  remove none of the rest. `GET/POST /me/api-keys`, `GET /me/api-keys/scopes` and
+  `DELETE /me/api-keys/{id}` sit inside `meRouter` behind
+  `DenyMachineCredentials`, `RequireMFA` and `RequireRole(admin, staff)`;
+  `POST /admin/api-keys` carries `DenyMachineCredentials` too. An administrator's
+  API key gets `403 session_required` on both; an OAuth client is a staff
+  identity, so on the admin route the role check refuses it first (`403
+  forbidden`). Listing and revoking stay open to a key on the admin routes (a key
+  lists and revokes only itself, #466). This also makes the "a machine
+  credential naming another user" and "broader than itself" cases unreachable,
+  so those checks are gone rather than left as dead code.
+  **OAuth clients are covered by the same rule** ("API keys cannot create oauth",
+  Erik, 2026-10-16): `POST /admin/oauth-clients` carries
+  `DenyMachineCredentials` (an API key `403 session_required`, an OAuth client `403
+  forbidden`). A client made by a leaked key would outlive it. A key can still
+  list and delete clients. `POST /admin/oauth-clients/{id}/rotate-secret` (#622)
+  mints a new secret for an existing client, so it carries the same
+  `DenyMachineCredentials`: creating and rotating are the only paths that make
+  one.
+- **A webhook dies with the key that made it** (Erik, 2026-10-16). A key may
+  still create and edit webhooks. The hook records the API key that created it
+  or last changed its URL (`webhook_configs.api_key_id`, no foreign key, so
+  deleting the key does not forget it); a hook made or last re-pointed in a
+  session has none. When that key is no longer active (revoked, expired, or its owner disabled or
+  deleted), the hook is
+  **paused**: `paused: true` and `paused_reason` ("Its API key, or that key's
+  owner, is no longer active") on every read, and the dispatcher sends it nothing. It is
+  judged from the key's own row on every read and at every delivery attempt, so
+  an expiry pauses a hook with no job running, a queued delivery is settled
+  rather than sent, and retries stop. The link is a plain column with **no
+  foreign key**, so deleting the key cannot null it and make the hook look
+  session-made: a missing key counts the same as a revoked one, and so does a
+  key whose owner is disabled or deleted (it no longer authenticates). Every one
+  of those fails closed. A key cannot lift the pause by editing: any `PATCH` of a
+  paused hook with a key is `403 webhook_paused` (re-pointing it would tie it to
+  the editing key and un-pause it unseen); a key may still delete it. Changing a hook's URL in a session is an
+  approval of that destination, by a person who typed it, so it clears the link;
+  any other session edit (events, filter, enabled) does not, and a paused hook
+  stays paused until it is re-approved explicitly. A key changing something else
+  leaves the link as it was. `POST /admin/webhooks/{id}/reapprove` (session only) clears the link,
+  and the hook fires again; the Webhooks page shows a Paused badge with the
+  reason and a Re-approve button. Nothing is written to the delivery history for
+  a skipped delivery, as for a disabled hook; #518's dropped-delivery record was
+  not merged when this was built, so this does not use it.
+- **A change of role keeps the person's keys** (Erik, 2026-10-16). A key acts
+  within its owner's *current* role: the role check runs on every request, and
+  the scope table only limits what can be put on a key at creation. Demoting an
+  administrator leaves their keys alive but able to reach only what staff can.
+  Promoting a staff member leaves their keys alive and, by the same rule, able to
+  reach what an administrator can reach, so "issue a key for a staff member, then
+  promote them" leaves an administrator holding a key another administrator
+  issued. That is an accepted consequence, not an oversight; revoke the keys, or
+  use the password-reset checkbox, if it is not wanted.
+- **`staff_can_create_api_keys` is auth-critical** (`admin.AuthCriticalKeys`), so
+  a machine credential cannot change it. Switching it on widens who may hold a
+  bearer credential, the same kind of change as `closed_reopen_policy`, and a
+  leaked administrator key must not be able to switch it on and then use it.
+  (The alternative, session-gated detail for settings that only widen what staff
+  *see*, is the `staff_can_view_*` family. This one widens what staff can
+  *make*, so it takes the stricter reading.)
+- **A key's scopes never exceed its owner's role.** `auth.ScopesForRole` is the
+  table: an administrator may carry any scope; staff `tickets:read|write`,
+  `groups:read` and `requester_search:read` (not `audit:read`, the admin-wide audit view being administrators only; not `users:read`: the one staff route that needed it, the requester lookup, is session-only since #290); a requester none, since requesters never own a
+  key (an existing requester key still acts within the role check). It is checked
+  against the key's *owner*, so an administrator issuing a key for a staff member is
+  limited by what staff can do; a scope outside it is `400 invalid_scope`.
+  `GET /admin/scopes?role=staff` serves that list, and the admin picker offers
+  only it once an owner is chosen.
+  Scopes only narrow, so this is defence in depth and not the boundary: the role
+  check still refuses a staff key every admin route. What it prevents is a key
+  that looks as though it can edit users and cannot. The table is written out
+  and `TestScopesForRole_MatchTheRouter` derives the same answer from the
+  router's own middleware for administrators and staff, fails if an
+  administrator-only scope is offered to staff, and fails if a scope the router lets a role use is
+  missing from the table. Scopes that gate a parameter rather than a route
+  (`requester_search:read`) are added to the derived set from a named list.
+- **Every issue and revoke is audited**, a person's own keys and keys issued or
+  revoked on someone's behalf alike (`entity_type` `api_key`; actions
+  `api_key_issued` and `api_key_revoked`; the entry carries the owner's id,
+  `on_behalf`, the scopes and the expiry, and never the key's name, which is
+  free text). A revoke-on-reset is a different entry: `entity_type` `user` (the
+  account whose keys went), action `api_keys_revoked`, with `keys_revoked`, the
+  count. The write is best effort and detached from the request with
+  `context.WithoutCancel`, like `user.Service.ResetMFA`: an audit entry here does
+  not gate anything, and hanging up after the key is written cannot suppress it
+  (`TestAPIKeyAudit_IsWrittenEvenIfTheRequestWasCancelled`).
+- **Every OAuth client and webhook change is audited, in the same transaction
+  as the change.** Unlike the key entries above, these are not best effort:
+  `authstore`'s `*Audited` writes (`CreateOAuthClientAudited`,
+  `DeleteOAuthClientAudited`, `CreateWebhookAudited`, `UpdateWebhookAudited`,
+  `DeleteWebhookAudited`) write the entry on the change's own transaction, as
+  the custom-field store does, so a change that cannot be recorded does not
+  happen (`TestOAuthClientAudit_RolledBackWithTheChange`,
+  `TestWebhookAudit_RolledBackWithTheChange`). The difference from keys is
+  deliberate: a key's entry sits beside a credential its owner already holds,
+  while a client or a hook is created and edited by an administrator and is how
+  ticket data leaves or enters the system. Entity types `oauth_client` and
+  `webhook`; actions `oauth_client_created`, `oauth_client_deleted`,
+  `oauth_client_secret_rotated` (#622),
+  `webhook_created`, `webhook_updated`, `webhook_deleted` and
+  `webhook_reapproved` (`POST /admin/webhooks/{id}/reapprove`, session only); the
+  actor is the signed-in administrator, or for a webhook changed with an API key,
+  the key's owner. An OAuth client has no update route, so it has no update action beyond the secret rotation.
+  Renaming its service user (`PATCH /admin/users/{id}`) renames the client too,
+  and that rename is **not audited**: `handleUpdateUser` writes no audit entry,
+  so this is a gap in editing users and not something this entry type covers.
+  **No secret and no URL token is ever written.** A client's entry carries
+  `client_name`, `scopes` and `service_user_id`, never the secret or its hash. A
+  webhook's carries `url_host` (the host only: the path and query are where the
+  token lives), `events`, `enabled`, `payload_format`, `filter` (ids and
+  priorities, as one JSON string) and `signed` (whether a signing secret is set,
+  not the secret). An update records both sides and adds `url_changed` or
+  `signature_changed` when the URL or the secret was replaced, since a rotated
+  token on the same host would otherwise look like no change; a `PATCH` that
+  repeats what is stored writes no entry. `client_name` and `url_host` are shown
+  by the Audit Log (they are text an administrator wrote and cannot hold ticket
+  content); the Audit Log page offers both entity types in its filter and shows
+  a client's name and scopes, or a hook's host and events, as a line on every
+  row of those two entity types: it is what names the client or hook on create
+  and delete rows, which have no diff, and it sits above the changed keys on
+  update and re-approval rows. A re-approval writes the hook's state on both sides
+  with `key_linked` (whether an API key was still tied to it) going from true to
+  false; it is written even for a hook with no link, because the approval is
+  what is recorded, and it carries the same fields as an edit, so no secret.
+- `api_keys.created_by` (migration 000050) records who issued each new key. It
+  equals `user_id` when the owner made it and differs when it was issued on their
+  behalf; NULL means unknown (a key made before 1.3, or an issuer deleted since).
+  It is returned by both key lists, and the Account page says "Issued for you by
+  an administrator" and the admin page "Issued on their behalf".
+- **Maximum key lifetime** (`api_key_max_lifetime_years`, Admin → System →
+  Authentication → API keys). Every key made through `/me/api-keys` or
+  `POST /admin/api-keys`, own or on someone's behalf, must expire, and no later
+  than this: **2 years by default**, set on a slider with six stops, 1 to 5 years
+  and Never. Stored as the integer 1 to 5, or `-1` for Never; `0`, `6`, a
+  fraction, a string and null are refused with 400, and an unreadable stored
+  value reads as 2. With a limit, a missing expiry is `400 expires_at_required`
+  and one past it `400 expires_at_too_far`, naming the limit; only with Never may
+  `expires_at` be omitted. The setting is **auth-critical** (session only),
+  because raising it, or choosing Never, widens how long a stolen key stays
+  useful; the panel shows a red warning whenever it is above 2. The check is made
+  **when the key is created, never when it is used**. A key that already exists
+  with no expiry, or an expiry beyond the current limit (after the limit is
+  lowered), keeps working and is returned with `beyond_limit: true` in both key
+  lists, which the screens show as "No expiry (longer than the current limit)" so
+  it can be rotated. The create forms default the date to the longest allowed,
+  require one while there is a limit, and refuse a later one; the server enforces
+  the same. The UI sends the end of the chosen day, but never later than an hour
+  before the limit, so the last day the form offers is not refused.
+- **An administrator's password reset can revoke the person's keys.** The reset
+  form has "Also revoke this person's API keys", unticked; `revoke_api_keys` on
+  `POST /admin/users/{id}/password`. When true the server deletes every key the
+  account owns after the password is set and the sessions are ended, and records
+  `api_keys_revoked` on the account's audit entries with `keys_revoked`, the
+  count. It is a separate step from the reset, not one transaction, and it is
+  detached from the request (`context.WithoutCancel`) like the audit write. If
+  the revoke fails after the reset succeeded, the answer is `500 keys_not_revoked`
+  with "The password was reset, but the API keys were NOT revoked.", which the
+  page shows as it is. A person
+  changing or resetting their own password never touches keys, and neither
+  `server unlock` nor `server reset-factors` does.
+- Both screens take the expiry as a date. `GET /me` reports `can_create_api_keys`
+  and `api_key_max_lifetime_years` so the Account page knows whether to offer the
+  form and what to cap it at.
+
+**A blank webhook `secret` clears it, by design.** `PATCH /api/v1/admin/webhooks/{id}`
+with `"secret": ""` removes the stored secret, and deliveries to that hook are
+no longer signed; an absent or `null` secret keeps it. This is a deliberate
+choice and stays admin-only: the admin router needs the administrator role and
+a second factor, and an OAuth client carries the staff role, so no credential
+below an administrator can reach it. It is revisited if that stops being true.
 
 ### Other protections
 
@@ -480,52 +6292,91 @@ so they are not removed as dead weight:
 
 - **Credential throttling.** Failed password attempts are counted per account,
   not per source address — an address-keyed limit is defeated by any proxy or a
-  forged forwarding header. The password counter is in-process, so a restart
-  clears it and N replicas multiply the budget by N; `AUTH_RATE_LIMIT_PER_MINUTE=0`
+  forged forwarding header. The password counter is in the database (see Rate limits), so a
+  restart does not clear it and replicas share it; `AUTH_RATE_LIMIT_PER_MINUTE=0`
   disables it and the signup limit with it. The MFA failed-attempt count is on
   the user row and does survive a restart.
 - **Ticket list paging.** `GET /tickets` takes `?limit=` (default 100, maximum
-  200) and `?offset=`. Offset-based, not page-based. The staff view merges the
-  caller's own tickets with each of their groups', so it reads each source to
-  the end of the requested page and slices after merging — pushing the window
-  into each query returns limit × (1 + groups) rows.
-- **Uploaded images are capped at 25 megapixels**, checked from the header
-  before any decode. A byte-size limit is not a memory limit: compressed formats
-  expand, and a 169 KB PNG decodes to 142 MB.
+  200) and `?offset=`. Offset-based, not page-based. The window is cut in SQL by
+  the one list query (`ListTicketsFiltered`), whatever the caller's role or queue,
+  so a page is exactly `limit` rows and no source is read past it. Before 1.3.0
+  the staff "mine" view merged the caller's own tickets with each of their groups'
+  in Go, reading every source to the end of the requested page and slicing after
+  the merge, because pushing the window into each of those queries returned
+  limit × (1 + groups) rows. SLA status is still attached only to the page that is
+  returned, never to rows the response throws away.
+- **Uploaded images are capped by what decoding them will cost**, checked from
+  the header before any decode. A byte-size limit is not a memory limit:
+  compressed formats expand, and a 169 KB PNG decodes to 142 MB. Two bounds
+  apply: twenty-five megapixels, and 100 MB of decoder allocation, which is not
+  the picture's size (a progressive JPEG holds every DCT coefficient until the
+  image is reconstructed, and a CMYK or RGB one decodes through a second
+  full-resolution image, so "pixels times four bytes" let a 214 KB file cost
+  403 MB). Because every narrower rule of the form "know each shape" was beaten
+  by a differently-shaped file, the rule is a refusal: **a JPEG whose header
+  cannot be read is refused** rather than falling back to a weaker estimate.
+  Every real JPEG parses, and "I cannot tell how much this will cost" is a
+  reason to refuse. That converts the next gap in the estimate from a way
+  through into a refusal, which is worth more than any single thing the
+  estimate knows. A limit on how many images are decoded at once bounds the
+  process rather than the request. Neither bound depends on the per-file
+  byte limit (`attachment_max_mb`, #673), and neither moves when it does.
 - **Security headers** on every response: a content security policy, `nosniff`,
-  `X-Frame-Options: DENY` and a referrer policy. The uploaded logo is served
-  with a stricter, sandboxed policy so an SVG cannot execute whatever it
-  contains.
+  `X-Frame-Options: DENY` and a referrer policy. The uploaded logo and the
+  site icon's files are served with a stricter, sandboxed policy, so a file
+  that got past the upload check still cannot execute.
 - **Webhook targets are address-checked** at the moment of connection, so a
   hostname resolving to an internal address, a redirect to one, and DNS
   rebinding are all refused. The SAML metadata and OIDC issuer URLs are
   deliberately *not* address-checked — a self-hosted identity provider on a
   private network is a normal topology — and are restricted by who may set them
   instead.
-- **Webhook payloads omit the body of an internal note** and carry an
-  `internal` flag, so a subscriber can tell a staff-only note from a public
-  reply. Before, it received the text of every internal note and could not tell
-  them apart.
+- **Webhook payloads never carry the text of an internal note.** A staff-only
+  note is its own event, `ticket.note_added`
+  ([#448](https://github.com/PubliciaLLC/go-help-desk/issues/448)), so a hook
+  subscribed to `ticket.replied` is never sent one and the event name says
+  which it is. Before, it received the text of every internal note and could
+  not tell them apart.
+- **Chat/ITSM payload formats escape mentions and never carry an internal
+  note body.** Slack escapes `&`, `<` and `>` in user-chosen text, so a
+  subject of `<!channel>` cannot page a channel; Discord always sends
+  `allowed_mentions: {"parse": []}`, so `@everyone`-style text cannot ping a
+  server. All four formats (Slack, Teams, Discord, JIRA) are built from the
+  same summary the raw format's internal-note omission already produces, so
+  an internal note's body reaches none of them, not just the raw payload.
 
-**Scopes were documented here before they were enforced.** Until 1.2.0 they were
-accepted, stored and returned by the API, and no code read them — every
-credential issued as restricted was unrestricted. Enforcement in 1.2.0 is a
-breaking change: credentials created before it carry no scopes and are therefore
-denied, and must be re-issued.
+**Scopes are enforced** (since 1.2.0). Before it they were accepted, stored and
+returned by the API and no code read them, so every credential issued as
+restricted was unrestricted. Credentials created before enforcement carry no
+scopes and are therefore denied; they must be re-issued.
 
 ---
 
-## Plugin Infrastructure
+## Plugin Infrastructure (v2)
 
-### Capabilities (v1)
+Deferred from v1; 1.x has no working plugin system. The data model and an
+admin routes exist (`internal/domain/plugin/`, `handler_admin_plugins.go`;
+there is no admin page), but nothing registers a plugin, so the list is always
+empty and enable/disable fails for every id. None of the capabilities below
+are wired up: install and uninstall return `501 not_implemented`, no WASM runtime is linked
+in, and `plugin.Registry.Dispatch` is never called from the ticket lifecycle,
+so no plugin receives events. Treat this section as the
+target design for v2, not a description of what ships today.
+
+External chat/ITSM notifications (Slack, Teams, Discord, JIRA) do **not** wait
+for this — see Notifications below, where they ship in v1 as payload formats
+on the existing webhook feature instead of as plugins.
+
+### Capabilities (v2)
 
 - React to **ticket lifecycle events** (created, assigned, status changed, resolved, etc.)
 - Add **custom fields / UI panels** to tickets
-- Integrate **external systems** (Slack, Teams, Discord, JIRA, etc.)
+- Integrate **external systems** generically, beyond what a webhook payload format can express
 
 ### Theming
 
 - **CSS/branding only** — logo, colors, fonts configurable in admin UI
+- Light and dark are not plugin theming: they are a per-person choice built on the colour tokens (see Appearance (dark mode), #709). A plugin theme would set token values, never palette classes.
 - Not full layout-level theming
 
 ### Trust Model
@@ -537,7 +6388,7 @@ denied, and must be re-issued.
 
 | Version | Method |
 |---------|--------|
-| v1 | Install/manage via **admin UI** (upload or URL) |
+| v2 | Install/manage via **admin UI** (upload or URL) |
 | v4 | **Plugin registry** for discovery and installation |
 
 ---
@@ -548,6 +6399,131 @@ denied, and must be re-issued.
   the acknowledgement, and a note on each status change, resolution and reopen,
   because each of those replaces the link they hold and the mail is how the
   replacement reaches them.
+- **Staff email** ([#441](https://github.com/PubliciaLLC/go-help-desk/issues/441),
+  parts C and D of #464). Staff are emailed about their own work, not just
+  requesters about theirs. Two events: a ticket is **assigned**, and the
+  **requester replies** (the public reply of whoever filed the ticket: an
+  account holder, a guest, or a staff member replying on a ticket they filed
+  themselves; any other staff reply, or an internal note, is not one). A third,
+  a **reopen** ([#464](https://github.com/PubliciaLLC/go-help-desk/issues/464)),
+  is described below. A fourth, **SLA alerts** (a target breached or at risk,
+  [#670](https://github.com/PubliciaLLC/go-help-desk/issues/670)), is
+  described under SLA Tracking → Breach and at-risk notifications.
+
+  Four per-user switches, all **on by default** (columns on `users`, set
+  from **Your account → Email about tickets**, `PATCH /me/email-preferences`):
+
+  | Switch | Mailed when |
+  | --- | --- |
+  | Tickets assigned to me | a ticket is assigned to me |
+  | Activity on tickets I'm assigned to or follow | a requester replies on a ticket assigned to me, a ticket assigned to me is **reopened**, and a ticket I **follow** is assigned, gets a requester's reply or is reopened |
+  | My groups' tickets | a ticket is assigned to a group I belong to, a requester replies on a group ticket that **nobody personally holds**, and a ticket in my group that nobody personally holds is **reopened** |
+  | SLA alerts (`email_notify_sla`) | a ticket assigned to me, a ticket in my group that **nobody personally holds**, or a ticket I **follow** has just **breached** an SLA target or is **at risk** of it (80%). For these two events this switch alone decides: the Activity and Group switches do not apply to them |
+
+  A requester's reply on a ticket that has both an assignee and a group goes
+  to the assignee only: the group's members would otherwise get mail for every
+  reply on work a colleague already holds. Assignment mails both. Group
+  members are told it is their group's ticket ("assigned to your group"), not
+  that it is theirs. **Followers** (Ticket Followers, above) are mailed for both
+  events under the second switch and its override, and are told it is a ticket
+  they follow. **Followers who are the assignee, or members of the assigned
+  group when the group itself is mailed for that event, get no follower mail**
+  (Erik, 2026-10-14: they follow the ticket from a practical point of view).
+  The group is mailed for an assignment, and for a reply on a ticket nobody
+  holds; for those events a member's own group switch decides, and following
+  on top does not bring back mail they turned off. The assignee is always left
+  out of follower mail, and their own switches decide. For a reply on a ticket
+  somebody holds, the group is not mailed, so a member who follows it is
+  mailed as a follower. This is decided when the worker first picks up the change, a moment after the commit, not on the request. At send time
+  only the follow row (and visibility) is checked, so unfollowing stops mail
+  already queued, and mail queued to a follower is not lost if they are then
+  assigned the ticket.
+
+  **A reopen** (any door: Ticket Lifecycle) follows the reply rule (Erik,
+  2026-10-14). The assignee is mailed, under the *requester replied* switch (the
+  second one). The assigned group's members are mailed, under the third
+  switch, **only while nobody personally holds the ticket**. Followers are
+  mailed whoever holds it, under the second switch. So on a held ticket a group
+  member hears about a reopen only if they follow it, as a follower; on an
+  unheld ticket the group is mailed, a member who also follows gets exactly one
+  mail, and their own group switch decides. The assignee never gets follower
+  mail. Everyone gets one mail. Whoever did the reopening is not mailed, whether a requester (who is no staff candidate
+  anyway), the assignee, a group member or a follower. The mail is built from
+  the change's one event, which carries the kind `ticket.reopened`, who holds
+  the ticket and who acted; a requester's reply that reopens is one change
+  carrying both the reply and the reopen, and each person gets one mail for it
+  (the first of assigned, reopened, requester replied whose switch is on). At send time the same checks run
+  as for every staff mail: the person must still hold the ticket, still be in
+  the group, or still follow it and be able to see it. The requester's own mail
+  is unchanged: a force-reopen mails the guest, and a status change mails the
+  guest through its own event.
+
+  An administrator can **override each switch for everyone**
+  (**Admin → System → Email → Notifications**; the settings `staff_email_assigned_override`,
+  `staff_email_activity_override`, `staff_email_group_override`,
+  `staff_email_sla_override`): `user`
+  leaves it to each person (the default), `on` and `off` ignore what people
+  chose. An unrecognised stored value reads as `user`, never as a forced one.
+  `GET /me` reports, for each switch, whether it applies to the person and
+  whether an override forces it, and the account page shows a forced switch
+  locked with "Set by your administrator".
+
+  **An upgraded install starts with staff email off.** Migration `000052`
+  stores all three overrides as `off` when the users table already holds a
+  person (a service account does not count), so a 1.2 install that already has
+  SMTP configured does not begin mailing staff on first boot. A fresh install
+  migrates with no users, gets no stored override, and the defaults apply. An
+  override already stored is kept (`ON CONFLICT DO NOTHING`). The down step is a
+  no-op: it cannot tell its rows from an administrator's own `off`, and deleting
+  them would turn mail back on. The administrator turns staff email on under
+  **Admin → System → Email → Notifications**. Migration `000067` does the same for the fourth
+  override, `staff_email_sla_override`, on the same condition, with the same
+  no-op down step for that row, so an upgraded install, including a 1.3 beta
+  whose administrator already turned the first three back on, gets no SLA mail
+  until the administrator chooses it. That is apart from `sla_alerts_enabled`
+  (stored off on upgrade by the same migration), which gates the events
+  themselves: an administrator can send SLA alerts to a webhook without mailing
+  staff. Per person, `email_notify_sla` is `NOT NULL DEFAULT TRUE` like the
+  other three.
+
+  Staff mail for the two SLA events uses the reply rule's recipients under the
+  fourth switch, and never shares a change with an assignment, a reply or a
+  reopen (the sweep raises it in a transaction of its own), so the "first reason
+  whose switch is on" order is unaffected. In code the switch that decides is
+  carried on the candidate apart from the reason (`StaffCandidate.Switch`, the
+  reason when empty): the reason (assignee, group, follower) still picks the
+  template variant and the send-time check, and the switch picks the person's
+  preference.
+
+  The rules that hold whatever the switches say:
+  - **Nobody is mailed about their own action.** The person who made the
+    assignment is skipped even when an override forces the switch on.
+  - **One email per person per event.** Someone who is both the assignee and
+    a member of the assigned group gets one, if either switch lets it through.
+    That holds for a reopen too.
+    A follower who is neither is mailed as a follower.
+  - **Only people who can receive it**: an active staff member or
+    administrator with an address. A requester account is never sent staff
+    mail. Service accounts (the identity an OAuth client acts as, #490) never
+    are: `user.User.CanReceiveStaffMail` refuses them, and the query that lists a
+    group's mailable members leaves them out too.
+
+  Staff mail uses the same no-content templates as requester mail (the
+  tracking number and a link to the ticket behind the sign-in, nothing a
+  requester wrote). Each person gets their own outbox row on the `email`
+  channel, so one person's failing mail never resends anyone else's and none
+  of it touches the requester's own mail. The row names the person, not an
+  address: the address is read when the mail is sent, and mail queued for an
+  account that was disabled or deleted in the meantime is dropped. The ticket
+  is checked again too: mail is dropped if the person no longer holds the
+  ticket, is no longer in the group that does, or (for a follower) can no
+  longer see it under the ticket-scope rule (#391), because a queued row can
+  wait up to an hour of retries while the ticket moves. Rows are
+  made by the outbox worker (`notify.ChangeSplitter`, using `notify.StaffFanout`)
+  when it first picks up the change's one email row, not on the request, and are
+  never webhook events. A person qualifying for several kinds in one change gets
+  one mail, and mail is deduplicated by recipient address; see Ticket Events:
+  One Change, One Event.
 - Email is a notification, not a copy of the ticket. A message says what
   happened, names the ticket by its tracking number, and links to it. It does
   not carry the ticket subject or the reply text, and the recipient's own
@@ -560,14 +6536,1369 @@ denied, and must be re-issued.
 
   **Guest tickets** carry a per-ticket link instead of a ticket id, so a
   recipient with no account reaches their own thread and nothing else.
-- **Webhooks** — configurable HTTP callbacks for ticket lifecycle events. These
-  do carry the full event payload, subject and reply body included: a webhook
-  target is registered by an administrator, not chosen by a reporter.
-- Additional channels (Slack, Teams, Discord) are plugin territory
+- **Editable email templates** ([#158](https://github.com/PubliciaLLC/go-help-desk/issues/158)).
+  An administrator edits the wording of all 24 emails under **Admin → System → Email → Templates** (`/admin/settings/email/templates`), and a shared **header** and **footer**
+  that wrap every mail. Each can also have an optional HTML part (see *The HTML
+  part* below); without one, mail is plain text.
+
+  *No ticket content, ever.* The rule above holds for edited text exactly as
+  for the compiled text. A template is `text/template`, but only a sliver of
+  it is accepted: the words, `{{.Name}}`, and `{{if .Name}}…{{else}}…{{end}}`.
+  The parse tree is walked and anything else is refused with its line and
+  column (a FuncMap cannot do this: `printf`, `call` and `index` are built in,
+  and `{{range 1000000000}}` is legal). The variables are the whole of what a
+  template can see, and a test pins them:
+
+  | Template | Variables | Must print (outside any `if`) |
+  | --- | --- | --- |
+  | the seven requester mails (created, follow-up created, replied, status changed, resolved, reopened, guest link) | `TrackingNumber`, `TicketURL` | `TicketURL` |
+  | the nine staff mails (assigned, requester replied, reopened, each to the assignee, the group and a follower) | `TrackingNumber`, `TicketURL` | `TicketURL` |
+  | the six SLA staff mails (SLA breached and SLA at risk, each to the assignee, the group and a follower) | `TrackingNumber`, `TicketURL`, `SLAStatus` | `TicketURL` |
+  | email verification | `VerifyURL` | `VerifyURL` |
+  | password reset | `ResetURL` | `ResetURL` |
+  | header, footer | `SiteName` (the name in Settings) | nothing |
+
+  The guest status, resolve and reopen mails carry the guest's *rotated* link,
+  so dropping `TicketURL` from one would lock the guest out; that is why the
+  link is required and required at the top level. Caps: body 8 KiB, subject 200
+  bytes on one line (a line break in a subject is a header break), rendered
+  output 64 KiB. Each default subject is a template too, so the text the editor
+  shows as "the default" is the text a never-edited install sends.
+
+  *Storage.* Table `email_template_overrides` (migration `000057`): one row per
+  edited template, keyed by name. No row means the shipped text; **reverting is
+  deleting the row**, and saving text equal to the default deletes it too. The
+  header and footer are the reserved names `_header` and `_footer` in the same
+  table, and default to empty, so **with nothing edited every mail is
+  byte-identical to the one before the editor** (a golden test holds the whole
+  MIME message of every template). The header and footer are concatenated
+  verbatim around the body. There is no versions table: the audit log is the
+  history. A send reads the rows it needs in one primary-key lookup, no cache,
+  so several replicas agree.
+
+  *A stale edit fails the mail.* An edit can stop validating only after an
+  upgrade that removes a variable or tightens a rule. The send re-validates the
+  stored text and, if it fails, **fails the mail** with `ErrPermanent` and
+  `email template "Reset your password": your edited version does not work with
+  this release (…); revert it under Admin, Email templates`. It does not fall
+  back to the default: the administrator chose that, knowing a reset or guest
+  link could be missed. So the failure is never quiet: it is the `last_error` of
+  the email-health warning, a WARN per template at startup (startup is never
+  blocked), and `email.broken_templates` in `GET /admin/security-warnings`,
+  computed live from the rows, which the admin banner shows as a red notice per
+  template with a one-click **Revert to default** and an **Edit** link. A broken
+  header or footer fails every mail. Mail that failed before a revert is **not**
+  re-sent.
+
+  *API.* Session-only (an API key or OAuth client is refused with 403, on top
+  of the admin role and MFA): `GET /admin/email-templates`, `GET|PUT|DELETE
+  /admin/email-templates/{name}`, `POST …/{name}/preview`, `POST …/{name}/test`.
+  `PUT` validates again whatever the editor checked, and answers a refusal with
+  400 `invalid_template` carrying `field`, `line`, `col` and `errors` (one per
+  field). `preview` is also the live check: it answers 200 with `valid: false`
+  and every problem, renders a valid draft with sample data (a real-format
+  tracking number; links carrying `token=sample-not-a-real-link`, which answer
+  `token_invalid`) inside the saved header and footer, and sends and stores
+  nothing. `test` mails the draft, or the saved text if none is given, to **the
+  signed-in administrator's own address only** (the request has no recipient to
+  honour), with `[Test] ` in front of the subject, at most 5 per 10 minutes per
+  administrator, counted in the database (429 with `Retry-After`), 503 `email_not_configured` when email
+  is off, and the SMTP error returned to the page.
+
+  *The editor checks as you type.* The draft goes to `preview` 400 ms after the
+  last keystroke. A problem shows beside its field with line and column, the
+  field is marked `aria-invalid`, and **Save is disabled while the draft is
+  invalid or has not been checked yet**. That is a convenience, never the
+  authority: the server refuses an invalid save whatever the page did, and the
+  page shows that refusal the same way.
+
+  *Audit.* `email_template_saved` and `email_template_reverted` are written in
+  the same transaction as the row change, with the **full** subject and body
+  under `template_name`, `template_subject` and `template_body`; a first edit
+  records the default as "before", a revert records the edited text as
+  "before". `email_template_test_sent` records the template and never the
+  address. `template_*` are allow-listed in the audit view; the plain `subject`
+  and `body` keys stay hidden, because ticket entries keep the ticket's own text
+  under them. The HTML part is recorded in full under `template_html` (always
+  present on a save or revert, empty when there is none).
+
+  *The HTML part* ([#158](https://github.com/PubliciaLLC/go-help-desk/issues/158), migration
+  `000058`). Every template, and the header and footer, can have an HTML body beside
+  its text one.
+
+  - **Sending.** With no HTML saved anywhere (no HTML header, footer or body), every
+    mail is single-part `text/plain`, byte for byte as before; the golden tests
+    hold that. **Once the header or the footer has HTML, EVERY mail gets an HTML
+    part** (the administrator's ruling): a template with HTML of its own uses it;
+    one without has its text turned into paragraphs on the server (a blank line
+    starts a paragraph, a line break is a `<br>`, each link variable is a
+    clickable link, the text is escaped and each value is escaped by
+    `html/template`). The HTML part is the header's HTML, then that, then the
+    footer's; a header or footer that has only text goes through the same
+    conversion, so it is not lost from an HTML part that exists because the other
+    one has HTML (text-only shells alone still make no HTML part). The mail is
+    `multipart/alternative`, `text/plain` first, each part
+    quoted-printable, with a random boundary. The text part is **always the
+    separately edited text template** (with the text header and footer), never
+    generated from the HTML. A `{` or `}` in the text is written as an entity in
+    the generated source, because a `{` next to an action would otherwise make
+    `{{{`, which does not parse.
+  - **Templating.** `html/template`, so each value is escaped for where it lands
+    (text, or a link's `href`); the guest `#token` fragment survives it. The same
+    AST allow-list as the text part runs first, on the parse tree before the
+    escaper adds its own functions. The same variables and the same required link
+    (outside any `if`, as text or as the whole `href` of a link). The data is the
+    same string-only map, so ticket text can never reach it.
+  - **What an administrator may write** is checked at save with
+    `golang.org/x/net/html` and **refused, with the reason, line and column;
+    nothing is rewritten.**
+    - *Elements* outside a list of what email carries are refused, and the
+      design's list is refused by name with why: `script`, `iframe`, `frame`,
+      `object`, `embed`, `form`, `input`, `button`, `select`, `textarea`, `base`,
+      `link`, `meta`, `svg`, `math`.
+    - *Attributes* are an allow-list too (names are letters, digits and hyphens;
+      `aria-*` as a family). `on*`, `srcdoc`, `formaction` and `xlink:href` are
+      refused by name. `href` must start `https:`, `http:` or `mailto:` (read the
+      way a browser reads it: character references decoded, tabs and line breaks
+      dropped, leading control characters and spaces trimmed), or be exactly one
+      link variable (`TicketURL`, `VerifyURL` or `ResetURL`; any other variable as
+      a whole href is refused). `src`, `srcset` (every candidate), `background`,
+      `lowsrc`, `dynsrc`, `ping`, `cite` and `longdesc` must be `https:`.
+    - *CSS* (`style` attributes and `<style>` blocks, which stay allowed) is
+      refused when it holds a backslash, a comment (`/* */`), `expression`,
+      `behavior`, `-moz-binding`, `@import`, `javascript:`, `vbscript:`, `data:`,
+      `progid:`, a control or replacement character (an entity such as `&#x0;`
+      decodes to one), `image-set(`, `image(`, `src(`, `cross-fade(`, or any `url(` not
+      followed (after a quote or space) by `https:`. Matched on the lower-cased
+      text, on the decoded value for an attribute and the raw text for a block.
+    - *Comments* (`<!-- -->`, Outlook conditionals, `<!-->`, `<?...>`,
+      `<![CDATA[`) are refused: `html/template` drops them from what it renders,
+      which would be a silent change. Use `{{/* */}}` for a note.
+    - *Templates* may appear only in text or as the whole `href` value; never in a
+      tag, an attribute name, a comment or a `<style>`. A literal `<` in text is
+      written `&lt;`. Remote images are allowed (the administrator's choice, and the
+      audit records it). Each branch of an `{{if}}` is read on its own and must come
+      out whole, so one branch cannot finish a tag another began.
+    - *Repeated attributes* are refused. The tokenizer, like a browser, keeps the
+      first and drops the rest, but a mail client may read the last, so the raw tag
+      is scanned (HTML5 rules: a name ends at whitespace, `/`, `>` or `=`; names
+      compare without case; an unquoted value runs to whitespace or `>`).
+  - **The bytes that are sent are checked, not only the source.** The tokenizer
+    reads source with its actions stood in for; a browser reads what comes out.
+    The same markup check runs on the rendered sample at save and on the joined
+    header, body and footer at send and in the preview, and the fuzz test reads the
+    output with the HTML5 tree builder (a different parser) and fails on any
+    element, handler, URL or CSS the validator forbids. Found this way: `<style/>`
+    is not self-closing in HTML, so what follows is CSS; the check used to treat it
+    as an empty element and skipped that CSS and the template rule for `<style>`.
+  - **Caps.** Source 64 KiB. The rendered header, body and footer **together**
+    100 KiB (Gmail clips near 102 KB). That is checked **at save, for what the save
+    would join with**: saving a body is checked with the saved header and footer,
+    saving the header or footer is checked against every template (each has an HTML
+    part once a shell has HTML), and the 400 names the template that would go
+    over. The live check (`preview`) says the same, so Save stays off. A stored
+    combination that is over appears as a broken template (red notice) and fails the
+    send. The measure uses long links (2,048 bytes each, a guest link with its token
+    behind a long `BASE_URL`) and a 64-byte tracking number, and **the real site
+    name**, since the settings do not cap it: the broken-template notice appears as
+    soon as a long name makes a header or footer too big, and changing the site name
+    in the settings is refused (`400 site_name_too_long_for_email`) when it would push
+    an email over the limit. Text that cannot be turned into HTML (a stored text that
+    no longer parses) is a refusal or a broken template, never counted as 0 bytes.
+  - **No HTML defaults.** Shipping some would turn every install's mail multipart
+    on upgrade. The editor's **Start from a basic layout** button fills an empty
+    HTML field with a starter (the header opens a layout, the footer closes it, a
+    template gets its own text as paragraphs); nothing is saved until Save.
+  - **Saving.** `html` absent means unchanged (a tab opened before the upgrade
+    cannot wipe it); an explicit `""` removes the HTML part. The merge is decided
+    inside the save's transaction, under the row's lock, so two concurrent saves
+    cannot bring back HTML the other removed. The editor always
+    sends the key.
+  - **Preview.** The HTML renders in `<iframe sandbox="">` (no `allow-scripts`, no
+    `allow-same-origin`), written as `srcdoc` with a meta CSP first (after a leading
+    doctype, so the frame is not in quirks mode)
+    (`default-src 'none'; style-src 'unsafe-inline'; img-src data:`), so remote
+    images do not load there; the page says so and **Send test** shows the real
+    mail. It is never written into the app's page: a test forbids `innerHTML`-style
+    APIs in the page and pins the sandbox. Browser tests prove the sandbox on its
+    own (the frame's CSP meta is removed and the script still does not run; the
+    frame's origin is opaque; a control frame with scripts allowed does run), and
+    separately that under the backend's real CSP a `srcdoc` frame is not blocked
+    (`frame-src` from `default-src 'self'` does not block `about:srcdoc`).
+  - **Stale HTML** fails the mail like stale text: `ErrPermanent`, the same
+    message naming the template, the same broken-template notice and one-click
+    revert. A save, a live check and a test send validate the text and the HTML
+    together and report both.
+  - **Audit.** The full HTML is under `template_html` on every save and revert; the
+    Audit page shows a reverted template's removed text and its removed HTML.
+
+- **Webhooks** — configurable HTTP callbacks for ticket lifecycle events:
+  `ticket.created`, `ticket.assigned`, `ticket.status_changed`,
+  `ticket.replied` (a customer-visible reply only), `ticket.note_added` (a
+  staff-only note), `ticket.resolved`, `ticket.closed`, `ticket.reopened` (every reopen: a requester's reply, a status change out of Resolved or Closed, and `POST /reopen`) and
+  `ticket.linked`, `ticket.priority_changed` (a priority change),
+  `ticket.classified` (a category, type or item change), `ticket.unlinked` (a
+  link removed), `ticket.attachment_added` (a file uploaded), `sla.breached`
+  and `sla.at_risk` (the SLA sweep has just stamped a breach, or a target at
+  80%, and `sla_alerts_enabled` is on; a pass that does both on one ticket is
+  one `sla.breached` that also names the at-risk target; SLA Tracking → Breach
+  and at-risk notifications), and the two
+  **opt-in** events `ticket.followed` and `ticket.unfollowed`. A hook matches a
+  change when any of the change's kinds is in its list, and fires once. The raw
+  body keeps its shape. See Ticket Events: One Change, One Event.
+  **Opt-in events** ([#630](https://github.com/PubliciaLLC/go-help-desk/issues/630),
+  D40). `ticket.followed` and `ticket.unfollowed` are sent **only to a hook that
+  lists them by name**. A hook on "All events" (`*`), and a legacy hook with an
+  empty list, does not get them; a hook can list `*` and the follow events
+  together to get everything. Who follows a ticket, and who added them, is what
+  the follow audit keeps from staff by default (#695 lets one person add another),
+  and it would be public the moment a hook subscribed to "everything". The
+  payload carries the person's **id** (`user_id`), never their name, and no email
+  is sent. When one person adds or removes another, the event's actor
+  (`ActorID`) is the person who did it and `user_id` is the person added or
+  removed; for a person's own follow they are the same id. Removing a ticket's old assignee's follow when the
+  ticket is reassigned, or when that person is deleted, is an unfollow and is
+  announced as one, as one more kind of the reassignment's own event. A hook that opted into the unfollow is told the event's first name it subscribes to (usually `ticket.assigned`), and that raw body also carries `user_id`; a hook that did not opt in never sees the kind or the id.
+  **What the raw format carries** ([#448](https://github.com/PubliciaLLC/go-help-desk/issues/448)).
+  The raw body is **ids only**: the event name (`Type`), `TicketID`, `ActorID`
+  (null for a system event, and for a routed create under `ticket.assigned`), `OccurredAt` and a `Payload` holding only the ids
+  `new_status_id` (status changed) and `target_id` (linked), where the event
+  has them. Whether an event is a reply or a note is its name, so there is no
+  `internal` flag. The ids a name carries: `ticket.status_changed` has
+  `new_status_id`; `ticket.linked` has `target_id`; `ticket.unlinked` has
+  `target_id` and `link_type` (the same two tickets can be linked in more than
+  one way, so the id alone does not say which link went); `ticket.replied` and
+  `ticket.note_added` have `reply_id`; `ticket.attachment_added` has
+  `attachment_id`; `ticket.followed` and `ticket.unfollowed` have `user_id`;
+  `sla.breached` and `sla.at_risk` have `targets` (a list of `response` and/or
+  `resolution`, enums), `policy_id` and `record_id`, with `ActorID` null, and
+  `sla.breached` also has `at_risk_targets` (the same enums: targets that
+  reached 80% in the same pass and have not breached; omitted when none).
+  Every other event has no payload, except that a hook which lists
+  `ticket.unfollowed` also gets `user_id` on a delivery under whatever name it
+  is told (for example `ticket.assigned`) when the change dropped a follow; a
+  hook that does not list it never does. Opting in counts from when the hook
+  named the event: a change that happened before is never upgraded, so a retry
+  after the edit carries no `user_id`. No link type is sent on `ticket.linked`.
+  No address, subject, tracking number, priority, status name or reply text is
+  sent, and none is stored with it. The keys are an allow list, so a key added
+  to an event later stays off the wire until someone decides a receiver should
+  have it. A receiver that needs the ticket reads it through the REST API using
+  `TicketID`. **This changed from earlier 1.3 betas**, which also sent
+  `TrackingNumber`, `Subject`, `Priority`, `guest_email`, `ReplyBody` and
+  `reporter_email` in `Payload`. The Slack, Teams, Discord and JIRA formats are
+  not affected: they are built from the event as the server holds it, not from
+  the raw body, and keep their subject, tracking number, status and reply
+  text (never a note's text, and never an address), including for
+  `ticket.note_added`.
+  Administrators manage them under **Admin → Webhooks** (URL, payload format,
+  events, ticket filter, enabled — also when creating — edit, delete). A secret is write-only:
+  it signs deliveries and is never returned by the API or shown again, and
+  leaving the field empty on edit keeps the stored one. The list shows each
+  hook's most recent delivery: when it started, the HTTP status, and on failure
+  a class (`http_status`, `timeout`, `dns`, `tls`, `blocked_address`,
+  `connection`, `other`). No error text is stored, because a URL can carry a
+  token and a response body can carry anything; the details are in the server
+  log. The latest-started attempt wins, and changing a hook's URL clears its
+  result.
+  **Headers.** Every delivery carries `X-GHD-Delivery`, a UUID that is the same
+  on every retry of that delivery, and `X-GHD-Event`, the event name. Receivers
+  can see an event more than once (below), and de-duplicate on the first.
+  **History and Redeliver.** Each hook keeps its last 25 deliveries: the event
+  name, when the first and latest attempts started, the HTTP status, a result
+  (`ok` or a class), the number of attempts and whether another is pending.
+  No payload and no error text is shown or returned. The event is kept beside
+  each entry only so **Redeliver** can queue it again, as a new delivery with a
+  new `X-GHD-Delivery`. What is kept is ids only: the ids of a raw body plus
+  the link type of a `ticket.linked`. No address,
+  subject, tracking number or text. For a raw hook the replay is identical to
+  the original. For a Slack, Teams, Discord or JIRA hook the message is
+  **rebuilt from the ticket as it is now**: its current subject, tracking
+  number and status name, and, for a reply, the reply text only if that reply
+  still exists and is public (visibility is read at that moment; an internal or
+  deleted reply is never sent, and a note never has text). If the ticket is
+  gone the message is its headline only. So a replayed message can differ from
+  the original, and a status-change message names the status the ticket has
+  now. Redeliver is refused with
+  `409 webhook_disabled` for a disabled hook,
+  `409 webhook_paused` for a paused one (its API key is no longer active; it
+  needs re-approving, and enabling does not help),
+  `409 webhook_not_subscribed` when the hook no longer lists that event (for
+  `ticket.followed` and `ticket.unfollowed`, when it no longer lists it **by
+  name**: `*` does not cover them), and
+  `409 webhook_filter_excludes` when the hook's ticket filter, as it is now,
+  does not admit the ticket, and `409 webhook_filter_unverifiable` when the
+  hook has a filter and the ticket no longer exists, so the filter cannot be
+  checked (see the filter, below).
+  Changing a hook's URL clears its history, and deleting the hook deletes it.
+  (`GET /admin/webhooks/{id}/deliveries`,
+  `POST /admin/webhooks/{id}/deliveries/{delivery}/redeliver`.)
+- **Webhook ticket filter** ([#413](https://github.com/PubliciaLLC/go-help-desk/issues/413)).
+  A hook can carry one optional filter: sets of categories, priorities and
+  assignee groups. A ticket matches a set when its value is any entry, and
+  every non-empty set must match. `invert` sends for the tickets that do not
+  match, which is how one hook takes "critical Network tickets" and another
+  "everything else". No filter (the default, stored as `{}`) means every
+  ticket, as before. A filter changes when a hook fires, never what it sends:
+  the raw body is unchanged, and the classification travels on the event as
+  fields excluded from JSON, the same way `Subject` and `StatusName` do. The
+  filter is tested against the ticket's classification **as it was when the
+  event was raised**, not when the outbox delivers, so a ticket reclassified
+  in between is judged by its old values. Consequences worth knowing:
+  auto-assignment happens inside the create's transaction, so a creation
+  carries its group and a group condition matches a new ticket (the filter reads
+  the event's `Ticket` state; see Ticket Events: One Change, One Event). Category covers the category's types and items. Type
+  and item conditions (`type_ids`, `item_ids`, #631) combine with the categories by AND like the other
+  lists, and a ticket with no type or item never matches one. A filter that
+  could never match is refused with `400 contradictory_filter`: a type outside
+  the ticked categories, or an item outside the ticked types (or, with no types
+  ticked, outside the ticked categories). Unknown ids are `unknown_filter_type`
+  and `unknown_filter_item`, and each list holds at most 200. The two keys are
+  left out of the JSON while empty. The admin list shows how many types and
+  items a hook names, not their names. A filter naming a deleted group or category
+  matches no ticket (inverted: every ticket). If a classification is not known
+  (an event or a queued row made before this existed), the hook is sent to and
+  a warning is logged: an extra message beats a missed one. A filtered-out
+  event is not a delivery: it gets no per-hook outbox row, so no delivery id,
+  no retry, no history entry and no result on the hook.
+
+  **The hook's filter is read as it is now, at every step, not once.** It is
+  tested when the event is fanned out to the hooks (above), again at **every
+  attempt** of a queued delivery, retries included, and again at **Redeliver**.
+  An administrator who tightens a filter therefore stops the deliveries
+  already queued that it no longer admits: at their next attempt such a row
+  is dropped and settled, with no send, no history entry and no failure, the
+  same as a hook that was disabled, unsubscribed from the event or given a new
+  URL. Widening a filter lets them go out. What is tested on a retry is the
+  classification the row took when the event was raised: each per-hook row
+  keeps it as internal data (ids and a priority, no text), which no body is
+  built from. The raw body is still ids only, the chat and ITSM messages never
+  show it, and neither the history copy nor the scrubbed row kept for 30 days
+  after a final failure holds it. A row with no classification (queued before
+  #413) is sent whatever the filter says, and a warning is logged.
+  **Redeliver** has no stored classification to test (the kept copy has none,
+  by design), so it reads it from the ticket as it is now, the way a chat
+  message's content is rebuilt. If the filter does not admit that ticket it is
+  refused with `409 webhook_filter_excludes` and nothing is queued. If the hook
+  has a filter and the ticket cannot be read (deleted, or no source wired) the
+  filter cannot be checked, and it is refused with
+  `409 webhook_filter_unverifiable` and nothing is queued ([#499](https://github.com/PubliciaLLC/go-help-desk/issues/499)):
+  Redeliver is something an administrator asked for just now, so it is told
+  why rather than a message being sent that the filter might have stopped. An
+  inverted filter is a filter; a hook with no conditions is not, and is
+  replayed whether or not the ticket exists. A raw hook with no filter reads no
+  ticket. Only a queued row with no stored classification (queued before
+  #413, sent by the worker with nobody to tell) still fails open, with a
+  warning logged. The replay's row carries
+  the ticket's classification, so it is tested again at its own send. Refusal
+  codes are in the API reference. (An earlier version of this section had the
+  filter evaluated once, at the fan-out; that rule was reversed on #290.)
+- **Delivery is queued, not done on the request**
+  ([#164](https://github.com/PubliciaLLC/go-help-desk/issues/164)). A request
+  that triggers a notification writes it to `notification_outbox`, one row per
+  channel that can carry the event (`email`, `webhook`, and `verification`
+  for signup and password-reset mail, below), and returns. For a change to a ticket the rows are
+  written in the change's own transaction (Ticket Events: One Change, One
+  Event). A worker in every server process
+  claims due rows (`FOR UPDATE SKIP LOCKED`, so replicas never share one, with
+  a ten-minute lease that returns a row whose worker died; a claim takes at
+  most as many rows as can each run to their full time inside the
+  lease — a minute for the database work, plus the 40 seconds the email
+  channel's own SMTP limits allow — so rows are not reclaimed while still
+  waiting their turn), sends, and deletes
+  on success. A failed send is retried after 30 seconds, doubling to at most an
+  hour, eight attempts in all; then the row is marked failed, logged, and
+  deleted after thirty days. One row per channel means a failing channel is
+  retried alone and the others are not sent twice; a channel that cannot carry an
+  event type (webhooks never receive `guest.link_resent`) gets no row. A send
+  that panics fails its row. A failed send's error is kept in `last_error` and
+  the log with email addresses replaced by `[address]` (#350): a mail server's
+  rejection usually names the recipient, and the SMTP status code is what an
+  operator needs. The match is loose on purpose, so anything shaped like an
+  address is hidden, including one with an apostrophe or an IP literal the
+  relay never closed (#389). The reply is the relay's text, so the pattern is
+  bounded to stay linear in its length (#358). It still costs about 0.4 s of
+  worker CPU per megabyte of reply for the worst shapes on an Apple M4, and
+  about three times that on a slower server, per attempt; that is accepted
+  (#389). Delivery is at least once: a
+  worker that dies between sending and settling sends again after the lease.
+  **Webhooks are retried per hook** ([#448](https://github.com/PubliciaLLC/go-help-desk/issues/448)).
+  The `webhook` row an event queues is a fan-out: the worker turns it into one
+  row per subscribed hook and settles it. The row ids derive from the fan-out
+  row, so a repeat after a crash reuses the same delivery ids: a row still
+  waiting is not queued twice, and one already sent and deleted is queued again
+  with the same `X-GHD-Delivery`, which a receiver can drop. A row holds no
+  address; a raw hook's holds ids only, and a chat hook's keeps the text its
+  message is built from until it is sent. When a chat hook's delivery finally
+  fails (the eighth attempt) the worker keeps the failed row for the usual
+  thirty days, but its event is first rewritten to ids only, so no subject or
+  text lingers; a delivery that fails for good on the first try is deleted like
+  any settled row. It holds a SHA-256 of the hook's URL,
+  never the URL, which can carry a token. Each per-hook row
+  is then delivered and retried on its own, on the schedule above: 30 seconds
+  doubling to an hour, eight attempts in all, so a failing hook never causes
+  another to be sent twice. The row's id is the `X-GHD-Delivery`. Connection
+  errors, DNS and TLS failures, timeouts, 5xx and 429 are retried; a
+  `Retry-After` from the receiver (seconds or a date) postpones the next attempt
+  when it is longer than the schedule, to at most an hour. A refused address
+  (`blocked_address`), any other status and a request that cannot be built are
+  final: asking again gets the same answer. A hook disabled or deleted between
+  queueing and sending is skipped, not failed, and so is one that no longer
+  lists the event or whose URL no longer matches the stored hash (a queued
+  retry for the old address is dropped rather than sent to the new one). This
+  is checked on every attempt, so it also stops retries already waiting. The
+  secret is read at send time, so a rotated secret signs the retry. A retry
+  dropped for any of these reasons (hook disabled, no longer subscribed, URL
+  changed, ticket filter no longer admits the ticket, hook paused because its
+  API key, or that key's owner, is no longer active, body cannot be built)
+  turns its History entry from "retrying" into **dropped**, with the reason
+  (`result: dropped`, `drop_reason`: `disabled`, `unsubscribed`, `url_changed`,
+  `filter`, `paused`, `unbuildable`; migration `000051`, #499). Only an entry that is
+  retrying changes, and a drop is not an attempt. A deleted hook takes its
+  history with it, so there is nothing to mark. Changing a hook's URL also
+  clears its whole history (`UpdateWebhook`), so `url_changed` is seen only on
+  an attempt that was in flight and recorded after the clear; in practice the
+  admin sees an empty history, not a "Dropped" row, after a URL change. A refused address
+  (`blocked_address`) is not a drop: it is a final result of its own attempt.
+  Each attempt updates the hook's
+  latest result and its history (above), not the outbox row, whose `last_error`
+  holds only a class and a status. Delivery is at least once, so a receiver can
+  see the same event twice.
+- **Email is on only with both `SMTP_HOST` and `SMTP_FROM`**
+  ([#456](https://github.com/PubliciaLLC/go-help-desk/issues/456)). The server
+  says which at startup: `email enabled`, `email disabled: SMTP_HOST and
+  SMTP_FROM are not set`, or a warning when exactly one of the two is set.
+- **SMTP encryption** ([#455](https://github.com/PubliciaLLC/go-help-desk/issues/455)).
+  There is no `SMTP_TLS` setting; the port and the credentials decide.
+  - Port **465** uses TLS from the first byte (implicit TLS). Any other port
+    connects in the clear and upgrades with STARTTLS when the server offers it.
+  - **A password is never sent unencrypted**, to any address, private or not.
+    With `SMTP_PASSWORD` set, TLS is required: implicit on 465, STARTTLS
+    elsewhere, and if the server does not offer STARTTLS the send fails with
+    `SMTP server does not offer STARTTLS, and SMTP_PASSWORD is set: refusing
+    to send the password unencrypted`. Someone on the path stripping STARTTLS
+    from the greeting therefore costs a failed send, not the password. A user
+    name with no password is treated the same way, because AUTH PLAIN would send
+    the name in the clear: the send fails with `SMTP server does not offer
+    STARTTLS, and SMTP_USER is set: refusing to send credentials unencrypted`.
+  - **With no password, plain SMTP is allowed only to a private address**:
+    loopback, RFC 1918 (10/8, 172.16/12, 192.168/16) or IPv6 ULA (fc00::/7).
+    STARTTLS is still used whenever it is offered. A public address with no
+    password also requires TLS (`SMTP server does not offer STARTTLS and is not
+    on a private address: refusing to send mail unencrypted`). Link-local and
+    carrier-grade NAT ranges are not private for this rule. The check runs on
+    the address the connection actually reached, not on the configured name.
+  - **When `SMTP_USER` is set and the server offers no `AUTH`** (checked after
+    STARTTLS, since AUTH is often advertised only then), the send fails with
+    `SMTP server does not offer AUTH but SMTP_USER is set` instead of sending
+    anonymously.
+  - The certificate is always verified against the system roots. A user name
+    with no password is not treated as a secret: only `SMTP_PASSWORD` triggers
+    the requirement.
+- **Email that cannot be sent is not silent.**
+  - A template that fails to render is a *permanent* error. The worker marks
+    the row failed at once, with no retries (a retry renders the same way), and
+    keeps the error. It used to return success, so the row was deleted and the
+    mail vanished.
+  - `GET /admin/security-warnings` carries an `email` object: whether email is
+    enabled and which of `SMTP_HOST` and `SMTP_FROM` is missing; whether signup
+    or guest submission is on with email off; and whether email rows are
+    failing (retrying after an error, or failed within the last day) with the
+    newest address-redacted error. This is where an AUTH or STARTTLS failure
+    shows.
+  - **Turning signup or guest submission on while email is off is refused**
+    (`400 email_required`), because both send an email the person needs. Only
+    a change from off to on is refused, judged against the stored value, so
+    saving the settings page with one already on is not. An install that
+    already has either on with email off is warned, not switched off.
+- **Signup verification email goes through the outbox too**
+  ([#348](https://github.com/PubliciaLLC/go-help-desk/issues/348)), on its own
+  `verification` channel. Signup answers the same 202 whether or not the
+  address already has an account, and does the same work for both: it
+  writes the pending registration and queues one row naming only that
+  registration's id. The send re-reads the row and mails the stored
+  address and token, or nothing if the row is gone or expired or the address
+  has an account. Before this a new address dialled the mail server on the
+  request and a taken one returned at once, so the timing said who had an
+  account. A taken address now gets a pending row that is never mailed, and
+  it expires unused. The send-time timing that remains is recorded under
+  Guest Submission (#361).
+- **The display name and password are chosen at verification, not at
+  signup** ([#360](https://github.com/PubliciaLLC/go-help-desk/issues/360),
+  [#374](https://github.com/PubliciaLLC/go-help-desk/issues/374)). The
+  signup form takes only the address. The link in the verification email
+  opens a page that asks for the display name and the password, neither
+  pre-filled, and `POST /auth/verify-email` takes the token, `display_name`
+  and `password` together. A blank name or a password below the usual
+  minimum is refused without using up the link. When signup carried them, a
+  second signup for the same address replaced them, so anyone who knew an
+  address could sign up after its owner and have the owner, following the
+  newest link, create an account with the other person's password, and
+  later with their name. A second signup can now only re-issue the link.
+  This holds because only the inbox's owner reaches the page (the email is
+  never sent for an address that already has an account), and signup still
+  does the same work for a new and a taken address (#348).
+  `pending_registrations.password_hash` and `display_name` are no longer
+  written and are dropped in a later migration.
+  The page first looks the link up (`GET /auth/verify-email?token=`, which
+  answers the address and nothing else, and refuses a dead link the same way
+  the POST does), so it shows which address the account is for, gives a
+  password manager the address, and says a dead link is dead before
+  anything is typed
+  ([#370](https://github.com/PubliciaLLC/go-help-desk/issues/370)). When MFA
+  is required for requesters, the verified session owes enrolment like a
+  password login does, and the page goes to the same enrolment form before
+  the dashboard ([#369](https://github.com/PubliciaLLC/go-help-desk/issues/369)).
+- **Chat/ITSM payload formats (Slack, Teams, Discord, JIRA)** — shipped in v1.
+  Not a plugin, and not a separate integration surface: a webhook
+  subscription has a `payload_format` setting (`raw`, the default,
+  `slack`, `teams`, `discord`, `jira`) that reshapes the same lifecycle event
+  into the body that service expects (Slack/Discord: a message body such as
+  `text`/`content` plus blocks or an embed; Teams: an Adaptive Card; JIRA: a
+  comment/webhook-automation-compatible body) before it is POSTed to the
+  operator's configured URL — a Slack incoming webhook, a Teams connector URL,
+  a Discord webhook URL, or a JIRA automation webhook endpoint. This reuses the
+  existing webhook admin surface, its SSRF address-checking, and its
+  administrator-only registration; it adds a format field and a set of
+  renderers, not a new credential type, a new event source, or new
+  infrastructure. Detailed field-by-field mapping per service is tracked in
+  [#187](https://github.com/PubliciaLLC/go-help-desk/issues/187) rather than
+  duplicated here.
+- Anything beyond reshaping this payload — a plugin polling Slack for replies,
+  a two-way JIRA sync, a Discord bot — is genuinely plugin territory and stays
+  on the v2 plugin timeline above.
 
 ---
 
-## Custom Fields (v2)
+## Ticket Events: One Change, One Event
+
+Built in [#506](https://github.com/PubliciaLLC/go-help-desk/issues/506) (merged
+as #510, 1.3.0). A change to a ticket is **one event for that ticket**, written
+to the notification outbox in the same database transaction as the change.
+Every reader of that event (webhooks, requester email, staff email) decides
+from it what it is told. Code paths below are relative to `backend/` and were
+checked against the code at `cbe98585`. Where this text and the code ever
+disagree, the code wins and this text is wrong.
+
+**The goal, in Erik's words (2026-10-14):** "a single event carrying the
+entire change needs to fire off, be put on the event bus for the web hooks to
+receive and process, and every Web hook that meets a criteria for that change
+event on the work order needs to fire its payload."
+
+### How it works
+
+#### The bus
+
+The bus is the `notification_outbox` table, the `notification.Dispatcher`
+interface and the outbox worker. There is no external message broker.
+
+**The outbox row is written inside the change's transaction.** An early
+version of the #506 issue text said so, but at that time the code wrote the
+rows after the commit, so a crash in between lost the notification. That gap
+is closed. `txrunner.Runner.InTx` (`internal/database/txrunner/txrunner.go`)
+hands the function a collector (`*notification.Changes`) as its third
+argument. Just before the commit, it writes one outbox row per channel for each
+event the function raised (`EnqueueNotification`, on the transaction's own
+connection). A rolled-back change leaves no row. A committed change cannot
+lose its announcement. After the commit it wakes the worker.
+
+What happens to a change, step by step:
+
+1. **The producer** (a ticket service method) does its writes inside
+   `ticket.Atomic.InTx` and *raises* what it did into the collector. The
+   collector merges everything raised for one ticket into one
+   `notification.Event` (`internal/domain/notification/changes.go`).
+2. **The transaction writes the rows.** For each merged event, one row per
+   channel that can carry it: `email` (when there is a requester recipient,
+   a guest link, a staff user, or the change may mean staff mail), `webhook`
+   (when any of its kinds is a webhook event name) and `verification` (signup
+   verification mail and password-reset mail, never any other event)
+   (`notification.Carries`, `channels.go`). The channel list is
+   `email`, `webhook`, `verification` (`cmd/server/outbox_wiring.go`).
+   When Postgres aborts the transaction for a deadlock (`40P01`) or a
+   serialization failure (`40001`), `InTx` runs the function again with a new
+   collector, so the rolled-back attempt's events are discarded with its
+   writes. Three attempts in all, with a 10-50 ms pause between them, and
+   none after the request's context ends (`internal/database/dbretry`, #508).
+   The same rule covers `outboxstore.Split` and the user store's guarded
+   writes. A function given to `InTx` must start from a clean slate on every
+   run: nothing it captured may carry over from an attempt that was rolled
+   back. **Not covered, on purpose:** the `unlock` command, which is run by
+   hand and shows its error to the person running it, and a single
+   autocommit statement, which is not wrapped and returns the error if it is
+   aborted (the three guarded last-administrator statements are the one
+   exception, because the deadlock was measured there).
+3. **The worker** runs in every server process. Each turn it claims rows that
+   are due (`FOR UPDATE SKIP LOCKED`, ten-minute lease) and hands each to the
+   sender registered for the row's channel (`internal/server/notify/outbox.go`).
+4. **The senders.** The `email` channel is `ChangeSplitter`, wrapped around
+   `StaffMailDispatcher`, wrapped around `GuestLinkDispatcher`, wrapped around
+   `EmailDispatcher` (`cmd/server/main.go`). `webhook` is `WebhookDispatcher`.
+   `verification` is `VerificationDispatcher`.
+   - `ChangeSplitter` (`notify/split.go`) works out who is mailed and turns the
+     change's one email row into one row for the requester's mail and one row
+     for each staff member (see Staff email). Rows that carry no `Kinds` are
+     sent as they are.
+   - `WebhookDispatcher` (`notify/webhook.go`) turns the change's webhook row
+     into one row for each hook that matches (the per-hook rows of #448). A row
+     that names a hook is one delivery.
+   - `StaffMailDispatcher` reads the staff member's address and runs
+     `StillEntitled` at send time. `GuestLinkDispatcher` issues the guest token
+     at send time.
+5. **Settling.** A successful send deletes the row. A failure is retried after
+   30 seconds, doubling to at most an hour, eight attempts in all. A permanent
+   error, or the eighth failure, marks the row failed. Failed rows are kept for
+   30 days.
+
+**How does a reader know it has not already handled a row?** The readers do not
+look. Nothing polls the table except the worker. Each row names one channel,
+and the worker calls that channel's sender with that row. A row is handled when
+it is deleted, and deletion happens only after a successful send. Two workers
+never hold the same row: the claim skips locked rows and sets a lease. If a
+worker dies after sending but before deleting, the lease runs out and the row is
+sent again. Delivery is therefore "at least once". For webhooks,
+`X-GHD-Delivery` is the same on every retry, so the receiver can drop a
+duplicate. For email there is no such id, and a duplicate mail is accepted.
+
+**Not every event goes through the transaction.** Two events are not changes to
+a ticket and have no transaction to join: `guest.link_resent` (a guest asking
+for a new link) and `registration.verify` (signup mail). They are still
+dispatched after their own write through `notify.OutboxDispatcher`, on a
+context that cannot be cancelled. Neither is a webhook event.
+
+**Plugins.** Nothing reads the bus as a plugin. A plugin reader would be one
+more channel name in `outboxChannels` and one more sender in the worker's map;
+no plugin API is built.
+
+#### Producers: what each door raises
+
+All in `internal/domain/ticket/service.go` unless named otherwise. Every row
+raises into the transaction's collector; none dispatches after the commit.
+"Status kinds" is defined under *The event* below.
+
+| Producer (who calls it) | Kinds it raises | What the event carries |
+| --- | --- | --- |
+| `create` (REST and guest `POST` ticket, MCP `create_ticket`, `CreateFollowUp`, `CreateRequesterFollowUp`) | `ticket.created`; plus `ticket.assigned` when routing picked someone (REST create, REST follow-up and guest follow-up only; guest create, MCP `create_ticket` and MCP `create_follow_up` pass no candidates) | Recipient = guest address and the guest-link flag for a guest. For routing, the `RoutedAssignment` flag (below). |
+| same, follow-up only | `ticket.linked` **on the original ticket** (its own event: one per ticket) | `target_id` = the new ticket, `link_type` = `parent_child` |
+| `UpdateStatus` (MCP `update_ticket_status`; REST `PATCH status_id` runs the same in-transaction step inside `Update`) | the status kinds | `new_status_id`; recipient = guest (none when closing); guest-link flag unless closing |
+| `Assign` (MCP `assign_ticket`; REST `PATCH` assignee or `clear_assignee` runs the same step inside `Update`) | `ticket.assigned`, only when the assignee user or group moved. A clear of an assigned ticket is a change; a clear of an unassigned one, or assigning the person and group already held, raises nothing (ruling 16). The audit entry is still written, as for a same-status move. | |
+| `ChangePriority` (no production caller: REST `PATCH priority` runs its step inside `Update`) | `ticket.priority_changed`, only when the priority moved | |
+| `UpdateCTI` (no production caller: REST `PATCH category_id` runs its step inside `Update`) | `ticket.classified`, only when category, type or item changed. Now in a transaction, and writes a `classified` audit entry in it (1.3.0). | |
+| `Update` (REST `PATCH /tickets/{id}`, `handler_tickets.go`; it calls the in-transaction step functions of the four rows above) | whatever its steps raise, merged | see *One transaction* |
+| `addReply` (REST reply, MCP `add_reply`, guest reply) | `ticket.replied`, or `ticket.note_added` for an internal note. A requester's reply that reopens a Resolved ticket adds the status kinds (`status_changed`, `reopened`) and, on the ticket's first reopen, `priority_changed` if the priority moved (a critical ticket cannot be raised). | `reply_id`, `internal`, `ReplyBody` (public only); recipient = reporter when "notify customer" is on; `FromRequester` true for the requester's public reply **including one that reopens** |
+| `Resolve` (REST resolve) | the status kinds into Resolved (`status_changed`, `resolved`). On an already-Resolved ticket with new notes: `ticket.resolved` only. | `new_status_id`; recipient = guest; guest-link flag |
+| `ResolveAsDuplicate` (REST link with `duplicate_of` and resolve) | `ticket.linked` (only when it made the link) merged with the resolve above | `target_id`, `link_type`, then as `Resolve` |
+| `close` (REST close, auto-close scheduler as the system) | the status kinds into Closed (`status_changed`, `closed`) | no recipient |
+| `Reopen` (REST `POST /reopen`) | the status kinds (`status_changed`, `reopened`), plus `priority_changed` on the first reopen, if the priority moved | recipient = guest; guest-link flag |
+| `AddLink` (REST link) | `ticket.linked` on the source ticket | `target_id`, `link_type` |
+| `RemoveLink` (REST `DELETE` link; staff and admin) | `ticket.unlinked` on the source ticket, only when a link was removed. In a transaction that locks both tickets in `AddLink`'s order (the #210 deadlock). Writes **no audit entry**, as `AddLink` writes none. | `target_id`, `link_type`. No mail. The actor is the caller, or nobody for a credential with no person behind it. |
+| `CreateAttachment`, `CreateGuestAttachment` (REST and guest upload) | `ticket.attachment_added`, in the transaction that writes the row, so a refused or failed upload announces nothing | `attachment_id`. **No mail** (D39): a file usually comes with a reply, which already mails. An upload plus a reply is two deliveries. |
+| `Follow`, `Unfollow` (REST `PUT` and `DELETE /follow`); `AddFollower`, `RemoveFollower` (REST `PUT` and `DELETE /followers/{userId}`, #695) | `ticket.followed` or `ticket.unfollowed`, only when it changed something, in the transaction that writes the follower row and its audit entry. **Opt-in by name.** The actor is whoever acted. | `user_id` (the person followed or unfollowed, not their name). No mail. |
+| `UnassignForUser` (an administrator deletes a user) | `ticket.assigned` per open ticket the user held, the assignee cleared, with the deleting administrator as the actor; plus `ticket.unfollowed` when the user followed it (the follow goes with the assignment). **Staff mail is suppressed.** | `user_id` only when an unfollow rides along. `Changes` has `assignee_user_id`. |
+| `DeleteGroup` (an administrator deletes a group) | `ticket.assigned` per ticket the group held, open or not, the group cleared, with the deleting administrator as the actor. **Staff mail is suppressed.** | `Changes` has `assignee_group_id`. |
+| `sla.Service.SweepBreaches` (the SLA sweep, every minute; `domain/sla`) | At most one per ticket per pass, in one transaction through `ticket.Atomic` that stamps every crossing the pass found on that ticket, so the stamps and the event commit together: `sla.breached` when a fresh breach was newly stamped (naming any fresh at-risk of the other target too), else `sla.at_risk` when a fresh at-risk was, else nothing. Only while `sla_alerts_enabled` is on. Never merged with a ticket kind. | `targets`, `policy_id`, `record_id`, and on `sla.breached` `at_risk_targets` when any; no actor; `Ticket` read in the transaction; the typed `SLA` field for mail. Staff mail under the SLA alerts switch (SLA Tracking → Breach and at-risk notifications) |
+| `RequestGuestLink` (guest "resend my link") | `guest.link_resent` through `OutboxDispatcher` | what the guest typed; no ticket id |
+| `registration.Service.Signup` | `registration.verify` through `OutboxDispatcher` | `pending_id` only |
+
+The bulk unassignments announce to webhooks and **mail no staff** (D41). The
+event carries a `SuppressStaffMail` flag (`notification.Event`, kept in the
+outbox row). `MailsStaff` is false for it, so no `email` row is queued, and the
+staff fan-out also refuses it if a row exists anyway. Without that, a group
+delete would mail each member and follower "assigned" once per ticket in a
+burst. A deleted user's group, and the tickets' followers, hear nothing. The
+`staff.*` events are not produced by domain code at all: the worker makes them
+(Staff email).
+
+Still announcing nothing: `DeleteAttachment`, which has no route and no
+production caller, so there is no removal to announce.
+
+#### Consumers
+
+| Consumer | Reads | Decides by |
+| --- | --- | --- |
+| Requester email (`EmailDispatcher`, `notify/email.go`) | the requester's `email` row, made by `ChangeSplitter` | `Type` → template: created, reopened, resolved, replied, status_changed, guest_link. Needs a `Recipient` or a guest link. Status, resolve and reopen mail go to guests only. |
+| Staff email (`ChangeSplitter`, then `StaffMailDispatcher` + `StillEntitled` at send) | the change's `email` row, then the `staff.*` rows | `Kinds` → candidates (assigned, requester replied, reopened, and the reply rule under the SLA alerts switch for `sla.breached` and `sla.at_risk`); none at all for a change flagged `SuppressStaffMail`. Then switches, overrides, actor skip, one mail per person. At send: account still mailable, still holds, still in group, or still follows and can see the ticket. |
+| Guest link (`GuestLinkDispatcher`) | `email` row with the guest-link flag | issues and rotates the token at send time |
+| Verification (`VerificationDispatcher`) | `verification` row | `Type`: `registration.verify` is sent by `pending_id` (the address and token are read from the pending row); `password.reset_requested` carries the typed address as its recipient and no `pending_id`, and is handed to the password-reset send step, which looks the account up and makes the token at send time (#451) |
+| Webhooks (`WebhookDispatcher`) | `webhook` row | `subscribedKinds(hook, event)`: any kind of the change in the hook's list, or `*`, or an empty list, except that `ticket.followed` and `ticket.unfollowed` match only a hook that lists them by name. Then the ticket filter on `Ticket`. Again at every retry and at Redeliver. |
+| Chat and ITSM formats (`notify/format*.go`) | the per-hook row | headline chosen by `Type`; "Also" line, reply text and status name chosen by the kinds the hook subscribes to |
+| Plugin registry | nothing | never called |
+
+#### What subscribers are promised
+
+The **raw body** is ids only: `Type`, `TicketID`, `ActorID`, `OccurredAt`, and
+a `Payload` holding only the ids that belong to the name the body is sent
+under: `new_status_id` for `ticket.status_changed`, `target_id` for
+`ticket.linked`, `target_id` and `link_type` for `ticket.unlinked`, `reply_id`
+for `ticket.replied` and `ticket.note_added`, `attachment_id` for
+`ticket.attachment_added`, `user_id` for `ticket.followed` and
+`ticket.unfollowed`, `targets`, `at_risk_targets`, `policy_id` and `record_id`
+for `sla.breached`, `targets`, `policy_id` and `record_id` for `sla.at_risk`
+(ids and enums only), nothing for any other name (`rawKeysFor`,
+`notify/webhook_body.go`) with one exception: a hook that opted into
+`ticket.unfollowed` also gets `user_id` on a delivery under whatever name it is
+told (for example `ticket.assigned`) when the change dropped a follow, and a
+hook that did not opt in never does. Opting in counts from when the hook named
+the event: a change that happened before is never upgraded, so a retry after
+the edit carries no `user_id`. The history copy (every format) and a raw hook's
+queued row never hold that `user_id` for a hook that did not list the event. A
+Slack, Teams, Discord or JIRA hook's queued row holds the whole payload until it
+is sent or finally fails and is scrubbed. Headers: `X-GHD-Delivery` and `X-GHD-Event` (the same
+name as `Type`), plus the signature. `*` does not include `ticket.followed` and
+`ticket.unfollowed`: a hook gets those only by listing them. The OpenAPI
+`WebhookEvent` enum lists `*` and the seventeen names (`sla.breached` and
+`sla.at_risk` are the two added by #670, and `*` includes them). The raw body already changed during the 1.3 betas
+(#448), and `docs/upgrade-notes-1.3.0.md` describes both changes to
+1.2.x users.
+
+#### One action, what a `*` hook receives
+
+| One user action | Events | Deliveries to a `*` hook |
+| --- | --- | --- |
+| Staff create (REST), auto-assigned | one event: `created`, `assigned` | 1 |
+| Follow-up, auto-assigned | new ticket: `created`, `assigned`; original: `linked` | 2, over two tickets |
+| `PATCH` status + assignee + priority | one event: the status kinds, `assigned`, `priority_changed` | 1 |
+| `PATCH` out of Resolved/Closed | one event: `reopened`, `status_changed` (+ `priority_changed` on the first reopen, if the priority moved) | 1 |
+| Requester reply that reopens | one event: `reopened`, `status_changed`, `replied` (+ `priority_changed` on the first reopen, if the priority moved) | 1 |
+| `POST /reopen` | one event: `reopened`, `status_changed` (+ `priority_changed` on the first reopen, if the priority moved) | 1 |
+| Resolve as duplicate | one event: `resolved`, `status_changed`, `linked` | 1 |
+| `PATCH` status to Resolved | `resolved`, `status_changed` | 1 |
+| Resolve button | `resolved`, `status_changed` | 1 |
+| Close (button, scheduler, or `PATCH` to Closed) | `closed`, `status_changed` | 1 |
+| `PATCH` or assign that repeats the current assignee and group, or clears an unassigned ticket | nothing (the audit entry is still written) | 0 |
+| `PATCH` that repeats the ticket's current status | nothing about status (see *Same status*) | 0, or 1 for the other kinds in the request |
+| Resolve button on an already-Resolved ticket, new notes | `resolved` only | 1 |
+| `PATCH` priority only | `priority_changed` | 1 |
+| `PATCH` category only | `classified` | 1 |
+| Remove a link | `unlinked` | 1 |
+| Upload an attachment | `attachment_added` | 1 (and a reply sent with it is a second delivery) |
+| Follow or unfollow | `followed` or `unfollowed` | 0: only a hook that lists it by name |
+| Reassign a ticket away from a follower | `assigned` + `unfollowed` | 1 (a `*` hook is told `assigned`; the unfollow is for hooks that list it) |
+| Delete a user, or a group (per ticket held) | `assigned` (cleared) | 1 per ticket, **no staff mail** |
+| (no user action) The SLA sweep newly stamps a fresh breach of one or both targets, with or without a fresh at-risk of the other | `sla.breached` (with `at_risk_targets` when the other target went at risk) | 1 per ticket per pass; 0 while `sla_alerts_enabled` is off or every crossing is stale |
+| (no user action) The SLA sweep newly stamps a fresh at-risk of one or both targets and no fresh breach | `sla.at_risk` | 1 per ticket per pass; 0 while `sla_alerts_enabled` is off or the crossing is stale |
+
+The same status change has the same names whichever button made it. A hook
+subscribed to `ticket.resolved` sees a resolve done with `PATCH`, and a hook
+subscribed to `ticket.status_changed` sees a resolve done with the button and
+every close.
+
+### The event
+
+#### 1. One event per ticket per committed transaction
+
+One transaction that changes a ticket produces **one event for that ticket**.
+The event lists everything that changed and the ticket's state after the
+commit. A transaction that changes two tickets produces one event for each (a
+follow-up: the new ticket is created, and the original is linked). "On the work
+order" in Erik's sentence is the ticket, so a hook fires at most once per ticket
+per change.
+
+`notification.Event` (`internal/domain/notification/notification.go`) keeps its
+older fields and has three more, none of which is sent in a raw body:
+
+- **`Kinds`**: what happened, as the event names, in a fixed order (below).
+  Consumers match on this.
+- **`Changes`**: field by field, from and to. The fields raised are
+  `status_id`, `assignee_user_id`, `assignee_group_id`, `priority`,
+  `category_id`, `type_id` and `item_id`. Ids and enums only, never text.
+- **`Ticket`** (`TicketState`): the ticket as committed: those same seven
+  fields plus `reopen_count`. It replaces the old `Attrs`, `AssigneeUserID`
+  and `AssigneeGroupID`, which were each a part of it. The webhook filter and
+  staff mail read it.
+
+`Type` stays on the event and is set to the first entry of `Kinds`. The fixed
+order (`notification.KindOrder`) is the order of importance:
+`ticket.created`, `ticket.reopened`, `ticket.resolved`, `ticket.closed`,
+`ticket.status_changed`, `ticket.assigned`, `ticket.priority_changed`,
+`ticket.classified`, `ticket.replied`, `ticket.note_added`, `ticket.linked`,
+`ticket.unlinked`, `ticket.attachment_added`, `ticket.followed`,
+`ticket.unfollowed`, `sla.breached`, `sla.at_risk`. Two kinds are new: `ticket.priority_changed` and
+`ticket.classified` (category, type or item). Both can be subscribed to. Four
+more came with #630: `ticket.unlinked`, `ticket.attachment_added`,
+`ticket.followed` and `ticket.unfollowed`, the last two opt-in by name. Two
+more came with #670: `sla.breached` and `sla.at_risk`, last because the sweep
+raises them in a transaction of its own, so neither ever shares an event with
+a ticket kind. The two never share an event with each other either: the sweep
+raises exactly one of them per ticket per transaction, and an at-risk crossing
+in the same pass as a breach rides on the `sla.breached` event as
+`at_risk_targets`, not as a second kind.
+
+**Status kinds are the same for every door** (`statusKinds`,
+`internal/domain/ticket/events.go`). Every status move carries
+`ticket.status_changed`. A move into Resolved also carries `ticket.resolved`. A
+move into Closed also carries `ticket.closed`. A move out of Resolved or Closed
+into an open status also carries `ticket.reopened`. This is the same for the
+buttons, `PATCH`, MCP, a requester's reply and the scheduler.
+
+**Same status.** A move to the status the ticket already has is not a move: it
+carries no status kind and no `status_id` change (Erik's ruling 13, below).
+Resolving an already-Resolved ticket with the Resolve button and new notes is
+the one exception, because that is a resolution; it carries `ticket.resolved`
+only (`resolveInTx`). Any other door repeating Resolved announces nothing about
+status, so a `PATCH` that repeats Resolved and assigns someone sends
+`ticket.assigned` only, and the guest is not mailed or given a new link. An
+event that ends up with no kinds at all is ignored by the collector and writes
+no row.
+
+Example: an agent `PATCH`es a Resolved ticket back to In Progress and assigns it
+to Bob, and this is the ticket's first reopen. The event, as the server holds
+it:
+
+```json
+{
+  "Type": "ticket.reopened",
+  "TicketID": "7d0c…",
+  "ActorID": "a11c…",
+  "OccurredAt": "2026-10-14T15:02:11Z",
+  "Kinds": ["ticket.reopened", "ticket.status_changed",
+            "ticket.assigned", "ticket.priority_changed"],
+  "Changes": [
+    {"field": "status_id",        "from": "<resolved>", "to": "<in progress>"},
+    {"field": "priority",         "from": "medium",     "to": "high"},
+    {"field": "assignee_user_id", "from": "<alice>",    "to": "<bob>"}
+  ],
+  "Ticket": {
+    "status_id": "<in progress>", "priority": "high",
+    "assignee_user_id": "<bob>", "assignee_group_id": "<network>",
+    "category_id": "<hardware>", "type_id": null, "item_id": null,
+    "reopen_count": 1
+  },
+  "Payload": {"new_status_id": "<in progress>"}
+}
+```
+
+(Shown as the server holds it; `Payload` holds the keys of every kind and is cut
+down for the wire, below. Inside the server the other fields are also kept:
+recipient, guest-link flag, tracking number, subject and status name. They are
+never sent to a raw webhook.)
+
+**How the collector merges** (`Changes.Raise`): kinds are a set, kept in the
+fixed order; changes are keyed by field, with the first "from" and the last
+"to"; `Ticket` is the last one raised, so the final raise must describe the
+ticket as the transaction leaves it; `Payload` keys are merged, a later key
+replacing an earlier one; the strings (tracking number, recipient, subject,
+status name) are the last non-empty one; the flags (guest link, `FromRequester`,
+`RoutedAssignment`) are true if any piece said so; the actor is the first
+non-nil one raised and the time is the first piece's. One event has one
+actor; a routed create's actor is the creator's, and the webhook sender drops it
+for the name `ticket.assigned` (see *Create, then auto-assign*).
+
+#### 2. One transaction
+
+A change is one transaction. Each service method raises its kinds and changes
+inside its `InTx`, into the collector, instead of calling `Dispatch` after the
+commit. A door that does several things calls the pieces inside one
+transaction, and the collector merges them.
+
+- **`PATCH /tickets/{id}` is one service method**,
+  `Update(ctx, id, Patch, actor)`. It runs the existing steps in the existing
+  order (status, assignment, classification, priority) inside one `InTx`.
+  The `Validate*` checks the handler makes up front stay as the early answer
+  (`handler_tickets.go`). Because it is one transaction, `PATCH` is
+  all-or-nothing: a refusal partway through leaves the whole request unapplied.
+  The priority is last so that a category changed in the same request is the
+  one its SLA policy is matched against.
+- **Create, then auto-assign.** Routing is inside the create's transaction. The
+  handler still works out the candidates before the transaction (`Routing` in
+  `handler_tickets.go`: the CTI group, else the global group, else the
+  round-robin users) and passes them in `CreateInput.AutoAssign`. Inside the
+  transaction, the first candidate that `checkAssignable` accepts is assigned; a
+  candidate refused as unassignable (a departed colleague still on the
+  round-robin list) is skipped for the next. The event is `[created, assigned]`.
+  A group filter therefore matches a new ticket. Routing also writes its own
+  audit entry `assigned`, with no actor and the change `unassigned` to
+  `assigned`. The event carries the creator as its one actor, but routing is the
+  system's act: a hook that is told `ticket.assigned` gets `ActorID: null`
+  (`forHook`, `notify/webhook.go`, from `RoutedAssignment`), and one told
+  `ticket.created` still gets the creator (ruling 17). Limit: only create's routing
+  sets the flag and create raises no manual assignment in the same transaction; if
+  a future change lets one transaction raise both, the merge would null the
+  human's actor under `ticket.assigned`, and per-kind actors would be needed. Guest create, MCP `create_ticket` and MCP `create_follow_up` route the same way (they did not before 1.3.0).
+  - **Round-robin takes its turn up front.** When no group routes the ticket,
+    `roundRobin` advances its counter with one atomic add as `Routing` runs,
+    before the transaction, and offers the whole user list rotated from that
+    slot. A create that is then refused still used a turn, and two overlapping
+    creates each get their own.
+  - **A creator who is routed their own ticket is mailed**: routing picked the
+    assignee, so the event carries `RoutedAssignment`, which exempts it from "no
+    mail about your own action" (Staff email). The same flag makes the
+    `ticket.assigned` webhook name no actor.
+
+#### 3. The outbox write is inside the change's transaction
+
+This is a true transactional outbox. The `Atomic` contract
+(`ticket/store.go`) is `InTx(ctx, fn func(Store, audit.Store,
+*notification.Changes) error)`. A separate "announcing" `InTx` was rejected: a
+producer would have had two ways in, and one of them would not announce. The
+recorded decision "`ticket.Atomic` takes both a `Store` and an `audit.Store`"
+extends to the change's events for the same reason: an announcement made apart
+from the change it describes is not reliable.
+
+- **The row encoding** (`EncodeEvent` and `DecodeEvent`) lives in the
+  `notification` package (`codec.go`), so `txrunner` can write rows without
+  importing the server. It refuses an event carrying a raw guest token.
+- **The detached context** is no longer needed on the ticket path. If the client
+  disconnects mid-transaction, the change and its events roll back together.
+  `OutboxDispatcher` keeps its detached context for the two producers that
+  still dispatch after their own write.
+- **No schema change and no migration.** `notification_outbox.event` and
+  `webhook_deliveries.event` are `jsonb`, and the new fields are new keys.
+
+**Staff fan-out moved to the worker.** The fan-out reads group members and
+followers through ordinary connections. Inside the change's transaction those
+reads would not see the transaction's own writes. For example, `Assign` drops
+the previous assignee's follow in the same transaction, so a read inside it
+would still see that follow and mail the previous assignee as a follower. So
+who is mailed is decided when the worker first takes the change's email row
+(normally within a second of the commit), not on the request.
+
+**The split is all or nothing.** `ChangeSplitter` collects the requester's mail
+and each staff member's mail, then `outboxstore.Store.Split`
+(`internal/database/outboxstore/outboxstore.go`) queues them all and deletes
+the change's row in **one transaction**. A failure part way leaves nothing
+queued and the change's row to be tried again. The transaction deletes the
+change's row **first**, and only the call that deleted it queues anything
+(#513): a split that outlasts the 10-minute claim lease (`Worker.Lease`) lets a second worker
+claim and split the same row, and the first split's children may be sent and
+deleted by then, so `ON CONFLICT` alone would queue them again and the mail go
+out twice. The second worker finds no row to delete, queues nothing and
+succeeds. The children's ids derive from
+the change's row id (`uuid.NewSHA1` of the parent and a key: `requester`, or
+`staff:` plus the user id), so a repeat after a crash does not queue anyone twice
+while their rows still wait. Outside the worker (no row id) it queues one by
+one. `Split` on a store built without a database handle (`outboxstore.New`)
+returns an error rather than queue and delete as separate commits, which would
+lose mail when an insert failed after the parent was gone; production builds
+the store with `NewWithDB`. A failed read of the staff
+accounts, of the followers or of a group's members returns an error and the row
+is retried with nothing queued (ruling 15). This is deliberate: a requester's
+mail queued before that error would by then have been sent and deleted, and sent
+a second time, with a new guest link each time, and mailing the people found so
+far would lose the rest with no retry. The cost is that a lookup that keeps
+failing holds back every mail of the change, the requester's included: it is
+tried 8 times in all over about an hour, then the row is marked failed. The log says
+"staff email: could not work out who to notify".
+
+#### 4. A consumer is still a channel row (no shared log with positions)
+
+One row per channel is kept, written with the change. A shared event log that
+each consumer reads from its own position was considered and not built.
+
+- Each channel needs its own retry state and "done" marker. Today that is the
+  row: its attempts, its next try, and its deletion. Webhooks need this per hook
+  as well (#448). A shared log would still need a table of per-consumer,
+  per-event state for retries, which is the outbox again plus a position.
+- A position in Postgres is unsafe without extra machinery. A sequence number is
+  given out when a row is inserted, not when it commits, so a reader that has
+  read up to 105 can miss 104 if 104 commits after 105.
+
+#### 5. How each consumer matches
+
+**Webhooks.** A hook matches a change if any entry in `Kinds` is in the hook's
+event list, or if the list is `*` or empty (`subscribedKinds`,
+`notify/webhook.go`; for `*` only names that can be webhook events count). The
+ticket filter is then tested against `Ticket`, as before. A matching hook gets
+**one** per-hook row, so one delivery. Retries run the same test against the
+subscription as it is at that moment, and the filter as it is at that moment.
+The rules for a changed URL hash, a disabled hook and a deleted hook are
+unchanged.
+
+**What the hook is told the event "is" (`Type` and `X-GHD-Event`).** It is the
+first kind in `Kinds`, in the fixed order, that **this hook** subscribes to
+(`forHook`). For `*` it is simply the first kind. It is worked out again at each
+attempt, from the subscription at that moment. So a hook subscribed only to
+`ticket.status_changed` gets `"Type": "ticket.status_changed"` for the reopen
+example above. The history's `event_type` column stores the `Type` that was
+sent.
+
+**Raw body (Erik, 2026-10-15): the shape is unchanged.** `Kinds`, `Changes` and
+`Ticket` live on the event inside the server, so that matching and the filter
+can use them. They are not sent. The raw body is `Type`, `TicketID`, `ActorID`,
+`OccurredAt` and the allow-listed `Payload` id, and the id goes out only for the
+name it belongs to (see *What subscribers are promised*). So a `*` hook that is
+told `ticket.reopened` for the example above receives no `Payload`, where the
+server's own copy holds `new_status_id`; a `ticket.priority_changed` or
+`ticket.classified` delivery has none either, and the receiver reads the ticket
+through the API by `TicketID`. The tracking number stays out, as #448 ruled on
+2026-10-13. There is no version flag.
+
+**Chat and ITSM formats** (Slack, Teams, Discord, Jira Automation). The
+headline comes from the hook's `Type`, as before. The headline for
+`ticket.priority_changed` is "Priority changed" and for `ticket.classified`
+"Reclassified" (`headline`, `notify/format.go`); neither carries a value or a
+name. `ticket.unlinked` is "Unlinked from <ticket id> (<link type>)",
+`ticket.attachment_added` is "Attachment added" (no file name), and
+`ticket.followed` and `ticket.unfollowed` are "Ticket followed" and "Ticket
+unfollowed": the person is an id, and a chat message does not look one up.
+`sla.breached` and `sla.at_risk` are "SLA breached" and "SLA at risk", naming no
+target and no policy; an `sla.breached` with `at_risk_targets` is "SLA
+breached; another target at risk". Jira has no headline and keeps the event name in its `event` key. Under
+the headline:
+
+- **The "Also" line (ruling 10).** One line names the change's other kinds, such
+  as "Also: assigned, priority changed". It names **only kinds the hook
+  subscribes to**. A `*` hook sees every other kind. A hook subscribed to a
+  single name gets no Also line, and Jira gets no `also` key. The line never
+  tells a channel about something it did not subscribe to: an `assigned`-only
+  Slack hook must not learn that an internal note was added. It names kinds
+  only, never values, because a status or group *name* would be content. The
+  words are: created, reopened, resolved, closed, status changed, assigned,
+  priority changed, reclassified, replied, note added, linked. It is rebuilt at
+  every attempt, so a retry after the subscription narrowed drops the kind. A
+  Redeliver has no kinds beyond the one name, so it has no Also line.
+- **Reply text (ruling 12).** The text of a reply goes only to a hook that
+  subscribes to `ticket.replied` (or `*`). A hook subscribed to
+  `ticket.reopened` only still gets its "Reopened" message, with the subject and
+  the link, but not the text of the reply that reopened the ticket. Internal
+  notes are never included, whatever the hook subscribes to. Jira follows the
+  same rule as chat.
+- **Status name.** The status name is carried only for a hook that subscribes to
+  a status kind (`ticket.status_changed`, `ticket.resolved`, `ticket.closed` or
+  `ticket.reopened`). In Jira that is the `status` key; a hook on
+  `ticket.assigned` alone does not learn the status of a change that also moved
+  it.
+- **Placement (`ticket.created`, Slack and Teams only).** Under the subject, a
+  new-ticket message names where the ticket landed, in at most two short lines
+  (`placementLines`, `notify/format.go`):
+  1. The classification as `Category > Type > Item`, only the levels the ticket
+     has: `Hardware`, `Hardware > Printer`, `Hardware > Printer > Toner`. A
+     ticket always has a category, so the line is absent only when the name
+     cannot be read (the category was deleted).
+  2. The holder as `Group: IT Support · Assignee: Jordan Blake`, only the parts
+     the ticket has: `Group: IT Support`, `Assignee: Jordan Blake`. When it has
+     neither, the line is `Unassigned`.
+
+  Nothing else is added. Priority, status, requester and description are not
+  shown: the status of a new ticket is always New, the requester and the text are
+  what the subject and the link are for, and a chat card that grows a field a
+  release soon becomes a card nobody reads. Discord and Jira are not changed;
+  they could take the same two lines by reading `summary.Placement`, which is
+  the whole of the work.
+
+  *Where the names come from.* The event carries ids only: `Event.Ticket`
+  (`TicketState`) holds the category, type, item, group and assignee ids as
+  committed, and the raw body sends none of them. The names are therefore
+  **read at send time from those ids**, with one statement
+  (`Store.PlacementNames`, scalar sub-selects, one round trip), by the
+  dispatcher before it renders, and held in a new `Event.Placement`
+  (`json:"-"`, never stored in the outbox, never in the raw body). The other
+  choice, putting names in the event inside the creation transaction, was
+  rejected: it adds up to five reads to the hot path of every ticket whether or
+  not any hook wants them, it puts names (content) into every outbox row where
+  today a chat row holds only the subject and tracking number, and it would
+  need the same read added again to a Redeliver, which rebuilds from the ticket
+  as it is. Reading at send time costs one statement per Slack or Teams
+  delivery of a created event, and nothing for a raw, Discord or Jira hook.
+  Which ids are used: the ones in the event, so a message says where the ticket
+  was filed, not where it is a few seconds later. A Redeliver replaces them with
+  the ticket's current ones, as it does for the subject.
+
+  *Renames and deletions.* The id is fixed and the name is read when the
+  message is built, so a category, group or person renamed between the commit
+  and the send, or between two attempts of a retry, is named as it is then. That
+  is what a reader sees in the help desk, and it is acceptable: the message is a
+  pointer to the ticket, not a record. A level whose row is gone has no name and
+  is left out; a ticket whose assignee id has no readable name (a deleted
+  account) says nothing about the assignee and is **not** called Unassigned,
+  because it was assigned (the ticket page likewise says "Former staff member"
+  rather than "Unassigned").
+  `Unassigned` is decided from the ids, never from a missing name.
+
+  *Retries.* The read runs on every attempt, before the POST. If it fails the
+  message is sent without the lines, and the failure is logged at warn. The
+  lines are an addition to a message that was complete without them in 1.3
+  betas; a database that cannot answer one select should not be able to hold a
+  notification back, and failing the attempt instead would leave the row's
+  content in the outbox past the scrub, which only runs after a failed POST.
+
+  *What a hook may learn.* Every Slack and Teams hook that is sent a created
+  message gets both lines, whatever else it subscribes to. The holder is a fact
+  about the ticket as filed, not a separate change the channel did not ask
+  about: routing runs inside the create transaction, the created and assigned
+  kinds are merged into one event, and `Event.Ticket` is the state after
+  routing, so `Unassigned` cannot be false at creation. (The status name and
+  the Also line are gated by kind because they would otherwise name a change
+  the hook did not subscribe to, an internal note above all; the holder of a
+  new ticket is not that.) It is not a privilege boundary either: whoever
+  edits a hook can add `ticket.assigned`, and the subject the hook already
+  receives says more than a group name does. A later assignment is not part of
+  the created message; it follows the "as filed" rule above, and the hook hears
+  about it only if it subscribes to `ticket.assigned`. A **Redeliver** swaps in
+  the ticket's current ids, as it does for the subject, so a replayed created
+  message names the classification and the **current** holder (or `Unassigned`
+  if nobody holds it now), which can differ from the original.
+
+  *Rendering.* Slack: each line is a line of the text, `&`, `<` and `>` escaped
+  like the subject (the `>` between levels becomes `&gt;`, which Slack shows as
+  `>`); `*`, `_` and `~` in a name are left as they are, as they are in the
+  subject, because mrkdwn has no escape for them and the worst a name can do is
+  bold itself. Teams: each line is its own `TextBlock` with `wrap`, `isSubtle`
+  and `spacing: "Small"`, in the card's existing 1.4 schema, put through the same
+  `escapeChatMarkdown` as the subject, so a `[name](url)`, `*`, `_`, `` ` ``
+  or `|` in a name is literal text; the JSON is built by `encoding/json`, so a
+  quote, `&`, `<` or any Unicode cannot break it. Names have every
+  run of whitespace, line and paragraph separators included, collapsed to one
+  space and are cut at 100 characters, so nobody can forge a line of the card
+  or fill it with a pasted paragraph. A name that itself contains ` > ` or
+  ` · Assignee: ` reads as an extra level or a second part: names are written by
+  administrators, and this is accepted. Not done, because the subject has the
+  same behaviour: escaping list markers and backslashes in Teams text.
+
+  *Generic subscribers.* Nothing changes: the raw body is built from an allow
+  list that does not include the placement, the OpenAPI schemas are unchanged,
+  and the existing raw-body pins pass untouched. Only the description of
+  `WebhookPayloadFormat` says what the two formats now show.
+
+**Requester email.** One mail per change at most. The recipient is decided once
+per change, when the change is raised:
+
+- the reporter for a reply with "notify customer" on;
+- the guest for a creation, a status change other than closing, a resolution,
+  and a force-reopen;
+- nobody for a close.
+
+The template is the first kind in the fixed order that has a requester template:
+created, reopened, resolved, replied, status_changed (`requesterTemplates`,
+`notify/staff.go`). Some guest mail changed as a result. A `PATCH` to Resolved
+now says "We have resolved" instead of "There is an update". A status change
+that reopens now says "We have reopened". The guest-link flag is set once per
+change, so a link rotates once per change.
+
+**Staff email** (`ChangeSplitter` and `StaffFanout`, `notify/split.go` and
+`notify/staff.go`). Candidates are worked out for each kind with the existing
+rules (assigned, requester replied, reopened), all from `Ticket`, the state
+after the commit. They are merged with one entry per person. A person who
+qualifies for more than one reason gets the mail of the **first reason, in the
+order assigned, reopened, requester replied, whose switch is on**. Every rule in
+Notifications still holds:
+
+- one mail per person per change;
+- nobody is mailed about their own action, even when an override forces the
+  switch on (checked after the switches), **except** an assignment that routing
+  made inside a create (`RoutedAssignment`): the creator did not choose it, and
+  1.2.x mailed them, so they still get that one mail (ruling 11);
+- only active staff with an address; never a service account or a requester;
+- the switches and the administrator's overrides (the fourth, SLA alerts, for
+  the two SLA events only);
+- the follower exclusions (the assignee never gets follower mail; group members
+  are excluded from follower mail when the group is mailed for that kind);
+- the send-time re-check (account, holding, group, follow and scope).
+
+`FromRequester` stays, so "requester replied" means the filer's public reply. It
+is **true on a reply that also reopened the ticket**. The old special case "not
+when the reply reopened" is gone: a reply that reopens is one change carrying
+both kinds, and the merge gives each person one mail.
+
+**One mail per address (ruling 11).** After the staff are worked out, the mails
+are deduplicated by recipient address, compared without case or surrounding
+space. Erik's ruling is only that one address gets one mail; which mail is kept is a build decision. The stronger reason is kept:
+
+- If the requester's address is also a staff member's (a staff member who filed
+  the ticket for themselves, or whose address a guest used), the **staff mail is
+  kept** and the requester's mail is dropped. The staff mail carries the more
+  specific reason and the link behind sign-in; the requester's mail would add a
+  guest link, a second credential in the same inbox.
+- If two staff accounts share an address, the first in candidate order is kept,
+  which is strongest reason first: holding the ticket, then its group, then
+  following it.
+- Two different addresses keep both mails. A requester mail whose address is
+  only read at send time (a guest-link mail) cannot be compared and is sent.
+- The send-time check can still drop a kept staff mail if the person stops being
+  entitled between the split and the send, because rows know nothing of each
+  other. That is accepted.
+
+Example, the reopen plus reassignment above: Bob, the new assignee, gets
+"assigned to you" (his Assigned switch). If that switch is off, he gets
+"reopened" (his Activity switch). A follower of the ticket who is neither Bob
+nor in the group gets **one** mail: the follower version of "assigned" ("A ticket
+you follow is assigned"), because `assigned` comes first in the order and the
+follower qualifies for it under the Activity switch; they are not also sent the
+"reopened" mail. Alice, the previous assignee, gets nothing: the holder is read
+from `Ticket`, after the commit.
+
+#### 6. Compatibility for existing webhook subscribers
+
+- **Today's subscriptions keep working as criteria.** The event list on a hook
+  is unchanged, and `Kinds` uses the same names. No stored hook changes, and no
+  migration is needed.
+- **A hook subscribed to `ticket.status_changed`, for a change that also
+  reopened the ticket,** receives one delivery with `Type: ticket.status_changed`
+  and the same `Payload.new_status_id` as before. A hook subscribed to a single
+  name gets the body it always had.
+- **What does change for receivers** (these are in the upgrade notes):
+  - A `*` hook, or a hook with several names, gets one delivery where it got two
+    or three. A receiver that switches on `Type` and handles only, say,
+    `ticket.replied` will not see the reply in a reply that reopened a ticket,
+    because `Type` is `ticket.reopened` and the body does not list the other
+    kinds. **Accepted (Erik, 2026-10-15, ruling 6).** The upgrade notes tell such
+    receivers to read the ticket through the API when they need more than the
+    label.
+  - Hooks fire where they did not before, because the status kinds are now
+    consistent: `ticket.status_changed` on the Resolve button, on a close and on a
+    requester's reopening reply, and `ticket.resolved` and `ticket.closed` on a
+    `PATCH`.
+  - `*` hooks start receiving `ticket.priority_changed` and `ticket.classified`.
+  - `*` hooks also start receiving `ticket.unlinked` and `ticket.attachment_added`
+    (#630). They do **not** receive `ticket.followed` or `ticket.unfollowed`.
+  - A deleted user's tickets, and a deleted group's, are announced to `*` hooks as
+    `ticket.assigned` (cleared), one per ticket, with no staff mail (#630).
+  - The raw body of `ticket.replied` and `ticket.note_added` now carries
+    `reply_id` in `Payload`.
+  - A status change to the status the ticket already has no longer announces
+    `ticket.status_changed` (1.2.x did).
+- **Redeliver.** It sends the name that was sent, because the kept copy holds no
+  `Kinds`. `409 webhook_not_subscribed` therefore means the hook no longer
+  subscribes to the `Type` of that delivery (not "to none of the change's
+  kinds", which is not recorded). `webhook_filter_excludes` and
+  `webhook_filter_unverifiable` are unchanged.
+- **Rows queued in the old shape during the upgrade.** Outbox rows and webhook
+  history copies are JSON. A row made before #506 has no `kinds`. `DecodeEvent`
+  leaves `Kinds` **empty** and fills `Ticket` from the old `attrs`,
+  `assignee_user_id` and `assignee_group_id` keys; every consumer reads an event
+  with no `Kinds` as a one-kind change, `[Type]` (`Event.AllKinds`). An old
+  webhook row, per-hook or not, is therefore delivered as before, and an old
+  history entry redelivers as before. An old `email` row had already been split
+  per person on the request, so it carries no `Kinds`, and `ChangeSplitter` sends
+  it as it is and does not split it again. The same rule keeps the worker from
+  splitting its own children: the rows it makes carry no `Kinds`. Tested with
+  stored rows in the old shape (`codec_test.go`, `webhook_one_delivery_test.go`,
+  `split_test.go`).
+
+#### 7. Events that are not ticket changes
+
+`guest.link_resent` and `registration.verify` are not changes to a ticket. Each
+is already a single event for a single action. Neither is a webhook event. They
+keep their path (dispatch after their own write, on a context that cannot be
+cancelled). Registration could be made transactional the same way later; nothing
+in #506 asks for it. The `staff.*` events remain internal rows made by the
+worker's split. They are never dispatched by domain code and never sent to
+webhooks.
+
+#### 8. Out of scope (not built)
+
+- Ordering between events. Two changes to one ticket can still arrive out of
+  order after a retry, as before.
+- A plugin API.
+- A message broker.
+
+#### 9. Tests
+
+Test-first, as CLAUDE.md requires. The outbox and transaction tests use real
+Postgres, and the ones that commit to the outbox run on a database of their own
+(`testutil.NewIsolatedDB`) so no other package's claims or cleanups can touch
+their rows.
+
+- **The collector** (pure): `domain/notification/changes_test.go`. Kinds merged
+  in the fixed order, first-from and last-to, one event per ticket, an empty
+  collector or an event with no kinds writes nothing.
+- **The codec**: `domain/notification/codec_test.go`. Round trip, rows in the old
+  shape, and a test that fails when a field is added to `Event` without a
+  decision about how it is stored.
+- **Producers**: `domain/ticket/one_event_test.go`. One event per change and per
+  ticket, routing inside the create's transaction, a failing `PATCH` step
+  announcing nothing, the same-status rules.
+- **Transactional outbox** (Postgres): `database/outboxstore/txrunner_outbox_test.go`.
+  A rolled-back change leaves no row, a committed one leaves one row per
+  carrying channel, a failed outbox write rolls the change back, a deadlock retry
+  announces only the attempt that committed, and the split is all or nothing.
+  `database/outboxstore/e2e_test.go` runs a change from the service through the
+  runner and the worker to the mail.
+- **Webhooks and formats**: `server/notify/webhook_one_delivery_test.go`. One
+  delivery for `*` and for several names, the exact body for a single name, no
+  payload on the two new names, the retry recomputing the name, the Also line,
+  reply text and status name rules, and old-shape rows.
+- **Staff and requester mail**: `server/notify/split_test.go`. The first reason
+  whose switch is on, the actor skip, the routed creator, one mail per address,
+  a failed lookup retrying the row, a failed insert leaving nothing queued.
+- **No breaking change in existing tests.** Tests that asserted a sequence of
+  separate events were rewritten to assert the single merged event (the
+  resolve-as-duplicate, reopen and priority tests, and the by-type event
+  lookups, now by kind). `TestChangePriority_DispatchesNoNotification` pinned
+  the opposite of ruling 2 and was replaced.
+
+#### 10. Rulings
+
+**Ruled by Erik, 2026-10-15** (the design review):
+
+1. **The outbox rows are written inside the change's transaction.** Yes.
+2. **Event names are the same whichever button made the change.** Yes: Resolve
+   and Close also carry `status_changed`, and a `PATCH` to Resolved or Closed
+   also carries `resolved` or `closed`. Priority and category changes now
+   produce events.
+3. **`ticket.priority_changed` and `ticket.classified` are names a hook can
+   subscribe to**, with no priority or category id in the webhook body.
+4. **The webhook body is unchanged.** The event inside the server carries the
+   kinds, the from and to of each field, and the ticket state, so that
+   subscriptions and filters can match on them. The body sent does not gain them.
+   There is no version flag.
+5. **Auto-assignment moves into the create transaction.** Yes.
+6. **A hook subscribed to several names, or to `*`, gets one delivery per
+   change, labelled with one name: accepted** (option b of three). A requester's
+   reply that also reopened the ticket arrives as `ticket.reopened` only. The
+   body does not list the other kinds. The upgrade notes tell such receivers to
+   read the ticket through the API when they need more than the label. Rejected:
+   (a) a list of names in the body; (c) one delivery per subscribed name, which
+   brings back the duplicates.
+7. **The tracking number stays out of the raw body** (reaffirms the 2026-10-13
+   #448 ruling). The raw body is exactly today's.
+8. **One event per ticket.** A change that touches two tickets produces two
+   events. A follow-up gives one event for the new ticket and one `linked` event
+   for the original.
+9. **Build order.** One PR on top of #504, built after #503
+   and #504 merge, with the upgrade notes in the same PR, then an Opus review.
+
+**Ruled by Erik, 2026-10-16** (from the build and its review, recorded as
+comments on #506):
+
+10. **The Also line names only the kinds the hook subscribes to.** A `*` hook
+    sees every other kind. A hook subscribed to a single name gets no Also line
+    and no Jira `also` key. The line must never tell a channel about something it
+    did not subscribe to.
+11. **A creator who is auto-routed their own ticket gets one email.** Routing
+    picked the assignee, so "no mail about your own action" does not suppress it.
+    Mail is deduplicated by recipient address, so each address gets one mail per
+    change. In Erik's words: "if both actions resolve to the same email address
+    we dedup. one email". (Which mail is kept is a **build decision**, not a
+    ruling of Erik's: the staff mail over the requester's, and between two staff
+    accounts the stronger reason.)
+12. **Reply text in chat and ITSM messages goes only to hooks subscribed to
+    replies.** A hook on `ticket.reopened` only gets its "Reopened" message
+    without the reply's text. Reply text appears only for hooks subscribed to
+    `ticket.replied` or `*`. Internal notes are never included.
+13. **A status change to the same status announces nothing about status.** A
+    re-resolve of an already-Resolved ticket carries `resolved` only, and only
+    the Resolve button with notes sends it. A `PATCH` that sends the same status
+    plus an assignee carries `assigned` only. 1.2.x announced `status_changed`
+    here, so the upgrade notes say so.
+
+**Ruled by Erik, 2026-10-16.** Recorded on #506.
+
+14. **Chat headlines for the two new events are readable.** `ticket.priority_changed`
+    is "Priority changed" and `ticket.classified` is "Reclassified". (That the
+    headlines name no value or name is a **build decision**, not a ruling of
+    Erik's: values are content, as for the rest of the event.)
+15. **A failed lookup of followers or group members retries the change.** No mail
+    goes out until every recipient is known; nothing is queued from a partial
+    answer.
+16. **An assignment that changes nothing announces nothing.** That covers the
+    same assignee, or a clear on a ticket that is already unassigned. It changes
+    1.2.x behaviour, so it is in the upgrade notes. (Two details are **build
+    decisions**, not rulings of Erik's: that "same" means the same user and the
+    same group, and that the audit entry is still written, as for a same-status
+    move.)
+17. **An auto-routing assignment names nobody as the actor.** A hook told
+    `ticket.assigned` gets `ActorID: null`, as in 1.2.x and as the audit log
+    already records. The `ticket.created` delivery still names the creator.
+
+No other questions are open.
+
+That staff mail recipients are decided by the worker, a moment after the commit,
+follows from ruling 1.
+
+---
+
+## Custom Fields
 
 Admins can attach arbitrary structured data to tickets beyond the fixed fields (subject, description, priority, CTI).
 
@@ -576,33 +7907,354 @@ Admins can attach arbitrary structured data to tickets beyond the fixed fields (
 Defined globally under **Admin → Custom Fields**. Each definition has:
 
 - **Name** (unique)
-- **Type**: `text`, `textarea`, `number`, `select`
-- **Options** (select only): list of allowed values
-- **Sort order**: controls display order
-- **Active flag**: field defs are never hard-deleted — only deactivated. Deactivated fields do not appear on new ticket forms but existing values are preserved for history.
+- **Type**: `text`, `textarea`, `number`, `select`. The type can be changed
+  only while no ticket holds a value for the field; after that
+  `PATCH /admin/custom-fields/{id}` refuses a change with `409 conflict`, and
+  the admin page shows the type as fixed. A `number` field accepts only a
+  number; see *Values*.
+- **Options** (select only): an ordered list of the values that may be chosen,
+  stored as a JSON array of strings, so an option may contain a comma. The admin
+  page edits them as a list: add, edit, reorder, retire, bring back, delete.
+  Blank and duplicate options (a retired option's text counts) are refused by
+  the page, and by the server (#626): a select field's lists are checked on
+  create, and on any `PATCH` that changes `options` or `retired_options` or makes
+  the field a select, for a blank option (after trimming), an option that is in
+  both lists, and one listed twice, compared exactly (`a` and `A` are two
+  options), and an option over 255 characters, which no ticket could be set to
+  (see *Values*, length limits). All are `400 bad_request`. A `PATCH` that leaves both lists as they
+  are is not checked, so a field that was saved with a bad option before can
+  still be renamed or reordered. On any other type the server stores `options`
+  as sent and nothing reads it.
+- **Retired options** (select only): see *Options: retiring and deleting*. On
+  any other type `retired_options` is stored as sent, like `options`, and
+  nothing reads it.
+- **Field number** (`sort_order`): orders fields within each level. Set by
+  dragging on the Custom Fields page, with a pointer or the keyboard (Space to
+  pick up, arrow keys to move, Space to drop). See
+  *Display order*.
+- **Active flag**: field defs are never hard-deleted — only deactivated.
 
-### Assignment to CTI Nodes
+Every change an administrator makes to a definition, its options or its
+attachments is written to the audit log in the same transaction as the change.
+See *Audit*.
 
-Fields are assigned to CTI nodes (category, type, or item) from the CTI editor (**Admin → Categories**). Each assignment has:
+`GET /admin/custom-fields` returns every definition, inactive ones included, in
+field-number order, each with `place_count`: the number of categories, types and
+items the field is attached to (0 for a field on no form). `PUT
+/admin/custom-fields/order` sets the numbers: the body lists every definition
+exactly once, position *n* becoming number *n*, and the answer is the same list
+as `GET`. A list that repeats an id is `400 bad_request`; a list that does not
+match the stored definitions (one was added since the page read them) is
+`409 conflict` and writes nothing.
 
-- **Visible on new**: whether the field appears on the new-ticket form
-- **Required on new**: whether the field must be filled before the form can be submitted
-- **Sort order**: display order within the node
+### Deactivating a field
 
-The fields available on a ticket are the union of all fields assigned to its selected category, type, and item, ordered by scope level (category → type → item) then sort order within each level.
+A field can be deactivated whether or not tickets use it.
+
+- It is not shown on the new-ticket form.
+- On a ticket that holds a value it is still shown, read-only, to everyone who
+  could see it before. On a ticket with no value it is not shown.
+- Nobody can write it: `PUT /tickets/{id}/custom-fields` refuses a value for it,
+  an empty one (a clear) included, with `400 bad_request`. On ticket creation a
+  value for it is dropped and reported in `warnings` (see *Values*).
+- The Custom Fields page asks for confirmation before it deactivates a field, and hides inactive fields. **Show inactive** lists them,
+  marked, each with **Reactivate**. The API list always includes them.
+
+Reactivating restores the field as it was: deactivation does not touch its
+attachments, options or number.
+
+### Options: retiring and deleting
+
+Retiring an option works the same way as deactivating a field. A retired option
+is not offered on new tickets or in edits. Tickets that already hold it keep
+showing it: in edit mode on the ticket page it stays as the current choice,
+labelled "(retired)" and disabled, so it can be kept but not picked again. The
+server refuses a write that sets a ticket to it, with `400 bad_request`.
+**Show retired** in the options editor lists retired options, each with
+**Bring back**.
+
+An option can be deleted only while no ticket holds it. The page offers
+**Delete** only on an option it has counted as unused. The server checks again,
+under a lock on the definition row taken in the transaction that writes the
+change, and answers `409 conflict` if any ticket holds the value. This applies
+to any `PATCH` that removes a value from both lists, whichever client sends it.
+If the server refuses a delete the page had counted as safe (a ticket took the
+option since), the page reads the counts again and puts the option back where it
+was, so it can be retired without starting the edit over.
+
+Renaming an option that tickets hold retires the old text and adds the new text
+in its place. Renaming an unused option edits it in place. An option whose
+count the page could not read is treated as held.
+
+Retired options are stored in `custom_field_defs.retired_options`, a JSON array
+of strings, separate from `options`. `options` holds only the options in use, so
+every reader that predates retiring still gets a plain list of strings it may
+offer. An option is in one list or the other, never both. A value enters
+`retired_options` only from `options`. A select field needs at least one option
+in use.
+
+### Where a field appears
+
+A field appears on a ticket only when it is attached to the ticket's category,
+type or item. Creating a field attaches it nowhere, and the page says so: after
+**Create field**, a notice says the field is on no form yet, and the new field
+opens on **Where it appears** with "Not on any form yet".
+
+Attachments are managed from either side, and both write the same
+`custom_field_assignments` rows through the same per-node routes:
+
+- from the field, on **Admin → Custom Fields**: **Where it appears** lists every
+  category, type and item the field is attached to; **Add a place** picks a
+  category, then optionally a type, then optionally an item;
+- from the node, on **Admin → Categories**: the **Fields** subsection of an
+  expanded category, type or item, as before. Each field name there links to the
+  field on the Custom Fields page, and the order is set only on that page.
+
+The Custom Fields page refreshes its list. When a field is found to have changed
+elsewhere while its form holds unsaved edits, the edits are kept, with a notice,
+and a Save then overwrites the other change; **Cancel** loads the latest. A form
+with no unsaved edits is rebuilt from the latest copy.
+The server still refuses to remove an option a ticket holds, whoever saves.
+
+Each attachment has:
+
+- **Show on new-ticket form** (`visible_on_new`)
+- **Required on new-ticket form** (`required_on_new`): only meaningful while
+  shown; the page disables it when the field is not shown. The server holds
+  every caller to it, not only the form (#626): see *Required fields*.
+- **Offer to guests** (`visible_to_guests`, #627): off for every attachment
+  until an administrator turns it on, and available on a category's own
+  attachment only. See *Guests*.
+
+A field reaches a ticket once, however many of the ticket's category, type and
+item it is attached to. The most specific attachment wins — item over type over
+category — for its settings and for the level the field is shown at. The server
+refuses to attach a field above or below a place it is already attached on one
+path (`409 conflict`, naming where; #626): it checks under a lock on the field's
+definition row, so two attachments made at once cannot both land. Overlaps that
+already exist, which a 1.3.0-beta database can hold, are left as they are and the
+rule above still resolves them. The Custom Fields page lists any that exist with
+a note saying which settings apply.
+
+On the ticket page, staff see every active field the ticket has, empty or not,
+and every inactive field that holds a value. Requesters see fields that hold a
+value. Guests see no custom fields, on the form or after (see *Guests*).
+
+### Required fields
+
+A field is required of a new ticket when its most specific attachment is shown
+on the new-ticket form and marked required, and the field is active. A hidden
+field, a deactivated one, and one attached at a type or item the ticket does not
+have are not required. `POST /tickets` and MCP `create_ticket` check this **before
+the ticket is created**, so a refusal spends no tracking number, and for every
+caller: browser session, API key, OAuth client, and staff or administrators
+filing for someone else. A reporting user's request is judged without an item,
+because a requester cannot pick one. A missing field, an empty value or spaces is
+`400 bad_request` naming each missing field. The value must also be one the field
+accepts (an option in use, a number for a number field): a required value that
+creation would drop is refused instead, because a ticket without it is what the
+rule is there to prevent. The check and the create are not one transaction. An
+administrator who makes a field required between them lets one ticket through
+without it; that is accepted, since the ticket was valid against the form as the
+requester last saw it. Before 1.3.0 only the form held anyone to this; it is
+listed under breaking changes in the upgrade notes (#626, owner decision D25).
+
+**Follow-ups are exempt.** `POST /tickets/{id}/follow-up` (staff and requester),
+`POST /guest/follow-up` and MCP `create_follow_up` file a ticket in the original's
+category, type and item; their routes take no `custom_fields`, so the request
+can never satisfy a required field, and the check is not made. They carry their
+original's values afterwards (see *Custom-field values are copied* under
+Follow-up), which usually satisfies it, but a follow-up is filed whether or not
+it does.
+
+**A failed write of the values.** Once the ticket exists its values are written
+in one transaction. Values are bounded (see *Values*), so a failure is a database
+fault. When the classification has a required field, the REST and MCP request
+then fails with `500` (the answer names the ticket that was filed, so it can be
+checked) rather than answering `201` for a ticket that lost the required value.
+A guest, who has no warnings and no way to check, is answered `201` with the
+tracking number and a notice (see *Guests*).
+When it has none, the values stay best-effort: `201`, with `not_saved` in
+`warnings`.
+
+### Guests
+
+A guest is shown, and may write, only the custom fields an administrator
+**offered to guests** (#627). This reverses the earlier rule that guests see no
+fields at all. What an anonymous visitor may write into an operator's own
+fields is the operator's decision, so the offer is an explicit per-attachment
+switch and not a reading of another flag: reusing `visible_on_new` would have
+published, at upgrade, the name and options of every field staff see on the
+form, some of them internal, to anyone on the internet.
+
+- **What is offered** (`customfield.Service.GuestFields`): the category's own
+  attachments with `visible_to_guests` on that are also shown on the new-ticket
+  form, whose field is active. A guest's offered fields are the category's own
+  whatever they pick below it (they may pick a Type and Item while
+  `guests_show_types` and `guests_show_items` are on, #711), so nothing attached to a type or an
+  item is ever offered, and the service refuses the switch on one (`400`). A field added later is not offered until someone
+  says so. Everything a guest asks about is judged against this one list.
+- **`GET /guest/fields?category_id=`** answers with `id`, `name`, `field_type`,
+  `options` (in use) and `required` for each, and nothing else: it is a struct of
+  its own, so a key added to the definition later reaches a guest only by being
+  added there. It answers `404` while guest submission is off, `429` past a
+  per-address budget, and `400` for a category not open to guests, the test
+  `POST /guest/tickets` applies.
+- **`POST /guest/tickets` takes `custom_fields`** and judges it strictly
+  (`CheckGuestValues`), before anything is written: a key that is not an offered
+  field is `400` whatever it is (a staff-only field, one on a type, a
+  deactivated one, an unknown id, text that is not an id), the same for an empty
+  value, and the message never says whether such a field exists; a value the
+  field does not accept (including one over its length limit) is `400`, and a
+  retired option reads exactly like one that never existed, because the form is
+  never shown retired options; a required offered field without a value is
+  `400`. A guest is never warned and never partly saved, because the form is
+  ours. If the write of the values fails after the ticket exists, the guest is
+  told the truth in a success-like answer (owner, 2026-11-11: "Say it was filed,
+  check email"): `201` with the tracking number as on success, plus
+  `custom_fields_saved: false` and a `notice` that the request was received, some
+  details could not be saved, and to check the email for the ticket link and add
+  them there. Not a `500`, which invites a retry that files the ticket twice, and
+  the notice does not suggest one. Required is judged over the offered fields only, so a field the staff
+  form requires but guests are not offered does not stop a guest filing. After
+  the ticket exists the write is held to the offered set again
+  (`SetGuestCreationValues`), so a field withdrawn between the check and the
+  write is dropped, not stored.
+- **The form.** The public form asks `GET /guest/fields` when a category is
+  chosen, and does not submit until it has the answer. If the lookup is
+  throttled (`429`) or fails, it says "try again in a moment", offers **Try
+  again** and keeps submit disabled: a form that went on would show no fields and
+  then be refused for a required one it never offered.
+- **Nothing flows back.** The response is the tracking number, and the guest's
+  view of their ticket carries no custom fields.
+- **Audit.** A change to the switch is recorded on both sides of the entry
+  (`visible_to_guests`), and its text is shown on the Audit Log.
+
+### Display order
+
+Fields are grouped by level — the category's, then the type's, then the
+item's — and within each level ordered by field number, lowest first, ties
+broken by name. The new-ticket form and the ticket page use the same order, so
+a field sits in the same place on both. A field's level is the level of its
+most specific attachment. An inactive field that holds a value keeps its level.
+A field that holds a value but is no longer attached to the ticket's category,
+type or item comes after the item level, by field number then name, read-only.
+
+`GET /tickets/{id}/custom-fields` keeps its own order (field number, then name);
+the page applies the grouping.
+
+`custom_field_assignments.sort_order` is still accepted, stored and returned by
+the assignment routes, so no caller breaks, but nothing orders by it.
+
+An assignment goes with the node it is attached to. Deleting a category, type or item deletes its assignments in the same statement (a category's include those of its types and items), so a delete that is refused for tickets in use leaves them alone. `custom_field_assignments.scope_id` has no foreign key, which is why this is done in the delete itself. Assignment routes check the whole path: the item must belong to the type, the type to the category, and the assignment to the scope the path ends at; a mismatch, or a scope that does not exist, answers `404`.
+
+### Audit
+
+Entries use entity type `custom_field` and the field definition's id, so a
+field's whole history — attachments included — is one entity. Actions, and what
+each records, are listed in the API documentation. The actor is passed to every
+change explicitly. It is the signed-in administrator; for an API key, the key's
+owner; for an OAuth client, the client's service user (the existing custom-field
+routes still accept both). Every route that changes a field sits behind the
+administrator gate, so there is always an actor and no route records the
+system. Every entry carries the
+field's name in each state it records (before and after, where both exist);
+option entries carry the option's text, and attachment entries the place's
+path. The audit view shows all three: they are
+text an administrator wrote, not ticket content. Attachments removed by
+deleting a category, type or item are recorded as detached, in the same
+statement as the delete.
 
 ### Values
 
-Stored normalized in `ticket_custom_field_values` (one row per ticket + field def, `value TEXT`) for filterability — not as a JSON blob. Staff can edit field values at any time after ticket creation from the ticket detail page.
+Stored normalized in `ticket_custom_field_values` (one row per ticket + field def, `value TEXT`) for filterability — not as a JSON blob. Values are edited with `PUT /tickets/{id}/custom-fields`, restricted to fields the ticket actually has (those assigned to its category, type and item, for every role). Staff and admin can edit at any time after creation, from the ticket detail page, except a deactivated field, which is read-only; a reporting user can edit the fields on their own ticket through the API until it is Closed, and is refused with `409 ticket_closed` after (Closed is read-only to every requester). The ticket page offers **Edit** only to staff and admin.
 
-Guests see and can fill only category-level fields with `visible_on_new = true`. Regular authenticated users see category + type fields. Staff/admin see all levels.
+On ticket creation, custom field values are written after the ticket exists
+and never fail the request, except for the fields the classification requires,
+which are checked first (see *Required fields*). MCP `create_ticket` returns the
+same `warnings`. A value that is not written is reported in the 201
+response's `warnings` array, one entry per dropped field with a reason:
+`invalid_field_id`, `duplicate_field_id`, `not_on_ticket`, `inactive`,
+`retired_option`, `not_an_option`, `not_a_number`, `too_long` or `not_saved`
+(`too_long` only as a backstop: a value over its limit is refused with `400`
+before the ticket is created). The entry's
+`field_id` is the key exactly as sent, and entries are sorted by it. Two keys
+that spell the same field id (upper and lower case, say) get
+`duplicate_field_id` and neither is written, because which value to keep would
+be luck. An empty value means "no value" and is not a warning. The key is
+absent when nothing was dropped.
+
+A `number` field accepts a decimal number: after leading and trailing spaces
+are removed, what Go's `strconv.ParseFloat` accepts, except NaN, infinity,
+out-of-range values, hexadecimal and underscores. The trimmed text is stored as written, not
+reformatted. `PUT /tickets/{id}/custom-fields` refuses anything else with
+`400 bad_request`. It writes all of its entries or none, and it refuses a request
+in which two keys spell the same field id (`field_def_id is listed twice`)
+rather than pick one. Values stored before 1.3.0 are left as they are and shown as
+they are; since the ticket page sends only the fields that changed, such a value
+blocks only a save that changes that field.
+
+**Length limits** (owner, 2026-11-11). A value is at most **255 characters** for
+a `text` field, **10,000** for a `textarea` field, and 255 for `number` (counted
+after trimming) and `select` (which is one of the options, themselves at most 255
+characters: the options list refuses a longer one). Characters are Unicode code
+points, not bytes, so 10,000 four-byte characters (40 KB) is allowed and
+10,001 is not. They are the constants `customfield.MaxTextChars` and
+`MaxLongTextChars`, applied in `checkValue`, the one check every write goes
+through. Every door refuses an over-long value with `400 bad_request` before
+anything is created: `PUT /tickets/{id}/custom-fields` (all or none),
+`POST /tickets` for every caller (for any field, required or not), `POST
+/guest/tickets` and MCP `create_ticket`. The message names the field and the
+limit and never repeats the value. A value stored before the limits and over
+one is left as it is and shown as it is. A value that does not change is not
+checked against a limit again: an edit that leaves it out (every save the ticket
+page makes for another field) is unaffected, and one that sends it back
+unchanged (an API client that sends every field) is accepted, and the stored
+value is not rewritten. A different value is held to the limit as usual. The
+index under the values holds the first 255 characters of each (migration 000065),
+because Postgres refuses an index row over about 2,704 bytes and a long value
+could not otherwise be stored; the only lookups by value are of a select
+field's values, which never exceed 255 characters.
+
+**A field's own maximum length** (owner, 2026-11-11: "fixed caps but admin can
+lower it when they're defining the field"). A `text` or `textarea` field can carry
+`max_length` (`custom_field_defs.max_length`, nullable), set when the field is
+defined or edited on **Admin → Custom Fields** (a **Maximum length** box, with the
+type's cap in the hint) or with `max_length` on `POST /admin/custom-fields` and
+`PATCH /admin/custom-fields/{id}` (`null` removes it). It can only narrow the
+type: a whole number from 1 to one below the type's cap (254, or 9,999 for a
+text area), else `400`; a `number` or `select` field has none, so changing a
+field's type to one of those needs it cleared. The limit that applies is
+`min(max_length, the type's cap)`, `FieldDef.EffectiveMaxLength`, which every
+route that returns a definition or a value's field sends as
+`effective_max_length`, `GET /guest/fields` and MCP `list_ticket_fields` send as
+`max_length`, and the forms (new ticket, ticket page, guest form) set as
+`maxlength` and check inline before submitting. Changing it is audited
+(`custom_field_max_length_changed`, the limit that applied before and after, so
+clearing one reads as the type's cap coming back).
+
+**Where each limit lives** (owner, 2026-11-11: "when we're writing it to the
+database, it's always at the fixed cap. The length limit is only enforced in the
+frontend, in the API."). The database and the store know only the fixed type caps
+(255; 10,000 for long text): `customfieldstore` refuses a value over its type's
+cap whatever `decide` allowed, and reads a field's own `max_length` for nothing
+but returning it. The field's own limit is enforced in the API (`checkValue`, at
+every door) and the forms. Two consequences. **Lowering a field's limit never
+touches stored data**, and a value over a lowered limit stays and shows. **A write
+that bypasses the API** (an import, a migration, a direct store call) **is held
+only to the fixed cap**, so it can store a value the API would refuse.
+
+Guests are offered the fields an administrator chose for them, through their own endpoints, and see no custom fields on a ticket after (see *Guests*). The public form offers exactly the fields `GET /guest/fields` returns for the category, and holds the visitor to the required ones; the server judges what is sent. The authenticated field endpoints do not filter by role: the fields a ticket has are resolved from its own category, type and item, and `PUT /tickets/{id}/custom-fields` accepts any of them from any role that may write to the ticket. What a reporting user is offered follows from what they can pick (category and type, never an item), so in practice they see category and type fields, while staff and admin, who can pick all three, see all levels.
 
 ---
 
-## CTI-Linked Group Management (v2)
+## CTI-Linked Group Management
 
 Admins can manage which groups handle each CTI node directly from the CTI editor (**Admin → Categories**), without navigating to the Groups page.
 
+The same editor archives and restores a category, type or item (#446): an archive button on each row sends `active: false`, after a confirmation that says requesters will no longer see it or be able to file new tickets under it; a restore button sends `active: true` with no confirmation. Archived rows are greyed and labelled **Archived**. Deleting an entry that tickets use is refused with `409` (`category_in_use`, `type_in_use`, `item_in_use`), and the dialog then suggests archiving instead.
+
+- Each expanded row, at all three levels, also has an optional **Description** (1.3.0; see Data Model → Ticket Classification → Descriptions).
 - Each expanded **Category** row shows a **Groups** subsection listing groups assigned at the category level (type_id = NULL in `group_scopes`).
 - Each expanded **Type** row shows a **Groups** subsection listing groups assigned to that specific category + type pair.
 - **Items do not have a group management section** — items do not factor into scope per the scope model.
@@ -611,7 +8263,7 @@ Admins can manage which groups handle each CTI node directly from the CTI editor
 
 ---
 
-## Canned Responses (v2)
+## Canned Responses
 
 Staff insert reusable reply templates into ticket replies with one click, so common acknowledgements, fixes, and closure messages don't have to be retyped.
 
@@ -657,19 +8309,46 @@ Only admins create, edit, and delete canned responses; all staff and admins can 
 
 ## SLA Tracking (v1)
 
-SLA tracking is an optional feature toggle available in **Admin → Settings → Features → SLA tracking**. It can also be pre-enabled at startup via the `SLA_ENABLED=true` environment variable.
+This section describes what runs. SLA tracking is off until an operator turns
+it on from **Admin → System → Features**. The setting is read live, so the
+toggle takes effect without a restart.
+
+`SLA_ENABLED=true` in the environment switches that setting on at **every**
+start, not only the first. It only ever switches it on and never off, so an
+unset variable cannot disable a feature an administrator enabled — but an
+administrator who turns the toggle off while the variable is still set will
+find it on again after the next restart. Treat it as "this instance has SLA
+tracking" rather than as a default.
 
 ### SLA Policies
 
-When the SLA toggle is enabled, a **SLA Policies** management blade appears directly in the Features settings tab. Policies define the maximum time from ticket creation until a first response and until resolution. Each policy has:
+When the SLA toggle is enabled, a **SLA Policies** management blade appears directly on the Features page. Policies define the maximum time from ticket creation until a first response and until resolution. Each policy has:
 
 | Field | Description |
 |-------|-------------|
 | **Name** | Display label, e.g. "Critical — 1h response" |
 | **Priority** | Optional. `critical`, `high`, `medium`, or `low` — restricts the policy to tickets of that priority. Leave blank for "Any priority". |
 | **Category** | Optional. Restricts the policy to a specific category. Leave blank for "All categories". |
-| **Response target** | Minutes from ticket creation to first staff reply |
+| **Response target** | Minutes from ticket creation to the first staff reply visible to the reporter (internal notes do not count). A resolution also counts as the first response — see below. |
 | **Resolution target** | Minutes from ticket creation to ticket resolved |
+
+**A resolution counts as the first response**
+([#219](https://github.com/PubliciaLLC/go-help-desk/issues/219)). If a
+ticket reaches Resolved, or Closed without passing through Resolved,
+before any staff reply, its first response is recorded at the resolution
+instant, in a single statement on the ticket's SLA record (separate from,
+and after, the ticket's own resolution write; a failure there is repaired
+on the next resolve/close). The response target is judged against that
+instant, so a ticket resolved without a reply is never left reporting a
+response it can no longer receive. A ticket that already had an earlier
+staff reply keeps that reply as its first response.
+
+**Deleting a policy.** A policy that any ticket has been tracked against
+cannot be deleted: those tickets' targets and breach stamps are measured
+against it, and that includes a record a priority change has since superseded
+(see Re-matching when priority changes). The API refuses with 409, naming how
+many tickets depend on it. A policy that has never matched a ticket can be
+deleted freely.
 
 ### Policy Matching
 
@@ -681,12 +8360,567 @@ When a ticket is created, the system selects an SLA policy by specificity:
 4. A catch-all (no Priority, no Category)
 5. No SLA — if no policy matches
 
+#### Re-matching when priority changes
+
+The same re-match runs when the **category** changes: see *Re-matching when the category changes* below.
+
+A ticket can change priority after it is created (staff and admin,
+`PATCH /tickets/{id}`, #443). The SLA policy is then matched again, by the same
+four tiers, against the new priority and the ticket's category, and the change
+is audited. **A staff change never restarts a clock.** Only a reopen does: see
+**A reopen restarts both clocks** below.
+
+**Resolved and Closed tickets are refused.** A priority change on either answers
+`409 ticket_closed`, the same refusal every other write to a closed ticket gets,
+and changes nothing: not the priority, not the SLA. The check is made on the
+locked row. `PATCH /tickets/{id}` also asks it before it saves anything else in the request
+(role first, then the closed state), so a status or assignment sent with the
+priority is not left behind by the refusal.
+
+**A record's facts are never rewritten.** A ticket can have a history of SLA
+records, of which at most one is *current*. A re-match does not edit the current
+record: it marks it **superseded** (`sla_records.superseded_at`, the only column
+ever written on it again) and inserts a new record. Everything that addresses
+"the ticket's SLA" (the indicator, the breach sweep, the recording of a first
+response or a resolution) reads the current record only. A superseded record is
+history: it is never evaluated, and its breach stamps stay as they were.
+
+What a staff change does, decided in this order:
+
+| The ticket and its current record | Outcome | The new record |
+|---|---|---|
+| SLA tracking is switched off | `sla_off` | none; nothing is re-matched |
+| No record, no policy matches | `none` | none |
+| No current record, a policy matches | `attached` | a record whose clock **resumes where the last one ran**: it takes the `started_at` and pause base of the ticket's most recently superseded record, and none of its met or breach facts. A ticket that never had a record starts **at its creation**, not at the change, and can already be breached when it is created |
+| The new priority matches the record's own policy | `unchanged` | none |
+| Another policy matches | `rematched` | replaces the old record under the new policy, **keeping its clock** (so elapsed time still counts) and **its facts** (so a target already met stays met) |
+| A record exists, no policy matches | `removed` | none; the record is superseded and the ticket shows no SLA |
+
+**Moving through a priority with no policy does not undo a restart** (Erik,
+2026-10-14). A priority with no matching policy supersedes the record and leaves
+the ticket with none (`removed`). When a later change gives it one back
+(`attached`), the new record resumes from the **later of** the ticket's last
+reopen (`last_reopened_at`) and the newest superseded record's start, with the
+pause base that goes with whichever wins, instead of the ticket's creation. So a
+restart is not thrown away by a trip through a priority with no policy, a reopen
+that itself lands on a priority with no policy still counts as a restart (a
+ticket reopened onto high, which has no policy, and moved back to medium resumes
+from the reopen, not from before it), and the time spent there still counts.
+`sla_restarted` is written when a reopen supersedes a record, even if none
+starts, because the old clock did end and the restart point is recorded on the
+ticket; it is not written when the ticket had no record to replace, even if the
+reopen starts a first one (Erik, 2026-10-15). It gains
+nothing, and it is not punished beyond what happened: the pause base comes with
+the start, and the record's facts (met, breached) are not copied. This applies to
+a staff change only; a reopen always starts at the reopen. The "SLA restarted"
+badge reads the same as before: the record the restart replaced.
+
+**A reopen restarts both clocks** ([#464](https://github.com/PubliciaLLC/go-help-desk/issues/464)).
+Whenever a ticket is reopened (a requester's reply, a status change out of
+Resolved or Closed, or `POST /reopen`: Ticket Lifecycle), the reopen's own
+transaction calls the same primitive with the reason `reopened`, after the status
+change. That reason always starts both clocks over from the reopen: the current
+record is superseded and kept, and a new one starts at the reopen with no facts,
+so both targets are timed anew. It does so on **every** reopen, not only the
+first (the priority bump is first-only; the restart is not, Erik 2026-10-14), even when the
+priority does not change (a ticket already at the highest priority cannot be
+raised, and a later reopen does not raise it) and even when the new priority maps
+to the same policy. It is not refused for being Resolved or Closed, because the
+reopen has just moved the ticket out of it in that same transaction. With SLA
+tracking switched off no record is created. The audit feed carries
+`priority_changed` (when the priority changed, with the outcome) and
+`sla_restarted`. A record that started over is recognisable as one (`started_at`
+is set), and because it is a clean clock it can clear a breach from the
+indicator; the breach stays on the superseded record, and `sla_restarted` says
+when.
+
+**"SLA restarted" badge.** When the clock really restarted, the ticket page
+shows an **SLA restarted** badge next to the SLA indicator (staff and admin; a
+reporting user sees no SLA). It exists because of a reopen and nothing else: a staff or admin priority change
+**never makes it appear on a ticket that was never reopened**, and never
+restarts a clock itself; it re-matches the SLA and keeps its clock, whatever the
+old record had already met or breached. (On a ticket whose reopen landed on a
+priority with no policy, the badge first shows at the staff change that gives it
+a record back: that record resumes from the reopen, so it is the reopen's
+restart showing, not the priority change's.) It appears on a reopened
+ticket whose earlier record had something met or breached. Its tooltip reads
+"The SLA clock restarted when this ticket was reopened. The earlier record is
+kept; select to see it." Selecting it
+opens a small panel (Escape closes it) with the earlier record's facts: its
+policy, when its clock started, when it was replaced, and whether it ended met or
+breached. `GET /tickets/{id}` carries it as `sla.earlier`; a list row never does.
+
+What tells a restart from a re-match is the clock start, not the stamps: a
+re-match copies the old record's `started_at` and its met and breach stamps onto
+the new record, so the stamps are the same in both and say nothing. Only a
+restart gives a record a `started_at` of its own. The current record's
+`started_at` is the reference: empty means the clock runs from the ticket's
+creation, so it cannot have restarted; otherwise the newest superseded record
+whose clock started somewhere else is the one the restart replaced (a re-match
+after a restart shares the restart's start and is passed over, so the badge stays
+after one, correctly, because the clock did restart). If that record ended with
+nothing met and nothing breached there is no outcome to show and no badge. The
+outcome reads the record's stored stamps, so a breach the sweep has not stamped
+yet is not reported.
+
+**The clock.** A record's clock starts at its `started_at`, or at the ticket's
+creation when that is empty (every record written before this existed, every
+record a new ticket attaches, and a record a staff priority change attaches to a
+ticket that never had one).
+A record also stores `paused_seconds_at_start`: the ticket's pause total plus
+the part of an open Pending interval already elapsed, as of its start, so pause
+time before a restart does not count toward the new record. A re-match carries
+both onto the record that replaces it.
+
+**Atomic.** The priority, the SLA rows and the audit entries are written in one
+transaction, like the ticket service's other composite writes: an audit entry
+committed apart from the change it describes is not an audit trail. (A new
+ticket's SLA record, by contrast, is attached after the ticket commits and is
+best-effort.) A second change made at the same moment waits for the first, and
+the schema allows one current record per ticket.
+
+**Gated on the toggle.** A re-match creates records, so, like attaching a policy
+to a new ticket, it happens only while SLA tracking is on. Recording a first
+response or a resolution onto an existing record is not gated.
+
+**Event.** A priority change that moves the priority raises `ticket.priority_changed` (written in the same transaction; no event when the priority is unchanged). It sends no email. See [Ticket Events: One Change, One Event](#ticket-events-one-change-one-event).
+
+**Recording against a re-match.** Recording a first response or a resolution
+(`RecordFirstResponse`, `RecordResolved`) runs after the reply's own commit and
+outside the ticket's row lock, so a re-match can commit between its read of the
+record and its write. Every SLA write is therefore tied to the record it was
+computed from: it is addressed by that record's id, not the ticket's, and if the
+record has been superseded in the meantime the write changes nothing and reports
+it. The recording code then reads the current record again, recomputes from its
+clock and policy, and retries, up to 3 attempts in all; if every attempt is
+beaten by a re-match it returns an error, which the server logs. A response or
+resolution from before the record's clock started is dropped: after a reopen's
+restart, one that came before the reopen never counts on the new clock. For a
+staff re-match, which keeps the clock, the response lands on the new record.
+The breach sweep is bound the same way: it stamps a breach only on the record it
+evaluated, and skips one that was superseded, leaving the next pass to evaluate
+the record that replaced it.
+
+#### Re-matching when the category changes
+
+A policy is matched on priority and category, so reclassifying a ticket can mean
+a different policy (1.3.0; until then a reclassified ticket kept the policy of
+its old category). `PATCH /tickets/{id}` with a new `category_id` (and
+`ticket.Service.UpdateCTI`) matches the policy again, by the same four tiers, in
+the reclassification's own transaction, and writes a `classified` audit entry
+carrying the same outcome vocabulary as a priority change (`sla_outcome` and the
+policy and record ids before and after).
+
+- **The clock is kept.** A reclassification is a staff change, and a staff change
+  never restarts a clock: the new record takes the old record's start and pause
+  base and its met and breach facts, exactly as for a priority change, with the
+  same outcomes (`rematched`, `unchanged`, `attached`, `removed`, `sla_off`).
+  Only a reopen restarts a clock.
+- **Only the category matters.** A change of type or item alone cannot change the
+  match; it is audited, with no SLA outcome.
+- **Resolved and Closed tickets are not reclassified at all** (`409
+  ticket_closed`, for every role), so a finished ticket's SLA is never re-matched:
+  what it was measured against is a fact about what happened. Classification
+  only happens to open tickets (Erik, 2026-11-10).
+- **Gated on the toggle**, as for a priority change: with SLA tracking off nothing
+  is re-matched and the entry says `sla_off`.
+- **Atomic.** The classification, the SLA rows and the entry commit together.
+
+### Timer Mechanics (pause / resume)
+
+A target is measured against **elapsed time since creation, minus time spent
+Pending** — not wall-clock time since creation. That subtraction is the part
+that has to be modeled explicitly, because "paused" is a duration a ticket
+accumulates across possibly several Pending intervals, not a single flag:
+
+- "Pending" means the status **named** `Pending`: a seeded *custom* status,
+  not a system one, matched by name (`ticket.StatusNamePending`). There is no
+  per-status "pauses the SLA" flag in v1. Renaming the status away from
+  `Pending` stops tickets from pausing from then on. A ticket already in it
+  stays paused until it leaves, since leaving closes the interval whatever the
+  status is called. Deactivating it stops tickets entering it: the
+  server refuses a move into an inactive status for every role and the
+  ticket-detail status picker no longer lists it. A ticket already in it stays
+  paused until it leaves. A reopen cannot enter it either: an inactive reopen
+  target falls back to New. Deleting it removes the only way to pause. Whatever
+  status is later named `Pending`, renamed back or newly created, becomes the
+  pause status.
+- Each time a ticket enters Pending, that timestamp is recorded as the start
+  of a paused interval; each time it leaves Pending (to any other status), the
+  interval closes and its length is added to the ticket's accumulated
+  `tickets.sla_paused_seconds`.
+- **Elapsed-toward-target**, at any instant, is `now - created_at -
+  sla_paused_seconds` (for a record a reopen has started over, and any record
+  that later replaced it, from the record's own start and pause base instead: `now - started_at -
+  (sla_paused_seconds - paused_seconds_at_start)`; see Re-matching when
+  priority changes), with one adjustment: if the ticket is *currently*
+  Pending, the still-open interval's length (from its start to now) is added
+  on top, so a ticket does not appear to be making progress toward breach
+  while it is actively paused.
+- A response or resolution that lands while paused stops that clock the same
+  way a status change would: `sla_records.first_response_at` / `resolved_at`
+  is a timestamp, not a running total, so once it's set the elapsed-time
+  formula above is irrelevant to it — only breaches still open at that
+  moment continue to accrue pause time.
+- Re-entering Pending after a reopen (see Ticket Lifecycle) resumes
+  accumulating against the same accumulated pause total; the pause time before
+  a reopen does not count toward the restarted record (its base is the pause
+  total as of the reopen), so a reopen's new record is a new SLA clock.
+
+### Breach Evaluation
+
+Because elapsed-toward-target keeps moving without any action on the ticket, a
+breach can occur while nobody touches it — so, like ticket auto-close, this
+cannot be computed only on read. A periodic background sweep evaluates every
+open ticket with an attached policy and no existing breach timestamp for a
+target still outstanding, and stamps `response_breached_at` /
+`resolution_breached_at` the first time elapsed-toward-target reaches or
+passes the policy's minutes for that target (reaching it exactly counts, the
+same instant the indicator turns red). The stamp, once set, does not clear itself
+if a ticket is later reopened or its policy changes — a breach that happened
+is a fact about what happened, not a live status. A priority change that
+re-matches the SLA does not clear it either: the breach stamp is carried onto
+the record that replaces it, and the superseded record, which is never evaluated
+again, keeps its own. (A reopen's restart starts a clean record; the stamp stays
+on the superseded one.)
+
+The sweep runs every minute from a goroutine started in
+`cmd/server/main.go` and calls `sla.Service.SweepBreaches`. That selects
+candidates with a pause-aware prefilter query (`ListSLABreachCandidates`)
+and re-checks each against a fresh read of the ticket before stamping.
+One minute because targets are whole minutes and a sweep stamp records
+when a breach was *detected*, so the interval is the stamp's worst-case
+error. The goroutine always runs, but each tick first reads the SLA toggle
+and does nothing while it is off. A failure on one ticket is logged and
+does not stop the pass.
+
+The sweep is not the only writer. When a first response or a resolution is
+recorded (`RecordFirstResponse` / `RecordResolved`), the same statement that
+stores the timestamp also stamps that target's breach if it had already
+reached or passed it at that instant (a target met at exactly its length is
+therefore recorded as breached). A late response or resolution is therefore
+stamped when it happens, even between sweep ticks. These record-time writes
+are not gated on the SLA toggle: a ticket that already has an SLA record
+gets its facts recorded truthfully while the feature is off. The toggle
+governs whether new tickets get a record and whether the sweep runs. Every
+writer is write-once per column (the first stamp wins, and none overwrites
+a stamp already set).
+
+Timer mechanics were tracked as
+[#181](https://github.com/PubliciaLLC/go-help-desk/issues/181), the scheduler
+as [#182](https://github.com/PubliciaLLC/go-help-desk/issues/182), and the
+queue indicator below as
+[#183](https://github.com/PubliciaLLC/go-help-desk/issues/183).
+
+The sweep also stamps when a target first reaches 80%, and announces what it
+newly stamps: see *Breach and at-risk notifications*, next.
+
+### Breach and at-risk notifications
+
+([#670](https://github.com/PubliciaLLC/go-help-desk/issues/670), 1.3.x.) A
+breach used to tell nobody: the sweep stamped it and stopped. Now the sweep
+announces each crossing it stamps, by email to staff and to webhooks, once,
+in at most one notification per ticket per pass.
+Escalation tiers and a group lead are not part of this; they stay with incident
+management (#408, v1.4).
+
+**Two events.** `sla.breached`: the sweep has just stamped a breach of one or
+both targets, and, when the other target reached 80% in the same pass, says
+that too (see *One notification per ticket per pass*). `sla.at_risk`: the
+sweep has just stamped that one or both targets reached 80% while still
+outstanding and not breached, and stamped no breach. Both are raised
+**only by the sweep**. A late first response or resolution that stamps its own
+breach (`SetSLAFirstResponse`, `SetSLAResolved`, `SetSLAResolvedAndFirstResponse`)
+sends nothing: somebody has just acted on the ticket, and the target it stamps
+is met, so the sweep never evaluates it again. Each event carries in `Payload`
+`targets` (a list of `response` and/or `resolution`, in that order: the
+targets that breached, for `sla.breached`, or reached 80%, for `sla.at_risk`),
+`policy_id` and `record_id` (the record the stamp was written on);
+`sla.breached` also carries `at_risk_targets` (same enums, same order) when a
+target that has not breached was announced at risk in the same pass, and
+omits the key when none was; `ActorID` is
+null, because the system acts; `Ticket` is the ticket as read inside the
+stamp's transaction, so per-hook filters and staff mail work as for any change.
+
+**At-risk stamps are stored.** `sla_records.response_at_risk_at` and
+`resolution_at_risk_at` (migration `000067`) record when the sweep first saw a
+target at or past 80%. "Tell once" needs a fact to compare against, and the
+live colour cannot say whether anyone was told. Like the breach stamps they
+are write-once, set only while the column is NULL, and never cleared. Only the
+sweep writes them. The threshold is the indicator's own rule, `elapsed*5 >=
+target*4` (one Go function shared by `colorFor` and the sweep's decision; in
+SQL, `target_min * 48` seconds, which is exact).
+
+**An at-risk stamp is written only below 100%.** A target the sweep first sees
+at or past its full length gets the breach stamp and **never** an at-risk one,
+and an at-risk stamp is never written once that target is breached. So at-risk
+never alerts once the same target has breached, by construction rather than by
+a check, and a target that jumps past both thresholds between ticks (a target
+of a minute or two, a downtime) gets one alert, the breach. A pass that finds
+one target breached and the other at risk stamps both, in one transaction,
+and announces both in one `sla.breached`.
+
+**Only fresh crossings are announced.** A crossing is announced only when the
+sweep stamps it within **15 minutes** of the threshold, measured on the SLA
+clock as of the sweep's reading: for a breach, `elapsed − target ≤ 15 min`;
+for at-risk, `elapsed − 80% of target ≤ 15 min`. Anything older is stamped
+silently (it still shows breached, and still counts for the restart badge),
+and the pass logs one count of how many it stamped that way (`stale`), not one
+line per ticket. The window is the domain constant `sla.AlertFreshness`, not a
+setting: it guards against a flood, it is not a preference, and it is the same
+kind of number as the one-minute sweep interval, which is not a setting either.
+What it stops: a policy tightened in place, or a staff change that re-matches
+to a shorter target, putting a whole queue past its target at once; a server
+that was down; SLA tracking switched back on after a while off (the sweep does
+not run while it is off); a staff change that attaches a record whose resumed
+clock is already over (`attached`); and the first sweep after upgrading, which
+finds open tickets already past 80%. Because it is measured on the SLA clock,
+pause time never makes a crossing stale: a ticket that leaves Pending and
+crosses 80% a minute later is announced.
+
+Freshness is decided **per target and per crossing**, including inside one
+notification: each crossing the pass newly stamps is announced only if its own
+crossing is fresh. An at-risk target alongside a breach is named in
+`at_risk_targets` only if its own 80% crossing is fresh; otherwise its stamp
+is still set, silently, in the same transaction, it is left out of the event
+and counted as stale. The same holds the other way: a stale breach with a
+fresh at-risk of the other target is stamped silently and the pass raises
+`sla.at_risk` for the fresh one. There is no special case: the pass announces
+the fresh crossings it newly stamped, and which event that is follows from
+them (next).
+
+**One notification per ticket per pass.** Whatever the pass found on a
+ticket, it is written in **one transaction** and announced by **at most one
+event**, chosen from the fresh crossings that transaction newly stamped:
+
+| Fresh, newly stamped in this pass | Event | `targets` | `at_risk_targets` |
+| --- | --- | --- | --- |
+| one or both breaches, no at-risk | `sla.breached` | the breached targets | omitted |
+| one breach and an at-risk of the other target | `sla.breached` | the breached target | the at-risk target |
+| one or both at-risk, no breach | `sla.at_risk` | the at-risk targets | not a key of this event |
+| nothing fresh (or `sla_alerts_enabled` off) | none | | |
+
+Both targets breached in the same pass are one `sla.breached` with
+`targets: ["response", "resolution"]`; the same for at-risk. A target cannot be
+in both lists: an at-risk stamp is never written for a target that breaches in
+the same pass (written only below 100%, above). Because the at-risk stamp of a
+target named in `at_risk_targets` is set in that same transaction, it is
+never announced at risk again; when that target later breaches, a later pass
+stamps the breach and raises `sla.breached` with `targets` naming it, as for
+any breach. This is the shape #506 asks for: one transaction is one event per
+ticket, and the collector merges everything raised for a ticket in one
+transaction into one event, so two SLA raises in one transaction would have
+merged into one event with one `targets` key overwriting the other. Raising
+exactly one event per transaction means nothing is merged. An SLA event never
+shares an event with a ticket kind either (the sweep's transaction changes
+nothing else), so the chat "Also" line never names one. The event's `Kinds`
+is its own name only: a mixed pass is `sla.breached`, so a hook that lists
+`sla.at_risk` and not `sla.breached` is not told of it, and since the at-risk
+stamp is set, it is not told later either. A hook that wants to hear of
+breaches lists `sla.breached` (or `*`).
+
+**The stamps and their event commit together.** Each ticket's crossings in a
+pass are written through `ticket.Atomic`, the same runner the ticket service
+uses: one stamp statement for all of them, then at most one raise, and the
+outbox rows (one per channel, as for any change) are written inside that
+transaction before it commits (Ticket Events: One Change, One Event). An
+announcement committed apart from the stamps it describes is not reliable,
+for the same reason an audit entry committed apart from its change is not an
+audit trail. A rollback leaves neither the stamps nor a row, and the next pass
+finds the record unstamped and announces what is still fresh; once committed,
+the stamps are there and the record never announces those crossings again.
+The sweep's stamp is not audited, as it was not before.
+
+**The stamp statement says what it newly set.** `StampSLACrossings` replaces
+`StampSLABreaches` on the sweep's path. It locks the current record
+(`FOR UPDATE`, addressed by record id with `superseded_at IS NULL`, as since
+#623), sets each of the four stamp columns it is given only where that column
+is still NULL **and** its target is still outstanding (`first_response_at` /
+`resolved_at` NULL; an at-risk column also needs that target's breach column
+NULL), and returns, per column, whether **this** statement set it (NULL before,
+set after). Only a column this statement set, and whose crossing the Go
+decision found fresh, is announced; the event is chosen from those after the
+statement, inside the same transaction. `StampSLABreaches`
+reported rows affected, which is 1 even when every column was already set, so
+its caller could not tell what it had stamped. It is kept, deprecated, with no
+production caller. No record row means the record was superseded: nothing is
+written and nothing is raised, and the next pass evaluates its replacement.
+
+- **Two sweeps at once** (every replica runs one): both may decide the same
+  crossing. The row lock puts one after the other; the second finds the column
+  set, sets nothing and announces nothing. If the second, reading later, also
+  finds a crossing the first did not (the at-risk target has since breached),
+  it sets only that column and announces only that.
+- **A late reply racing the sweep.** The reply's statement and the stamp lock
+  the same row. Reply first: the target is met, the stamp sets nothing and
+  nothing is sent. Sweep first: the breach was true at the sweep's reading, so
+  it is announced; the reply then records its response and keeps the stamp.
+- **The record-time writers send nothing** and never touch the at-risk columns.
+
+**Through the record's life.**
+
+- **Superseded** records are history: never evaluated, never announced; their
+  stamps stay.
+- **A staff re-match** (priority or category) copies the at-risk stamps onto
+  the new record exactly as it copies the breach stamps, so a crossing already
+  announced is not announced again. A consequence, accepted with the breach
+  stamp's own: a re-match to a longer target keeps the at-risk stamp, and that
+  record gets no second at-risk alert at the new 80%.
+- **A reopen** restarts clean: the new record has no stamps, so it can be at
+  risk and breach, and be announced, again.
+- **`attached`** resumes the old clock with no facts: its crossings are
+  announced if fresh and stamped silently if not.
+- **Pause** freezes elapsed, so nothing crosses while Pending.
+- **Closed** tickets are not candidates; neither is a met target.
+
+**The candidate query is the only mirror.** The decision is made in Go from
+`Record.Elapsed` and the shared 80% rule, so the elapsed-time formula is not
+copied again. `ListSLABreachCandidates` gains an at-risk branch per target
+(outstanding, not breached, not at-risk-stamped, elapsed at or past 80%) and
+stays a superset of what the Go decision stamps; its superset test covers the
+new branches. It is still the second of the three copies (Go, this query,
+`ListTicketsFiltered`), which change together as before.
+
+**The indicator does not change.** The at-risk stamps are never read by the
+indicator, the list's `sla=at_risk` filter or its sort (all still a live read
+of the clock), the restart badge, or the API; a test pins `StatusFor` ignoring
+them as it ignores the breach stamps. A ticket whose at-risk stamp a re-match to
+a longer target carried over shows green.
+
+**The off switch: `sla_alerts_enabled`.** One setting gates both events, for
+email and for webhooks (**Admin → System → Email → Notifications**, in the SLA alerts section).
+Off, the sweep still runs and still stamps, breach and at-risk alike; it raises
+nothing. A crossing stamped while it is off is never announced later. It is read
+on every tick; a failed read skips the tick, as a failed read of `sla_enabled`
+does, so a crossing is not stamped silently because a read failed.
+
+- **Upgraded installs start with it off.** Migration `000067` stores `false`
+  when the users table already holds a person (a service account does not
+  count), as `000052` does for staff email. On upgrade, `*` hooks would
+  otherwise start receiving two names they have never seen, and an instance
+  already running SLA would start announcing on first boot.
+- **A fresh install starts with it on.** The same migration stores `true` on a
+  database with no people. A fresh install has SLA tracking off, no policies
+  and no hooks, so nothing is announced until an administrator sets those up,
+  and one who does expects a breach to be announced.
+- An existing value wins (`ON CONFLICT DO NOTHING`). The setting is not
+  session-only: it widens nothing anyone can see.
+
+**Email.** Staff mail for both events is decided by the worker like all staff
+mail (`notify.StaffFanout`), under the **fourth switch, SLA alerts**
+(`users.email_notify_sla`, override `staff_email_sla_override`; Notifications,
+Staff email). The recipients follow the reply rule: the **assignee**; the
+**assigned group's members only while nobody personally holds the ticket**;
+and **followers**, except the assignee and, when the group is mailed, its
+members. All of them answer to the SLA switch, not to Activity or Group: those
+three switches do not apply to these two events. Nobody is skipped as the
+actor, since there is none. Each event has three templates, own, group and
+follow: `staff_sla_breached`, `staff_sla_breached_group`,
+`staff_sla_breached_follow`, `staff_sla_at_risk`, `staff_sla_at_risk_group`,
+`staff_sla_at_risk_follow`, admin-editable like the rest. A person gets one
+mail per notification, so a mixed pass is one mail, from the breached
+templates, that says both. The send-time checks are those of every staff mail.
+
+*Which targets.* The mail names the targets through a third variable,
+`SLAStatus`, besides `TrackingNumber` and `TicketURL` (`TicketURL` is still
+the one that must be printed). Email still never reads `Payload`: the sweep
+also sets a typed field on the event, `SLA` (`notification.SLAAlert`, the
+breached and the at-risk targets as the same enums as `targets` and
+`at_risk_targets`, excluded from JSON, stored by the outbox codec like
+`FollowUp`, carried onto the `staff.*` rows by the fan-out). `SLAStatus` is
+made from it by one function, and is one of exactly these eight, never text
+anyone typed:
+
+| Breached | At risk | `SLAStatus` |
+| --- | --- | --- |
+| response | | Response breached |
+| resolution | | Resolution breached |
+| response, resolution | | Response and resolution breached |
+| response | resolution | Response breached; resolution at risk |
+| resolution | response | Resolution breached; response at risk |
+| | response | Response at risk |
+| | resolution | Resolution at risk |
+| | response, resolution | Response and resolution at risk |
+
+*Default wording.* The subjects end on the tracking number in brackets, left
+out when there is none (as the follow-up mail's does). For the mixed case on
+`GHD-2026-000007`:
+
+| Template | Subject |
+| --- | --- |
+| `staff_sla_breached` | SLA alert on a ticket assigned to you: Response breached; resolution at risk [GHD-2026-000007] |
+| `staff_sla_breached_group` | SLA alert on a ticket assigned to your group: Response breached; resolution at risk [GHD-2026-000007] |
+| `staff_sla_breached_follow` | SLA alert on a ticket you follow: Response breached; resolution at risk [GHD-2026-000007] |
+
+that is, `SLA alert on a ticket assigned to you: {{.SLAStatus}}{{if
+.TrackingNumber}} [{{.TrackingNumber}}]{{end}}`, with "assigned to your
+group" and "you follow" in the other two. The three at-risk templates use the
+same three subjects (their `SLAStatus` says "at risk"). The bodies, with the
+same closing lines as the other staff mails:
+
+```
+An SLA target on a ticket assigned to you has been breached.
+
+Response breached; resolution at risk.
+
+Ticket: GHD-2026-000007
+
+Read it here:
+<TicketURL>
+
+You can choose which of these emails you get under your profile.
+```
+
+The first line is, for `staff_sla_breached_group`, "An SLA target on a ticket
+assigned to a group you belong to, which nobody has picked up, has been
+breached."; for `staff_sla_breached_follow`, "An SLA target on a ticket you
+follow has been breached."; for the at-risk three, the same with "is at risk:
+80% of its time has been used." in place of "has been breached." The second
+line is `{{.SLAStatus}}.`
+
+**Webhooks.** Both names are in `WebhookEvents` and are not opt-in, so a `*`
+hook receives them. The raw body carries `targets`, `policy_id` and
+`record_id`, and for `sla.breached` also `at_risk_targets` when the pass
+announced an at-risk target with the breach (the key is absent otherwise, not
+an empty list). The chat headlines are "SLA breached", "SLA breached; another
+target at risk" and "SLA at risk", with no target named; Jira keeps the name in
+its `event` key. Redeliver keeps the same keys.
+
+**Known limits.**
+
+- Detection is at most a minute late, like the stamp.
+- If the outbox write keeps failing for longer than the 15 minutes, the
+  crossing is then stamped silently: a lost alert, not a flood.
+- A reply recorded after the sweep stamped, whose own time was before the
+  target (the gap between a reply's commit and the recording of its first
+  response, under Re-matching when priority changes), leaves the breach stamp
+  as before and has now also announced it. The window is the time between the
+  two writes.
+- A hook that lists `sla.at_risk` but not `sla.breached` never hears of an
+  at-risk crossing that came in the same pass as a breach of the other target
+  (it rides on `sla.breached`, and its stamp is set).
+
 ### SLA Indicators
 
-The ticket queue shows a color-coded SLA indicator per ticket:
+The ticket queue shows a color-coded SLA indicator per ticket, computed from
+the same elapsed-toward-target calculation used for breach evaluation (not
+from the breach stamp alone, since amber has to render before a breach
+timestamp would ever be set):
 
-- **Green** — within SLA
-- **Amber** — within 20% of the deadline
-- **Red** — SLA breached
+- **Green** — elapsed-toward-target is under 80% of the applicable minutes
+- **Amber** — elapsed-toward-target is at or past 80% but under 100%
+- **Red** — elapsed-toward-target is at or past 100% (breached), whether or
+  not the background sweep has stamped it yet — the stamp is for reporting and
+  for freezing a fact in time, the color is a live read
+- A ticket with no matching policy shows no indicator at all, not green.
 
-SLA timers are paused while a ticket is in a "Pending" status (waiting on the user) and resume when the ticket moves to any other status.
+The response and resolution targets are indicated separately when both are
+outstanding (e.g. resolution can be amber while response is already breached);
+once a target's timestamp (`sla_records.first_response_at` / `resolved_at`)
+is set, that target's indicator stops updating and shows its final color.
+
+**Visibility:** the indicator, the policy name, the targets, and the
+breach/late status are staff/admin only. A reporting user's own ticket never
+carries any of it — the API returns `"sla": null` on that response regardless
+of whether a policy is attached — so a customer cannot see how their ticket is
+being timed or that it has breached.
